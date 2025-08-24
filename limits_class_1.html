@@ -13,7 +13,7 @@
     .quiz-container { max-width: 900px; margin: 30px auto; padding: 25px; background: white; border-radius: 12px; box-shadow: 0 0 15px #555; }
     .question { margin-bottom: 20px; padding: 10px; border-radius: 8px; background: #e1f5fe; }
     .question p { font-weight: bold; }
-    input[type="text"] { width: 100%; padding: 6px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; }
+    input[type="text"], input[type="email"] { width: 100%; padding: 6px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; }
     button { background-color: #0288d1; color: white; padding: 10px 25px; border: none; cursor: pointer; font-size: 1em; border-radius: 5px; margin-top: 10px; margin-right: 10px; }
     button:hover { background-color: #01579b; }
     .correct { background-color: #c8e6c9; }
@@ -22,6 +22,8 @@
     .timer { text-align: right; font-weight: bold; margin-bottom: 15px; }
     #solution-btn { display: none; background-color: #43a047; }
     #solution-btn:hover { background-color: #2e7d32; }
+    .email-container { margin-bottom: 15px; }
+    #submission-message { margin-top: 10px; font-weight: bold; color: #01579b; }
 </style>
 <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
 <script id="MathJax-script" async
@@ -37,16 +39,29 @@
 </header>
 
 <div class="quiz-container">
+    <div class="email-container">
+        <label for="name">Enter your name (required):</label>
+        <input type="text" id="name" placeholder="Your name" required>
+    </div>
+    <div class="email-container">
+        <label for="email">Enter your email (required):</label>
+        <input type="email" id="email" placeholder="you@example.com" required>
+    </div>
+
     <div class="timer" id="timer">60:00</div>
     <div id="quiz-container"></div>
-    <button onclick="checkAnswers()">Submit</button>
-    <button onclick="restartQuiz()">Restart Quiz</button>
-    <button id="solution-btn" onclick="showSolution()">View Solution Pack</button>
+
+    <div class="button-row">
+        <button id="submitBtn" onclick="checkAnswers()">Submit</button>
+        <button id="restartBtn" onclick="restartQuiz()">Restart Quiz</button>
+        <button id="solution-btn" onclick="showSolution()">View Solution Pack</button>
+    </div>
+
     <div id="score"></div>
+    <div id="submission-message"></div>
 </div>
 
 <script>
-// === Questions with LaTeX syntax for MathJax ===
 const questions = [
     {type:'fill', q:"\\(\\lim_{x \\to 2} \\frac{x^2 - 4}{x - 2}\\)", answer:["4"]},
     {type:'fill', q:"\\(\\lim_{x \\to 1} \\frac{x^3 - 1}{x - 1}\\)", answer:["3"]},
@@ -57,7 +72,7 @@ const questions = [
     {type:'fill', q:"\\(\\lim_{x \\to 4} \\frac{x^2 - 16}{x - 4}\\)", answer:["8"]},
     {type:'fill', q:"\\(\\lim_{x \\to 0} (5x + 2)\\)", answer:["2"]},
     {type:'fill', q:"\\(\\lim_{x \\to 2} \\frac{x^3 - 8}{x - 2}\\)", answer:["12"]},
-    {type:'fill', q:"\\(\\lim_{x \\to -2} \\frac{x^2 + 4}{x + 2}\\)", answer:["-2"]},
+    {type:'fill', q:"\\(\\lim_{x \\to -2} \\frac{x^2 + 2x}{x + 2}\\)", answer:["-2"]},
     {type:'fill', q:"\\(\\lim_{x \\to 1} \\frac{x^2 - 1}{x - 1}\\)", answer:["2"]},
     {type:'fill', q:"\\(\\lim_{x \\to 3} \\frac{x^2 - 9}{x - 3}\\)", answer:["6"]},
     {type:'fill', q:"\\(\\lim_{x \\to 0} \\frac{x^3 + 2x^2}{x}\\)", answer:["0"]},
@@ -66,13 +81,9 @@ const questions = [
     {type:'fill', q:"\\(\\lim_{x \\to 5} \\frac{x^2 - 25}{x - 5}\\)", answer:["10"]},
     {type:'fill', q:"\\(\\lim_{x \\to 4} \\frac{x^2 - 16}{x - 4}\\)", answer:["8"]},
     {type:'fill', q:"\\(\\lim_{x \\to 0} \\frac{x^2 - 4x}{x}\\)", answer:["-4"]},
-    {type:'fill', q:"\\(\\lim_{x \\to 3} \\frac{x^2 - 4}{x - 3}\\)", answer:["6"]},
+    {type:'fill', q:"\\(\\lim_{x \\to 2} \\frac{4x^2 - 9}{2x - 3}\\)", answer:["7"]},
     {type:'fill', q:"\\(\\lim_{x \\to 1} \\frac{x^3 - 1}{x - 1}\\)", answer:["3"]}
 ];
-
-// Shuffle questions
-function shuffleArray(arr){ return arr.sort(() => Math.random() - 0.5); }
-shuffleArray(questions);
 
 const container = document.getElementById('quiz-container');
 
@@ -88,33 +99,68 @@ function renderQuiz(){
     });
     document.getElementById('score').innerText = '';
     document.getElementById('solution-btn').style.display = 'none';
+    document.getElementById('submission-message').textContent = '';
     MathJax.typesetPromise();
 }
 
-function checkAnswers(){
+function normalizeAns(s){
+    return s.replace(/\s+/g,'').replace(/,+/g,'').toLowerCase();
+}
+
+async function checkAnswers(){
+    const nameInput = document.getElementById('name');
+    const emailInput = document.getElementById('email');
+    const msgEl = document.getElementById('submission-message');
+
+    msgEl.textContent = '';
+    if(!nameInput.value.trim()){ msgEl.textContent = "Name is required!"; nameInput.focus(); return; }
+    if(!emailInput.value.trim()){ msgEl.textContent = "Email is required!"; emailInput.focus(); return; }
+
     let score = 0;
     questions.forEach((q, idx)=>{
         const div = document.getElementById(`qdiv${idx}`);
         div.classList.remove('correct','wrong');
-        const userAns = document.getElementById(`q${idx}`).value.trim();
-        const answers = Array.isArray(q.answer)? q.answer.map(a=>a.toString()): [q.answer.toString()];
+        const userAnsRaw = document.getElementById(`q${idx}`).value.trim();
+        const userAns = normalizeAns(userAnsRaw);
+        const answers = (Array.isArray(q.answer)? q.answer : [q.answer]).map(a=>normalizeAns(a.toString()));
         if(answers.includes(userAns)){
             div.classList.add('correct'); score++;
         } else {
             div.classList.add('wrong');
-            div.innerHTML += `<p style="color:#01579b;">Correct answer: ${answers[0]}</p>`;
+            div.querySelector('input').insertAdjacentHTML('afterend',
+                `<p style="color:#01579b;margin-top:6px;">Correct answer: ${q.answer[0]}</p>`);
         }
     });
+
     document.getElementById('score').innerText = `Your score: ${score} / ${questions.length}`;
     document.getElementById('solution-btn').style.display = 'inline-block';
 }
 
 function restartQuiz(){
-    shuffleArray(questions);
     renderQuiz();
+    remaining = 60*60; 
+    clearInterval(timerId);
+    timerId = setInterval(updateTimer,1000);
 }
 
-// Timer: 60 minutes
+function showSolution(){
+    window.open('limits_class_1_solution.html','_blank');
+}
+
+// Disable quiz on timeout
+function disableQuiz(){
+    const inputs = document.querySelectorAll('#quiz-container input[type="text"]');
+    inputs.forEach(input => {
+        input.disabled = true;
+        input.style.backgroundColor = '#f0f0f0';
+    });
+    const restartBtn = document.getElementById('restartBtn');
+    restartBtn.disabled = true;
+    restartBtn.style.backgroundColor = '#cccccc';
+    restartBtn.style.cursor = 'not-allowed';
+}
+
+// Timer
 let remaining = 60*60;
 const timerEl = document.getElementById('timer');
 function pad(n){ return n.toString().padStart(2,'0'); }
@@ -122,16 +168,25 @@ function updateTimer(){
     const min = Math.floor(remaining/60);
     const sec = remaining % 60;
     timerEl.textContent = `${pad(min)}:${pad(sec)}`;
-    if(remaining <= 0){ clearInterval(timerId); alert('Time is up! Submitting quiz.'); checkAnswers(); }
+    if(remaining <= 0){
+        clearInterval(timerId);
+        disableQuiz();
+        alert('Time is up! Quiz is now disabled.');
+        const nameInput = document.getElementById('name');
+        const emailInput = document.getElementById('email');
+        if(nameInput.value.trim() && emailInput.value.trim()){
+            checkAnswers();
+        } else {
+            document.getElementById('submission-message').textContent =
+                'Time is up! Please enter your name and email, then click Submit to save your score.';
+            document.getElementById('submission-message').style.color = 'red';
+        }
+        return;
+    }
     remaining--;
 }
-const timerId = setInterval(updateTimer,1000);
-updateTimer();
 
-// Open solution pack
-function showSolution(){
-    window.open('limits_class_1_solution.html','_blank');
-}
+let timerId = setInterval(updateTimer,1000);
 
 renderQuiz();
 </script>
