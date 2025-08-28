@@ -192,7 +192,7 @@ function renderCalendar(month,year){
     const dayStr=`${year}-${String(month+1).padStart(2,'0')}-${String(date).padStart(2,'0')}`;
     const allSlots=[]; for(let h=9;h<=21;h++) allSlots.push(`${dayStr}T${h.toString().padStart(2,'0')}:00`);
 
-    // ✅ consider both bookedSessions and locally selected slots
+    // Consider both Firebase bookings and local selections
     const daySelected = selectedSlotsByDay[dayStr] || [];
     if(allSlots.every(slot => bookedSessions.includes(slot) || daySelected.includes(slot.split('T')[1]))) 
         dayDiv.classList.add('fully-booked');
@@ -210,45 +210,56 @@ function openModal(date){
   modalDate.textContent=`Available Time Slots — ${date.toDateString()}`;
   timeSlotsDiv.innerHTML='';
   updateSelectionSummary(); updatePriceSummary(); updatePaymentVisibility();
+
   const dateStr=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
   if(!selectedSlotsByDay[dateStr]) selectedSlotsByDay[dateStr]=[];
-  for(let h=9;h<=21;h++){
-    const time=`${h.toString().padStart(2,'0')}:00`;
-    const slotDiv=document.createElement('div');
-    slotDiv.textContent=time; slotDiv.classList.add('timeslot');
-    const slotISO=`${dateStr}T${time}`;
-    const isBooked=bookedSessions.includes(slotISO);
-    const hoursDiff=(new Date(slotISO)-new Date())/(1000*60*60);
+
+  for(let h=9; h<=21; h++){
+    const time = `${h.toString().padStart(2,'0')}:00`;
+    const slotISO = `${dateStr}T${time}`;
+    const slotDiv = document.createElement('div');
+    slotDiv.textContent = time;
+    slotDiv.classList.add('timeslot');
+
+    const isBooked = bookedSessions.includes(slotISO) || (selectedSlotsByDay[dateStr] && selectedSlotsByDay[dateStr].includes(time));
+
     if(isBooked){
-      slotDiv.classList.add('booked');
-      if(hoursDiff>=24){
-        slotDiv.style.cursor='pointer'; slotDiv.title='Click to cancel/reschedule';
-        slotDiv.addEventListener('click',async e=>{
-          e.stopPropagation();
-          if(!confirm(`Cancel session at ${time} on ${dateStr}?`)) return;
-          try{
-            await removeBookingFromFirebase(slotISO);
-            bookedSessions = bookedSessions.filter(s=>s!==slotISO);
-            renderTimeSlots(date);
-            alert('Session cancelled. You can select a new slot.');
-          } catch(err){ console.error(err); alert('Cancellation failed.'); }
-        });
+      slotDiv.classList.add('booked');  // RED
+      // Cancellation logic only for Firebase bookings
+      if(bookedSessions.includes(slotISO)){
+        const hoursDiff = (new Date(slotISO) - new Date())/(1000*60*60);
+        if(hoursDiff>=24){
+          slotDiv.style.cursor='pointer'; slotDiv.title='Click to cancel/reschedule';
+          slotDiv.addEventListener('click', async e=>{
+            e.stopPropagation();
+            if(!confirm(`Cancel session at ${time} on ${dateStr}?`)) return;
+            try{
+              await removeBookingFromFirebase(slotISO);
+              bookedSessions = bookedSessions.filter(s=>s!==slotISO);
+              renderTimeSlots(date);
+              alert('Session cancelled. You can select a new slot.');
+            } catch(err){ console.error(err); alert('Cancellation failed.'); }
+          });
+        }
       }
     } else {
       if(selectedSlotsByDay[dateStr].includes(time)) slotDiv.classList.add('selected');
-      slotDiv.addEventListener('click',()=>{
-        const plan=packageSelect.value; const max=planLimits[plan];
+      slotDiv.addEventListener('click', ()=>{
+        const plan = packageSelect.value;
+        const max = planLimits[plan];
         if(slotDiv.classList.contains('selected')){
           slotDiv.classList.remove('selected');
-          const idx=selectedSlotsByDay[dateStr].indexOf(time); if(idx>-1) selectedSlotsByDay[dateStr].splice(idx,1);
+          const idx = selectedSlotsByDay[dateStr].indexOf(time);
+          if(idx>-1) selectedSlotsByDay[dateStr].splice(idx,1);
         } else {
           if(totalSelectedCount()<max){ slotDiv.classList.add('selected'); selectedSlotsByDay[dateStr].push(time); }
           else alert(`You can only select ${max} slot${max>1?'s':''} for ${plan} package.`);
         }
-        localStorage.setItem('selectedSlots',JSON.stringify(selectedSlotsByDay));
+        localStorage.setItem('selectedSlots', JSON.stringify(selectedSlotsByDay));
         updateSelectionSummary(); updatePaymentVisibility();
       });
     }
+
     timeSlotsDiv.appendChild(slotDiv);
   }
 }
