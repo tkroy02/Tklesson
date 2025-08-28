@@ -123,279 +123,189 @@ const paypalButtonsWrapper = document.getElementById('paypalButtons');
 const priceSummary = document.getElementById('priceSummary');
 
 let bookingsLoaded = false;
-let bookedSessions = []; // list of ISO strings saved in Firestore (doc IDs)
-let selectedSlotsByDay = {}; // will be restored from localStorage after bookings load
+let bookedSessions = []; 
+let selectedSlotsByDay = {}; 
 const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const planLimits = { basic: 1, bronze: 4, silver: 8, gold: 12 };
 const planPrices = { basic: 45, bronze: 170, silver: 330, gold: 480 };
 const stripePriceIDs = { basic:"price_1S0gVjJHTA6RJOGg88mEOLMW", bronze:"price_1S0j1cJHTA6RJOGgHg8XLo68", silver:"price_IS0j3ZJHTA6RJOGgXrl7icK5", gold:"price_IS0j6dJHTA6RJOGgtjrBr4SG" };
 
 /* ====== Helpers ====== */
-function totalSelectedCount(){
-  return Object.values(selectedSlotsByDay).reduce((s,arr)=>s+arr.length,0);
-}
-function updateSelectionSummary(){ const planKey = packageSelect.value; const max = planLimits[planKey]; selectionSummary.textContent = `Selected ${totalSelectedCount()} / ${max}`; }
-function updatePriceSummary(){ const planKey = packageSelect.value; priceSummary.textContent = `$${planPrices[planKey]} — ${planLimits[planKey]} session${planLimits[planKey]>1?'s':''}`; }
-function updatePaymentVisibility(){ const planKey = packageSelect.value; const max = planLimits[planKey]; const ready = totalSelectedCount()===max && max>0; stripePayBtn.style.display = ready ? 'block' : 'none'; paypalButtonsWrapper.style.display = ready ? 'block' : 'none'; }
+function totalSelectedCount() { return Object.values(selectedSlotsByDay).reduce((s,a)=>s+a.length,0); }
+function updateSelectionSummary() { const plan=packageSelect.value; const max=planLimits[plan]; selectionSummary.textContent=`Selected ${totalSelectedCount()} / ${max}`; }
+function updatePriceSummary() { const plan=packageSelect.value; priceSummary.textContent=`$${planPrices[plan]} — ${planLimits[plan]} session${planLimits[plan]>1?'s':''}`; }
+function updatePaymentVisibility() { const plan=packageSelect.value; const max=planLimits[plan]; const ready=totalSelectedCount()===max && max>0; stripePayBtn.style.display=ready?'block':'none'; paypalButtonsWrapper.style.display=ready?'block':'none'; }
 
-/* ====== Load bookings from Firestore (Promise) ====== */
+/* ====== Load bookings ====== */
 async function loadBookedSessions(){
-  // show loading UI
-  loadingOverlay.style.display = 'block';
-  calendarGrid.style.display = 'none';
-  bookingsLoaded = false;
-
+  loadingOverlay.style.display='block';
+  calendarGrid.style.display='none';
+  bookingsLoaded=false;
   try{
     const snapshot = await bookingsRef.get();
-    bookedSessions = [];
-    snapshot.forEach(doc => bookedSessions.push(doc.id));
-  } catch(err){
-    console.error('Failed to load bookings:', err);
-    alert('Unable to load bookings. Check console.');
-  } finally {
-    bookingsLoaded = true;
-    // restore selected slots from localStorage but filter out slots that are now booked
-    restoreSelectionsFromLocalStorage();
-    renderCalendar(currentMonth, currentYear);
-    loadingOverlay.style.display = 'none';
-    calendarGrid.style.display = 'grid';
-  }
+    bookedSessions = snapshot.docs.map(doc=>doc.id);
+  } catch(e){ console.error(e); alert('Failed to load bookings.'); } 
+  bookingsLoaded=true;
+  restoreSelectionsFromLocalStorage();
+  renderCalendar(currentMonth,currentYear);
+  loadingOverlay.style.display='none';
+  calendarGrid.style.display='grid';
 }
 
-/* Restore saved user selections but remove times that are already booked */
+/* Restore selected slots filtering out booked */
 function restoreSelectionsFromLocalStorage(){
   const raw = localStorage.getItem('selectedSlots') || '{}';
-  let saved = {};
-  try { saved = JSON.parse(raw) || {}; } catch(e){ saved = {}; }
-  const filtered = {};
+  let saved={};
+  try{ saved=JSON.parse(raw)||{} } catch(e){ saved={}; }
+  const filtered={};
   for(const day in saved){
-    const times = Array.isArray(saved[day]) ? saved[day] : [];
-    const keep = times.filter(t => {
-      const iso = `${day}T${t}`;
-      return !bookedSessions.includes(iso); // only keep if not already booked
-    });
-    if(keep.length) filtered[day] = keep;
+    const times = Array.isArray(saved[day])?saved[day]:[];
+    const keep = times.filter(t=>!bookedSessions.includes(`${day}T${t}`));
+    if(keep.length) filtered[day]=keep;
   }
-  selectedSlotsByDay = filtered;
-  localStorage.setItem('selectedSlots', JSON.stringify(filtered));
+  selectedSlotsByDay=filtered;
+  localStorage.setItem('selectedSlots',JSON.stringify(filtered));
 }
 
-/* Save single booking to Firestore */
-function saveBookingToFirebase(day, time){
-  const iso = `${day}T${time}`;
-  return bookingsRef.doc(iso).set({ booked: true }, { merge: true });
-}
+/* Save/remove bookings */
+function saveBookingToFirebase(day,time){ return bookingsRef.doc(`${day}T${time}`).set({booked:true},{merge:true}); }
+function removeBookingFromFirebase(iso){ return bookingsRef.doc(iso).delete(); }
 
-/* Remove booking (cancellation) from Firestore */
-function removeBookingFromFirebase(iso){
-  return bookingsRef.doc(iso).delete();
-}
+/* ===== Calendar & Modal ===== */
+let today=new Date(), currentMonth=today.getMonth(), currentYear=today.getFullYear();
 
-/* ====== Calendar render / modal logic ====== */
-let today = new Date();
-let currentMonth = today.getMonth();
-let currentYear = today.getFullYear();
-
-function renderCalendar(month, year){
-  calendarGrid.innerHTML = '';
-  const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  monthYear.textContent = `${monthNames[month]} ${year}`;
-  weekdays.forEach(day => { const d = document.createElement('div'); d.textContent = day; d.style.fontWeight = 'bold'; calendarGrid.appendChild(d); });
-
-  const firstDay = new Date(year, month, 1).getDay();
+function renderCalendar(month,year){
+  calendarGrid.innerHTML='';
+  const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  monthYear.textContent=`${monthNames[month]} ${year}`;
+  weekdays.forEach(d=>{const e=document.createElement('div'); e.textContent=d; e.style.fontWeight='bold'; calendarGrid.appendChild(e);});
+  const firstDay=new Date(year,month,1).getDay();
   for(let i=0;i<firstDay;i++) calendarGrid.appendChild(document.createElement('div'));
-
-  const lastDate = new Date(year, month+1, 0).getDate();
-  for(let date=1; date<=lastDate; date++){
-    const dayDiv = document.createElement('div');
+  const lastDate=new Date(year,month+1,0).getDate();
+  for(let date=1;date<=lastDate;date++){
+    const dayDiv=document.createElement('div');
     dayDiv.classList.add('day');
-    const dayDate = new Date(year, month, date);
-    dayDiv.textContent = date;
-
-    const dayStart = new Date(year, month, date); dayStart.setHours(0,0,0,0);
-    if(dayStart < new Date().setHours(0,0,0,0)) dayDiv.classList.add('past');
-
-    // Determine if all slots are booked (9..21 inclusive -> 13 slots)
-    const dayStr = `${year}-${String(month+1).padStart(2,'0')}-${String(date).padStart(2,'0')}`;
-    const allSlots = [];
-    for(let h=9; h<=21; h++) allSlots.push(`${dayStr}T${h.toString().padStart(2,'0')}:00`);
-    if(allSlots.every(s => bookedSessions.includes(s))) dayDiv.classList.add('fully-booked');
-
-    dayDiv.addEventListener('click', ()=> openModal(dayDate));
+    const dayDate=new Date(year,month,date);
+    dayDiv.textContent=date;
+    if(new Date(year,month,date).setHours(0,0,0,0)<new Date().setHours(0,0,0,0)) dayDiv.classList.add('past');
+    const dayStr=`${year}-${String(month+1).padStart(2,'0')}-${String(date).padStart(2,'0')}`;
+    const allSlots=[]; for(let h=9;h<=21;h++) allSlots.push(`${dayStr}T${h.toString().padStart(2,'0')}:00`);
+    if(allSlots.every(s=>bookedSessions.includes(s))) dayDiv.classList.add('fully-booked');
+    dayDiv.addEventListener('click',()=>openModal(dayDate));
     calendarGrid.appendChild(dayDiv);
   }
 }
 
-/* Open modal: if bookings not loaded yet, don't open */
 function openModal(date){
-  if(!bookingsLoaded){
-    alert('Still loading bookings — please wait a moment and try again.');
-    return;
-  }
-
-  modal.style.display = 'flex';
+  if(!bookingsLoaded){ alert('Still loading bookings…'); return; }
+  modal.style.display='flex';
   modal.setAttribute('aria-hidden','false');
-  modalDate.textContent = `Available Time Slots — ${date.toDateString()}`;
-  timeSlotsDiv.innerHTML = '';
-  updateSelectionSummary();
-  updatePriceSummary();
-  updatePaymentVisibility();
-
-  const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-  if(!selectedSlotsByDay[dateStr]) selectedSlotsByDay[dateStr] = [];
-
-  for(let h=9; h<=21; h++){
-    const time = `${h.toString().padStart(2,'0')}:00`;
-    const slotDiv = document.createElement('div');
-    slotDiv.textContent = time;
-    slotDiv.classList.add('timeslot');
-    const slotISO = `${dateStr}T${time}`;
-
-    const isBooked = bookedSessions.includes(slotISO);
-    const hoursDiff = (new Date(slotISO) - new Date()) / (1000*60*60);
-
+  modalDate.textContent=`Available Time Slots — ${date.toDateString()}`;
+  timeSlotsDiv.innerHTML='';
+  updateSelectionSummary(); updatePriceSummary(); updatePaymentVisibility();
+  const dateStr=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  if(!selectedSlotsByDay[dateStr]) selectedSlotsByDay[dateStr]=[];
+  for(let h=9;h<=21;h++){
+    const time=`${h.toString().padStart(2,'0')}:00`;
+    const slotDiv=document.createElement('div');
+    slotDiv.textContent=time; slotDiv.classList.add('timeslot');
+    const slotISO=`${dateStr}T${time}`;
+    const isBooked=bookedSessions.includes(slotISO);
+    const hoursDiff=(new Date(slotISO)-new Date())/(1000*60*60);
     if(isBooked){
       slotDiv.classList.add('booked');
-      // If cancellable (>24h) offer a separate cancel/reschedule handler
-      if(hoursDiff >= 24){
-        slotDiv.style.cursor = 'pointer';
-        slotDiv.title = 'Click to reschedule or cancel (allowed >24 hours before)';
-        slotDiv.addEventListener('click', async (e) => {
-          // IMPORTANT: cancel click should not act as "select" — it's a cancel action.
+      if(hoursDiff>=24){
+        slotDiv.style.cursor='pointer'; slotDiv.title='Click to cancel/reschedule';
+        slotDiv.addEventListener('click',async e=>{
           e.stopPropagation();
-          const ok = confirm(`Do you want to CANCEL this session at ${time} on ${dateStr}? (You can reschedule after cancelling)`);
-          if(!ok) return;
+          if(!confirm(`Cancel session at ${time} on ${dateStr}?`)) return;
           try{
             await removeBookingFromFirebase(slotISO);
-            // After deletion, refresh bookings (this will also remove any accidental selected-state)
-            await loadBookedSessions();
-            alert('Session successfully cancelled. You may now select a new slot.');
-            // reopen modal for same date (bookings reloaded inside loadBookedSessions)
-            openModal(date);
-          } catch(err){
-            console.error('Cancel failed', err);
-            alert('Cancellation failed — check console.');
-          }
+            bookedSessions = bookedSessions.filter(s=>s!==slotISO);
+            renderTimeSlots(date);
+            alert('Session cancelled. You can select a new slot.');
+          } catch(err){ console.error(err); alert('Cancellation failed.'); }
         });
       }
     } else {
-      // only mark selected if user previously saved it and it's not booked
-      if(selectedSlotsByDay[dateStr] && selectedSlotsByDay[dateStr].includes(time)) slotDiv.classList.add('selected');
-
-      // attach selection handler only for non-booked slots
-      slotDiv.addEventListener('click', () => {
-        const planKey = packageSelect.value;
-        const maxSlots = planLimits[planKey];
+      if(selectedSlotsByDay[dateStr].includes(time)) slotDiv.classList.add('selected');
+      slotDiv.addEventListener('click',()=>{
+        const plan=packageSelect.value; const max=planLimits[plan];
         if(slotDiv.classList.contains('selected')){
           slotDiv.classList.remove('selected');
-          const idx = selectedSlotsByDay[dateStr].indexOf(time);
-          if(idx > -1) selectedSlotsByDay[dateStr].splice(idx, 1);
+          const idx=selectedSlotsByDay[dateStr].indexOf(time); if(idx>-1) selectedSlotsByDay[dateStr].splice(idx,1);
         } else {
-          if(totalSelectedCount() < maxSlots){
-            slotDiv.classList.add('selected');
-            selectedSlotsByDay[dateStr].push(time);
-          } else {
-            alert(`You can only select ${maxSlots} slot${maxSlots>1?'s':''} for the ${planKey} package.`);
-          }
+          if(totalSelectedCount()<max){ slotDiv.classList.add('selected'); selectedSlotsByDay[dateStr].push(time); }
+          else alert(`You can only select ${max} slot${max>1?'s':''} for ${plan} package.`);
         }
-        // persist selections (so refresh doesn't lose them)
-        localStorage.setItem('selectedSlots', JSON.stringify(selectedSlotsByDay));
-        updateSelectionSummary();
-        updatePaymentVisibility();
+        localStorage.setItem('selectedSlots',JSON.stringify(selectedSlotsByDay));
+        updateSelectionSummary(); updatePaymentVisibility();
       });
     }
-
     timeSlotsDiv.appendChild(slotDiv);
   }
 }
 
-/* ====== Navigation & modal controls ====== */
-prevMonth.addEventListener('click', ()=>{ currentMonth--; if(currentMonth<0){ currentMonth = 11; currentYear--; } loadBookedSessions(); });
-nextMonth.addEventListener('click', ()=>{ currentMonth++; if(currentMonth>11){ currentMonth = 0; currentYear++; } loadBookedSessions(); });
+function renderTimeSlots(date){ // refresh timeslots after cancellation
+  if(modal.style.display==='flex') openModal(date);
+}
 
-closeModal.addEventListener('click', ()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); });
-window.addEventListener('click', e => { if(e.target === modal){ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); } });
+/* Navigation & modal controls */
+prevMonth.addEventListener('click',()=>{ currentMonth--; if(currentMonth<0){currentMonth=11; currentYear--; } loadBookedSessions(); });
+nextMonth.addEventListener('click',()=>{ currentMonth++; if(currentMonth>11){currentMonth=0; currentYear++; } loadBookedSessions(); });
+closeModal.addEventListener('click',()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); });
+window.addEventListener('click',e=>{ if(e.target===modal){ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); } });
+packageSelect.addEventListener('change',()=>{ updateSelectionSummary(); updatePriceSummary(); updatePaymentVisibility(); });
 
-packageSelect.addEventListener('change', ()=>{ updateSelectionSummary(); updatePriceSummary(); updatePaymentVisibility(); });
-
-/* ====== Payment flows ====== */
-/* Stripe: when user clicks stripePay, we save current selections to localStorage.pending and redirectToCheckout.
-   After return (successUrl) we read pending and write them to Firestore, then clear pending & selected. */
-stripePayBtn.addEventListener('click', async () => {
-  const planKey = packageSelect.value;
-  const stripe = Stripe("pk_test_51S0fdeJHTA6RJOGgnRqmX0uM9cVytpImUTRPbLAKZz3hFuQ2aIQqlANcZzP7aAvhdpaldKyugXw0cWvGnd5pbqUW008hVRiqQj");
-  // Save temporary pending so we can finalize after redirect
-  localStorage.setItem('pendingBooking', JSON.stringify(selectedSlotsByDay));
-  const successUrl = `${location.origin}${location.pathname}?paid=stripe`;
-  const cancelUrl = `${location.origin}${location.pathname}?paid=cancel`;
-  // redirect using client-only Checkout (assumes you enabled it for testing)
-  await stripe.redirectToCheckout({
-    lineItems: [{ price: stripePriceIDs[planKey], quantity: 1 }],
-    mode: 'payment',
-    successUrl,
-    cancelUrl
-  });
+/* ===== Payments ===== */
+stripePayBtn.addEventListener('click',async ()=>{
+  const plan=packageSelect.value;
+  const stripe=Stripe("pk_test_51S0fdeJHTA6RJOGgnRqmX0uM9cVytpImUTRPbLAKZz3hFuQ2aIQqlANcZzP7aAvhdpaldKyugXw0cWvGnd5pbqUW008hVRiqQj");
+  localStorage.setItem('pendingBooking',JSON.stringify(selectedSlotsByDay));
+  const successUrl=`${location.origin}${location.pathname}?paid=stripe`; const cancelUrl=`${location.origin}${location.pathname}?paid=cancel`;
+  await stripe.redirectToCheckout({lineItems:[{price:stripePriceIDs[plan],quantity:1}],mode:'payment',successUrl,cancelUrl});
 });
 
-/* PayPal: create order then onApprove save each selected slot to Firestore */
 function initPayPalButtons(){
-  if(!window.paypal || !paypal.Buttons) return;
+  if(!window.paypal||!paypal.Buttons) return;
   paypal.Buttons({
-    style: { layout: 'vertical' },
-    createOrder: function(data, actions){
-      const planKey = packageSelect.value;
-      const amount = planPrices[planKey];
-      return actions.order.create({ purchase_units: [{ amount: { value: amount.toFixed(2) } }] });
+    style:{layout:'vertical'},
+    createOrder:(data,actions)=>{
+      const plan=packageSelect.value;
+      return actions.order.create({purchase_units:[{amount:{value:planPrices[plan].toFixed(2)}}]});
     },
-    onApprove: function(data, actions){
-      return actions.order.capture().then(async function(details){
-        // persist selections to Firestore
-        const entries = Object.entries(selectedSlotsByDay);
-        for(const [day, times] of entries){
-          for(const time of times){
-            await saveBookingToFirebase(day, time);
-          }
-        }
-        // clear selections
-        selectedSlotsByDay = {};
-        localStorage.removeItem('selectedSlots');
-        localStorage.removeItem('pendingBooking');
-        await loadBookedSessions();
-        alert('Payment confirmed via PayPal. Your selected slots have been booked.');
-        modal.style.display = 'none';
-        updatePaymentVisibility();
-      });
-    },
-    onError: function(err){
-      console.error(err);
-      alert('PayPal error — please try again or use Stripe.');
-    }
+    onApprove:(data,actions)=>actions.order.capture().then(async function(details){
+      for(const [day,times] of Object.entries(selectedSlotsByDay)){
+        for(const time of times) await saveBookingToFirebase(day,time);
+      }
+      selectedSlotsByDay={};
+      localStorage.removeItem('selectedSlots'); localStorage.removeItem('pendingBooking');
+      await loadBookedSessions();
+      alert('Payment confirmed via PayPal. Your slots are booked.');
+      modal.style.display='none'; updatePaymentVisibility();
+    }),
+    onError:err=>{ console.error(err); alert('PayPal error — please try again or use Stripe.'); }
   }).render('#paypal-button-container');
 }
-(function waitForPayPal(){ const sdk = document.getElementById('paypal-sdk'); if(window.paypal){ initPayPalButtons(); } else if(sdk){ sdk.addEventListener('load', initPayPalButtons); }})();
+(function waitForPayPal(){ const sdk=document.getElementById('paypal-sdk'); if(window.paypal) initPayPalButtons(); else if(sdk) sdk.addEventListener('load',initPayPalButtons); })();
 
-/* Handle return from Stripe (success) */
+/* Stripe return */
 (async function handleStripeReturn(){
-  const params = new URLSearchParams(location.search);
-  if(params.get('paid') === 'stripe'){
-    const pendingRaw = localStorage.getItem('pendingBooking') || '{}';
-    let pending = {};
-    try { pending = JSON.parse(pendingRaw) || {}; } catch(e) { pending = {}; }
-    for(const [day, times] of Object.entries(pending)){
-      for(const time of times){
-        try { await saveBookingToFirebase(day, time); } catch(e){ console.error('Stripe finalize failed', e); }
-      }
+  const params=new URLSearchParams(location.search);
+  if(params.get('paid')==='stripe'){
+    const pendingRaw=localStorage.getItem('pendingBooking')||'{}';
+    let pending={}; try{ pending=JSON.parse(pendingRaw)||{} }catch(e){pending={};}
+    for(const [day,times] of Object.entries(pending)){
+      for(const time of times) try{ await saveBookingToFirebase(day,time); } catch(e){ console.error(e); }
     }
-    localStorage.removeItem('pendingBooking');
-    selectedSlotsByDay = {};
-    localStorage.removeItem('selectedSlots');
+    localStorage.removeItem('pendingBooking'); selectedSlotsByDay={}; localStorage.removeItem('selectedSlots');
     await loadBookedSessions();
-    alert('Payment confirmed via Stripe. Your selected slots have been booked.');
-    history.replaceState({}, document.title, location.pathname);
+    alert('Payment confirmed via Stripe. Your slots are booked.');
+    history.replaceState({},document.title,location.pathname);
   }
 })();
 
-/* ====== Start: load bookings and then show calendar ====== */
+/* ===== Start ===== */
 loadBookedSessions();
 </script>
 
