@@ -365,6 +365,37 @@
             margin-right: 8px;
         }
         
+        .resend-container {
+            margin-top: 15px;
+            text-align: center;
+        }
+        
+        .resend-btn {
+            background: none;
+            border: none;
+            color: var(--primary);
+            cursor: pointer;
+            text-decoration: underline;
+            font-size: 14px;
+            padding: 5px;
+        }
+        
+        .resend-btn:disabled {
+            color: var(--gray);
+            cursor: not-allowed;
+            text-decoration: none;
+        }
+        
+        .resend-btn:hover:not(:disabled) {
+            color: var(--secondary);
+        }
+        
+        .countdown {
+            color: var(--gray);
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
@@ -471,6 +502,13 @@
             
             <p id="signupMsg" role="alert"></p>
             
+            <div class="resend-container" id="resendContainer" style="display: none;">
+                <button class="resend-btn" id="resendVerification">
+                    <i class="fas fa-paper-plane"></i> Resend Verification Email
+                </button>
+                <div class="countdown" id="resendCountdown"></div>
+            </div>
+            
             <div class="footer">
                 Already have an account? <a href="student-login.html">Login here</a><br>
                 <span style="font-size: 12px;">
@@ -514,6 +552,14 @@
             const emailInput = document.getElementById("email");
             const loadingOverlay = document.getElementById("loadingOverlay");
             const permissionHelp = document.getElementById("permissionHelp");
+            const resendContainer = document.getElementById("resendContainer");
+            const resendBtn = document.getElementById("resendVerification");
+            const resendCountdown = document.getElementById("resendCountdown");
+            
+            // Store the current user for resend functionality
+            let currentUser = null;
+            let resendTimer = null;
+            let countdownSeconds = 60;
 
             // Check if there was a permission error in the URL
             const urlParams = new URLSearchParams(window.location.search);
@@ -529,6 +575,31 @@
             // Hide loading overlay
             function hideLoading() {
                 loadingOverlay.classList.remove('visible');
+            }
+            
+            // Start resend countdown timer
+            function startResendTimer() {
+                clearInterval(resendTimer);
+                resendBtn.disabled = true;
+                let seconds = countdownSeconds;
+                
+                updateCountdownText(seconds);
+                
+                resendTimer = setInterval(() => {
+                    seconds--;
+                    updateCountdownText(seconds);
+                    
+                    if (seconds <= 0) {
+                        clearInterval(resendTimer);
+                        resendBtn.disabled = false;
+                        resendCountdown.textContent = '';
+                    }
+                }, 1000);
+            }
+            
+            // Update countdown text
+            function updateCountdownText(seconds) {
+                resendCountdown.textContent = `Resend available in ${seconds} seconds`;
             }
 
             // Password visibility toggle
@@ -670,6 +741,35 @@
                 checkPasswordStrength(password);
             });
 
+            // Resend verification email
+            resendBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                
+                if (!currentUser) {
+                    showMessage("No user found. Please sign up again.", "error");
+                    return;
+                }
+                
+                try {
+                    showLoading();
+                    resendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+                    resendBtn.disabled = true;
+                    
+                    await currentUser.sendEmailVerification();
+                    
+                    showMessage("Verification email sent successfully. Please check your inbox.", "success");
+                    startResendTimer();
+                    
+                } catch (error) {
+                    console.error("Resend error:", error);
+                    showMessage("Error sending verification email. Please try again later.", "error");
+                    resendBtn.disabled = false;
+                } finally {
+                    hideLoading();
+                    resendBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Resend Verification Email';
+                }
+            });
+
             // Form submission
             form.addEventListener("submit", async (e) => {
                 e.preventDefault();
@@ -730,6 +830,7 @@
                     );
                     
                     const user = userCredential.user;
+                    currentUser = user; // Store for resend functionality
                     
                     // Update user profile with display name
                     await user.updateProfile({
@@ -754,26 +855,12 @@
                     showMessage(`
                         <strong>Account created successfully!</strong><br>
                         We've sent a verification email to <strong>${formData.email}</strong>.<br><br>
-                        <strong>Important:</strong> Please check your inbox and verify your email before logging in.<br>
-                        <em>Didn't receive the email? <a href="#" id="resendVerification">Click to resend</a></em>
+                        <strong>Important:</strong> Please check your inbox and verify your email before logging in.
                     `, "success");
                     
-                    // Add event listener for resend verification
-                    setTimeout(() => {
-                        const resendLink = document.getElementById('resendVerification');
-                        if (resendLink) {
-                            resendLink.addEventListener('click', async (e) => {
-                                e.preventDefault();
-                                try {
-                                    await user.sendEmailVerification();
-                                    showMessage("Verification email sent again. Please check your inbox.", "success");
-                                } catch (error) {
-                                    console.error("Resend error:", error);
-                                    showMessage("Error sending verification email. Please try again later.", "error");
-                                }
-                            });
-                        }
-                    }, 100);
+                    // Show resend container and start timer
+                    resendContainer.style.display = 'block';
+                    startResendTimer();
 
                     // Clear form
                     form.reset();
