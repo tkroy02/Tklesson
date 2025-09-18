@@ -6,7 +6,7 @@ import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.2.1/firebase
 
 // --- Scheduler Services ---
 import { getAuth } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
-import { getFirestore } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+import { getFirestore, collection, addDoc, serverTimestamp, setDoc, doc } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 
 // --- Scheduler Project Config ---
 const firebaseConfig = {
@@ -33,3 +33,4 @@ try {
 // --- Export Scheduler Services ---
 export const auth = getAuth(app);     // Handles login, signup, logout
 export const db = getFirestore(app);  // Handles Firestore database
+
