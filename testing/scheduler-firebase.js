@@ -6,14 +6,21 @@ import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.2.1/firebase
 
 // --- Scheduler Services ---
 import { getAuth } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
-import { getFirestore, collection, addDoc, serverTimestamp, setDoc, doc } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  serverTimestamp, 
+  setDoc, 
+  doc 
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 
 // --- Scheduler Project Config ---
 const firebaseConfig = {
   apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
   authDomain: "tk-scheduler.firebaseapp.com",
   projectId: "tk-scheduler",
-  storageBucket: "tk-scheduler.appspot.com", // FIXED: must end with .appspot.com
+  storageBucket: "tk-scheduler.appspot.com",
   messagingSenderId: "746606755052",
   appId: "1:746606755052:web:d7eae92976cb2f2fa9f9c9",
   measurementId: "G-Q5L607R3N7"
@@ -30,7 +37,9 @@ try {
   console.warn("Analytics not initialized. Likely running on unauthorized domain.", e);
 }
 
-// --- Export Scheduler Services ---
+// --- Initialize Firebase Services ---
 export const auth = getAuth(app);     // Handles login, signup, logout
 export const db = getFirestore(app);  // Handles Firestore database
 
+// --- Export Firestore helpers so they can be used globally ---
+export const firestoreHelpers = { collection, addDoc, setDoc, doc, serverTimestamp };
