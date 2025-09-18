@@ -1114,13 +1114,30 @@ async function loadTutorData(uid) {
         updateUpcomingSessionsCount(sessionsSnapshot.size);
         loadBookings(sessionsSnapshot);
         
-        // Load students
-        const studentsSnapshot = await db.collection('users')
-            .where('role', '==', 'student')
-            .limit(5)
-            .get();
+        // Load students who have booked sessions with this tutor
+        const studentIds = new Set();
+        sessionsSnapshot.forEach(doc => {
+            const booking = doc.data();
+            if (booking.userId) {
+                studentIds.add(booking.userId);
+            }
+        });
         
-        loadStudents(studentsSnapshot);
+        // Convert Set to Array for querying
+        const studentIdsArray = Array.from(studentIds);
+        
+        if (studentIdsArray.length > 0) {
+            const studentsSnapshot = await db.collection('users')
+                .where('role', '==', 'student')
+                .where(firebase.firestore.FieldPath.documentId(), 'in', studentIdsArray)
+                .get();
+            
+            loadStudents(studentsSnapshot);
+            document.getElementById('activeStudentsCount').textContent = studentsSnapshot.size;
+        } else {
+            document.getElementById('activeStudentsCount').textContent = '0';
+            document.getElementById('studentsContainer').innerHTML = '<p>You have no students yet.</p>';
+        }
         
         // Load session history
         const historySnapshot = await db.collection('bookings')
@@ -1131,12 +1148,65 @@ async function loadTutorData(uid) {
         
         loadSessionHistory(historySnapshot);
         
-        // Load earnings
-        loadEarnings(uid);
+        // Load earnings based on actual completed sessions
+        const completedSessions = await db.collection('bookings')
+            .where('tutorId', '==', uid)
+            .where('status', '==', 'completed')
+            .get();
+        
+        loadEarnings(uid, completedSessions);
         
     } catch (error) {
         console.error("Error loading tutor data:", error);
     }
+}
+
+// Update loadEarnings to use actual data
+function loadEarnings(uid, completedSessions) {
+    let totalEarnings = 0;
+    let sessionCount = completedSessions.size;
+    let totalHours = 0;
+    
+    completedSessions.forEach(doc => {
+        const session = doc.data();
+        const hours = session.duration || 1.5; // Default to 1.5 hours if not specified
+        const rate = session.hourlyRate || 40; // Default to $40 if not specified
+        
+        totalEarnings += hours * rate;
+        totalHours += hours;
+    });
+    
+    document.getElementById('monthlyEarnings').textContent = `$${totalEarnings.toFixed(2)}`;
+    
+    const earningsContainer = document.getElementById('earningsContainer');
+    earningsContainer.innerHTML = `
+        <table class="sessions-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Total Sessions Completed</td>
+                    <td>${sessionCount}</td>
+                </tr>
+                <tr>
+                    <td>Total Hours Tutored</td>
+                    <td>${totalHours.toFixed(1)}</td>
+                </tr>
+                <tr>
+                    <td>Total Earnings</td>
+                    <td>$${totalEarnings.toFixed(2)}</td>
+                </tr>
+                <tr>
+                    <td>Average Hourly Rate</td>
+                    <td>$${sessionCount > 0 ? (totalEarnings / totalHours).toFixed(2) : '0.00'}</td>
+                </tr>
+            </tbody>
+        </table>
+    `;
 }
         
 // Update profile UI with user data
