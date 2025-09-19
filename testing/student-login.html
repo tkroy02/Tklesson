@@ -224,6 +224,12 @@
             border: 1px solid var(--error);
         }
         
+        .warning {
+            background-color: rgba(255, 193, 7, 0.15);
+            color: var(--warning);
+            border: 1px solid var(--warning);
+        }
+        
         .footer {
             text-align: center;
             margin-top: 30px;
@@ -292,6 +298,46 @@
         
         .tutor-redirect a:hover {
             text-decoration: underline;
+        }
+        
+        .verification-notice {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: rgba(255, 193, 7, 0.1);
+            border: 1px solid var(--warning);
+            border-radius: var(--border-radius);
+            text-align: center;
+            display: none;
+        }
+        
+        .verification-notice.visible {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+        
+        .resend-btn {
+            background: none;
+            border: none;
+            color: var(--primary);
+            text-decoration: underline;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 10px;
+            display: inline-block;
+        }
+        
+        .resend-btn:hover {
+            color: var(--secondary);
+        }
+        
+        .resend-btn:disabled {
+            color: var(--gray);
+            cursor: not-allowed;
+        }
+        
+        .resend-status {
+            font-size: 12px;
+            margin-top: 8px;
         }
         
         @keyframes fadeIn {
@@ -391,6 +437,14 @@
                 </button>
             </form>
             
+            <div class="verification-notice" id="verificationNotice">
+                <p>Your email address has not been verified yet.</p>
+                <button id="resendVerificationBtn" class="resend-btn">
+                    Resend verification email
+                </button>
+                <p id="resendStatus" class="resend-status"></p>
+            </div>
+            
             <p id="loginMsg" role="alert"></p>
             
             <div class="tutor-redirect">
@@ -409,7 +463,8 @@
     import { 
         getAuth, 
         signInWithEmailAndPassword,
-        signOut
+        signOut,
+        sendEmailVerification
     } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
     import { 
         getFirestore, 
@@ -464,6 +519,12 @@
         const passwordInput = document.getElementById("password");
         const passwordToggle = document.getElementById("passwordToggle");
         const emailInput = document.getElementById("email");
+        const verificationNotice = document.getElementById("verificationNotice");
+        const resendVerificationBtn = document.getElementById("resendVerificationBtn");
+        const resendStatus = document.getElementById("resendStatus");
+
+        // Store current user for resend functionality
+        let currentUser = null;
 
         // Password visibility toggle
         passwordToggle.addEventListener('click', () => {
@@ -540,6 +601,36 @@
             }
         });
 
+        // Resend verification email
+        resendVerificationBtn.addEventListener('click', async () => {
+            if (!currentUser) return;
+            
+            resendVerificationBtn.disabled = true;
+            resendStatus.textContent = "Sending...";
+            
+            try {
+                await sendEmailVerification(currentUser);
+                resendStatus.textContent = "Verification email sent! Please check your inbox.";
+                resendStatus.style.color = "var(--success)";
+                
+                // Re-enable button after 60 seconds
+                setTimeout(() => {
+                    resendVerificationBtn.disabled = false;
+                    resendStatus.textContent = "";
+                }, 60000);
+            } catch (error) {
+                console.error("Error sending verification email:", error);
+                resendStatus.textContent = "Error sending email. Please try again.";
+                resendStatus.style.color = "var(--error)";
+                
+                // Re-enable button after 5 seconds
+                setTimeout(() => {
+                    resendVerificationBtn.disabled = false;
+                    resendStatus.textContent = "";
+                }, 5000);
+            }
+        });
+
         // Form submission
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
@@ -547,6 +638,7 @@
             // Clear previous messages
             loginMsg.textContent = "";
             loginMsg.className = "";
+            verificationNotice.classList.remove("visible");
             
             // Get form data
             const formData = {
@@ -586,10 +678,16 @@
             try {
                 const userCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
                 const user = userCredential.user;
+                currentUser = user; // Store for potential resend action
                 
                 // Check if email is verified
                 if (!user.emailVerified) {
-                    showMessage("Please verify your email before logging in.", "error");
+                    showMessage("Please verify your email address to continue.", "warning");
+                    verificationNotice.classList.add("visible");
+                    
+                    // Sign out the user but keep the form filled
+                    await signOut(auth);
+                    
                     loginBtn.disabled = false;
                     loginBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Student Login';
                     return;
