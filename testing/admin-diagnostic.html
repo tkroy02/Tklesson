@@ -7,10 +7,34 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
-    <!-- Firebase SDKs -->
-    <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore-compat.js"></script>
+    <!-- Firebase SDKs - MODULAR VERSION (not compat) -->
+    <script type="module">
+        // Import the functions you need from the SDKs
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js';
+        import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
+        import { getFirestore, collection, doc, getDoc, query, limit, getDocs } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js';
+        
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
+            authDomain: "tk-scheduler.firebaseapp.com",
+            projectId: "tk-scheduler",
+            storageBucket: "tk-scheduler.appspot.com",
+            messagingSenderId: "746606755052",
+            appId: "1:746606755052:web:d7eae92976cb2f2fa9f9c9",
+            measurementId: "G-Q5L607R3N7"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Make them available globally
+        window.firebase = { app, auth, db, collection, doc, getDoc, query, limit, getDocs, onAuthStateChanged };
+        
+        console.log("Firebase initialized with modular SDK");
+    </script>
     
     <style>
         :root {
@@ -466,21 +490,24 @@ match /admins/{adminId} {
     </div>
 
     <script>
-        // Firebase configuration (same as your admin dashboard)
-        const firebaseConfig = {
-            apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
-            authDomain: "tk-scheduler.firebaseapp.com",
-            projectId: "tk-scheduler",
-            storageBucket: "tk-scheduler.appspot.com",
-            messagingSenderId: "746606755052",
-            appId: "1:746606755052:web:d7eae92976cb2f2fa9f9c9",
-            measurementId: "G-Q5L607R3N7"
-        };
-
-        // Initialize Firebase
-        firebase.initializeApp(firebaseConfig);
-        const auth = firebase.auth();
-        const db = firebase.firestore();
+        // Wait for Firebase to be initialized
+        let firebaseInitialized = false;
+        const initializationCheck = setInterval(() => {
+            if (window.firebase && window.firebase.app) {
+                firebaseInitialized = true;
+                clearInterval(initializationCheck);
+                console.log("Firebase is ready");
+                
+                // Set up auth state listener once Firebase is ready
+                const { auth, onAuthStateChanged } = window.firebase;
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        addLogEntry('User detected, running diagnostics automatically...', 'info');
+                        setTimeout(runDiagnostics, 500);
+                    }
+                });
+            }
+        }, 100);
 
         // DOM elements
         const runDiagnosticsBtn = document.getElementById('runDiagnostics');
@@ -546,12 +573,20 @@ match /admins/{adminId} {
 
         // Test admin access indirectly
         async function testAdminAccess(user) {
+            if (!window.firebase) {
+                addLogEntry('Firebase not initialized yet', 'error');
+                return false;
+            }
+            
+            const { db, collection, query, limit, getDocs } = window.firebase;
+            
             addLogEntry('Testing admin access indirectly...', 'info');
             
             try {
                 // Try to read from a collection that requires admin privileges
                 // We'll use the users collection which allows admin read access
-                const usersQuery = await db.collection('users').limit(1).get();
+                const q = query(collection(db, 'users'), limit(1));
+                const usersQuery = await getDocs(q);
                 
                 addLogEntry('Admin access confirmed indirectly', 'info');
                 updateStatus(adminStatus, 'success', 'Admin Access', 'You have admin privileges');
@@ -579,8 +614,39 @@ match /admins/{adminId} {
             }
         }
 
+        // Test Firebase connection with modular SDK
+        async function testFirebaseConnection() {
+            if (!window.firebase) {
+                addLogEntry('Firebase not initialized yet', 'error');
+                return false;
+            }
+            
+            const { db, collection, query, limit, getDocs } = window.firebase;
+            
+            try {
+                // Test Firestore connection with a simple query to a public collection
+                const q = query(collection(db, 'Job_Applications'), limit(1));
+                await getDocs(q);
+                
+                addLogEntry('Firebase connection successful', 'info');
+                updateStatus(connectionStatus, 'success', 'Connected', 'Firebase connection established');
+                return true;
+            } catch (error) {
+                addLogEntry(`Firebase connection failed: ${error.message}`, 'error');
+                updateStatus(connectionStatus, 'error', 'Failed', 'Could not connect to Firebase');
+                return false;
+            }
+        }
+
         // Run diagnostics
         async function runDiagnostics() {
+            if (!window.firebase) {
+                addLogEntry('Firebase not initialized yet. Please wait...', 'error');
+                return;
+            }
+            
+            const { auth } = window.firebase;
+            
             // Reset UI
             diagnosticLog.innerHTML = '';
             adminDetails.classList.add('hidden');
@@ -596,15 +662,8 @@ match /admins/{adminId} {
             addLogEntry('Testing Firebase connection...', 'info');
             updateStatus(connectionStatus, 'loading', 'Testing...', 'Checking Firebase connection');
             
-            try {
-                // Test Firestore connection with a simple query to a public collection
-                await db.collection('Job_Applications').limit(1).get();
-                addLogEntry('Firebase connection successful', 'info');
-                updateStatus(connectionStatus, 'success', 'Connected', 'Firebase connection established');
-            } catch (error) {
-                addLogEntry(`Firebase connection failed: ${error.message}`, 'error');
-                updateStatus(connectionStatus, 'error', 'Failed', 'Could not connect to Firebase');
-                
+            const connectionSuccess = await testFirebaseConnection();
+            if (!connectionSuccess) {
                 // Re-enable button
                 runDiagnosticsBtn.disabled = false;
                 runDiagnosticsBtn.innerHTML = '<i class="fas fa-play-circle"></i> Run Diagnostics';
@@ -648,14 +707,6 @@ match /admins/{adminId} {
 
         // Event listeners
         runDiagnosticsBtn.addEventListener('click', runDiagnostics);
-
-        // Auto-run diagnostics if user is already logged in
-        auth.onAuthStateChanged((user) => {
-            if (user) {
-                addLogEntry('User detected, running diagnostics automatically...', 'info');
-                setTimeout(runDiagnostics, 500); // Small delay to ensure UI is ready
-            }
-        });
     </script>
 </body>
 </html>
