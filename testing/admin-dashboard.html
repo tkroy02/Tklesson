@@ -187,6 +187,7 @@
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
+            flex-wrap: wrap;
         }
 
         .filter-btn {
@@ -309,6 +310,7 @@
             background: var(--light);
             border-radius: 15px;
             font-size: 12px;
+            color: var(--dark);
         }
 
         .application-actions {
@@ -384,6 +386,30 @@
             color: var(--gray-light);
         }
 
+        .access-denied {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .access-denied i {
+            font-size: 80px;
+            color: var(--error);
+            margin-bottom: 20px;
+        }
+
+        .access-denied h2 {
+            color: var(--error);
+            margin-bottom: 15px;
+        }
+
+        .access-denied p {
+            color: var(--gray);
+            margin-bottom: 25px;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
         @media (max-width: 900px) {
             .dashboard {
                 grid-template-columns: 1fr;
@@ -434,49 +460,8 @@
             </div>
         </header>
 
-        <div class="dashboard">
-            <div class="sidebar">
-                <h2>Statistics</h2>
-                <div class="stats">
-                    <div class="stat-item">
-                        <h3>Total Applications</h3>
-                        <span class="stat-value" id="totalApplications">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <h3>Pending Review</h3>
-                        <span class="stat-value pending" id="pendingApplications">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <h3>Approved Tutors</h3>
-                        <span class="stat-value approved" id="approvedApplications">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <h3>Rejected</h3>
-                        <span class="stat-value rejected" id="rejectedApplications">0</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="main-content">
-                <div class="section-header">
-                    <h2>Tutor Applications</h2>
-                </div>
-
-                <div class="filters">
-                    <button class="filter-btn active" data-filter="all">All</button>
-                    <button class="filter-btn" data-filter="pending">Pending</button>
-                    <button class="filter-btn" data-filter="approved">Approved</button>
-                    <button class="filter-btn" data-filter="rejected">Rejected</button>
-                </div>
-
-                <div class="applications-list" id="applicationsList">
-                    <div class="empty-state">
-                        <i class="fas fa-users"></i>
-                        <h3>No applications found</h3>
-                        <p>When tutors apply, their applications will appear here.</p>
-                    </div>
-                </div>
-            </div>
+        <div id="dashboard-content">
+            <!-- Content will be loaded dynamically based on user role -->
         </div>
     </div>
 
@@ -516,8 +501,10 @@
         // Global variables
         let applications = [];
         let currentFilter = 'all';
+        let currentUser = null;
 
         // DOM elements
+        const dashboardContent = document.getElementById('dashboard-content');
         const applicationsList = document.getElementById('applicationsList');
         const totalApplicationsEl = document.getElementById('totalApplications');
         const pendingApplicationsEl = document.getElementById('pendingApplications');
@@ -531,16 +518,116 @@
         const modalBody = document.getElementById('modalBody');
         const modalFooter = document.getElementById('modalFooter');
 
-        // Check authentication state
-        auth.onAuthStateChanged((user) => {
+        // Check authentication state and admin status
+        auth.onAuthStateChanged(async (user) => {
             if (user) {
-                // User is signed in, load applications
-                loadApplications();
+                currentUser = user;
+                // Check if user is admin
+                const isAdmin = await checkAdminStatus(user.uid);
+                
+                if (isAdmin) {
+                    // User is admin, load dashboard
+                    loadDashboard();
+                    loadApplications();
+                } else {
+                    // User is not admin, show access denied
+                    showAccessDenied();
+                }
             } else {
                 // No user is signed in, redirect to login
                 window.location.href = 'admin-login.html';
             }
         });
+
+        // Check if user has admin privileges
+        async function checkAdminStatus(uid) {
+            try {
+                // Check if user exists in the admin collection
+                const adminDoc = await db.collection('admins').doc(uid).get();
+                
+                if (adminDoc.exists) {
+                    return true;
+                }
+                
+                // Alternative: Check custom claims (if you set them via Firebase Admin SDK)
+                const idTokenResult = await currentUser.getIdTokenResult();
+                return !!idTokenResult.claims.admin;
+            } catch (error) {
+                console.error("Error checking admin status:", error);
+                return false;
+            }
+        }
+
+        // Show access denied message
+        function showAccessDenied() {
+            dashboardContent.innerHTML = `
+                <div class="access-denied">
+                    <i class="fas fa-ban"></i>
+                    <h2>Access Denied</h2>
+                    <p>You do not have permission to access the admin dashboard. Please contact your administrator if you believe this is an error.</p>
+                    <button class="btn btn-primary" id="goBackBtn">
+                        <i class="fas fa-arrow-left"></i> Return to Home
+                    </button>
+                </div>
+            `;
+            
+            document.getElementById('goBackBtn').addEventListener('click', () => {
+                window.location.href = '/'; // Redirect to your main site
+            });
+        }
+
+        // Load the dashboard UI
+        function loadDashboard() {
+            dashboardContent.innerHTML = `
+                <div class="dashboard">
+                    <div class="sidebar">
+                        <h2>Statistics</h2>
+                        <div class="stats">
+                            <div class="stat-item">
+                                <h3>Total Applications</h3>
+                                <span class="stat-value" id="totalApplications">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <h3>Pending Review</h3>
+                                <span class="stat-value pending" id="pendingApplications">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <h3>Approved Tutors</h3>
+                                <span class="stat-value approved" id="approvedApplications">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <h3>Rejected</h3>
+                                <span class="stat-value rejected" id="rejectedApplications">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="main-content">
+                        <div class="section-header">
+                            <h2>Tutor Applications</h2>
+                        </div>
+
+                        <div class="filters">
+                            <button class="filter-btn active" data-filter="all">All</button>
+                            <button class="filter-btn" data-filter="pending">Pending</button>
+                            <button class="filter-btn" data-filter="approved">Approved</button>
+                            <button class="filter-btn" data-filter="rejected">Rejected</button>
+                        </div>
+
+                        <div class="applications-list" id="applicationsList">
+                            <div class="empty-state">
+                                <i class="fas fa-users"></i>
+                                <h3>No applications found</h3>
+                                <p>When tutors apply, their applications will appear here.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Reattach event listeners to the new elements
+            attachEventListeners();
+        }
 
         // Load applications from Firestore
         async function loadApplications() {
@@ -558,7 +645,7 @@
                 renderApplications();
             } catch (error) {
                 console.error("Error loading applications:", error);
-                applicationsList.innerHTML = `
+                document.getElementById('applicationsList').innerHTML = `
                     <div class="empty-state">
                         <i class="fas fa-exclamation-circle"></i>
                         <h3>Error loading applications</h3>
@@ -575,10 +662,10 @@
             const approved = applications.filter(app => app.approved).length;
             const rejected = applications.filter(app => app.rejected).length;
             
-            totalApplicationsEl.textContent = total;
-            pendingApplicationsEl.textContent = pending;
-            approvedApplicationsEl.textContent = approved;
-            rejectedApplicationsEl.textContent = rejected;
+            document.getElementById('totalApplications').textContent = total;
+            document.getElementById('pendingApplications').textContent = pending;
+            document.getElementById('approvedApplications').textContent = approved;
+            document.getElementById('rejectedApplications').textContent = rejected;
         }
 
         // Render applications based on current filter
@@ -593,8 +680,10 @@
                 filteredApplications = applications.filter(app => app.rejected);
             }
             
+            const applicationsListEl = document.getElementById('applicationsList');
+            
             if (filteredApplications.length === 0) {
-                applicationsList.innerHTML = `
+                applicationsListEl.innerHTML = `
                     <div class="empty-state">
                         <i class="fas fa-users"></i>
                         <h3>No applications found</h3>
@@ -604,7 +693,7 @@
                 return;
             }
             
-            applicationsList.innerHTML = '';
+            applicationsListEl.innerHTML = '';
             
             filteredApplications.forEach(application => {
                 const status = application.approved ? 'approved' : application.rejected ? 'rejected' : 'pending';
@@ -654,7 +743,7 @@
                     </div>
                 `;
                 
-                applicationsList.appendChild(applicationCard);
+                applicationsListEl.appendChild(applicationCard);
             });
             
             // Add event listeners to view details buttons
@@ -828,20 +917,25 @@
             }
         }
 
-        // Event listeners
-        filterButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                filterButtons.forEach(btn => btn.classList.remove('active'));
-                button.classList.add('active');
-                currentFilter = button.getAttribute('data-filter');
-                renderApplications();
+        // Attach event listeners to dynamic elements
+        function attachEventListeners() {
+            // Filter buttons
+            document.querySelectorAll('.filter-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                    currentFilter = button.getAttribute('data-filter');
+                    renderApplications();
+                });
             });
-        });
+            
+            // Refresh button
+            refreshBtn.addEventListener('click', () => {
+                loadApplications();
+            });
+        }
 
-        refreshBtn.addEventListener('click', () => {
-            loadApplications();
-        });
-
+        // Event listeners for static elements
         logoutBtn.addEventListener('click', () => {
             auth.signOut().then(() => {
                 window.location.href = 'admin-login.html';
@@ -860,9 +954,6 @@
                 applicationModal.style.display = 'none';
             }
         });
-
-        // Initial load
-        loadApplications();
     </script>
 </body>
 </html>
