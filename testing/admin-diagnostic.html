@@ -252,6 +252,19 @@
             display: none;
         }
 
+        .rule-error {
+            background: rgba(230, 57, 70, 0.1);
+            border-left: 4px solid var(--error);
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+
+        .rule-error h3 {
+            color: var(--error);
+            margin-bottom: 10px;
+        }
+
         @media (max-width: 768px) {
             .data-row {
                 grid-template-columns: 1fr;
@@ -350,6 +363,55 @@
 
         <div class="card">
             <div class="card-header">
+                <h2>Security Rules Analysis</h2>
+            </div>
+            <div id="rulesAnalysis">
+                <div class="status-item">
+                    <div class="status-info">
+                        <div class="status-icon status-warning">
+                            <i class="fas fa-question-circle"></i>
+                        </div>
+                        <div>
+                            <div class="status-text">Firestore Rules Check</div>
+                            <div class="status-details">Checking if rules allow access to admins collection</div>
+                        </div>
+                    </div>
+                    <div class="status-result">Pending</div>
+                </div>
+                <div id="rulesDetails" class="hidden">
+                    <div class="rule-error">
+                        <h3><i class="fas fa-exclamation-triangle"></i> Security Rules Issue Detected</h3>
+                        <p>Your Firestore security rules don't include any rules for the <code>admins</code> collection.</p>
+                        <p>This means it falls under the default rule:</p>
+                        <pre>match /{document=**} {
+  allow read, write: if false;
+}</pre>
+                        <p>Which blocks all client-side access to the admins collection.</p>
+                    </div>
+                    
+                    <div class="solution-box">
+                        <h3><i class="fas fa-lightbulb"></i> Solution</h3>
+                        <p>Add these rules to your Firestore security rules:</p>
+                        <pre>
+// ----------------------
+// Admins Collection
+// ----------------------
+match /admins/{adminId} {
+  // Only admins can read the admin collection
+  allow read: if isAdmin();
+  
+  // No client-side write access to admin collection
+  allow write: if false;
+}
+                        </pre>
+                        <p>After adding these rules, deploy them and run the diagnostic again.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
                 <h2>Diagnostic Log</h2>
             </div>
             <div class="log-output" id="diagnosticLog">
@@ -367,11 +429,11 @@
             <div id="solutions">
                 <div class="solution-box">
                     <h3><i class="fas fa-lightbulb"></i> Common Issues and Fixes</h3>
-                    <p><strong>1. Incorrect User ID in Admins Collection</strong><br>
-                    Make sure the document ID in the "admins" collection matches your user ID exactly.</p>
+                    <p><strong>1. Missing Rules for Admins Collection</strong><br>
+                    Your security rules don't include any rules for the admins collection, so access is denied by default.</p>
                     
                     <p><strong>2. Firestore Security Rules</strong><br>
-                    Check that your Firestore security rules allow read access to the admins collection.</p>
+                    Add specific rules for the admins collection to allow read access for admins.</p>
                     
                     <p><strong>3. Firebase Project Configuration</strong><br>
                     Verify that your Firebase config in the code matches your project settings.</p>
@@ -410,6 +472,8 @@
         const userUID = document.getElementById('userUID');
         const adminDocExists = document.getElementById('adminDocExists');
         const adminDocData = document.getElementById('adminDocData');
+        const rulesAnalysis = document.getElementById('rulesAnalysis');
+        const rulesDetails = document.getElementById('rulesDetails');
 
         // Add log entry
         function addLogEntry(message, type = 'info') {
@@ -465,8 +529,8 @@
             updateStatus(connectionStatus, 'warning', 'Testing...', 'Checking Firebase connection');
             
             try {
-                // Test Firestore connection with a simple query
-                await db.collection('admins').limit(1).get();
+                // Test Firestore connection with a simple query to a public collection
+                await db.collection('Job_Applications').limit(1).get();
                 addLogEntry('Firebase connection successful', 'info');
                 updateStatus(connectionStatus, 'success', 'Connected', 'Firebase connection established');
             } catch (error) {
@@ -516,6 +580,13 @@
                 } catch (error) {
                     addLogEntry(`Error checking admin document: ${error.message}`, 'error');
                     updateStatus(adminStatus, 'error', 'Error', 'Failed to check admin document');
+                    
+                    // Check if it's a permissions error
+                    if (error.code === 'permission-denied') {
+                        addLogEntry('Permission denied error detected. This indicates a security rules issue.', 'error');
+                        updateStatus(rulesAnalysis, 'error', 'Rules Issue', 'Security rules blocking access');
+                        rulesDetails.classList.remove('hidden');
+                    }
                 }
             } else {
                 addLogEntry('User not authenticated. Please sign in first.', 'error');
