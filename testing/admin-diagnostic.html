@@ -265,10 +265,30 @@
             margin-bottom: 10px;
         }
 
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         @media (max-width: 768px) {
             .data-row {
                 grid-template-columns: 1fr;
                 gap: 5px;
+            }
+            
+            header {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
             }
         }
     </style>
@@ -429,11 +449,11 @@ match /admins/{adminId} {
             <div id="solutions">
                 <div class="solution-box">
                     <h3><i class="fas fa-lightbulb"></i> Common Issues and Fixes</h3>
-                    <p><strong>1. Missing Rules for Admins Collection</strong><br>
-                    Your security rules don't include any rules for the admins collection, so access is denied by default.</p>
+                    <p><strong>1. Rules vs Diagnostic Tool Mismatch</strong><br>
+                    Your rules use exists() to check admin status, but the diagnostic tool tries to read the admin collection directly.</p>
                     
-                    <p><strong>2. Firestore Security Rules</strong><br>
-                    Add specific rules for the admins collection to allow read access for admins.</p>
+                    <p><strong>2. Try Indirect Testing</strong><br>
+                    Instead of reading from the admins collection directly, try to access a resource that requires admin privileges.</p>
                     
                     <p><strong>3. Firebase Project Configuration</strong><br>
                     Verify that your Firebase config in the code matches your project settings.</p>
@@ -508,6 +528,11 @@ match /admins/{adminId} {
                 statusIcon.className = 'status-icon status-error';
                 statusIcon.innerHTML = '<i class="fas fa-times-circle"></i>';
                 statusResult.style.color = 'var(--error)';
+            } else if (status === 'loading') {
+                statusIcon.className = 'status-icon status-warning';
+                statusIcon.innerHTML = '<div class="loading"></div>';
+                statusResult.style.color = 'var(--warning)';
+                statusResult.innerHTML = '<div class="loading"></div>';
             } else {
                 statusIcon.className = 'status-icon status-warning';
                 statusIcon.innerHTML = '<i class="fas fa-question-circle"></i>';
@@ -519,14 +544,57 @@ match /admins/{adminId} {
             }
         }
 
+        // Test admin access indirectly
+        async function testAdminAccess(user) {
+            addLogEntry('Testing admin access indirectly...', 'info');
+            
+            try {
+                // Try to read from a collection that requires admin privileges
+                // We'll use the users collection which allows admin read access
+                const usersQuery = await db.collection('users').limit(1).get();
+                
+                addLogEntry('Admin access confirmed indirectly', 'info');
+                updateStatus(adminStatus, 'success', 'Admin Access', 'You have admin privileges');
+                
+                adminDocExists.textContent = 'Indirect test passed';
+                adminDocData.textContent = 'Access to admin-restricted resources confirmed';
+                adminDetails.classList.remove('hidden');
+                
+                return true;
+            } catch (error) {
+                if (error.code === 'permission-denied') {
+                    addLogEntry('Admin access denied: ' + error.message, 'error');
+                    updateStatus(adminStatus, 'error', 'No Admin Access', 'You do not have admin privileges');
+                    
+                    adminDocExists.textContent = 'No';
+                    adminDocData.textContent = 'Permission denied when trying to access admin resources';
+                    adminDetails.classList.remove('hidden');
+                    
+                    return false;
+                } else {
+                    addLogEntry('Error testing admin access: ' + error.message, 'error');
+                    updateStatus(adminStatus, 'error', 'Error', 'Failed to test admin access');
+                    return false;
+                }
+            }
+        }
+
         // Run diagnostics
         async function runDiagnostics() {
+            // Reset UI
             diagnosticLog.innerHTML = '';
+            adminDetails.classList.add('hidden');
+            rulesDetails.classList.add('hidden');
+            
             addLogEntry('Starting diagnostics...', 'info');
+            
+            // Disable button during diagnostics
+            runDiagnosticsBtn.disabled = true;
+            runDiagnosticsBtn.innerHTML = '<i class="fas fa-cog fa-spin"></i> Running Diagnostics';
             
             // Test Firebase connection
             addLogEntry('Testing Firebase connection...', 'info');
-            updateStatus(connectionStatus, 'warning', 'Testing...', 'Checking Firebase connection');
+            updateStatus(connectionStatus, 'loading', 'Testing...', 'Checking Firebase connection');
             
             try {
                 // Test Firestore connection with a simple query to a public collection
@@ -536,12 +604,16 @@ match /admins/{adminId} {
             } catch (error) {
                 addLogEntry(`Firebase connection failed: ${error.message}`, 'error');
                 updateStatus(connectionStatus, 'error', 'Failed', 'Could not connect to Firebase');
+                
+                // Re-enable button
+                runDiagnosticsBtn.disabled = false;
+                runDiagnosticsBtn.innerHTML = '<i class="fas fa-play-circle"></i> Run Diagnostics';
                 return;
             }
             
             // Check authentication status
             addLogEntry('Checking authentication status...', 'info');
-            updateStatus(authStatus, 'warning', 'Checking...', 'Checking if user is authenticated');
+            updateStatus(authStatus, 'loading', 'Checking...', 'Checking if user is authenticated');
             
             const user = auth.currentUser;
             
@@ -549,45 +621,15 @@ match /admins/{adminId} {
                 addLogEntry(`User authenticated: ${user.email} (UID: ${user.uid})`, 'info');
                 updateStatus(authStatus, 'success', 'Authenticated', `Logged in as ${user.email}`);
                 
-                // Check admin privileges
+                // Check admin privileges using indirect method
                 addLogEntry('Checking admin privileges...', 'info');
-                updateStatus(adminStatus, 'warning', 'Checking...', 'Verifying admin access');
+                updateStatus(adminStatus, 'loading', 'Checking...', 'Verifying admin access');
                 
                 userUID.textContent = user.uid;
                 
-                try {
-                    const adminDoc = await db.collection('admins').doc(user.uid).get();
-                    
-                    if (adminDoc.exists) {
-                        addLogEntry('Admin document found in Firestore', 'info');
-                        updateStatus(adminStatus, 'success', 'Admin Access', 'You have admin privileges');
-                        
-                        adminDocExists.textContent = 'Yes';
-                        adminDocData.textContent = JSON.stringify(adminDoc.data(), null, 2);
-                        adminDetails.classList.remove('hidden');
-                        
-                        addLogEntry('Admin document data: ' + JSON.stringify(adminDoc.data()), 'info');
-                        addLogEntry('Diagnostics completed successfully. You should have admin access.', 'info');
-                    } else {
-                        addLogEntry('Admin document NOT found in Firestore', 'error');
-                        updateStatus(adminStatus, 'error', 'No Access', 'Your user ID was not found in the admins collection');
-                        
-                        adminDocExists.textContent = 'No';
-                        adminDetails.classList.remove('hidden');
-                        
-                        addLogEntry('Make sure you created a document in the "admins" collection with your user ID as the document ID', 'warning');
-                    }
-                } catch (error) {
-                    addLogEntry(`Error checking admin document: ${error.message}`, 'error');
-                    updateStatus(adminStatus, 'error', 'Error', 'Failed to check admin document');
-                    
-                    // Check if it's a permissions error
-                    if (error.code === 'permission-denied') {
-                        addLogEntry('Permission denied error detected. This indicates a security rules issue.', 'error');
-                        updateStatus(rulesAnalysis, 'error', 'Rules Issue', 'Security rules blocking access');
-                        rulesDetails.classList.remove('hidden');
-                    }
-                }
+                // Test admin access indirectly
+                await testAdminAccess(user);
+                
             } else {
                 addLogEntry('User not authenticated. Please sign in first.', 'error');
                 updateStatus(authStatus, 'error', 'Not Authenticated', 'Please sign in to continue');
@@ -598,6 +640,10 @@ match /admins/{adminId} {
                     window.location.href = 'admin-login.html';
                 }, 2000);
             }
+            
+            // Re-enable button
+            runDiagnosticsBtn.disabled = false;
+            runDiagnosticsBtn.innerHTML = '<i class="fas fa-play-circle"></i> Run Diagnostics';
         }
 
         // Event listeners
@@ -607,7 +653,7 @@ match /admins/{adminId} {
         auth.onAuthStateChanged((user) => {
             if (user) {
                 addLogEntry('User detected, running diagnostics automatically...', 'info');
-                runDiagnostics();
+                setTimeout(runDiagnostics, 500); // Small delay to ensure UI is ready
             }
         });
     </script>
