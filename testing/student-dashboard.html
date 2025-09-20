@@ -976,41 +976,77 @@
                 </form>
             </section>
 
-            <section id="scheduling" class="dashboard-section">
-                <div class="section-header">
-                    <h3><i class="fas fa-calendar-alt"></i> New Booking</h3>
-                </div>
-                <form id="schedulingForm">
-                    <div class="form-group">
-    <label for="tutor">Select Tutor</label>
-    <select id="tutor" class="form-control" required>
-        <option value="">Loading tutors...</option>
-    </select>
-    <div class="spinner" id="tutorSpinner" style="display: none;"></div>
-</div>
-<div class="form-group">
-    <label for="subject">Subject</label>
-    <select id="subject" class="form-control" required disabled>
-        <option value="">Select a tutor first</option>
-    </select>
-</div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="date">Date</label>
-                            <input type="date" id="date" class="form-control" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="time">Time</label>
-                            <input type="time" id="time" class="form-control" required>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="notes">Session Notes (Optional)</label>
-                        <textarea id="notes" class="form-control" rows="4" placeholder="What would you like to focus on during this session?"></textarea>
-                    </div>
-                    <button type="submit" class="save-btn">Schedule Session</button>
-                </form>
-            </section>
+           <section id="scheduling" class="dashboard-section">
+    <div class="section-header">
+        <h3><i class="fas fa-calendar-alt"></i> New Booking</h3>
+    </div>
+    
+    <form id="schedulingForm">
+        <div class="form-group">
+            <label for="tutor">Select Tutor *</label>
+            <select id="tutor" class="form-control" required>
+                <option value="">Select a tutor...</option>
+                <!-- Tutors will be loaded here -->
+            </select>
+            <div class="spinner" id="tutorSpinner" style="display: none;"></div>
+        </div>
+        
+        <div class="form-group">
+            <label for="subject">Subject *</label>
+            <select id="subject" class="form-control" required disabled>
+                <option value="">Select a tutor first</option>
+            </select>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group">
+                <label for="date">Date *</label>
+                <input type="date" id="date" class="form-control" required 
+                       min="<?php echo date('Y-m-d'); ?>">
+            </div>
+            <div class="form-group">
+                <label for="time">Time *</label>
+                <input type="time" id="time" class="form-control" required 
+                       min="08:00" max="20:00">
+            </div>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group">
+                <label for="duration">Duration *</label>
+                <select id="duration" class="form-control" required>
+                    <option value="1">1 hour</option>
+                    <option value="1.5" selected>1.5 hours</option>
+                    <option value="2">2 hours</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="sessionType">Session Type *</label>
+                <select id="sessionType" class="form-control" required>
+                    <option value="online">Online (Google Meet)</option>
+                    <option value="in-person">In-Person</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label for="notes">Session Notes (Optional)</label>
+            <textarea id="notes" class="form-control" rows="4" 
+                      placeholder="What would you like to focus on during this session? Any specific topics or areas of difficulty?"></textarea>
+        </div>
+        
+        <div class="form-group" id="priceSummary" style="display: none;">
+            <h4>Price Summary</h4>
+            <p>Hourly Rate: $<span id="hourlyRate">0</span></p>
+            <p>Duration: <span id="durationDisplay">0</span> hours</p>
+            <p><strong>Total: $<span id="totalPrice">0</span></strong></p>
+        </div>
+        
+        <button type="submit" class="save-btn" id="scheduleBtn">
+            <i class="fas fa-calendar-check"></i> Schedule Session
+        </button>
+    </form>
+</section>
 
             <section id="tutors" class="dashboard-section">
     <div class="section-header">
@@ -1691,11 +1727,13 @@ menuItems.forEach(item => {
         document.getElementById(sectionId).classList.add('active');
         
         // Load data for specific sections
-        if (sectionId === 'tutors') {
-            // Set up tabs and load initial data
-            setupTutorTabs();
-            loadMyTutors(); // Load student's tutors by default
-        }
+if (sectionId === 'tutors') {
+    // Set up tabs and load initial data
+    setupTutorTabs();
+    loadMyTutors(); // Load student's tutors by default
+} else if (sectionId === 'scheduling') {
+    initScheduling(); // Initialize scheduling functionality
+}
     });
 });
             // Edit profile button
@@ -1844,6 +1882,242 @@ menuItems.forEach(item => {
         function bookAgain(tutorId) {
             bookSession(tutorId);
         }
+
+// Load available tutors into dropdown
+        async function loadTutorOptions() {
+            const tutorSelect = document.getElementById('tutor');
+            const spinner = document.getElementById('tutorSpinner');
+            
+            // Show loading state
+            tutorSelect.innerHTML = '<option value="">Loading tutors...</option>';
+            spinner.style.display = 'block';
+            
+            try {
+                // Get only approved tutors
+                const tutorsSnapshot = await db.collection('users')
+                    .where('role', '==', 'tutor')
+                    .where('approved', '==', true)
+                    .get();
+                
+                if (tutorsSnapshot.empty) {
+                    tutorSelect.innerHTML = '<option value="">No tutors available</option>';
+                    return;
+                }
+                
+                // Clear and populate tutor options
+                tutorSelect.innerHTML = '<option value="">Select a tutor...</option>';
+                tutorsSnapshot.forEach(doc => {
+                    const tutor = doc.data();
+                    const option = document.createElement('option');
+                    option.value = doc.id;
+                    option.textContent = tutor.fullName || tutor.name || 'Tutor';
+                    option.setAttribute('data-hourly-rate', tutor.hourlyRate || 45);
+                    option.setAttribute('data-subjects', JSON.stringify(tutor.subjects || []));
+                    tutorSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error("Error loading tutors:", error);
+                tutorSelect.innerHTML = '<option value="">Error loading tutors</option>';
+            } finally {
+                spinner.style.display = 'none';
+            }
+        }
+
+        // Handle tutor selection change
+        function setupTutorSelection() {
+            const tutorSelect = document.getElementById('tutor');
+            const subjectSelect = document.getElementById('subject');
+            const priceSummary = document.getElementById('priceSummary');
+            const hourlyRateSpan = document.getElementById('hourlyRate');
+            const totalPriceSpan = document.getElementById('totalPrice');
+            const durationSelect = document.getElementById('duration');
+            
+            tutorSelect.addEventListener('change', function() {
+                const selectedOption = this.options[this.selectedIndex];
+                const hourlyRate = selectedOption.getAttribute('data-hourly-rate') || 45;
+                const subjects = JSON.parse(selectedOption.getAttribute('data-subjects') || '[]');
+                
+                // Update subject dropdown
+                updateSubjectOptions(subjects);
+                
+                // Update price information
+                if (this.value) {
+                    hourlyRateSpan.textContent = hourlyRate;
+                    updatePriceCalculation(hourlyRate, parseFloat(durationSelect.value));
+                    priceSummary.style.display = 'block';
+                } else {
+                    priceSummary.style.display = 'none';
+                }
+            });
+            
+            // Update price when duration changes
+            durationSelect.addEventListener('change', function() {
+                const selectedTutor = tutorSelect.options[tutorSelect.selectedIndex];
+                if (selectedTutor && selectedTutor.value) {
+                    const hourlyRate = selectedTutor.getAttribute('data-hourly-rate') || 45;
+                    updatePriceCalculation(hourlyRate, parseFloat(this.value));
+                }
+            });
+        }
+
+        // Update subject options based on selected tutor
+        function updateSubjectOptions(subjects) {
+            const subjectSelect = document.getElementById('subject');
+            
+            // Clear existing options
+            subjectSelect.innerHTML = '';
+            
+            if (subjects.length === 0) {
+                subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+                subjectSelect.disabled = true;
+                return;
+            }
+            
+            // Add subject options
+            subjectSelect.disabled = false;
+            subjectSelect.innerHTML = '<option value="">Select a subject...</option>';
+            
+            subjects.forEach(subject => {
+                const option = document.createElement('option');
+                option.value = subject;
+                option.textContent = subject;
+                subjectSelect.appendChild(option);
+            });
+        }
+
+        // Calculate and update price display
+        function updatePriceCalculation(hourlyRate, duration) {
+            const totalPrice = hourlyRate * duration;
+            document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+            document.getElementById('durationDisplay').textContent = duration;
+        }
+
+        // Enhanced form submission
+        function setupSchedulingForm() {
+            const form = document.getElementById('schedulingForm');
+            
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const tutorId = document.getElementById('tutor').value;
+                const subject = document.getElementById('subject').value;
+                const date = document.getElementById('date').value;
+                const time = document.getElementById('time').value;
+                const duration = document.getElementById('duration').value;
+                const sessionType = document.getElementById('sessionType').value;
+                const notes = document.getElementById('notes').value;
+                
+                // Basic validation
+                if (!tutorId || !subject || !date || !time) {
+                    alert('Please fill all required fields.');
+                    return;
+                }
+                
+                // Combine date and time
+                const dateTime = new Date(`${date}T${time}`);
+                
+                // Check if the selected time is in the future
+                if (dateTime <= new Date()) {
+                    alert('Please select a future date and time.');
+                    return;
+                }
+                
+                // Get tutor details for the booking
+                const tutorDoc = await db.collection('users').doc(tutorId).get();
+                const tutorData = tutorDoc.data();
+                
+                try {
+                    // Create the booking document
+                    const bookingRef = await db.collection('bookings').add({
+                        userId: currentUser.uid,
+                        tutorId: tutorId,
+                        tutorName: tutorData.fullName || tutorData.name || 'Tutor',
+                        subject: subject,
+                        date: dateTime,
+                        duration: parseFloat(duration),
+                        sessionType: sessionType,
+                        notes: notes,
+                        status: 'pending',
+                        hourlyRate: parseFloat(tutorData.hourlyRate || 45),
+                        totalPrice: parseFloat(tutorData.hourlyRate || 45) * parseFloat(duration),
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    
+                    // Show success message and redirect to payment
+                    alert('Session booked successfully! Redirecting to payment...');
+                    
+                    // Store booking ID for payment processing
+                    sessionStorage.setItem('pendingBookingId', bookingRef.id);
+                    
+                    // Here you would redirect to the payment page
+                    // For now, we'll just show an alert
+                    showPaymentPrompt(bookingRef.id, parseFloat(tutorData.hourlyRate || 45) * parseFloat(duration));
+                    
+                } catch (error) {
+                    console.error("Error booking session:", error);
+                    alert('Error booking session. Please try again.');
+                }
+            });
+        }
+
+        // Function to show payment prompt (to be replaced with actual payment integration)
+        function showPaymentPrompt(bookingId, amount) {
+            const proceed = confirm(`Session booked successfully! Total amount: $${amount.toFixed(2)}\n\nProceed to payment?`);
+            
+            if (proceed) {
+                // Here you would integrate with your payment system
+                // For now, we'll simulate a successful payment
+                simulatePaymentProcessing(bookingId, amount);
+            }
+        }
+
+        // Simulate payment processing (to be replaced with actual payment integration)
+        async function simulatePaymentProcessing(bookingId, amount) {
+            // Show processing message
+            alert(`Processing payment of $${amount.toFixed(2)}...`);
+            
+            // In a real implementation, you would:
+            // 1. Redirect to a payment gateway
+            // 2. Wait for payment confirmation
+            // 3. Update the booking status based on payment result
+            
+            // For now, we'll simulate a successful payment after 2 seconds
+            setTimeout(async () => {
+                try {
+                    // Update booking status to confirmed
+                    await db.collection('bookings').doc(bookingId).update({
+                        status: 'confirmed',
+                        paymentStatus: 'paid',
+                        paidAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    
+                    alert('Payment successful! Your session has been confirmed.');
+                    document.getElementById('schedulingForm').reset();
+                    document.getElementById('priceSummary').style.display = 'none';
+                    
+                    // Reload bookings to show the new one
+                    loadStudentData(currentUser.uid);
+                    
+                } catch (error) {
+                    console.error("Error updating booking status:", error);
+                    alert('Error processing payment. Please contact support.');
+                }
+            }, 2000);
+        }
+
+        // Initialize the scheduling functionality
+        function initScheduling() {
+            loadTutorOptions();
+            setupTutorSelection();
+            setupSchedulingForm();
+            
+            // Set minimum date to today
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('date').setAttribute('min', today);
+        }
+
+        // ====== ADD SCHEDULING FUNCTIONS ENDING HERE ======
+        
     </script>
 </body>
 </html>
