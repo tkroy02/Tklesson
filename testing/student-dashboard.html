@@ -1349,90 +1349,271 @@ tutorsContainer.innerHTML = tutorsHTML;
 }
 
 // Load available tutors (only approved ones) with enhanced features
+// Load available tutors (only approved ones) with enhanced features
 async function loadAvailableTutors() {
-try {
-const tutorsContainer = document.getElementById('availableTutorsContainer');
-const searchInput = document.getElementById('tutorSearch');
+    try {
+        const tutorsContainer = document.getElementById('availableTutorsContainer');
+        const searchInput = document.getElementById('tutorSearch');
 
-// Show loading state
-tutorsContainer.innerHTML = `
-           <div class="loading-state">
-               <div class="spinner"></div>
-               <p>Loading available tutors...</p>
-           </div>
-       `;
+        // Show loading state
+        tutorsContainer.innerHTML = `
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <p>Loading available tutors...</p>
+            </div>
+        `;
 
-// Disable search while loading
-if (searchInput) searchInput.disabled = true;
+        // Disable search while loading
+        if (searchInput) searchInput.disabled = true;
 
-// Get only approved tutors from users collection
-const tutorsSnapshot = await db.collection('users')
-.where('role', '==', 'tutor')
-.where('approved', '==', true)
-.get();
+        // Get only approved tutors from tutors collection (not users collection)
+        const tutorsSnapshot = await db.collection('tutors')
+            .where('approved', '==', true)
+            .get();
 
-if (tutorsSnapshot.empty) {
-tutorsContainer.innerHTML = `
-               <div class="empty-state">
-                   <i class="fas fa-user-tie fa-3x"></i>
-                   <h3>No Tutors Available</h3>
-                   <p>There are no tutors available at the moment. Please check back later.</p>
-               </div>
-           `;
-if (searchInput) searchInput.style.display = 'none';
-return;
+        if (tutorsSnapshot.empty) {
+            tutorsContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-user-tie fa-3x"></i>
+                    <h3>No Tutors Available</h3>
+                    <p>There are no tutors available at the moment. Please check back later.</p>
+                </div>
+            `;
+            if (searchInput) searchInput.style.display = 'none';
+            return;
+        }
+
+        let tutorsHTML = '<div class="tutors-container">';
+        let tutorCount = 0;
+
+        // We'll need to get user details for each tutor
+        for (const doc of tutorsSnapshot.docs) {
+            const tutor = doc.data();
+            const tutorId = doc.id;
+            
+            // Get user details from users collection
+            const userDoc = await db.collection('users').doc(tutorId).get();
+            if (!userDoc.exists) continue;
+            
+            const userData = userDoc.data();
+            
+            // Calculate average rating safely
+            const rating = tutor.rating || 0;
+            const reviews = tutor.reviews || 0;
+            const avgRating = reviews > 0 ? (rating / reviews).toFixed(1) : 0;
+
+            // Generate star rating HTML
+            const starRating = generateStarRating(avgRating);
+
+            tutorsHTML += `
+                <div class="tutor-card" data-tutor-id="${tutorId}" data-tutor-name="${userData.name || 'Tutor'}" data-subjects="${tutor.subjects ? tutor.subjects.join(',') : ''}">
+                    <div class="tutor-header">
+                        <div class="tutor-avatar">
+                            ${userData.photoURL ? 
+                                `<img src="${userData.photoURL}" alt="${userData.name || 'Tutor'}">` : 
+                                `<i class="fas fa-user-tie"></i>`
+                            }
+                        </div>
+                        <h3 class="tutor-name">${userData.name || 'Tutor'}</h3>
+                        <p class="tutor-subject">${tutor.subjects ? tutor.subjects[0] : 'General Tutor'}</p>
+                    </div>
+                    <div class="tutor-details">
+                        <p><i class="fas fa-graduation-cap"></i> ${tutor.qualifications || 'Certified Tutor'}</p>
+                        <div class="tutor-rating">
+                            ${starRating}
+                            <span>${avgRating} (${reviews} review${reviews !== 1 ? 's' : ''})</span>
+                        </div>
+                        <p><i class="fas fa-book"></i> ${tutor.subjects ? tutor.subjects.join(', ') : 'Various Subjects'}</p>
+                        ${tutor.hourlyRate ? `<p><i class="fas fa-clock"></i> $${tutor.hourlyRate}/hour</p>` : ''}
+                    </div>
+                    <div class="session-actions">
+                        <button class="btn-primary" onclick="bookSession('${tutorId}')">
+                            <i class="fas fa-calendar-plus"></i> Book Session
+                        </button>
+                        <button class="btn-outline" onclick="viewTutorProfile('${tutorId}')">
+                            <i class="fas fa-eye"></i> View Profile
+                        </button>
+                    </div>
+                </div>
+            `;
+            tutorCount++;
+        }
+
+        tutorsHTML += '</div>';
+
+        // Add tutor count display
+        const countHTML = `<div class="tutor-count">Showing ${tutorCount} available tutor${tutorCount !== 1 ? 's' : ''}</div>`;
+        tutorsContainer.innerHTML = countHTML + tutorsHTML;
+
+        // Enable search and setup functionality
+        if (searchInput) {
+            searchInput.disabled = false;
+            searchInput.style.display = 'block';
+            setupTutorSearch();
+        }
+
+    } catch (error) {
+        console.error("Error loading available tutors:", error);
+        document.getElementById('availableTutorsContainer').innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-triangle fa-3x"></i>
+                <h3>Error Loading Tutors</h3>
+                <p>We couldn't load the tutor list. Please try again later.</p>
+                <button class="btn-primary" onclick="loadAvailableTutors()">
+                    <i class="fas fa-redo"></i> Try Again
+                </button>
+            </div>
+        `;
+    }
 }
 
-let tutorsHTML = '<div class="tutors-container">';
-let tutorCount = 0;
+// Load tutor options for the scheduling dropdown
+async function loadTutorOptions() {
+    const tutorSelect = document.getElementById('tutor');
+    const spinner = document.getElementById('tutorSpinner');
+    
+    // Show loading state
+    tutorSelect.innerHTML = '<option value="">Loading tutors...</option>';
+    spinner.style.display = 'block';
+    
+    try {
+        // Get only approved tutors from tutors collection
+        const tutorsSnapshot = await db.collection('tutors')
+            .where('approved', '==', true)
+            .get();
+        
+        if (tutorsSnapshot.empty) {
+            tutorSelect.innerHTML = '<option value="">No tutors available</option>';
+            return;
+        }
+                
+        // Clear and populate tutor options
+        tutorSelect.innerHTML = '<option value="">Select a tutor...</option>';
+        
+        // We need to get user details for each tutor
+        for (const doc of tutorsSnapshot.docs) {
+            const tutor = doc.data();
+            const tutorId = doc.id;
+            
+            // Get user details from users collection
+            const userDoc = await db.collection('users').doc(tutorId).get();
+            if (!userDoc.exists) continue;
+            
+            const userData = userDoc.data();
+            
+            const option = document.createElement('option');
+            option.value = tutorId;
+            option.textContent = userData.name || 'Tutor';
+            option.setAttribute('data-hourly-rate', tutor.hourlyRate || 45);
+            option.setAttribute('data-subjects', JSON.stringify(tutor.subjects || []));
+            tutorSelect.appendChild(option);
+        }
+    } catch (error) {
+        console.error("Error loading tutors:", error);
+        tutorSelect.innerHTML = '<option value="">Error loading tutors</option>';
+    } finally {
+        spinner.style.display = 'none';
+    }
+}
 
-tutorsSnapshot.forEach(doc => {
-const tutor = doc.data();
-const tutorId = doc.id;
-
-// Calculate average rating safely
-const rating = tutor.rating || 0;
-const reviews = tutor.reviews || 0;
-const avgRating = reviews > 0 ? (rating / reviews).toFixed(1) : 0;
-
-// Generate star rating HTML
-const starRating = generateStarRating(avgRating);
-
-tutorsHTML += `
-               <div class="tutor-card" data-tutor-id="${tutorId}" data-tutor-name="${tutor.fullName || tutor.name || 'Tutor'}" data-subjects="${tutor.subjects ? tutor.subjects.join(',') : ''}">
-                   <div class="tutor-header">
-                       <div class="tutor-avatar">
-                           ${tutor.photoURL ? 
-                               `<img src="${tutor.photoURL}" alt="${tutor.fullName || tutor.name}">` : 
-                               `<i class="fas fa-user-tie"></i>`
-                           }
-                       </div>
-                       <h3 class="tutor-name">${tutor.fullName || tutor.name || 'Tutor'}</h3>
-                       <p class="tutor-subject">${tutor.subjects ? tutor.subjects[0] : 'General Tutor'}</p>
-                   </div>
-                   <div class="tutor-details">
-                       <p><i class="fas fa-graduation-cap"></i> ${tutor.qualifications || 'Certified Tutor'}</p>
-                       <div class="tutor-rating">
-                           ${starRating}
-                           <span>${avgRating} (${reviews} review${reviews !== 1 ? 's' : ''})</span>
-                       </div>
-                       <p><i class="fas fa-book"></i> ${tutor.subjects ? tutor.subjects.join(', ') : 'Various Subjects'}</p>
-                       ${tutor.hourlyRate ? `<p><i class="fas fa-clock"></i> $${tutor.hourlyRate}/hour</p>` : ''}
-                   </div>
-                   <div class="session-actions">
-                       <button class="btn-primary" onclick="bookSession('${tutorId}')">
-                           <i class="fas fa-calendar-plus"></i> Book Session
-                       </button>
-                       <button class="btn-outline" onclick="viewTutorProfile('${tutorId}')">
-                           <i class="fas fa-eye"></i> View Profile
-                       </button>
-                   </div>
-               </div>
-           `;
-tutorCount++;
-});
-
-tutorsHTML += '</div>';
+// Load my tutors (tutors the student has booked sessions with)
+async function loadMyTutors() {
+    const myTutorsContainer = document.getElementById('myTutorsContainer');
+    
+    try {
+        // Get all bookings for this student
+        const bookingsSnapshot = await db.collection('bookings')
+            .where('userId', '==', currentUser.uid)
+            .get();
+        
+        if (bookingsSnapshot.empty) {
+            myTutorsContainer.innerHTML = '<p>You have no tutors yet.</p>';
+            return;
+        }
+        
+        // Get unique tutor IDs from bookings
+        const tutorIds = new Set();
+        bookingsSnapshot.forEach(doc => {
+            const booking = doc.data();
+            if (booking.tutorId) {
+                tutorIds.add(booking.tutorId);
+            }
+        });
+        
+        if (tutorIds.size === 0) {
+            myTutorsContainer.innerHTML = '<p>You have no tutors yet.</p>';
+            return;
+        }
+        
+        // Convert Set to Array for querying
+        const tutorIdsArray = Array.from(tutorIds);
+        
+        // Get tutor details from tutors collection
+        const tutorsSnapshot = await db.collection('tutors')
+            .where(firebase.firestore.FieldPath.documentId(), 'in', tutorIdsArray)
+            .get();
+        
+        if (tutorsSnapshot.empty) {
+            myTutorsContainer.innerHTML = '<p>You have no tutors yet.</p>';
+            return;
+        }
+        
+        let tutorsHTML = '<div class="tutors-container">';
+        
+        // We need to get user details for each tutor
+        for (const doc of tutorsSnapshot.docs) {
+            const tutor = doc.data();
+            const tutorId = doc.id;
+            
+            // Get user details from users collection
+            const userDoc = await db.collection('users').doc(tutorId).get();
+            if (!userDoc.exists) continue;
+            
+            const userData = userDoc.data();
+            
+            tutorsHTML += `
+                <div class="tutor-card">
+                    <div class="tutor-header">
+                        <div class="tutor-avatar">
+                            ${userData.photoURL ? 
+                                `<img src="${userData.photoURL}" alt="${userData.name || 'Tutor'}">` : 
+                                `<i class="fas fa-user-tie"></i>`
+                            }
+                        </div>
+                        <h3 class="tutor-name">${userData.name || 'Tutor'}</h3>
+                        <p class="tutor-subject">${tutor.subjects ? tutor.subjects[0] : 'General Tutor'}</p>
+                    </div>
+                    <div class="tutor-details">
+                        <p><i class="fas fa-graduation-cap"></i> ${tutor.qualifications || 'Certified Tutor'}</p>
+                        <p><i class="fas fa-book"></i> ${tutor.subjects ? tutor.subjects.join(', ') : 'Various Subjects'}</p>
+                        ${tutor.hourlyRate ? `<p><i class="fas fa-clock"></i> $${tutor.hourlyRate}/hour</p>` : ''}
+                    </div>
+                    <div class="session-actions">
+                        <button class="btn-primary" onclick="bookSession('${tutorId}')">
+                            <i class="fas fa-calendar-plus"></i> Book Again
+                        </button>
+                        <button class="btn-outline" onclick="viewTutorProfile('${tutorId}')">
+                            <i class="fas fa-eye"></i> View Profile
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        tutorsHTML += '</div>';
+        myTutorsContainer.innerHTML = tutorsHTML;
+        
+    } catch (error) {
+        console.error("Error loading my tutors:", error);
+        myTutorsContainer.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-triangle"></i>
+                <h3>Error Loading Tutors</h3>
+                <p>We couldn't load your tutors. Please try again later.</p>
+            </div>
+        `;
+    }
+}
 
 // Add tutor count display
 const countHTML = `<div class="tutor-count">Showing ${tutorCount} available tutor${tutorCount !== 1 ? 's' : ''}</div>`;
