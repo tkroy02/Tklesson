@@ -1194,34 +1194,42 @@ function loadBookings(snapshot) {
     const date = booking.date.toDate();
     const formattedDate = date.toLocaleDateString();
     const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    html += `
-      <div class="session-card">
-        <div class="session-header">
-          <div class="session-title">${booking.subject || 'No subject'}</div>
-          <div class="session-date">${formattedDate} at ${formattedTime}</div>
-        </div>
-        <div class="session-details">
-          <div class="session-detail">
-            <i class="fas fa-user-tie"></i>
-            <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
-          </div>
-          <div class="session-detail">
-            <i class="fas fa-clock"></i>
-            <span>Duration: ${booking.duration || '1'} hours</span>
-          </div>
-          <div class="session-detail">
-            <i class="fas fa-video"></i>
-            <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-          </div>
-        </div>
-        <div class="session-actions">
-          <button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>
-          <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
-        </div>
+    const statusClass = booking.status === 'confirmed' ? 'status-verified' : 'status-pending';
+    const statusText = booking.status === 'confirmed' ? 'Confirmed' : 'Pending';    
+
+   html += `
+  <div class="session-card" id="booking-${doc.id}">
+    <div class="session-header">
+      <div class="session-title">${booking.subject || 'No subject'}</div>
+      <div class="session-date">${formattedDate} at ${formattedTime}</div>
+    </div>
+    <div class="session-details">
+      <div class="session-detail">
+        <i class="fas fa-user-tie"></i>
+        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
       </div>
-    `;
-  });
+      <div class="session-detail">
+        <i class="fas fa-clock"></i>
+        <span>Duration: ${booking.duration || '1'} hours</span>
+      </div>
+      <div class="session-detail">
+        <i class="fas fa-video"></i>
+        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+      </div>
+      <div class="session-detail">
+        <i class="fas fa-hourglass-half"></i>
+        <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
+      </div>
+    </div>
+    <div class="session-actions">
+      ${booking.status === 'confirmed' ? 
+        `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : 
+        ''}
+      <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
+    </div>
+  </div>
+`;
+
   
   container.innerHTML = html;
 }
@@ -1497,6 +1505,66 @@ function cancelBooking(bookingId) {
   }
 }
 
+
+function cancelBooking(bookingId) {
+  // ... existing cancelBooking code ...
+}
+
+// Add new booking to UI immediately
+function addBookingToUI(bookingId, bookingData) {
+  const container = document.getElementById('bookingsContainer');
+  
+  // Format date and time
+  const date = bookingData.date.toDate();
+  const formattedDate = date.toLocaleDateString();
+  const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  
+  // Create booking card HTML
+  const bookingCard = `
+    <div class="session-card" id="booking-${bookingId}">
+      <div class="session-header">
+        <div class="session-title">${bookingData.subject || 'No subject'}</div>
+        <div class="session-date">${formattedDate} at ${formattedTime}</div>
+      </div>
+      <div class="session-details">
+        <div class="session-detail">
+          <i class="fas fa-user-tie"></i>
+          <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-clock"></i>
+          <span>Duration: ${bookingData.duration || '1'} hours</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-video"></i>
+          <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-hourglass-half"></i>
+          <span>Status: <span class="status-badge status-pending">Pending</span></span>
+        </div>
+      </div>
+      <div class="session-actions">
+        <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  // If container has empty state message, replace it
+  if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
+    container.innerHTML = bookingCard;
+  } else {
+    // Prepend the new booking to the top
+    container.innerHTML = bookingCard + container.innerHTML;
+  }
+  
+  // Update upcoming sessions count
+  const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
+  document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+}
+
+
+
 // Load user bookings
 function loadUserBookings() {
   const userId = auth.currentUser.uid;
@@ -1504,8 +1572,7 @@ function loadUserBookings() {
   // Query upcoming bookings for this user
   db.collection('bookings')
     .where('studentId', '==', userId)
-    .where('status', '==', 'confirmed')
-    .where('date', '>=', new Date())
+    .where('status', 'in', ['confirmed', 'pending'])    .where('date', '>=', new Date())
     .orderBy('date', 'asc')
     .get()
     .then((querySnapshot) => {
@@ -1767,13 +1834,32 @@ function initDashboard() {
         hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
         totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
       })
-      .then(() => {
-        alert('Session booked successfully! It is now pending confirmation from the tutor.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-      })
+.then((docRef) => {
+  alert('Session booked successfully! It is now pending confirmation from the tutor.');
+  document.getElementById('schedulingForm').reset();
+  document.getElementById('priceSummary').style.display = 'none';
+  document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+  document.getElementById('subject').disabled = true;
+  
+  // Immediately add the new booking to the UI
+  addBookingToUI(docRef.id, {
+    slotId: slotId,
+    tutorId: tutorId,
+    tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+    studentId: studentId,
+    studentName: studentName,
+    subject: subject,
+    date: dateTime,
+    duration: duration,
+    sessionType: sessionType,
+    notes: notes,
+    status: 'pending',
+    bookedAt: new Date(),
+    hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+    totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+  });
+})
+
       .catch((error) => {
         console.error('Error creating booking:', error);
         alert('Failed to book session. Please try again.');
