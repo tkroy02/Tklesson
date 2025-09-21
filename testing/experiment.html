@@ -1115,11 +1115,11 @@ body {
         <h3><i class="fas fa-history"></i> Sessions History</h3>
       </div>
       <div id="sessionsContainer">
-        <div class="spinner" id="sessionsSpinner"></div>
-      </div>
-    </section>
-  </main>
+  <div class="spinner" id="sessionsSpinner"></div>
 </div>
+<button id="loadMoreBtn" class="btn-outline" style="display: none; margin: 20px auto;">
+  <i class="fas fa-chevron-down"></i> Load More Sessions
+</button>
 
 <script>
 // Firebase configuration
@@ -1159,6 +1159,45 @@ function logoutDueToInactivity() {
     window.location.href = 'student-login.html';
   });
 }
+
+function appendSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (snapshot.empty) {
+    return;
+  }
+  
+  let html = '';
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+      </tr>
+    `;
+  });
+  
+  // Append to existing table
+  const tbody = container.querySelector('tbody');
+  tbody.innerHTML += html;
+}
+
+<div style="margin-bottom: 20px;">
+  <label>Filter by:</label>
+  <select id="historyFilter" class="form-control" style="width: 200px;">
+    <option value="all">All Time</option>
+    <option value="month">This Month</option>
+    <option value="3months">Last 3 Months</option>
+    <option value="year">This Year</option>
+  </select>
+</div>
 
 function setupActivityListeners() {
   const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
@@ -1582,24 +1621,39 @@ function loadUserBookings() {
     });
 }
 
-// Load session history
-function loadUserSessionHistory() {
+let lastVisible = null;
+let isFirstLoad = true;
+
+function loadUserSessionHistory(loadMore = false) {
   const userId = auth.currentUser.uid;
-  
-  // Query ALL bookedSessions for this user (past and present)
-  db.collection('bookedSessions')
+  let query = db.collection('bookedSessions')
     .where('studentId', '==', userId)
     .orderBy('date', 'desc')
-    .limit(20)
-    .get()
-    .then((querySnapshot) => {
+    .limit(10); // ← Only load 10 at a time
+
+  if (loadMore && lastVisible) {
+    query = query.startAfter(lastVisible);
+  }
+
+  query.get().then((querySnapshot) => {
+    if (!querySnapshot.empty) {
+      lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
+    }
+    
+    if (isFirstLoad) {
       loadSessionHistory(querySnapshot);
-    })
-    .catch((error) => {
-      console.error('Error loading session history:', error);
-      document.getElementById('sessionsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load your session history. Please try again later.</p></div>';
-    });
+      isFirstLoad = false;
+    } else {
+      appendSessionHistory(querySnapshot);
+    }
+    
+    // Show/hide load more button
+    document.getElementById('loadMoreBtn').style.display = 
+      querySnapshot.docs.length === 10 ? 'block' : 'none';
+  });
 }
+
+
 
 // Update user stats
 function updateUserStats() {
