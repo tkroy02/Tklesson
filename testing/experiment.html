@@ -7,9 +7,10 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.2.1/firebase-app-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.2.1/firebase-auth-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.2.1/firebase-firestore-compat.min.js"></script>
+<!-- Firebase SDKs - Using compat version for easier integration -->
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore-compat.js"></script>
 
 <style>
 /* Your existing CSS styles */
@@ -979,6 +980,7 @@ body {
         <div class="form-row">
           <div class="form-group">
             <label for="fullName">Full Name</label>
+            <!-- Changed id from "name" to "fullName" -->
             <input type="text" id="fullName" class="form-control">
           </div>
           <div class="form-group">
@@ -1010,7 +1012,8 @@ body {
           <label for="tutor">Select Tutor *</label>
           <select id="tutor" class="form-control" required>
             <option value="">Select a tutor...</option>
-            </select>
+            <!-- Tutors will be loaded here -->
+          </select>
           <div class="spinner" id="tutorSpinner" style="display: none;"></div>
         </div>
         
@@ -1270,64 +1273,7 @@ function loadSessionHistory(snapshot) {
   container.innerHTML = html;
 }
 
-// Load available tutors
-function loadAvailableTutorsList() {
-  const container = document.getElementById('availableTutorsContainer');
-  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
-  
-  // Query tutors where 'available' is "true" and 'approved' is true
-  db.collection('tutors')
-    .where('available', '==', 'true')
-    .where('approved', '==', true)
-    .get()
-    .then(snapshot => {
-      if (snapshot.empty) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Available</h3><p>Check back later for available tutors.</p></div>';
-        return;
-      }
-      
-      let html = '<div class="tutors-container">';
-      snapshot.forEach(doc => {
-        const tutor = doc.data();
-        
-        // Corrected line to handle subjects that are not arrays
-        const subjectsText = Array.isArray(tutor.subjects) ? tutor.subjects.join(', ') : 'No subjects listed';
-        
-        html += `
-          <div class="tutor-card" style="background: white; border-radius: var(--border-radius); overflow: hidden; box-shadow: var(--box-shadow);">
-            <div class="tutor-header">
-              <div class="tutor-avatar">
-                <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal.fullName || 'Tutor Name Not Found'}">
-              </div>
-              <h3 class="tutor-name">${tutor.personal.fullName || 'Tutor Name Not Found'}</h3>
-              <p class="tutor-subject">${tutor.subjects && tutor.subjects.length > 0 ? tutor.subjects[0] : 'No subject specified'}</p>
-              <div class="tutor-rating">
-                <i class="fas fa-star"></i>
-                <span>${tutor.rating || '4.8'}/5.0</span>
-              </div>
-            </div>
-            <div class="tutor-details">
-              <p><i class="fas fa-graduation-cap"></i> ${tutor.professional.qualifications || 'No qualifications listed'}</p>
-              <p><i class="fas fa-book"></i> ${subjectsText}</p>
-              <p><i class="fas fa-dollar-sign"></i> $${tutor.professional.hourlyRate || '0'}/hour</p>
-              <p><i class="fas fa-clock"></i> ${tutor.availability.timezone || 'Flexible hours'}</p>
-              <button class="btn-primary" style="width: 100%; margin-top: 15px;" onclick="selectTutorForBooking('${doc.id}', '${tutor.personal.fullName}', '${tutor.professional.hourlyRate || 0}')">
-                Book Session
-              </button>
-            </div>
-          </div>
-        `;
-      });
-      html += '</div>';
-      container.innerHTML = html;
-    })
-    .catch(error => {
-      console.error('Error loading tutors:', error);
-      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-triangle"></i><h3>Error Loading Tutors</h3><p>Please try again later.</p></div>';
-    });
-}
-
-// Load tutors for scheduling dropdown
+// Load tutors for scheduling - UPDATED VERSION
 function loadTutorsForScheduling() {
   const tutorSelect = document.getElementById('tutor');
   const tutorSpinner = document.getElementById('tutorSpinner');
@@ -1339,249 +1285,437 @@ function loadTutorsForScheduling() {
   
   tutorSpinner.style.display = 'block';
   
-  // Query tutors where 'available' is "true" AND 'approved' is true
+  // Query tutors who are available and approved
   db.collection('tutors')
-    .where('available', '==', 'true')
+    .where('available', '==', true)
     .where('approved', '==', true)
     .get()
-    .then(snapshot => {
+    .then((querySnapshot) => {
       tutorSpinner.style.display = 'none';
       
-      if (snapshot.empty) {
-        tutorSelect.innerHTML += '<option value="" disabled>No tutors available</option>';
+      if (querySnapshot.empty) {
+        tutorSelect.innerHTML = '<option value="">No available tutors found</option>';
         return;
       }
       
-      snapshot.forEach(doc => {
+      querySnapshot.forEach((doc) => {
         const tutor = doc.data();
         const option = document.createElement('option');
         option.value = doc.id;
-        option.textContent = `${tutor.personal.fullName || 'Tutor'} - ${tutor.subjects && tutor.subjects.length > 0 ? tutor.subjects[0] : 'General'} ($${tutor.professional.hourlyRate || 0}/hr)`;
+        
+        // Extract tutor name and subjects based on your data structure
+        const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
+        let subjectsText = 'No subjects listed';
+        
+        // Check for nested subjects structure
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjectsText = tutor.subjects.subjects.join(', ');
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          // Fallback for different structure
+          subjectsText = tutor.subjects.join(', ');
+        }
+        
+        option.textContent = `${tutorName} - ${subjectsText}`;
+        option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
         tutorSelect.appendChild(option);
       });
     })
-    .catch(error => {
-      console.error('Error loading tutors:', error);
+    .catch((error) => {
       tutorSpinner.style.display = 'none';
+      console.error('Error loading tutors:', error);
+      alert('Failed to load tutors. Please try again.');
     });
 }
 
-// Load available tutors count
+// Load available tutors
 function loadAvailableTutors() {
-  // Query tutors where 'available' is "true" and 'approved' is true
+  const container = document.getElementById('availableTutorsContainer');
+  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+  
+  // Query tutors who are available and approved
   db.collection('tutors')
-    .where('available', '==', 'true')
+    .where('available', '==', true)
     .where('approved', '==', true)
     .get()
-    .then(snapshot => {
-      document.getElementById('tutorsCount').textContent = snapshot.size;
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const tutorCard = document.createElement('div');
+        tutorCard.className = 'tutor-card';
+        tutorCard.innerHTML = `
+          <div class="tutor-header">
+            <div class="tutor-avatar">
+              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
+            </div>
+            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+          </div>
+          <div class="tutor-details">
+            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+          </div>
+        `;
+        container.appendChild(tutorCard);
+      });
     })
-    .catch(error => {
-      console.error('Error loading tutors count:', error);
+    .catch((error) => {
+      console.error('Error loading available tutors:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+    });
+}
+  
+// Load my tutors (tutors the student has previously booked with)
+function loadMyTutors() {
+  const container = document.getElementById('myTutorsContainer');
+  container.innerHTML = '<div class="spinner"></div>';
+  
+  // Get the current user ID
+  const userId = auth.currentUser.uid;
+  
+  // Query sessions where this student is involved and status is completed
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Collect unique tutor IDs
+      const tutorIds = [];
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+      });
+      
+      if (tutorIds.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Get tutor details for each tutor ID
+      const tutorPromises = tutorIds.map(tutorId => 
+        db.collection('tutors').doc(tutorId).get()
+      );
+      
+      Promise.all(tutorPromises)
+        .then((tutorSnapshots) => {
+          tutorSnapshots.forEach((tutorDoc) => {
+            if (tutorDoc.exists) {
+              const tutor = tutorDoc.data();
+              const tutorCard = document.createElement('div');
+              tutorCard.className = 'tutor-card';
+              tutorCard.innerHTML = `
+                <div class="tutor-header">
+                  <div class="tutor-avatar">
+                    <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.name}">
+                  </div>
+                  <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+                  <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+                </div>
+                <div class="tutor-details">
+                  <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+                  <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+                  <p><i class="fas fa-clock"></i> Last session: Completed</p>
+                  <button class="btn-primary" onclick="bookTutor('${tutorDoc.id}')">Book Again</button>
+                </div>
+              `;
+              container.appendChild(tutorCard);
+            }
+          });
+        })
+        .catch((error) => {
+          console.error('Error loading tutor details:', error);
+          container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+        });
+    })
+    .catch((error) => {
+      console.error('Error loading sessions:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
     });
 }
 
-// Select tutor for booking
-function selectTutorForBooking(tutorId, tutorName, hourlyRate) {
-  // Switch to scheduling tab
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.classList.remove('active');
-  });
-  document.querySelector('a[data-section="scheduling"]').classList.add('active');
+// Book a tutor
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelector('.dashboard-section.active').classList.remove('active');
   
-  document.querySelectorAll('.dashboard-section').forEach(section => {
-    section.classList.remove('active');
-  });
+  document.querySelector('a[data-section="scheduling"]').classList.add('active');
   document.getElementById('scheduling').classList.add('active');
   
-  // Set the tutor in the dropdown
-  const tutorSelect = document.getElementById('tutor');
-  tutorSelect.value = tutorId;
-  
-  // Trigger change event to load subjects
-  const event = new Event('change');
-  tutorSelect.dispatchEvent(event);
-  
-  // Update price if hourly rate is available
-  if (hourlyRate) {
-    updatePrice(hourlyRate);
-  }
+  // Wait for the scheduling section to be visible, then select the tutor
+  setTimeout(() => {
+    const tutorSelect = document.getElementById('tutor');
+    tutorSelect.value = tutorId;
+    
+    // Trigger change event to load subjects
+    const event = new Event('change');
+    tutorSelect.dispatchEvent(event);
+  }, 100);
 }
 
-// Update price display
-function updatePrice(hourlyRate) {
-  const duration = parseFloat(document.getElementById('duration').value);
-  const totalPrice = hourlyRate * duration;
-  
-  document.getElementById('hourlyRate').textContent = hourlyRate;
-  document.getElementById('durationDisplay').textContent = duration;
-  document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-  document.getElementById('priceSummary').style.display = 'block';
-}
-
-// Join session
+// Join a session
 function joinSession(sessionId) {
-  alert(`Joining session ${sessionId}`);
-  // In a real app, this would redirect to the video call or session page
+  alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
+  // In a real app, this would redirect to the video meeting or open it in a modal
 }
 
-// Cancel booking
+// Cancel a booking
 function cancelBooking(bookingId) {
   if (confirm('Are you sure you want to cancel this booking?')) {
-    db.collection('bookings').doc(bookingId).delete()
-      .then(() => {
-        alert('Booking cancelled successfully');
-      })
-      .catch(error => {
-        console.error('Error cancelling booking:', error);
-        alert('Error cancelling booking. Please try again.');
-      });
+    // Update the booking status to cancelled
+    db.collection('bookings').doc(bookingId).update({
+      status: 'cancelled',
+      cancelledAt: new Date()
+    })
+    .then(() => {
+      alert('Booking cancelled successfully.');
+      // Reload the bookings
+      loadUserBookings();
+    })
+    .catch((error) => {
+      console.error('Error cancelling booking:', error);
+      alert('Failed to cancel booking. Please try again.');
+    });
   }
+}
+
+// Load user bookings
+function loadUserBookings() {
+  const userId = auth.currentUser.uid;
+  
+  // Query upcoming bookings for this user
+  db.collection('bookings')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'confirmed')
+    .where('date', '>=', new Date())
+    .orderBy('date', 'asc')
+    .get()
+    .then((querySnapshot) => {
+      updateUpcomingSessionsCount(querySnapshot.size);
+      loadBookings(querySnapshot);
+    })
+    .catch((error) => {
+      console.error('Error loading bookings:', error);
+      document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+    });
+}
+
+// Load session history
+function loadUserSessionHistory() {
+  const userId = auth.currentUser.uid;
+  
+  // Query past sessions for this user
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc')
+    .limit(20)
+    .get()
+    .then((querySnapshot) => {
+      loadSessionHistory(querySnapshot);
+    })
+    .catch((error) => {
+      console.error('Error loading session history:', error);
+      document.getElementById('sessionsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load your session history. Please try again later.</p></div>';
+    });
+}
+
+// Update user stats
+function updateUserStats() {
+  const userId = auth.currentUser.uid;
+  
+  // Count tutors (this is a simplified version)
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      const tutorIds = [];
+      let totalHours = 0;
+      
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+        totalHours += parseFloat(session.duration) || 1;
+      });
+      
+      document.getElementById('tutorsCount').textContent = tutorIds.length;
+      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
+    })
+    .catch((error) => {
+      console.error('Error loading stats:', error);
+    });
 }
 
 // Initialize the dashboard
 function initDashboard() {
-  // Set up event listeners
-  document.getElementById('menuToggle').addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('active');
-  });
-
-  // Navigation menu
+  // Set up navigation
   document.querySelectorAll('.menu-item a').forEach(item => {
     item.addEventListener('click', function(e) {
       e.preventDefault();
       
       // Update active menu item
-      document.querySelectorAll('.menu-item a').forEach(i => {
-        i.classList.remove('active');
-      });
+      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
       this.classList.add('active');
       
-      // Show corresponding section
+      // Show the corresponding section
       const sectionId = this.getAttribute('data-section');
-      document.querySelectorAll('.dashboard-section').forEach(s => {
-        s.classList.remove('active');
+      document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
       });
       document.getElementById(sectionId).classList.add('active');
-    });
-  });
-
-  // Tab functionality
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-      const tabName = this.getAttribute('data-tab');
       
-      // Update active tab
-      document.querySelectorAll('.tab').forEach(t => {
-        t.classList.remove('active');
-      });
-      this.classList.add('active');
-      
-      // Show corresponding content
-      document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-      });
-      document.getElementById(`${tabName}-tab`).classList.add('active');
-      
-      // Load available tutors if needed
-      if (tabName === 'available-tutors') {
-        loadAvailableTutorsList();
+      // Load specific data based on the section
+      if (sectionId === 'scheduling') {
+        loadTutorsForScheduling();
+      } else if (sectionId === 'tutors') {
+        // Load both my tutors and available tutors when the tutors section is opened
+        loadMyTutors();
+        loadAvailableTutors();
+      } else if (sectionId === 'bookings') {
+        loadUserBookings();
+      } else if (sectionId === 'sessions') {
+        loadUserSessionHistory();
       }
     });
   });
-
-  // Edit profile button
-  document.getElementById('editProfileBtn').addEventListener('click', function() {
-    const form = document.getElementById('profileForm');
-    if (form.style.display === 'none') {
-      form.style.display = 'block';
-      this.textContent = 'Cancel Editing';
-    } else {
-      form.style.display = 'none';
-      this.textContent = 'Edit Profile';
-    }
-  });
-
-  // Save profile
-  document.getElementById('saveProfileBtn').addEventListener('click', function() {
-    const name = document.getElementById('fullName').value;
-    const phone = document.getElementById('phone').value;
-    
-    db.collection('users').doc(currentUser.uid).update({
-      name: name,
-      phone: phone,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    })
-    .then(() => {
-      alert('Profile updated successfully!');
-      document.getElementById('profileForm').style.display = 'none';
-      document.getElementById('editProfileBtn').textContent = 'Edit Profile';
-      document.getElementById('profileName').textContent = name;
-      document.getElementById('userName').textContent = name;
-    })
-    .catch(error => {
-      console.error('Error updating profile:', error);
-      alert('Error updating profile. Please try again.');
+  
+  // Set up tabs in the tutors section
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      // Update active tab
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      
+      // Show the corresponding tab content
+      const tabId = this.getAttribute('data-tab');
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      document.getElementById(`${tabId}-tab`).classList.add('active');
+      
+      // Show search only for available tutors
+      const searchContainer = document.getElementById('tutorSearchContainer');
+      if (tabId === 'available-tutors') {
+        searchContainer.style.display = 'block';
+      } else {
+        searchContainer.style.display = 'none';
+      }
     });
   });
-
-  // Tutor selection change
+  
+  // Set up tutor selection change event
   document.getElementById('tutor').addEventListener('change', function() {
     const tutorId = this.value;
     const subjectSelect = document.getElementById('subject');
+    const priceSummary = document.getElementById('priceSummary');
+    const hourlyRateSpan = document.getElementById('hourlyRate');
+    const durationDisplay = document.getElementById('durationDisplay');
+    const totalPriceSpan = document.getElementById('totalPrice');
     
     if (!tutorId) {
       subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
       subjectSelect.disabled = true;
-      document.getElementById('priceSummary').style.display = 'none';
+      priceSummary.style.display = 'none';
       return;
     }
     
-    // Get tutor data
+    // Get tutor data to populate subjects and hourly rate
     db.collection('tutors').doc(tutorId).get()
-      .then(doc => {
+      .then((doc) => {
         if (doc.exists) {
           const tutor = doc.data();
-          const subjects = tutor.subjects || ['General Tutoring'];
           
           // Populate subjects
           subjectSelect.innerHTML = '';
-          subjects.forEach(subject => {
-            const option = document.createElement('option');
-            option.value = subject;
-            option.textContent = subject;
-            subjectSelect.appendChild(option);
-          });
-          subjectSelect.disabled = false;
+          let subjects = [];
           
-          // Update price
-          updatePrice(tutor.professional.hourlyRate || 0);
+          // Check for nested subjects structure
+          if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+            subjects = tutor.subjects.subjects;
+          } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+            // Fallback for different structure
+            subjects = tutor.subjects;
+          }
+          
+          if (subjects.length > 0) {
+            subjects.forEach(subject => {
+              const option = document.createElement('option');
+              option.value = subject;
+              option.textContent = subject;
+              subjectSelect.appendChild(option);
+            });
+            subjectSelect.disabled = false;
+          } else {
+            subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+            subjectSelect.disabled = true;
+          }
+          
+          // Show price summary
+          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+          const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+          const totalPrice = hourlyRate * duration;
+          
+          hourlyRateSpan.textContent = hourlyRate;
+          durationDisplay.textContent = duration;
+          totalPriceSpan.textContent = totalPrice.toFixed(2);
+          priceSummary.style.display = 'block';
         }
       })
-      .catch(error => {
+      .catch((error) => {
+        console.error('Error loading tutor details:', error);
+        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+        subjectSelect.disabled = true;
+        priceSummary.style.display = 'none';
+      });
+  });
+  
+  // Set up duration change event to update price
+  document.getElementById('duration').addEventListener('change', function() {
+    const tutorSelect = document.getElementById('tutor');
+    const tutorId = tutorSelect.value;
+    
+    if (!tutorId) return;
+    
+    // Get tutor hourly rate
+    db.collection('tutors').doc(tutorId).get()
+      .then((doc) => {
+        if (doc.exists) {
+          const tutor = doc.data();
+          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+          const duration = parseFloat(this.value) || 1.5;
+          const totalPrice = hourlyRate * duration;
+          
+          document.getElementById('hourlyRate').textContent = hourlyRate;
+          document.getElementById('durationDisplay').textContent = duration;
+          document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+        }
+      })
+      .catch((error) => {
         console.error('Error loading tutor details:', error);
       });
   });
-
-  // Duration change
-  document.getElementById('duration').addEventListener('change', function() {
-    const tutorId = document.getElementById('tutor').value;
-    if (tutorId) {
-      // Get tutor data to update price
-      db.collection('tutors').doc(tutorId).get()
-        .then(doc => {
-          if (doc.exists) {
-            const tutor = doc.data();
-            updatePrice(tutor.professional.hourlyRate || 0);
-          }
-        })
-        .catch(error => {
-          console.error('Error loading tutor details:', error);
-        });
-    }
-  });
-
-  // Schedule form submission
+  
+  // Set up scheduling form submission
   document.getElementById('schedulingForm').addEventListener('submit', function(e) {
     e.preventDefault();
     
@@ -1593,98 +1727,144 @@ function initDashboard() {
     const sessionType = document.getElementById('sessionType').value;
     const notes = document.getElementById('notes').value;
     
-    if (!tutorId) {
-      alert('Please select a tutor');
+    if (!tutorId || !subject || !date || !time) {
+      alert('Please fill in all required fields.');
       return;
     }
     
     // Combine date and time
     const dateTime = new Date(`${date}T${time}`);
     
-    // Create booking
-    db.collection('bookings').add({
-      studentId: currentUser.uid,
-      studentName: userData.name,
-      tutorId: tutorId,
-      tutorName: document.getElementById('tutor').options[document.getElementById('tutor').selectedIndex].textContent.split(' - ')[0],
-      subject: subject,
-      date: dateTime,
-      duration: duration,
-      sessionType: sessionType,
-      notes: notes,
-      status: 'scheduled',
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    // Get tutor details for the booking
+    db.collection('tutors').doc(tutorId).get()
+      .then((tutorDoc) => {
+        if (!tutorDoc.exists) {
+          alert('Selected tutor not found.');
+          return;
+        }
+        
+        const tutor = tutorDoc.data();
+        const studentId = auth.currentUser.uid;
+        const studentName = userData?.name || 'Unknown Student';
+        
+        // Create booking
+        db.collection('bookings').add({
+          tutorId: tutorId,
+          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+          studentId: studentId,
+          studentName: studentName,
+          subject: subject,
+          date: dateTime,
+          duration: duration,
+          sessionType: sessionType,
+          notes: notes,
+          status: 'pending',
+          createdAt: new Date(),
+          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+        })
+        .then(() => {
+          alert('Session booked successfully! It is now pending confirmation from the tutor.');
+          document.getElementById('schedulingForm').reset();
+          document.getElementById('priceSummary').style.display = 'none';
+          document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+          document.getElementById('subject').disabled = true;
+        })
+        .catch((error) => {
+          console.error('Error creating booking:', error);
+          alert('Failed to book session. Please try again.');
+        });
+      })
+      .catch((error) => {
+        console.error('Error getting tutor details:', error);
+        alert('Failed to book session. Please try again.');
+      });
+  });
+  
+  // Set up edit profile button
+  document.getElementById('editProfileBtn').addEventListener('click', function() {
+    const profileForm = document.getElementById('profileForm');
+    if (profileForm.style.display === 'none') {
+      profileForm.style.display = 'block';
+      this.textContent = 'Cancel Edit';
+    } else {
+      profileForm.style.display = 'none';
+      this.textContent = 'Edit Profile';
+    }
+  });
+  
+  // Set up save profile button
+  document.getElementById('saveProfileBtn').addEventListener('click', function() {
+    const name = document.getElementById('fullName').value;
+    const phone = document.getElementById('phone').value;
+    
+    if (!name) {
+      alert('Please enter your name.');
+      return;
+    }
+    
+    // Update user data in Firestore
+    const userId = auth.currentUser.uid;
+    db.collection('students').doc(userId).update({
+      name: name,
+      phone: phone,
+      updatedAt: new Date()
     })
     .then(() => {
-      alert('Session booked successfully!');
-      document.getElementById('schedulingForm').reset();
-      document.getElementById('subject').disabled = true;
-      document.getElementById('priceSummary').style.display = 'none';
+      alert('Profile updated successfully!');
+      document.getElementById('profileForm').style.display = 'none';
+      document.getElementById('editProfileBtn').textContent = 'Edit Profile';
+      
+      // Update displayed user info
+      document.getElementById('userName').textContent = name;
+      document.getElementById('profileName').textContent = name;
+      userData.name = name;
+      userData.phone = phone;
     })
-    .catch(error => {
-      console.error('Error booking session:', error);
-      alert('Error booking session. Please try again.');
+    .catch((error) => {
+      console.error('Error updating profile:', error);
+      alert('Failed to update profile. Please try again.');
     });
   });
-
-  // Logout button
+  
+  // Set up logout button
   document.getElementById('logoutBtn').addEventListener('click', function() {
-    auth.signOut().then(() => {
-      window.location.href = 'student-login.html';
-    });
+    if (confirm('Are you sure you want to logout?')) {
+      auth.signOut().then(() => {
+        window.location.href = 'student-login.html';
+      });
+    }
   });
-
-  // Setup real-time listeners
-  setupRealtimeListeners();
+  
+  // Set up mobile menu toggle
+  document.getElementById('menuToggle').addEventListener('click', function() {
+    document.getElementById('sidebar').classList.toggle('active');
+  });
   
   // Load initial data
-  loadAvailableTutors();
-  loadAvailableTutorsList();
-  loadTutorsForScheduling();
+  loadUserBookings();
+  loadUserSessionHistory();
+  updateUserStats();
+  
+  // Start inactivity timer
+  resetInactivityTimer();
+  setupActivityListeners();
 }
 
-// Setup real-time listeners
-function setupRealtimeListeners() {
-  // Listen for upcoming bookings
-  db.collection('bookings')
-    .where('studentId', '==', currentUser.uid)
-    .where('status', 'in', ['scheduled', 'confirmed'])
-    .orderBy('date', 'asc')
-    .onSnapshot(snapshot => {
-      updateUpcomingSessionsCount(snapshot.size);
-      loadBookings(snapshot);
-    }, error => {
-      console.error('Error listening to bookings:', error);
-    });
-
-  // Listen for session history
-  db.collection('bookings')
-    .where('studentId', '==', currentUser.uid)
-    .where('status', 'in', ['completed', 'cancelled'])
-    .orderBy('date', 'desc')
-    .limit(10)
-    .onSnapshot(snapshot => {
-      loadSessionHistory(snapshot);
-    }, error => {
-      console.error('Error listening to session history:', error);
-    });
-}
-
-// Authentication state observer
-auth.onAuthStateChanged(user => {
+// Check authentication state
+auth.onAuthStateChanged((user) => {
   if (user) {
     currentUser = user;
-    resetInactivityTimer();
     
     // Get user data from Firestore
-    db.collection('users').doc(user.uid).get()
-      .then(doc => {
+    db.collection('students').doc(user.uid).get()
+      .then((doc) => {
         if (doc.exists) {
           userData = doc.data();
           
           // Update UI with user data
-          document.getElementById('userName').textContent = userData.name || 'User';
-          document.getElementById('profileName').textContent = userData.name || 'User';
+          document.getElementById('userName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileName').textContent = userData.name || 'Unknown User';
           document.getElementById('profileEmail').textContent = user.email;
           document.getElementById('fullName').value = userData.name || '';
           document.getElementById('email').value = user.email;
@@ -1694,19 +1874,19 @@ auth.onAuthStateChanged(user => {
           initDashboard();
         } else {
           console.error('No user data found');
+          alert('Error loading user data. Please try logging in again.');
+          auth.signOut();
         }
       })
-      .catch(error => {
+      .catch((error) => {
         console.error('Error getting user data:', error);
+        alert('Error loading user data. Please try again.');
       });
   } else {
-    // User is signed out, redirect to login
+    // User is not logged in, redirect to login page
     window.location.href = 'student-login.html';
   }
 });
-
-// Setup activity listeners
-setupActivityListeners();
 </script>
 </body>
 </html>
