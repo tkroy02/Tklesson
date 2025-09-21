@@ -423,11 +423,6 @@ body {
   color: var(--warning);
 }
 
-.status-cancelled {
-  background: rgba(230, 57, 70, 0.1);
-  color: var(--error);
-}
-
 .edit-profile-btn {
   background: var(--primary);
   color: white;
@@ -862,7 +857,6 @@ body {
 </style>
 </head>
 <body>
-
 <div class="menu-toggle" id="menuToggle">
   <i class="fas fa-bars"></i>
 </div>
@@ -1185,12 +1179,12 @@ function updateUpcomingSessionsCount(count) {
   document.getElementById('upcomingSessionsCount').textContent = count;
 }
 
-// Load bookings - UPDATED VERSION from Experiment 4
+// Load bookings
 function loadBookings(snapshot) {
   const container = document.getElementById('bookingsContainer');
   
   if (snapshot.empty) {
-    container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Bookings Yet</h3><p>You don\'t have any upcoming bookings. Schedule a session to get started!</p></div>';
+    container.innerHTML = '<p>You have no upcoming bookings.</p>';
     return;
   }
   
@@ -1200,18 +1194,6 @@ function loadBookings(snapshot) {
     const date = booking.date.toDate();
     const formattedDate = date.toLocaleDateString();
     const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    // Determine status badge class
-    let statusClass = 'status-pending';
-    let statusText = 'Pending';
-    
-    if (booking.status === 'confirmed') {
-      statusClass = 'status-verified';
-      statusText = 'Confirmed';
-    } else if (booking.status === 'cancelled') {
-      statusClass = 'status-cancelled';
-      statusText = 'Cancelled';
-    }
     
     html += `
       <div class="session-card">
@@ -1232,22 +1214,10 @@ function loadBookings(snapshot) {
             <i class="fas fa-video"></i>
             <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
           </div>
-          <div class="session-detail">
-            <i class="fas fa-info-circle"></i>
-            <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
-          </div>
         </div>
         <div class="session-actions">
-          ${booking.status === 'pending' ? `
-            <button class="btn-outline" onclick="cancelBooking('${doc.id}')">
-              <i class="fas fa-times"></i> Cancel
-            </button>
-          ` : ''}
-          ${booking.status === 'confirmed' ? `
-            <button class="btn-primary" onclick="joinSession('${booking.sessionLink || '#'}')">
-              <i class="fas fa-video"></i> Join Session
-            </button>
-          ` : ''}
+          <button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>
+          <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
         </div>
       </div>
     `;
@@ -1256,133 +1226,51 @@ function loadBookings(snapshot) {
   container.innerHTML = html;
 }
 
-// Load user's bookings from Firestore - UPDATED from Experiment 4
-function loadUserBookings() {
-  if (!currentUser) return;
-  
-  console.log("Loading bookings for user:", currentUser.uid);
-  
-  // Simpler query without ordering to avoid index requirements
-  const bookingsRef = db.collection('bookedSessions')
-    .where('studentId', '==', currentUser.uid);
-  
-  // Real-time listener for bookings
-  bookingsRef.onSnapshot(snapshot => {
-    console.log("Bookings snapshot received:", snapshot.size, "items");
-    
-    if (snapshot.empty) {
-      console.log("No bookings found for this user");
-      document.getElementById('bookingsContainer').innerHTML = `
-        <div class="empty-state">
-          <i class="fas fa-calendar-times"></i>
-          <h3>No Bookings Yet</h3>
-          <p>You don't have any upcoming bookings. Schedule a session to get started!</p>
-        </div>
-      `;
-      updateUpcomingSessionsCount(0);
-      return;
-    }
-    
-    // Process the bookings and sort them locally
-    const bookings = [];
-    snapshot.forEach(doc => {
-      bookings.push({id: doc.id, ...doc.data()});
-    });
-    
-    // Sort by date locally instead of using Firestore ordering
-    bookings.sort((a, b) => {
-      const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date);
-      const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date);
-      return dateA - dateB;
-    });
-    
-    loadBookings({docs: bookings.map(booking => ({
-      id: booking.id,
-      data: () => booking
-    }))});
-    
-    // Update upcoming sessions count
-    const upcomingCount = bookings.filter(booking => {
-      const bookingDate = booking.date?.toDate ? booking.date.toDate() : new Date(booking.date);
-      return booking.status !== 'cancelled' && bookingDate > new Date();
-    }).length;
-    
-    updateUpcomingSessionsCount(upcomingCount);
-  }, error => {
-    console.error("Error loading bookings:", error);
-    document.getElementById('bookingsContainer').innerHTML = `
-      <div class="error-state">
-        <i class="fas fa-exclamation-triangle"></i>
-        <h3>Error Loading Bookings</h3>
-        <p>There was a problem loading your bookings. Please try again later.</p>
-        <p>Error: ${error.message}</p>
-      </div>
-    `;
-  });
-}
-
-// Modified loadSessionHistory function with simpler query
-function loadSessionHistory() {
+// Load session history
+function loadSessionHistory(snapshot) {
   const container = document.getElementById('sessionsContainer');
   
-  if (!currentUser) return;
+  if (snapshot.empty) {
+    container.innerHTML = '<p>No session history found.</p>';
+    return;
+  }
   
-  container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-  
-  // Simpler query without ordering to avoid index requirements
-  const sessionsRef = db.collection('sessions')
-    .where('studentId', '==', currentUser.uid)
-    .limit(20);
-  
-  sessionsRef.get().then(snapshot => {
-    if (snapshot.empty) {
-      container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t completed any sessions yet.</p></div>';
-      return;
-    }
-    
-    // Process sessions and sort them locally
-    const sessions = [];
-    snapshot.forEach(doc => {
-      sessions.push({id: doc.id, ...doc.data()});
-    });
-    
-    // Sort by date locally instead of using Firestore ordering
-    sessions.sort((a, b) => {
-      const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date);
-      const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date);
-      return dateB - dateA; // Descending order for history
-    });
-    
-    let html = '<table class="sessions-table"><thead><tr><th>Date</th><th>Tutor</th><th>Subject</th><th>Duration</th><th>Type</th></tr></thead><tbody>';
-    
-    sessions.forEach(session => {
-      const date = session.date?.toDate ? session.date.toDate() : new Date(session.date);
-      const formattedDate = date.toLocaleDateString();
-      
-      html += `
+  let html = `
+    <table class="sessions-table">
+      <thead>
         <tr>
-          <td>${formattedDate}</td>
-          <td>${session.tutorName || 'Unknown'}</td>
-          <td>${session.subject || 'No subject'}</td>
-          <td>${session.duration || '1'} hours</td>
-          <td>${session.sessionType === 'in-person' ? 'In-Person' : 'Online'}</td>
+          <th>Date</th>
+          <th>Tutor</th>
+          <th>Subject</th>
+          <th>Duration</th>
+          <th>Status</th>
         </tr>
-      `;
-    });
+      </thead>
+      <tbody>
+  `;
+  
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
     
-    html += '</tbody></table>';
-    container.innerHTML = html;
-  }).catch(error => {
-    console.error("Error loading session history:", error);
-    container.innerHTML = `
-      <div class="error-state">
-        <i class="fas fa-exclamation-triangle"></i>
-        <h3>Error Loading History</h3>
-        <p>There was a problem loading your session history. Please try again later.</p>
-        <p>Error: ${error.message}</p>
-      </div>
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+      </tr>
     `;
   });
+  
+  html += `
+      </tbody>
+    </table>
+  `;
+  
+  container.innerHTML = html;
 }
 
 // Load tutors for scheduling - UPDATED VERSION
@@ -1396,9 +1284,8 @@ function loadTutorsForScheduling() {
   }
   
   tutorSpinner.style.display = 'block';
-
-
-// Query tutors who are available and approved
+  
+  // Query tutors who are available and approved
   db.collection('tutors')
     .where('available', '==', true)
     .where('approved', '==', true)
@@ -1439,8 +1326,6 @@ function loadTutorsForScheduling() {
       alert('Failed to load tutors. Please try again.');
     });
 }
-
-
 
 // Load available tutors
 function loadAvailableTutors() {
@@ -1488,8 +1373,7 @@ function loadAvailableTutors() {
       container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
     });
 }
-
-
+  
 // Load my tutors (tutors the student has previously booked with)
 function loadMyTutors() {
   const container = document.getElementById('myTutorsContainer');
@@ -1567,54 +1451,90 @@ function loadMyTutors() {
     });
 }
 
-// Select tutor for booking - NEW from Experiment 4
-function selectTutorForBooking(tutorId, tutorName) {
-  // Switch to scheduling tab
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.classList.remove('active');
-  });
-  document.querySelector('[data-section="scheduling"]').classList.add('active');
+// Book a tutor
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelector('.dashboard-section.active').classList.remove('active');
   
-  document.querySelectorAll('.dashboard-section').forEach(section => {
-    section.classList.remove('active');
-  });
+  document.querySelector('a[data-section="scheduling"]').classList.add('active');
   document.getElementById('scheduling').classList.add('active');
   
-  // Set the tutor in the dropdown
-  document.getElementById('tutor').value = tutorId;
-  
-  // Trigger change event to load subjects
-  const event = new Event('change');
-  document.getElementById('tutor').dispatchEvent(event);
-  
-  // Show success message
-  alert(`Selected tutor: ${tutorName}. Please complete the booking form.`);
+  // Wait for the scheduling section to be visible, then select the tutor
+  setTimeout(() => {
+    const tutorSelect = document.getElementById('tutor');
+    tutorSelect.value = tutorId;
+    
+    // Trigger change event to load subjects
+    const event = new Event('change');
+    tutorSelect.dispatchEvent(event);
+  }, 100);
 }
 
-
-// Join a session - UPDATED from Experiment 4
-function joinSession(sessionLink) {
-  if (sessionLink && sessionLink !== 'https://meet.google.com/pvq-fmpw-qhn') {
-    window.open(sessionLink, '_blank');
-  } else {
-    alert('Session link not available. Please contact your tutor.');
-  }
+// Join a session
+function joinSession(sessionId) {
+  alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
+  // In a real app, this would redirect to the video meeting or open it in a modal
 }
 
-// Cancel a booking - UPDATED from Experiment 4
+// Cancel a booking
 function cancelBooking(bookingId) {
   if (confirm('Are you sure you want to cancel this booking?')) {
-    db.collection('bookedSessions').doc(bookingId).update({
-      status: 'cancelled'
+    // Update the booking status to cancelled
+    db.collection('bookings').doc(bookingId).update({
+      status: 'cancelled',
+      cancelledAt: new Date()
     })
     .then(() => {
       alert('Booking cancelled successfully.');
+      // Reload the bookings
+      loadUserBookings();
     })
-    .catch(error => {
-      console.error("Error cancelling booking:", error);
-      alert('There was an error cancelling your booking. Please try again.');
+    .catch((error) => {
+      console.error('Error cancelling booking:', error);
+      alert('Failed to cancel booking. Please try again.');
     });
   }
+}
+
+// Load user bookings
+function loadUserBookings() {
+  const userId = auth.currentUser.uid;
+  
+  // Query upcoming bookings for this user
+  db.collection('bookings')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'confirmed')
+    .where('date', '>=', new Date())
+    .orderBy('date', 'asc')
+    .get()
+    .then((querySnapshot) => {
+      updateUpcomingSessionsCount(querySnapshot.size);
+      loadBookings(querySnapshot);
+    })
+    .catch((error) => {
+      console.error('Error loading bookings:', error);
+      document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+    });
+}
+
+// Load session history
+function loadUserSessionHistory() {
+  const userId = auth.currentUser.uid;
+  
+  // Query past sessions for this user
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc')
+    .limit(20)
+    .get()
+    .then((querySnapshot) => {
+      loadSessionHistory(querySnapshot);
+    })
+    .catch((error) => {
+      console.error('Error loading session history:', error);
+      document.getElementById('sessionsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load your session history. Please try again later.</p></div>';
+    });
 }
 
 // Update user stats
@@ -1644,88 +1564,6 @@ function updateUserStats() {
     .catch((error) => {
       console.error('Error loading stats:', error);
     });
-}
-
-// Load tutors for dropdown - NEW from Experiment 4
-function loadTutorsForDropdown() {
-  const tutorDropdown = document.getElementById('tutor');
-  const spinner = document.getElementById('tutorSpinner');
-  
-  spinner.style.display = 'block';
-  
-  db.collection('tutors').where('availability', '==', true).get()
-    .then(snapshot => {
-      // Clear existing options except the first one
-      while (tutorDropdown.options.length > 1) {
-        tutorDropdown.remove(1);
-      }
-      
-      if (snapshot.empty) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'No tutors available';
-        tutorDropdown.appendChild(option);
-        return;
-      }
-      
-      snapshot.forEach(doc => {
-        const tutor = doc.data();
-        const option = document.createElement('option');
-        option.value = doc.id;
-        option.textContent = `${tutor.name || 'Unknown Tutor'} - ${tutor.subjects ? tutor.subjects.join(', ') : 'No subjects'}`;
-        tutorDropdown.appendChild(option);
-      });
-    })
-    .catch(error => {
-      console.error("Error loading tutors:", error);
-    })
-    .finally(() => {
-      spinner.style.display = 'none';
-    });
-}
-
-// Update user stats
-function updateUserStats() {
-  const userId = auth.currentUser.uid;
-  
-  // Count tutors (this is a simplified version)
-  db.collection('sessions')
-    .where('studentId', '==', userId)
-    .where('status', '==', 'completed')
-    .get()
-    .then((querySnapshot) => {
-      const tutorIds = [];
-      let totalHours = 0;
-      
-      querySnapshot.forEach((doc) => {
-        const session = doc.data();
-        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
-          tutorIds.push(session.tutorId);
-        }
-        totalHours += parseFloat(session.duration) || 1;
-      });
-      
-      document.getElementById('tutorsCount').textContent = tutorIds.length;
-      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
-    })
-    .catch((error) => {
-      console.error('Error loading stats:', error);
-    });
-}
-
-
-// Update price summary when duration changes - NEW from Experiment 4
-function updatePriceSummary() {
-  const hourlyRate = parseFloat(document.getElementById('hourlyRate').textContent) || 0;
-  const duration = parseFloat(document.getElementById('duration').value) || 0;
-  const totalPrice = hourlyRate * duration;
-  
-  document.getElementById('durationDisplay').textContent = duration;
-  document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-  
-  if (hourlyRate > 0) {
-    document.getElementById('priceSummary').style.display = 'block';
-  }
 }
 
 // Initialize the dashboard
@@ -1756,7 +1594,7 @@ function initDashboard() {
       } else if (sectionId === 'bookings') {
         loadUserBookings();
       } else if (sectionId === 'sessions') {
-        loadSessionHistory();
+        loadUserSessionHistory();
       }
     });
   });
@@ -1879,95 +1717,83 @@ function initDashboard() {
   
   // Set up scheduling form submission
   document.getElementById('schedulingForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    if (!currentUser) {
-      alert('Please log in to book a session.');
-      return;
-    }
-    
-    const tutorId = document.getElementById('tutor').value;
-    const subject = document.getElementById('subject').value;
-    const date = document.getElementById('date').value;
-    const time = document.getElementById('time').value;
-    const duration = document.getElementById('duration').value;
-    const sessionType = document.getElementById('sessionType').value;
-    const notes = document.getElementById('notes').value;
-    
-    if (!tutorId || !subject || !date || !time) {
-      alert('Please fill in all required fields.');
-      return;
-    }
-    
-    // Combine date and time
-    const dateTime = new Date(`${date}T${time}`);
-    
-    // Get tutor details for the booking
-    db.collection('tutors').doc(tutorId).get()
-      .then(tutorDoc => {
-        if (!tutorDoc.exists) {
-          alert('Selected tutor not found. Please try again.');
-          return;
-        }
-        
- const tutor = tutorDoc.data();
+  e.preventDefault();
+  
+  const tutorId = document.getElementById('tutor').value;
+  const subject = document.getElementById('subject').value;
+  const date = document.getElementById('date').value;
+  const time = document.getElementById('time').value;
+  const duration = document.getElementById('duration').value;
+  const sessionType = document.getElementById('sessionType').value;
+  const notes = document.getElementById('notes').value;
+  
+  if (!tutorId || !subject || !date || !time) {
+    alert('Please fill in all required fields.');
+    return;
+  }
+  
+  // Combine date and time
+  const dateTime = new Date(`${date}T${time}`);
+  
+  // Get tutor details for the booking
+  db.collection('tutors').doc(tutorId).get()
+    .then((tutorDoc) => {
+      if (!tutorDoc.exists) {
+        alert('Selected tutor not found.');
+        return;
+      }
+      
+      const tutor = tutorDoc.data();
       const studentId = auth.currentUser.uid;
       const studentName = userData?.name || 'Unknown Student';
-
-// Generate a unique slot ID
+      
+      // Generate a unique slot ID
       const slotId = 'slot_' + Date.now();
-
-        
-        // Create booking with pending status
-        const bookingData = {
-          studentId: currentUser.uid,
-          studentName: userData.name || 'Unknown Student',
-          tutorId: tutorId,
-          tutorName: tutor.name || 'Unknown Tutor',
-          subject: subject,
-          date: dateTime,
-          duration: parseFloat(duration),
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending', // Set status to pending
-          createdAt: new Date(),
-          hourlyRate: tutor.hourlyRate || 0,
-          totalPrice: (tutor.hourlyRate || 0) * parseFloat(duration)
-        };
-        
-        // Add to Firestore
-        return db.collection('bookedSessions').add(bookingData);
+      
+      // Create booking in the bookedSessions collection
+      db.collection('bookedSessions').add({
+        slotId: slotId,
+        tutorId: tutorId,
+        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+        studentId: studentId,
+        studentName: studentName,
+        subject: subject,
+        date: dateTime,
+        duration: duration,
+        sessionType: sessionType,
+        notes: notes,
+        status: 'pending',
+        bookedAt: new Date(),
+        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
       })
       .then(() => {
-        alert('Session booked successfully! It is now pending approval from the tutor.');
+        alert('Session booked successfully! It is now pending confirmation from the tutor.');
         document.getElementById('schedulingForm').reset();
         document.getElementById('priceSummary').style.display = 'none';
+        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+        document.getElementById('subject').disabled = true;
       })
-      .catch(error => {
-        console.error('Error booking session:', error);
-        alert('There was an error booking your session. Please try again.');
+      .catch((error) => {
+        console.error('Error creating booking:', error);
+        alert('Failed to book session. Please try again.');
       });
-  });
-  
-  // Set up logout button
-  document.getElementById('logoutBtn').addEventListener('click', function() {
-    if (confirm('Are you sure you want to log out?')) {
-      auth.signOut().then(() => {
-        window.location.href = 'student-login.html';
-      });
-    }
-  });
+    })
+    .catch((error) => {
+      console.error('Error getting tutor details:', error);
+      alert('Failed to book session. Please try again.');
+    });
+});
   
   // Set up edit profile button
   document.getElementById('editProfileBtn').addEventListener('click', function() {
     const profileForm = document.getElementById('profileForm');
     if (profileForm.style.display === 'none') {
       profileForm.style.display = 'block';
-      document.getElementById('fullName').value = userData.name || '';
-      document.getElementById('email').value = currentUser.email || '';
-      document.getElementById('phone').value = userData.phone || '';
+      this.textContent = 'Cancel Edit';
     } else {
       profileForm.style.display = 'none';
+      this.textContent = 'Edit Profile';
     }
   });
   
@@ -1982,7 +1808,8 @@ function initDashboard() {
     }
     
     // Update user data in Firestore
-    db.collection('students').doc(currentUser.uid).update({
+    const userId = auth.currentUser.uid;
+    db.collection('students').doc(userId).update({
       name: name,
       phone: phone,
       updatedAt: new Date()
@@ -1990,17 +1817,27 @@ function initDashboard() {
     .then(() => {
       alert('Profile updated successfully!');
       document.getElementById('profileForm').style.display = 'none';
+      document.getElementById('editProfileBtn').textContent = 'Edit Profile';
       
-      // Update displayed profile info
-      document.getElementById('profileName').textContent = name;
+      // Update displayed user info
       document.getElementById('userName').textContent = name;
+      document.getElementById('profileName').textContent = name;
       userData.name = name;
       userData.phone = phone;
     })
-    .catch(error => {
+    .catch((error) => {
       console.error('Error updating profile:', error);
-      alert('There was an error updating your profile. Please try again.');
+      alert('Failed to update profile. Please try again.');
     });
+  });
+  
+  // Set up logout button
+  document.getElementById('logoutBtn').addEventListener('click', function() {
+    if (confirm('Are you sure you want to logout?')) {
+      auth.signOut().then(() => {
+        window.location.href = 'student-login.html';
+      });
+    }
   });
   
   // Set up mobile menu toggle
@@ -2009,9 +1846,13 @@ function initDashboard() {
   });
   
   // Load initial data
-  loadTutorsForScheduling();
   loadUserBookings();
+  loadUserSessionHistory();
   updateUserStats();
+  
+  // Start inactivity timer
+  resetInactivityTimer();
+  setupActivityListeners();
 }
 
 // Check authentication state
@@ -2026,19 +1867,19 @@ auth.onAuthStateChanged((user) => {
           userData = doc.data();
           
           // Update UI with user data
-          document.getElementById('userName').textContent = userData.name || 'Student';
-          document.getElementById('profileName').textContent = userData.name || 'Student';
+          document.getElementById('userName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileName').textContent = userData.name || 'Unknown User';
           document.getElementById('profileEmail').textContent = user.email;
+          document.getElementById('fullName').value = userData.name || '';
+          document.getElementById('email').value = user.email;
+          document.getElementById('phone').value = userData.phone || '';
           
           // Initialize the dashboard
           initDashboard();
-          
-          // Set up activity listeners for inactivity timeout
-          setupActivityListeners();
-          resetInactivityTimer();
         } else {
           console.error('No user data found');
-          alert('Error loading user data. Please try again.');
+          alert('Error loading user data. Please try logging in again.');
+          auth.signOut();
         }
       })
       .catch((error) => {
@@ -2046,7 +1887,7 @@ auth.onAuthStateChanged((user) => {
         alert('Error loading user data. Please try again.');
       });
   } else {
-    // Redirect to login if not authenticated
+    // User is not logged in, redirect to login page
     window.location.href = 'student-login.html';
   }
 });
