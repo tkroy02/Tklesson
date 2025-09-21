@@ -1260,18 +1260,51 @@ function loadBookings(snapshot) {
 function loadUserBookings() {
   if (!currentUser) return;
   
+  console.log("Loading bookings for user:", currentUser.uid);
+  
+  // Simpler query without ordering to avoid index requirements
   const bookingsRef = db.collection('bookedSessions')
-    .where('studentId', '==', currentUser.uid)
-    .orderBy('date', 'asc');
+    .where('studentId', '==', currentUser.uid);
   
   // Real-time listener for bookings
   bookingsRef.onSnapshot(snapshot => {
-    loadBookings(snapshot);
+    console.log("Bookings snapshot received:", snapshot.size, "items");
+    
+    if (snapshot.empty) {
+      console.log("No bookings found for this user");
+      document.getElementById('bookingsContainer').innerHTML = `
+        <div class="empty-state">
+          <i class="fas fa-calendar-times"></i>
+          <h3>No Bookings Yet</h3>
+          <p>You don't have any upcoming bookings. Schedule a session to get started!</p>
+        </div>
+      `;
+      updateUpcomingSessionsCount(0);
+      return;
+    }
+    
+    // Process the bookings and sort them locally
+    const bookings = [];
+    snapshot.forEach(doc => {
+      bookings.push({id: doc.id, ...doc.data()});
+    });
+    
+    // Sort by date locally instead of using Firestore ordering
+    bookings.sort((a, b) => {
+      const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date);
+      const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date);
+      return dateA - dateB;
+    });
+    
+    loadBookings({docs: bookings.map(booking => ({
+      id: booking.id,
+      data: () => booking
+    }))});
     
     // Update upcoming sessions count
-    const upcomingCount = snapshot.docs.filter(doc => {
-      const booking = doc.data();
-      return booking.status !== 'cancelled' && booking.date.toDate() > new Date();
+    const upcomingCount = bookings.filter(booking => {
+      const bookingDate = booking.date?.toDate ? booking.date.toDate() : new Date(booking.date);
+      return booking.status !== 'cancelled' && bookingDate > new Date();
     }).length;
     
     updateUpcomingSessionsCount(upcomingCount);
@@ -1282,12 +1315,13 @@ function loadUserBookings() {
         <i class="fas fa-exclamation-triangle"></i>
         <h3>Error Loading Bookings</h3>
         <p>There was a problem loading your bookings. Please try again later.</p>
+        <p>Error: ${error.message}</p>
       </div>
     `;
   });
 }
 
-// Load user's sessions history - UPDATED from Experiment 4
+// Modified loadSessionHistory function with simpler query
 function loadSessionHistory() {
   const container = document.getElementById('sessionsContainer');
   
@@ -1295,9 +1329,9 @@ function loadSessionHistory() {
   
   container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
   
+  // Simpler query without ordering to avoid index requirements
   const sessionsRef = db.collection('sessions')
     .where('studentId', '==', currentUser.uid)
-    .orderBy('date', 'desc')
     .limit(20);
   
   sessionsRef.get().then(snapshot => {
@@ -1306,11 +1340,23 @@ function loadSessionHistory() {
       return;
     }
     
+    // Process sessions and sort them locally
+    const sessions = [];
+    snapshot.forEach(doc => {
+      sessions.push({id: doc.id, ...doc.data()});
+    });
+    
+    // Sort by date locally instead of using Firestore ordering
+    sessions.sort((a, b) => {
+      const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date);
+      const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date);
+      return dateB - dateA; // Descending order for history
+    });
+    
     let html = '<table class="sessions-table"><thead><tr><th>Date</th><th>Tutor</th><th>Subject</th><th>Duration</th><th>Type</th></tr></thead><tbody>';
     
-    snapshot.forEach(doc => {
-      const session = doc.data();
-      const date = session.date.toDate();
+    sessions.forEach(session => {
+      const date = session.date?.toDate ? session.date.toDate() : new Date(session.date);
       const formattedDate = date.toLocaleDateString();
       
       html += `
@@ -1333,6 +1379,7 @@ function loadSessionHistory() {
         <i class="fas fa-exclamation-triangle"></i>
         <h3>Error Loading History</h3>
         <p>There was a problem loading your session history. Please try again later.</p>
+        <p>Error: ${error.message}</p>
       </div>
     `;
   });
