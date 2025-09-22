@@ -1192,31 +1192,83 @@ async function loadUserData(uid) {
 }
 
 // Load tutor-specific data
-        async function loadTutorData(uid) {
-            try {
-                const tutorDoc = await db.collection('tutors').doc(uid).get();
-                if (tutorDoc.exists) {
-                    const tutorData = tutorDoc.data();
-                    
-                    // Update availability toggle
-                    const availabilityToggle = document.getElementById('availabilityToggle');
-                    if (availabilityToggle) {
-                        availabilityToggle.checked = tutorData.available === true;
-                        updateAvailabilityLabel(tutorData.available);
-                    }
-                    
-                    // Update profile availability status
-                    const profileAvailabilityStatus = document.getElementById('profileAvailabilityStatus');
-                    if (profileAvailabilityStatus) {
-                        profileAvailabilityStatus.textContent = tutorData.available ? 'Available for sessions' : 'Not available';
-                        profileAvailabilityStatus.className = 'availability-status ' + 
-                            (tutorData.available ? 'status-available' : 'status-unavailable');
-                    }
-                }
-            } catch (error) {
-                console.error("Error loading tutor data:", error);
+async function loadTutorData(uid) {
+    try {
+        const tutorDoc = await db.collection('tutors').doc(uid).get();
+        if (tutorDoc.exists) {
+            const tutorData = tutorDoc.data();
+            
+            // Update availability toggle
+            const availabilityToggle = document.getElementById('availabilityToggle');
+            if (availabilityToggle) {
+                availabilityToggle.checked = tutorData.available === true;
+                updateAvailabilityLabel(tutorData.available);
             }
+            
+            // Update profile availability status
+            const profileAvailabilityStatus = document.getElementById('profileAvailabilityStatus');
+            if (profileAvailabilityStatus) {
+                profileAvailabilityStatus.textContent = tutorData.available ? 'Available for sessions' : 'Not available';
+                profileAvailabilityStatus.className = 'availability-status ' + 
+                    (tutorData.available ? 'status-available' : 'status-unavailable');
+            }
+            
+            // Load upcoming sessions
+            const sessionsSnapshot = await db.collection('bookedSessions')
+                .where('tutorId', '==', uid)
+                .where('status', 'in', ['pending', 'confirmed'])
+                .orderBy('date', 'asc')
+                .get();
+            
+            updateUpcomingSessionsCount(sessionsSnapshot.size);
+            loadBookings(sessionsSnapshot);
+            
+            // Load students who have booked sessions with this tutor
+            const studentIds = new Set();
+            sessionsSnapshot.forEach(doc => {
+                const booking = doc.data();
+                if (booking.userId) {
+                    studentIds.add(booking.userId);
+                }
+            });
+            
+            // Convert Set to Array for querying
+            const studentIdsArray = Array.from(studentIds);
+            
+            if (studentIdsArray.length > 0) {
+                const studentsSnapshot = await db.collection('tutors')
+                    .where('role', '==', 'student')
+                    .where(firebase.firestore.FieldPath.documentId(), 'in', studentIdsArray)
+                    .get();
+                
+                loadStudents(studentsSnapshot);
+                document.getElementById('activeStudentsCount').textContent = studentsSnapshot.size;
+            } else {
+                document.getElementById('activeStudentsCount').textContent = '0';
+                document.getElementById('studentsContainer').innerHTML = '<p>You have no students yet.</p>';
+            }
+            
+            // Load session history
+            const historySnapshot = await db.collection('bookings')
+                .where('tutorId', '==', uid)
+                .where('status', 'in', ['completed', 'cancelled'])
+                .orderBy('date', 'desc')
+                .get();
+            
+            loadSessionHistory(historySnapshot);
+            
+            // Load earnings based on actual completed sessions
+            const completedSessions = await db.collection('bookings')
+                .where('tutorId', '==', uid)
+                .where('status', '==', 'completed')
+                .get();
+            
+            loadEarnings(uid, completedSessions);
         }
+    } catch (error) {
+        console.error("Error loading tutor data:", error);
+    }
+}
 
       // Update UI with user data
 function updateUIWithUserData() {
