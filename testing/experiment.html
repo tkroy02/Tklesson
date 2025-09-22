@@ -273,36 +273,6 @@ body {
   background: var(--primary-dark);
 }
 
-.status-cancelled {
-  background: rgba(230, 57, 70, 0.1);
-  color: var(--error);
-}
-
-.status-reschedule-requested {
-  background: rgba(255, 193, 7, 0.1);
-  color: var(--warning);
-}
-
-/* Style for session history tabs */
-#sessions .tabs {
-  border-bottom: 1px solid var(--gray-light);
-  margin-bottom: 20px;
-}
-
-#sessions .tab {
-  padding: 10px 20px;
-  cursor: pointer;
-  font-weight: 500;
-  color: var(--gray);
-  transition: var(--transition);
-  border-bottom: 2px solid transparent;
-}
-
-#sessions .tab.active {
-  color: var(--primary);
-  border-bottom: 2px solid var(--primary);
-}
-  
 /* Stats Container */
 .stats-container {
   display: grid;
@@ -628,17 +598,6 @@ body {
 
 .btn-danger:hover {
     background: #c53030;
-}
-
-
-.status-cancelled {
-  background: rgba(230, 57, 70, 0.1);
-  color: var(--error);
-}
-
-.status-rescheduled {
-  background: rgba(255, 193, 7, 0.1);
-  color: var(--warning);
 }
 
 
@@ -1195,7 +1154,15 @@ body {
     </div>
     
     <!-- Add filter for reschedule requests -->
-<!-- Session history will now show tabs instead of dropdown filter -->
+    <div style="margin-bottom: 20px;">
+        <label>Filter by:</label>
+        <select id="bookingFilter" class="form-control" style="width: 200px;">
+            <option value="all">All Bookings</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="reschedule">Reschedule Requests</option>
+            <option value="pending">Pending</option>
+        </select>
+    </div>
     
     <div id="bookingsContainer">
         <p>Loading your bookings...</p>
@@ -1759,6 +1726,7 @@ function loadSessionHistory(snapshot) {
       <thead>
         <tr>
           <th>Date</th>
+          <th>Time</th>
           <th>Tutor</th>
           <th>Subject</th>
           <th>Duration</th>
@@ -1772,10 +1740,12 @@ function loadSessionHistory(snapshot) {
     const session = doc.data();
     const date = session.date.toDate();
     const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
       <tr>
         <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
         <td>${session.subject || 'No subject'}</td>
         <td>${session.duration || '1'} hours</td>
@@ -1790,6 +1760,38 @@ function loadSessionHistory(snapshot) {
   `;
   
   container.innerHTML = html;
+}
+
+// Also update the appendSessionHistory function
+function appendSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (snapshot.empty) {
+    return;
+  }
+  
+  let html = '';
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+      </tr>
+    `;
+  });
+  
+  // Append to existing table
+  const tbody = container.querySelector('tbody');
+  tbody.innerHTML += html;
 }
 
 // Load tutors for scheduling - UPDATED VERSION
@@ -2097,252 +2099,147 @@ function loadUserBookings() {
 let lastVisible = null;
 let isFirstLoad = true;
 
-// Load session history from bookedSessions collection
 function loadUserSessionHistory(loadMore = false) {
-  const userId = auth.currentUser.uid;
-  const container = document.getElementById('sessionsContainer');
-  
-  console.log('Loading session history from bookedSessions...');
-  
-  // Show loading spinner only on first load
-  if (!loadMore) {
-    container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-  }
-
-  // Get ALL sessions (past and future) for history, ordered by date
-  let query = db.collection('bookedSessions')
-    .where('studentId', '==', userId)
-    .orderBy('date', 'desc')
-    .limit(20);
-
-  query.get().then((querySnapshot) => {
-    console.log('Sessions found in bookedSessions:', querySnapshot.size);
-    displaySessionHistoryFromBookings(querySnapshot);
-    
-  }).catch((error) => {
-    console.error('Error loading session history:', error);
-    container.innerHTML = `
-      <div class="error-state">
-        <i class="fas fa-exclamation-circle"></i>
-        <h3>Error Loading History</h3>
-        <p>Failed to load session history. Please try again later.</p>
-        <p><small>Error: ${error.message}</small></p>
-      </div>
-    `;
-  });
-}
-
-// Display session history from bookedSessions
-function displaySessionHistoryFromBookings(snapshot) {
-  const container = document.getElementById('sessionsContainer');
-  const now = new Date();
-  
-  if (snapshot.empty) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <i class="fas fa-history"></i>
-        <h3>No Session History</h3>
-        <p>You haven't booked any sessions yet.</p>
-      </div>
-    `;
-    document.getElementById('loadMoreBtn').style.display = 'none';
+  // If this is not a "load more" action and data is already loaded, return
+  if (!loadMore && sessionsDataLoaded) {
     return;
   }
   
-  // Separate past and future sessions
-  const pastSessions = [];
-  const futureSessions = [];
-  
-  snapshot.forEach(doc => {
-    const session = doc.data();
-    const sessionDate = session.date.toDate();
-    
-    if (sessionDate < now) {
-      pastSessions.push({ id: doc.id, ...session });
-    } else {
-      futureSessions.push({ id: doc.id, ...session });
+  const userId = auth.currentUser.uid;
+  let query = db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc')
+    .limit(10);
+
+  if (loadMore && lastVisible) {
+    query = query.startAfter(lastVisible);
+  }
+
+  query.get().then((querySnapshot) => {
+    if (!querySnapshot.empty) {
+      lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
     }
+    
+    if (isFirstLoad || loadMore) {
+      if (loadMore) {
+        appendSessionHistory(querySnapshot);
+      } else {
+        loadSessionHistory(querySnapshot);
+        sessionsDataLoaded = true; // Mark as loaded
+      }
+      isFirstLoad = false;
+    }
+    
+    // Show/hide load more button
+    document.getElementById('loadMoreBtn').style.display = 
+      querySnapshot.docs.length === 10 ? 'block' : 'none';
   });
-  
-  let html = `
-    <div class="section-header">
-      <h4><i class="fas fa-history"></i> Session History</h4>
-    </div>
-    
-    <div class="tabs" style="margin-bottom: 20px;">
-      <div class="tab active" data-tab="past-sessions">Past Sessions (${pastSessions.length})</div>
-      <div class="tab" data-tab="upcoming-sessions">Upcoming Sessions (${futureSessions.length})</div>
-    </div>
-    
-    <div class="tab-content active" id="past-sessions-tab">
-  `;
-  
-  // Display past sessions
-  if (pastSessions.length === 0) {
-    html += `
-      <div class="empty-state">
-        <i class="fas fa-clock"></i>
-        <h3>No Past Sessions</h3>
-        <p>You haven't completed any sessions yet.</p>
-      </div>
-    `;
-  } else {
-    html += `
-      <table class="sessions-table">
-        <thead>
-          <tr>
-            <th>Date & Time</th>
-            <th>Tutor</th>
-            <th>Subject</th>
-            <th>Duration</th>
-            <th>Type</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-    
-    pastSessions.forEach(session => {
-      const date = session.date.toDate();
-      const formattedDate = date.toLocaleDateString();
-      const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-      
-      // Determine status for past sessions
-      let statusClass = 'status-verified'; // Assume completed for past sessions
-      let statusText = 'Completed';
-      
-      if (session.status === 'cancelled') {
-        statusClass = 'status-cancelled';
-        statusText = 'Cancelled';
-      } else if (session.status === 'reschedule_requested') {
-        statusClass = 'status-reschedule-requested';
-        statusText = 'Rescheduled';
-      }
-      
-      html += `
-        <tr>
-          <td>
-            <strong>${formattedDate}</strong><br>
-            <small>${formattedTime}</small>
-          </td>
-          <td>${session.tutorName || 'Unknown Tutor'}</td>
-          <td>${session.subject || 'No subject'}</td>
-          <td>${session.duration || '1'} hour(s)</td>
-          <td>${session.sessionType === 'in-person' ? 'In-Person' : 'Online'}</td>
-          <td><span class="status-badge ${statusClass}">${statusText}</span></td>
-        </tr>
-      `;
-    });
-    
-    html += `
-        </tbody>
-      </table>
-    `;
-  }
-  
-  html += `</div><div class="tab-content" id="upcoming-sessions-tab">`;
-  
-  // Display future sessions
-  if (futureSessions.length === 0) {
-    html += `
-      <div class="empty-state">
-        <i class="fas fa-calendar-plus"></i>
-        <h3>No Upcoming Sessions</h3>
-        <p>You don't have any upcoming sessions scheduled.</p>
-      </div>
-    `;
-  } else {
-    html += `
-      <table class="sessions-table">
-        <thead>
-          <tr>
-            <th>Date & Time</th>
-            <th>Tutor</th>
-            <th>Subject</th>
-            <th>Duration</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-    
-    futureSessions.forEach(session => {
-      const date = session.date.toDate();
-      const formattedDate = date.toLocaleDateString();
-      const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-      
-      // Determine status for future sessions
-      let statusClass = 'status-pending';
-      let statusText = session.status || 'Scheduled';
-      
-      if (session.status === 'confirmed') {
-        statusClass = 'status-verified';
-        statusText = 'Confirmed';
-      } else if (session.status === 'reschedule_requested') {
-        statusClass = 'status-reschedule-requested';
-        statusText = 'Reschedule Requested';
-      }
-      
-      html += `
-        <tr>
-          <td>
-            <strong>${formattedDate}</strong><br>
-            <small>${formattedTime}</small>
-          </td>
-          <td>${session.tutorName || 'Unknown Tutor'}</td>
-          <td>${session.subject || 'No subject'}</td>
-          <td>${session.duration || '1'} hour(s)</td>
-          <td>${session.sessionType === 'in-person' ? 'In-Person' : 'Online'}</td>
-          <td><span class="status-badge ${statusClass}">${statusText}</span></td>
-          <td>
-            <button class="btn-outline" onclick="cancelBooking('${session.id}')" style="padding: 4px 8px; font-size: 12px;">Cancel</button>
-          </td>
-        </tr>
-      `;
-    });
-    
-    html += `
-        </tbody>
-      </table>
-    `;
-  }
-  
-  html += `</div>`;
-  
-  container.innerHTML = html;
-  
-  // Add tab functionality
-  setupSessionHistoryTabs();
-  
-  document.getElementById('loadMoreBtn').style.display = 'none';
 }
 
-// Setup tabs for session history
-function setupSessionHistoryTabs() {
-  document.querySelectorAll('#sessions .tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-    // Update active tab
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    this.classList.add('active');
-    
-    // Show the corresponding tab content
-    const tabId = this.getAttribute('data-tab');
-    document.querySelectorAll('.tab-content').forEach(content => {
-      content.classList.remove('active');
+// Add this function for manual refresh when needed
+function refreshSessionsHistory() {
+  sessionsDataLoaded = false;
+  isFirstLoad = true;
+  lastVisible = null;
+  loadUserSessionHistory();
+}
+
+
+// Update user stats
+function updateUserStats() {
+  const userId = auth.currentUser.uid;
+  
+  // Count tutors (this is a simplified version)
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      const tutorIds = [];
+      let totalHours = 0;
+      
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+        totalHours += parseFloat(session.duration) || 1;
+      });
+      
+      document.getElementById('tutorsCount').textContent = tutorIds.length;
+      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
+    })
+    .catch((error) => {
+      console.error('Error loading stats:', error);
     });
-    document.getElementById(`${tabId}-tab`).classList.add('active');
-    
-    // Show search only for available tutors
-    const searchContainer = document.getElementById('tutorSearchContainer');
-    if (tabId === 'available-tutors') {
-      searchContainer.style.display = 'block';
-    } else {
-      searchContainer.style.display = 'none';
-    }
-  }); // ← This closing parenthesis was likely missing
-}); // ← Make sure this closing brace is present
+}
+
+// Initialize the dashboard
+function initDashboard() {
+  // Set up navigation
+  document.querySelectorAll('.menu-item a').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.preventDefault();
+      
+      // Update active menu item
+      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+      this.classList.add('active');
+      
+      // Show the corresponding section
+      const sectionId = this.getAttribute('data-section');
+      document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
+      });
+      document.getElementById(sectionId).classList.add('active');
+
+      // Load specific data based on the section - ONLY if not already loaded
+      if (sectionId === 'scheduling') {
+        loadTutorsForScheduling();
+      } else if (sectionId === 'tutors') {
+        // Load both my tutors and available tutors when the tutors section is opened
+        if (!tutorsLoaded) {
+          loadMyTutors();
+          loadAvailableTutors();
+          tutorsLoaded = true;
+        }
+      } else if (sectionId === 'bookings') {
+        if (!bookingsLoaded) {
+          loadUserBookings();
+          bookingsLoaded = true;
+        }
+      } else if (sectionId === 'sessions') {
+        // Only load sessions history on first visit to the tab
+        if (!sessionsLoaded) {
+          loadUserSessionHistory();
+          sessionsLoaded = true;
+        }
+      }
+    });
+  });
+  
+  // Set up tabs in the tutors section
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      // Update active tab
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      
+      // Show the corresponding tab content
+      const tabId = this.getAttribute('data-tab');
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      document.getElementById(`${tabId}-tab`).classList.add('active');
+      
+      // Show search only for available tutors
+      const searchContainer = document.getElementById('tutorSearchContainer');
+      if (tabId === 'available-tutors') {
+        searchContainer.style.display = 'block';
+      } else {
+        searchContainer.style.display = 'none';
+      }
+    });
+  });
   
   // Set up tutor selection change event
   document.getElementById('tutor').addEventListener('change', function() {
@@ -2630,101 +2527,23 @@ auth.onAuthStateChanged((user) => {
           document.getElementById('email').value = user.email;
           document.getElementById('phone').value = userData.phone || '';
           
-// Initialize the dashboard
-function initDashboard() {
-  console.log('Initializing dashboard...');
-  
-  // Setup real-time listener for reschedule requests
-  setupRescheduleListener();
-  
-  // Start inactivity timer
-  resetInactivityTimer();
-  setupActivityListeners();
-  
-  // Setup all event listeners and UI components
-  setupDashboardEventListeners();
-}
-
-// Setup all dashboard event listeners
-function setupDashboardEventListeners() {
-  // Set up sidebar navigation
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-      e.preventDefault();
-      
-      // Remove active class from all menu items
-      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-      
-      // Add active class to clicked item
-      this.classList.add('active');
-      
-      // Hide all sections
-      document.querySelectorAll('.dashboard-section').forEach(section => {
-        section.classList.remove('active');
+          // Initialize the dashboard
+          initDashboard();
+        } else {
+          console.error('No user data found');
+          alert('Error loading user data. Please try logging in again.');
+          auth.signOut();
+        }
+      })
+      .catch((error) => {
+        console.error('Error getting user data:', error);
+        alert('Error loading user data. Please try again.');
       });
-      
-      // Show selected section
-      const sectionId = this.getAttribute('data-section');
-      document.getElementById(sectionId).classList.add('active');
-      
-      // Update page title based on section
-      updatePageTitle(sectionId);
-    });
-  });
-  
-  // Set up tutor tabs
-  document.querySelectorAll('#tutors .tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-      // Update active tab
-      document.querySelectorAll('#tutors .tab').forEach(t => t.classList.remove('active'));
-      this.classList.add('active');
-      
-      // Show the corresponding tab content
-      const tabId = this.getAttribute('data-tab');
-      document.querySelectorAll('#tutors .tab-content').forEach(content => {
-        content.classList.remove('active');
-      });
-      document.getElementById(`${tabId}-tab`).classList.add('active');
-      
-      // Show search only for available tutors
-      const searchContainer = document.getElementById('tutorSearchContainer');
-      if (tabId === 'available-tutors') {
-        searchContainer.style.display = 'block';
-        loadAvailableTutors();
-      } else {
-        searchContainer.style.display = 'none';
-        loadMyTutors();
-      }
-    });
-  });
-}
-
-// Update page title based on current section
-function updatePageTitle(sectionId) {
-  const titleMap = {
-    'profile': 'Profile Information',
-    'scheduling': 'New Booking', 
-    'tutors': 'Find Tutors',
-    'bookings': 'My Bookings',
-    'sessions': 'Sessions History'
-  };
-  
-  const pageTitle = document.querySelector('.page-title h2');
-  if (pageTitle && titleMap[sectionId]) {
-    pageTitle.textContent = titleMap[sectionId];
+  } else {
+    // User is not logged in, redirect to login page
+    window.location.href = 'student-login.html';
   }
-}
-
-// Update user stats function (you'll need to implement this)
-function updateUserStats() {
-  // This should query Firestore to get actual stats
-  const userId = auth.currentUser.uid;
-  
-  // Placeholder implementation - replace with actual data queries
-  document.getElementById('upcomingSessionsCount').textContent = '0';
-  document.getElementById('tutorsCount').textContent = '0'; 
-  document.getElementById('hoursLearned').textContent = '0';
-}
+});
   
 </script>
 </body>
