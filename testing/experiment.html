@@ -1391,96 +1391,158 @@
             document.getElementById('upcomingSessionsCount').textContent = count;
         }
 
-        // Load bookings
-        function loadBookings(snapshot) {
-            const bookingsContainer = document.getElementById('bookingsContainer');
-            
-            if (snapshot.empty) {
-                bookingsContainer.innerHTML = '<p>You have no upcoming bookings.</p>';
-                return;
+// Load bookings - CLEAN CORRECT VERSION
+async function loadBookings(snapshot) {
+    const bookingsContainer = document.getElementById('bookingsContainer');
+    
+    if (snapshot.empty) {
+        bookingsContainer.innerHTML = '<p>You have no upcoming bookings.</p>';
+        return;
+    }
+    
+    let bookingsHTML = '';
+    
+    // Process each booking and fetch student details
+    for (const doc of snapshot.docs) {
+        const booking = doc.data();
+        booking.id = doc.id;
+        
+        console.log('Booking data:', booking); // Debug: check what fields exist
+        
+        // Fetch student name from student document
+        let studentName = 'Student';
+        if (booking.studentId && booking.studentId !== "students") {
+            try {
+                const studentDoc = await db.collection('students').doc(booking.studentId).get();
+                if (studentDoc.exists) {
+                    const studentData = studentDoc.data();
+                    studentName = studentData.fullName || 'Student';
+                }
+            } catch (error) {
+                console.error("Error loading student data:", error);
             }
-            
-            let bookingsHTML = '';
-            snapshot.forEach(doc => {
-                const booking = doc.data();
-                bookingsHTML += createBookingCard(booking);
-            });
-            
-            bookingsContainer.innerHTML = bookingsHTML;
         }
+        
+        // Create the booking card HTML
+        bookingsHTML += createBookingCard(booking, studentName);
+    }
+    
+    bookingsContainer.innerHTML = bookingsHTML;
+    
+    // Add event listeners to action buttons
+    setTimeout(() => {
+        addBookingActionListeners();
+    }, 100);
+}
 
-        // Create booking card HTML
-        function createBookingCard(booking) {
-            const date = booking.date.toDate();
-            const formattedDate = date.toLocaleDateString();
-            const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            
-            return `
-                <div class="session-card">
-                    <div class="session-header">
-                        <div class="session-title">${booking.subject} Session with ${booking.userName}</div>
-                        <div class="session-date">${formattedDate}, ${formattedTime}</div>
-                    </div>
-                    <div class="session-details">
-                        <div class="session-detail">
-                            <i class="fas fa-user"></i> Student: ${booking.userName}
-                        </div>
-                        <div class="session-detail">
-                            <i class="fas ${booking.location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
-                            ${booking.location === 'online' ? 'Online (Google Meet)' : booking.location}
-                        </div>
-                    </div>
-                    <div class="session-actions">
-                        ${booking.location === 'online' ? 
-                            `<button class="btn-primary join-session-btn" data-meet-link="${booking.meetLink || '#'}">Join Session</button>` : 
-                            ''}
-                        <button class="btn-outline reschedule-btn">Reschedule</button>
-                        <button class="btn-outline cancel-booking-btn">Cancel</button>
-                    </div>
+// Create booking card HTML - SEPARATE FUNCTION (not nested!)
+function createBookingCard(booking, studentName) {
+    const date = booking.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Use the provided studentName and booking data
+    const subject = booking.subject || 'General Tutoring';
+    const location = booking.location || booking.sessionType || 'online';
+    const meetLink = booking.meetLink || '#';
+    
+    return `
+        <div class="session-card">
+            <div class="session-header">
+                <div class="session-title">${subject} Session with ${studentName}</div>
+                <div class="session-date">${formattedDate}, ${formattedTime}</div>
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user"></i> Student: ${studentName}
                 </div>
-            `;
-        }
+                <div class="session-detail">
+                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    ${location === 'online' ? 'Online (Google Meet)' : location}
+                </div>
+            </div>
+            <div class="session-actions">
+                ${location === 'online' ? 
+                    `<button class="btn-primary join-session-btn" data-meet-link="${meetLink}">Join Session</button>` : 
+                    ''}
+                <button class="btn-outline reschedule-btn">Reschedule</button>
+                <button class="btn-outline cancel-booking-btn">Cancel</button>
+            </div>
+        </div>
+    `;
+}
 
-        // Load students
-        function loadStudents(snapshot) {
-            const studentsContainer = document.getElementById('studentsContainer');
-            
-            if (snapshot.empty) {
-                studentsContainer.innerHTML = '<p>You have no students yet.</p>';
-                return;
+// Load students - SEPARATE FUNCTION (not nested!)
+function loadStudents(snapshot) {
+    const studentsContainer = document.getElementById('studentsContainer');
+    
+    if (snapshot.empty) {
+        studentsContainer.innerHTML = '<p>You have no students yet.</p>';
+        return;
+    }
+    
+    let studentsHTML = '<div class="tutors-container">';
+    snapshot.forEach(doc => {
+        const student = doc.data();
+        studentsHTML += createStudentCard(student);
+    });
+    studentsHTML += '</div>';
+    
+    studentsContainer.innerHTML = studentsHTML;
+}
+
+// Create student card HTML - SEPARATE FUNCTION (not nested!)
+function createStudentCard(student) {
+    return `
+        <div class="tutor-card">
+            <div class="tutor-header">
+                <div class="tutor-avatar">
+                    <i class="fas fa-user-graduate"></i>
+                </div>
+                <div class="tutor-name">${getUserDisplayInfo(student, null, 'Student').name}</div>
+                <div class="tutor-subject">${getUserDisplayInfo(student, null, 'Student').role}</div>
+            </div>
+            <div class="tutor-details">
+                <p><i class="fas fa-envelope"></i> ${student.email}</p>
+                <p><i class="fas fa-phone"></i> ${student.phone || 'Not provided'}</p>
+                <p><i class="fas fa-book"></i> Subjects: ${student.subjects ? student.subjects.join(', ') : 'Not specified'}</p>
+            </div>
+        </div>
+    `;
+}
+
+// Add event listeners to booking action buttons - SEPARATE FUNCTION
+function addBookingActionListeners() {
+    // Join session buttons
+    document.querySelectorAll('.join-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const meetLink = this.getAttribute('data-meet-link');
+            if (meetLink && meetLink !== '#') {
+                window.open(meetLink, '_blank');
+            } else {
+                alert('Meeting link not available');
             }
-            
-            let studentsHTML = '<div class="tutors-container">';
-            snapshot.forEach(doc => {
-                const student = doc.data();
-                studentsHTML += createStudentCard(student);
-            });
-            studentsHTML += '</div>';
-            
-            studentsContainer.innerHTML = studentsHTML;
-        }
-
-        // Create student card HTML
-        function createStudentCard(student) {
-            return `
-                <div class="tutor-card">
-                    <div class="tutor-header">
-                        <div class="tutor-avatar">
-                            <i class="fas fa-user-graduate"></i>
-                        </div>
-                        <div class="tutor-name">${getUserDisplayInfo(student, null, 'Student').name}</div>
-                        <div class="tutor-subject">${getUserDisplayInfo(student, null, 'Student').role}</div>
-                    </div>
-                    <div class="tutor-details">
-                        <p><i class="fas fa-envelope"></i> ${student.email}</p>
-                        <p><i class="fas fa-phone"></i> ${student.phone || 'Not provided'}</p>
-                        <p><i class="fas fa-book"></i> Subjects: ${student.subjects ? student.subjects.join(', ') : 'Not specified'}</p>
-                    </div>
-                </div>
-            `;
-        }
-
-        // Load session history
+        });
+    });
+    
+    // Reschedule buttons
+    document.querySelectorAll('.reschedule-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            alert('Reschedule functionality coming soon!');
+        });
+    });
+    
+    // Cancel buttons
+    document.querySelectorAll('.cancel-booking-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (confirm('Are you sure you want to cancel this booking?')) {
+                alert('Cancel booking functionality coming soon!');
+            }
+        });
+    });
+}
+  
+      // Load session history
         function loadSessionHistory(snapshot) {
             const sessionsContainer = document.getElementById('sessionsContainer');
             
