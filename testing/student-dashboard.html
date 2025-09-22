@@ -1250,6 +1250,45 @@ function updateUpcomingSessionsCount(count) {
   document.getElementById('upcomingSessionsCount').textContent = count;
 }
 
+// FIXED: Get proposed time from rescheduleRequests collection
+async function getProposedTime(bookingId) {
+    try {
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            const newDate = request.requestedDate.toDate();
+            return newDate.toLocaleString();
+        }
+        return 'Not specified';
+    } catch (error) {
+        console.error('Error getting proposed time:', error);
+        return 'Not specified';
+    }
+}
+
+// FIXED: Get reason from rescheduleRequests collection  
+async function getRescheduleReason(bookingId) {
+    try {
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            return request.reason || 'No reason provided';
+        }
+        return 'No reason provided';
+    } catch (error) {
+        console.error('Error getting reschedule reason:', error);
+        return 'No reason provided';
+    }
+}
+
 // Load bookings
 function loadBookings(snapshot) {
     const container = document.getElementById('bookingsContainer');
@@ -1260,6 +1299,8 @@ function loadBookings(snapshot) {
     }
     
     let html = '';
+    const bookingPromises = [];
+    
     snapshot.forEach(doc => {
         const booking = doc.data();
         const date = booking.date.toDate();
@@ -1299,11 +1340,11 @@ function loadBookings(snapshot) {
                     ${hasRescheduleRequest ? `
                     <div class="session-detail">
                         <i class="fas fa-info-circle"></i>
-                        <span>New Time Proposed: ${getProposedTime(booking)}</span>
+                        <span>New Time Proposed: <span id="proposedTime-${doc.id}">Loading...</span></span>
                     </div>
                     <div class="session-detail">
                         <i class="fas fa-comment"></i>
-                        <span>Reason: ${booking.rescheduleReason || 'No reason provided'}</span>
+                        <span>Reason: <span id="rescheduleReason-${doc.id}">Loading...</span></span>
                     </div>
                     ` : ''}
                 </div>
@@ -1321,10 +1362,69 @@ function loadBookings(snapshot) {
                 </div>
             </div>
         `;
+        
+        // Store promise for loading reschedule data if needed
+        if (hasRescheduleRequest) {
+            bookingPromises.push(loadRescheduleData(doc.id));
+        }
     });
 
     container.innerHTML = html;
     
+    // Load reschedule data for all bookings that need it
+    Promise.all(bookingPromises).then(() => {
+        console.log('All reschedule data loaded');
+    }).catch(error => {
+        console.error('Error loading reschedule data:', error);
+    });
+    
+    // Add filter functionality
+    setupBookingFilter();
+}
+
+// Helper function to load reschedule data from rescheduleRequests collection
+async function loadRescheduleData(bookingId) {
+    try {
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            const newDate = request.requestedDate.toDate();
+            const proposedTime = newDate.toLocaleString();
+            const reason = request.reason || 'No reason provided';
+            
+            // Update the UI elements
+            const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+            const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+            
+            if (proposedTimeElement) proposedTimeElement.textContent = proposedTime;
+            if (reasonElement) reasonElement.textContent = reason;
+        } else {
+            // No reschedule request found, show default values
+            const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+            const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+            
+            if (proposedTimeElement) proposedTimeElement.textContent = 'Not specified';
+            if (reasonElement) reasonElement.textContent = 'No reason provided';
+        }
+    } catch (error) {
+        console.error('Error loading reschedule data:', error);
+        
+        // Show error state
+        const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+        const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+        
+        if (proposedTimeElement) proposedTimeElement.textContent = 'Error loading';
+        if (reasonElement) reasonElement.textContent = 'Error loading';
+    }
+}
+
+
+// Remove the old getProposedTime function since we're not using it anymore    
+
     // Add filter functionality
     setupBookingFilter();
 }
