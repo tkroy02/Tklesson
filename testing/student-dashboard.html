@@ -1473,27 +1473,37 @@ async function acceptReschedule(bookingId) {
     if (!confirm('Are you sure you want to accept the new session time?')) return;
     
     try {
-        // First, get the reschedule request to get the proposed date
+        // Get current booking and reschedule request
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
         const rescheduleQuery = await db.collection('rescheduleRequests')
             .where('sessionId', '==', bookingId)
             .where('status', '==', 'pending')
             .get();
             
-        if (rescheduleQuery.empty) {
-            alert('Reschedule request not found.');
+        if (!bookingDoc.exists || rescheduleQuery.empty) {
+            alert('Booking or reschedule request not found.');
             return;
         }
         
+        const booking = bookingDoc.data();
         const rescheduleRequest = rescheduleQuery.docs[0].data();
         const newDate = rescheduleRequest.requestedDate;
         
-        // Update the booking with new date/time from the reschedule request
+        // Save the original date for history before updating
+        const originalDate = booking.date;
+        
+        // Update the booking with new date/time
         await db.collection('bookedSessions').doc(bookingId).update({
-            date: newDate, // Use the date from the reschedule request
+            date: newDate,
             status: 'confirmed',
             rescheduleStatus: 'accepted',
-            rescheduleRespondedAt: new Date()
+            rescheduleRespondedAt: new Date(),
+            previousDate: originalDate, // Store original for history
+            rescheduleAccepted: true
         });
+        
+        // Also update in sessions history if it exists
+        await updateSessionHistory(bookingId, newDate, originalDate);
         
         // Update the reschedule request status
         await updateRescheduleRequest(bookingId, 'accepted');
@@ -1507,6 +1517,50 @@ async function acceptReschedule(bookingId) {
     }
 }
 
+// Helper function to update session history
+async function updateSessionHistory(bookingId, newDate, originalDate) {
+    try {
+        // Check if this session exists in history
+        const sessionQuery = await db.collection('sessions')
+            .where('bookingId', '==', bookingId)
+            .get();
+            
+        if (!sessionQuery.empty) {
+            // Update existing session record
+            const sessionDoc = sessionQuery.docs[0];
+            await db.collection('sessions').doc(sessionDoc.id).update({
+                date: newDate,
+                originalDate: originalDate,
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date()
+            });
+        } else {
+            // Create a new session history record
+            const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+            const booking = bookingDoc.data();
+            
+            await db.collection('sessions').add({
+                bookingId: bookingId,
+                tutorId: booking.tutorId,
+                tutorName: booking.tutorName,
+                studentId: booking.studentId,
+                studentName: booking.studentName,
+                subject: booking.subject,
+                date: newDate,
+                originalDate: originalDate,
+                duration: booking.duration,
+                sessionType: booking.sessionType,
+                status: 'rescheduled',
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date(),
+                createdAt: new Date()
+            });
+        }
+    } catch (error) {
+        console.error('Error updating session history:', error);
+        // Don't fail the whole operation if history update fails
+    }
+}
 
 // Decline reschedule request
 async function declineReschedule(bookingId) {
