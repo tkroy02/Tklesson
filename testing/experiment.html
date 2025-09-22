@@ -828,6 +828,7 @@
     </style>
 </head>
 <body>
+
     <!-- Your HTML content remains exactly the same -->
     <div class="menu-toggle" id="menuToggle">
         <i class="fas fa-bars"></i>
@@ -897,7 +898,8 @@
             </ul>
         </aside>
 
-        <main class="main-content">
+
+       <main class="main-content">
             <div class="top-bar">
                 <div class="page-title">
                     <h2>Dashboard</h2>
@@ -921,8 +923,9 @@
                 </div>
             </div>
 
-            
-            <div class="stats-container">
+
+
+<div class="stats-container">
                 <div class="stat-card">
                     <div class="stat-icon blue">
                         <i class="fas fa-calendar-check"></i>
@@ -946,7 +949,9 @@
                 </div>
             </div>
 
-            <section id="profile" class="dashboard-section active">
+
+
+<section id="profile" class="dashboard-section active">
                 <div class="section-header">
                     <h3><i class="fas fa-user-circle"></i> Profile Information</h3>
                 </div>
@@ -964,11 +969,12 @@
                     <button class="edit-profile-btn" id="editProfileBtn">Edit Profile</button>
                 </div>
 
-                <div class="section-header">
+
+ <div class="section-header">
                     <h3><i class="fas fa-cog"></i> Account Settings</h3>
                 </div>
 
-                <form id="profileForm" style="display: none;">
+<form id="profileForm" style="display: none;">
                     <div class="form-row">
                         <div class="form-group">
                             <label for="name">Full Name</label>
@@ -993,16 +999,240 @@
                 </form>
             </section>
 
-            <section id="tutoring-opportunities" class="dashboard-section">
-                <div class="section-header">
-                    <h3><i class="fas fa-calendar-alt"></i> Tutoring Opportunities</h3>
-                </div>
-                <div id="opportunitiesContainer">
-                    <p>Loading tutoring opportunities...</p>
-                </div>
-            </section>
 
-            <section id="my-students" class="dashboard-section">
+// Load tutoring opportunities (pending sessions)
+        async function loadTutoringOpportunities(tutorId) {
+            const container = document.getElementById('opportunitiesContainer');
+            container.innerHTML = '<div class="spinner" id="opportunitiesSpinner"></div>';
+            
+            try {
+                // Query sessions where this tutor is assigned and status is pending
+                const querySnapshot = await db.collection('bookedSessions')
+                    .where('tutorId', '==', tutorId)
+                    .where('status', '==', 'pending')
+                    .orderBy('date', 'asc')
+                    .get();
+                
+                pendingSessions = [];
+                let pendingCount = 0;
+                
+                container.innerHTML = '';
+                
+                if (querySnapshot.empty) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fas fa-calendar-times"></i>
+                            <h3>No Pending Sessions</h3>
+                            <p>You don't have any pending session requests at the moment.</p>
+                        </div>
+                    `;
+                    document.getElementById('pendingSessionsCount').textContent = '0';
+                    document.getElementById('pendingCount').textContent = '0';
+                    return;
+                }
+                
+                // Process each session
+                for (const doc of querySnapshot.docs) {
+                    const session = doc.data();
+                    session.id = doc.id;
+                    pendingSessions.push(session);
+                    
+                    // Get student details
+                    let studentData = {};
+                    try {
+                        const studentDoc = await db.collection('students').doc(session.studentId).get();
+                        if (studentDoc.exists) {
+                            studentData = studentDoc.data();
+                        }
+                    } catch (error) {
+                        console.error("Error loading student data:", error);
+                    }
+                    
+                    // Create session card
+                    const sessionCard = createSessionCard(session, studentData);
+                    container.appendChild(sessionCard);
+                    pendingCount++;
+                }
+                
+                // Update counts
+                document.getElementById('pendingSessionsCount').textContent = pendingCount;
+                document.getElementById('pendingCount').textContent = pendingCount;
+                
+            } catch (error) {
+                console.error("Error loading tutoring opportunities:", error);
+                container.innerHTML = `
+                    <div class="error-state">
+                        <i class="fas fa-exclamation-circle"></i>
+                        <h3>Error Loading Opportunities</h3>
+                        <p>Failed to load tutoring opportunities. Please try again.</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Create session card HTML
+        function createSessionCard(session, studentData) {
+            const date = session.date.toDate();
+            const formattedDate = date.toLocaleDateString();
+            const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            
+            const card = document.createElement('div');
+            card.className = 'session-card';
+            card.id = `session-${session.id}`;
+            
+            card.innerHTML = `
+                <div class="session-header">
+                    <div class="session-title">${session.subject} Session Request</div>
+                    <div class="session-date">${formattedDate}, ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-graduate"></i> Student: ${studentData.fullName || 'Unknown Student'}
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-book"></i> Subject: ${session.subject || 'No subject'}
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i> Duration: ${session.duration || '1.5'} hours
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas ${session.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                        ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-dollar-sign"></i> Rate: $${session.hourlyRate || '40'}/hour
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-sticky-note"></i> Notes: ${session.notes || 'No notes provided'}
+                    </div>
+                </div>
+                <div class="session-actions">
+                    <button class="btn-success confirm-btn" data-session-id="${session.id}">
+                        <i class="fas fa-check"></i> Confirm
+                    </button>
+                    <button class="btn-danger reject-btn" data-session-id="${session.id}">
+                        <i class="fas fa-times"></i> Reject
+                    </button>
+                </div>
+            `;
+            
+            // Add event listeners to buttons
+            setTimeout(() => {
+                const confirmBtn = card.querySelector('.confirm-btn');
+                const rejectBtn = card.querySelector('.reject-btn');
+                
+                confirmBtn.addEventListener('click', () => confirmSession(session.id));
+                rejectBtn.addEventListener('click', () => rejectSession(session.id));
+            }, 100);
+            
+            return card;
+        }
+
+        // Confirm a session
+        async function confirmSession(sessionId) {
+            if (!confirm('Are you sure you want to confirm this session?')) return;
+            
+            try {
+                // Update session status to confirmed
+                await db.collection('bookedSessions').doc(sessionId).update({
+                    status: 'confirmed',
+                    confirmedAt: new Date()
+                });
+                
+                // Update UI
+                const sessionCard = document.getElementById(`session-${sessionId}`);
+                if (sessionCard) {
+                    sessionCard.classList.add('confirmed');
+                    sessionCard.querySelector('.session-actions').innerHTML = `
+                        <span class="status-badge status-confirmed">Confirmed</span>
+                    `;
+                }
+                
+                // Update counts
+                const pendingCount = parseInt(document.getElementById('pendingSessionsCount').textContent) - 1;
+                document.getElementById('pendingSessionsCount').textContent = pendingCount;
+                document.getElementById('pendingCount').textContent = pendingCount;
+                
+                alert('Session confirmed successfully!');
+                
+            } catch (error) {
+                console.error("Error confirming session:", error);
+                alert('Error confirming session. Please try again.');
+            }
+        }
+
+        // Reject a session
+        async function rejectSession(sessionId) {
+            if (!confirm('Are you sure you want to reject this session?')) return;
+            
+            try {
+                // Update session status to rejected
+                await db.collection('bookedSessions').doc(sessionId).update({
+                    status: 'rejected',
+                    rejectedAt: new Date()
+                });
+                
+                // Update UI
+                const sessionCard = document.getElementById(`session-${sessionId}`);
+                if (sessionCard) {
+                    sessionCard.classList.add('rejected');
+                    sessionCard.querySelector('.session-actions').innerHTML = `
+                        <span class="status-badge status-rejected">Rejected</span>
+                    `;
+                }
+                
+                // Update counts
+                const pendingCount = parseInt(document.getElementById('pendingSessionsCount').textContent) - 1;
+                document.getElementById('pendingSessionsCount').textContent = pendingCount;
+                document.getElementById('pendingCount').textContent = pendingCount;
+                
+                alert('Session rejected.');
+                
+            } catch (error) {
+                console.error("Error rejecting session:", error);
+                alert('Error rejecting session. Please try again.');
+            }
+        }
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', function() {
+            // Menu toggle for mobile
+            document.getElementById('menuToggle').addEventListener('click', function() {
+                document.getElementById('sidebar').classList.toggle('active');
+            });
+
+
+// Navigation menu
+const menuItems = document.querySelectorAll('.menu-item a');
+menuItems.forEach(item => {
+    item.addEventListener('click', function(e) {
+        e.preventDefault();
+        
+        // Update active menu item
+        menuItems.forEach(i => i.classList.remove('active'));
+        this.classList.add('active');
+        
+        // Show the corresponding section if it exists
+        const sectionId = this.getAttribute('data-section');
+        const targetSection = document.getElementById(sectionId);
+        
+        // Only proceed if the section exists
+        if (targetSection) {
+            const sections = document.querySelectorAll('.dashboard-section');
+            sections.forEach(s => s.classList.remove('active'));
+            targetSection.classList.add('active');
+        } else {
+            console.warn(`Section with ID '${sectionId}' does not exist`);
+            // Optionally, you could create these sections dynamically
+            // or redirect to another page
+        }
+    });
+});
+
+
+//Experiment continues from here
+
+ <section id="my-students" class="dashboard-section">
                 <div class="section-header">
                     <h3><i class="fas fa-users"></i> My Students</h3>
                 </div>
@@ -1525,66 +1755,7 @@ function loadEarnings(uid, completedSessions) {
         </table>
     `;
 }
-
-// Event listeners
-document.addEventListener('DOMContentLoaded', function() {
-    // Menu toggle for mobile
-    document.getElementById('menuToggle').addEventListener('click', function() {
-        document.getElementById('sidebar').classList.toggle('active');
-    });
-    
-    // Navigation menu
-    const menuItems = document.querySelectorAll('.menu-item a');
-    menuItems.forEach(item => {
-        item.addEventListener('click', function(e) {
-            e.preventDefault();
-            
-            // Update active menu item
-            menuItems.forEach(i => i.classList.remove('active'));
-            this.classList.add('active');
-            
-            // Show the corresponding section
-            const sectionId = this.getAttribute('data-section');
-            const sections = document.querySelectorAll('.dashboard-section');
-            sections.forEach(s => s.classList.remove('active'));
-            document.getElementById(sectionId).classList.add('active');
-        });
-    });
-    
-    // Edit profile button
-    document.getElementById('editProfileBtn').addEventListener('click', function() {
-        document.getElementById('profileForm').style.display = 'block';
-    });
-    
-    // Save profile button
-    document.getElementById('saveProfileBtn').addEventListener('click', function() {
-        const name = document.getElementById('name').value;
-        const phone = document.getElementById('phone').value;
-        
-        // Update Firestore - tutors collection uses 'fullName'
-        db.collection('tutors').doc(currentUser.uid).update({
-            fullName: name,  // Tutors collection uses 'fullName'
-            phone: phone,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }).then(() => {
-            alert('Profile updated successfully!');
-            document.getElementById('profileForm').style.display = 'none';
-            location.reload(); // Refresh to show updated data
-        }).catch(error => {
-            console.error("Error updating profile:", error);
-            alert('Error updating profile. Please try again.');
-        });
-    });
-    
-    // Logout button
-    document.getElementById('logoutBtn').addEventListener('click', function() {
-        clearTimeout(inactivityTimer); // Clear the timer on manual logout
-        auth.signOut().then(() => {
-            window.location.href = 'tutor-login.html';
-        }).catch(error => {
-            console.error("Error signing out:", error);
-        });
-    });
+     
     
     // Invoice form calculations
     const hoursInput = document.getElementById('hours');
@@ -1611,24 +1782,6 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('total').value = '60.00';
     });
     
-    // Tab functionality
-    const tabs = document.querySelectorAll('.tab');
-    const tabContents = document.querySelectorAll('.tab-content');
-    
-    tabs.forEach(tab => {
-        tab.addEventListener('click', function() {
-            // Remove active class from all tabs and contents
-            tabs.forEach(t => t.classList.remove('active'));
-            tabContents.forEach(c => c.classList.remove('active'));
-            
-            // Add active class to clicked tab
-            this.classList.add('active');
-            
-            // Show corresponding content
-            const tabId = this.getAttribute('data-tab');
-            document.getElementById(tabId).classList.add('active');
-        });
-    });
     
     // Availability toggle
     const availabilityToggle = document.getElementById('availabilityToggle');
@@ -1674,10 +1827,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
             });
             
-            // Edit profile button
-            document.getElementById('editProfileBtn').addEventListener('click', function() {
-                document.getElementById('profileForm').style.display = 'block';
-            });
             
             // Save profile button
 document.getElementById('saveProfileBtn').addEventListener('click', function() {
@@ -1757,3 +1906,8 @@ document.getElementById('logoutBtn').addEventListener('click', function() {
     </script>
 </body>
 </html>
+
+
+
+
+
