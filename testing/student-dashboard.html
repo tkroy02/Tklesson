@@ -646,6 +646,22 @@ body {
   color: var(--gray);
 }
 
+/* Reschedule status styles for student dashboard */
+.session-card.reschedule-requested {
+    border-left: 4px solid var(--warning);
+}
+
+.status-reschedule-requested {
+    background: rgba(255, 193, 7, 0.1);
+    color: var(--warning);
+}
+
+.reschedule-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
 /* State styles */
 .loading-state, .empty-state, .error-state {
   text-align: center;
@@ -1101,14 +1117,26 @@ body {
       </div>
     </section>
 
-    <section id="bookings" class="dashboard-section">
-      <div class="section-header">
+<section id="bookings" class="dashboard-section">
+    <div class="section-header">
         <h3><i class="fas fa-bookmark"></i> My Bookings</h3>
-      </div>
-      <div id="bookingsContainer">
+    </div>
+    
+    <!-- Add filter for reschedule requests -->
+    <div style="margin-bottom: 20px;">
+        <label>Filter by:</label>
+        <select id="bookingFilter" class="form-control" style="width: 200px;">
+            <option value="all">All Bookings</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="reschedule">Reschedule Requests</option>
+            <option value="pending">Pending</option>
+        </select>
+    </div>
+    
+    <div id="bookingsContainer">
         <p>Loading your bookings...</p>
-      </div>
-    </section>
+    </div>
+</section>
 
     <section id="sessions" class="dashboard-section">
   <div class="section-header">
@@ -1224,59 +1252,276 @@ function updateUpcomingSessionsCount(count) {
 
 // Load bookings
 function loadBookings(snapshot) {
-  const container = document.getElementById('bookingsContainer');
-  
-  if (snapshot.empty) {
-    container.innerHTML = '<p>You have no upcoming bookings.</p>';
-    return;
-  }
-  
- let html = '';
-snapshot.forEach(doc => {
-  const booking = doc.data();
-  const date = booking.date.toDate();
-  const formattedDate = date.toLocaleDateString();
-  const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-  const statusClass = booking.status === 'confirmed' ? 'status-verified' : 'status-pending';
-  const statusText = booking.status === 'confirmed' ? 'Confirmed' : 'Pending';    
+    const container = document.getElementById('bookingsContainer');
+    
+    if (snapshot.empty) {
+        container.innerHTML = '<p>You have no upcoming bookings.</p>';
+        return;
+    }
+    
+    let html = '';
+    snapshot.forEach(doc => {
+        const booking = doc.data();
+        const date = booking.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Check if this booking has a reschedule request
+        const hasRescheduleRequest = booking.status === 'reschedule_requested';
+        const statusClass = booking.status === 'confirmed' ? 'status-verified' : 
+                           hasRescheduleRequest ? 'status-reschedule-requested' : 'status-pending';
+        const statusText = booking.status === 'confirmed' ? 'Confirmed' : 
+                          hasRescheduleRequest ? 'Reschedule Requested' : 'Pending';
 
-  html += `
-    <div class="session-card" id="booking-${doc.id}">
-      <div class="session-header">
-        <div class="session-title">${booking.subject || 'No subject'}</div>
-        <div class="session-date">${formattedDate} at ${formattedTime}</div>
-      </div>
-      <div class="session-details">
-        <div class="session-detail">
-          <i class="fas fa-user-tie"></i>
-          <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-clock"></i>
-          <span>Duration: ${booking.duration || '1'} hours</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-video"></i>
-          <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-hourglass-half"></i>
-          <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
-        </div>
-      </div>
-      <div class="session-actions">
-        ${booking.status === 'confirmed' ? 
-          `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : 
-          ''}
-        <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
-      </div>
-    </div>
-  `;
-});
+        html += `
+            <div class="session-card ${hasRescheduleRequest ? 'reschedule-requested' : ''}" id="booking-${doc.id}">
+                <div class="session-header">
+                    <div class="session-title">${booking.subject || 'No subject'}</div>
+                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-tie"></i>
+                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i>
+                        <span>Duration: ${booking.duration || '1'} hours</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-video"></i>
+                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-hourglass-half"></i>
+                        <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
+                    </div>
+                    ${hasRescheduleRequest ? `
+                    <div class="session-detail">
+                        <i class="fas fa-info-circle"></i>
+                        <span>New Time Proposed: ${getProposedTime(booking)}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-comment"></i>
+                        <span>Reason: ${booking.rescheduleReason || 'No reason provided'}</span>
+                    </div>
+                    ` : ''}
+                </div>
+                <div class="session-actions">
+                    ${booking.status === 'confirmed' ? 
+                      `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : 
+                      ''}
+                    ${hasRescheduleRequest ? `
+                    <div class="reschedule-actions">
+                        <button class="btn-success" onclick="acceptReschedule('${doc.id}')">Accept New Time</button>
+                        <button class="btn-danger" onclick="declineReschedule('${doc.id}')">Decline</button>
+                    </div>
+                    ` : ''}
+                    <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
+                </div>
+            </div>
+        `;
+    });
 
-container.innerHTML = html;
-
+    container.innerHTML = html;
+    
+    // Add filter functionality
+    setupBookingFilter();
 }
+
+// Helper function to get proposed time from reschedule request
+function getProposedTime(booking) {
+    if (booking.rescheduleRequestedDate) {
+        const newDate = booking.rescheduleRequestedDate.toDate();
+        return newDate.toLocaleString();
+    }
+    return 'Not specified';
+}
+
+// Accept reschedule request
+async function acceptReschedule(bookingId) {
+    if (!confirm('Are you sure you want to accept the new session time?')) return;
+    
+    try {
+        // Get the current booking
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        if (!bookingDoc.exists) {
+            alert('Booking not found.');
+            return;
+        }
+        
+        const booking = bookingDoc.data();
+        
+        // Update the booking with new date/time
+        await db.collection('bookedSessions').doc(bookingId).update({
+            date: booking.rescheduleRequestedDate,
+            status: 'confirmed',
+            rescheduleStatus: 'accepted',
+            rescheduleRespondedAt: new Date(),
+            previousDate: booking.date // Keep record of original date
+        });
+        
+        // Update the reschedule request status
+        await updateRescheduleRequest(bookingId, 'accepted');
+        
+        alert('Reschedule accepted! The session has been updated.');
+        loadUserBookings(); // Refresh the bookings display
+        
+    } catch (error) {
+        console.error('Error accepting reschedule:', error);
+        alert('Failed to accept reschedule. Please try again.');
+    }
+}
+
+// Decline reschedule request
+async function declineReschedule(bookingId) {
+    const reason = prompt('Please provide a reason for declining the reschedule request:');
+    if (reason === null) return; // User cancelled
+    
+    try {
+        // Update the booking status back to confirmed
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed',
+            rescheduleStatus: 'declined',
+            rescheduleDeclineReason: reason,
+            rescheduleRespondedAt: new Date()
+        });
+        
+        // Update the reschedule request status
+        await updateRescheduleRequest(bookingId, 'declined');
+        
+        alert('Reschedule request declined.');
+        loadUserBookings(); // Refresh the bookings display
+        
+    } catch (error) {
+        console.error('Error declining reschedule:', error);
+        alert('Failed to decline reschedule. Please try again.');
+    }
+}
+
+// Update reschedule request in the rescheduleRequests collection
+async function updateRescheduleRequest(bookingId, status) {
+    try {
+        // Find the reschedule request for this booking
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const requestDoc = rescheduleQuery.docs[0];
+            await db.collection('rescheduleRequests').doc(requestDoc.id).update({
+                status: status,
+                respondedAt: new Date()
+            });
+        }
+    } catch (error) {
+        console.error('Error updating reschedule request:', error);
+    }
+}
+
+
+// Setup booking filter
+function setupBookingFilter() {
+    const filterSelect = document.getElementById('bookingFilter');
+    if (!filterSelect) return;
+    
+    filterSelect.addEventListener('change', function() {
+        const filterValue = this.value;
+        const bookingCards = document.querySelectorAll('.session-card');
+        
+        bookingCards.forEach(card => {
+            switch(filterValue) {
+                case 'all':
+                    card.style.display = 'block';
+                    break;
+                case 'upcoming':
+                    card.style.display = 'block';
+                    // You might want to add logic to hide past sessions
+                    break;
+                case 'reschedule':
+                    if (card.classList.contains('reschedule-requested')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
+                case 'pending':
+                    const statusBadge = card.querySelector('.status-badge');
+                    if (statusBadge && statusBadge.textContent.includes('Pending')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
+            }
+        });
+    });
+}
+
+
+// Real-time listener for reschedule requests
+function setupRescheduleListener() {
+    const userId = auth.currentUser.uid;
+    
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['reschedule_requested', 'confirmed', 'pending'])
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'modified') {
+                    const booking = change.doc.data();
+                    
+                    // Check if this is a new reschedule request
+                    if (booking.status === 'reschedule_requested') {
+                        // Show notification to student
+                        showRescheduleNotification(change.doc.id, booking);
+                    }
+                }
+            });
+        });
+}
+
+
+// Show notification for new reschedule request
+function showRescheduleNotification(bookingId, booking) {
+    // You can implement a toast notification system here
+    const notification = `
+        <div class="notification-toast">
+            <i class="fas fa-clock"></i>
+            <div>
+                <strong>Reschedule Request</strong>
+                <p>${booking.tutorName} has requested to reschedule your ${booking.subject} session.</p>
+            </div>
+            <button onclick="viewRescheduleRequest('${bookingId}')">Review</button>
+        </div>
+    `;
+    
+    // Add to notification system or show as alert
+    alert(`New reschedule request from ${booking.tutorName} for your ${booking.subject} session. Check your bookings to respond.`);
+}
+
+function viewRescheduleRequest(bookingId) {
+    // Switch to bookings section and highlight the specific booking
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelector('.dashboard-section.active').classList.remove('active');
+    
+    document.querySelector('a[data-section="bookings"]').classList.add('active');
+    document.getElementById('bookings').classList.add('active');
+    
+    // Scroll to the specific booking
+    setTimeout(() => {
+        const bookingElement = document.getElementById(`booking-${bookingId}`);
+        if (bookingElement) {
+            bookingElement.scrollIntoView({ behavior: 'smooth' });
+            bookingElement.style.animation = 'pulse 2s infinite';
+        }
+    }, 100);
+}
+
+
+
+
 
 // Load session history
 function loadSessionHistory(snapshot) {
@@ -1607,23 +1852,25 @@ function addBookingToUI(bookingId, bookingData) {
 
 // Load user bookings
 function loadUserBookings() {
-  const userId = auth.currentUser.uid;
-  
-  // Query upcoming bookings for this user
-  db.collection('bookedSessions')
-    .where('studentId', '==', userId)
-    .where('status', 'in', ['confirmed', 'pending'])    .where('date', '>=', new Date())
-    .orderBy('date', 'asc')
-    .get()
-    .then((querySnapshot) => {
-      updateUpcomingSessionsCount(querySnapshot.size);
-      loadBookings(querySnapshot);
-    })
-    .catch((error) => {
-      console.error('Error loading booked sessions:', error);
-      document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
-    });
+    const userId = auth.currentUser.uid;
+    
+    // Query upcoming bookings including reschedule requests
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            loadBookings(querySnapshot);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+            document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+        });
 }
+
 
 let lastVisible = null;
 let isFirstLoad = true;
@@ -2034,6 +2281,11 @@ let sessionsDataLoaded = false; // Track if sessions data has been initially loa
 auth.onAuthStateChanged((user) => {
   if (user) {
     currentUser = user;
+
+// Setup real-time listener for reschedule requests
+        setupRescheduleListener();
+    }
+});
     
     // Reset loaded flags for new user
     tutorsLoaded = false;
