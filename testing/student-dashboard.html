@@ -1629,11 +1629,16 @@ let lastVisible = null;
 let isFirstLoad = true;
 
 function loadUserSessionHistory(loadMore = false) {
+  // If this is not a "load more" action and data is already loaded, return
+  if (!loadMore && sessionsDataLoaded) {
+    return;
+  }
+  
   const userId = auth.currentUser.uid;
   let query = db.collection('bookedSessions')
     .where('studentId', '==', userId)
     .orderBy('date', 'desc')
-    .limit(10); // ← Only load 10 at a time
+    .limit(10);
 
   if (loadMore && lastVisible) {
     query = query.startAfter(lastVisible);
@@ -1644,11 +1649,14 @@ function loadUserSessionHistory(loadMore = false) {
       lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
     }
     
-    if (isFirstLoad) {
-      loadSessionHistory(querySnapshot);
+    if (isFirstLoad || loadMore) {
+      if (loadMore) {
+        appendSessionHistory(querySnapshot);
+      } else {
+        loadSessionHistory(querySnapshot);
+        sessionsDataLoaded = true; // Mark as loaded
+      }
       isFirstLoad = false;
-    } else {
-      appendSessionHistory(querySnapshot);
     }
     
     // Show/hide load more button
@@ -1657,6 +1665,13 @@ function loadUserSessionHistory(loadMore = false) {
   });
 }
 
+// Add this function for manual refresh when needed
+function refreshSessionsHistory() {
+  sessionsDataLoaded = false;
+  isFirstLoad = true;
+  lastVisible = null;
+  loadUserSessionHistory();
+}
 
 
 // Update user stats
@@ -1691,35 +1706,54 @@ function updateUserStats() {
 // Initialize the dashboard
 function initDashboard() {
   // Set up navigation
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-      e.preventDefault();
-      
-      // Update active menu item
-      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-      this.classList.add('active');
-      
-      // Show the corresponding section
-      const sectionId = this.getAttribute('data-section');
-      document.querySelectorAll('.dashboard-section').forEach(section => {
-        section.classList.remove('active');
-      });
-      document.getElementById(sectionId).classList.add('active');
-      
-      // Load specific data based on the section
-      if (sectionId === 'scheduling') {
-        loadTutorsForScheduling();
-      } else if (sectionId === 'tutors') {
-        // Load both my tutors and available tutors when the tutors section is opened
+document.querySelectorAll('.menu-item a').forEach(item => {
+  item.addEventListener('click', function(e) {
+    e.preventDefault();
+    
+    // Update active menu item
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    this.classList.add('active');
+    
+    // Show the corresponding section
+    const sectionId = this.getAttribute('data-section');
+    document.querySelectorAll('.dashboard-section').forEach(section => {
+      section.classList.remove('active');
+    });
+    document.getElementById(sectionId).classList.add('active');
+    
+// Global variables
+let currentUser = null;
+let userData = null;
+let inactivityTimer;
+let tutorsLoaded = false;
+let bookingsLoaded = false;
+let sessionsLoaded = false;
+let sessionsDataLoaded = false; // Track if sessions data has been initially loaded
+
+    // Load specific data based on the section - ONLY if not already loaded
+    if (sectionId === 'scheduling') {
+      loadTutorsForScheduling();
+    } else if (sectionId === 'tutors') {
+      // Load both my tutors and available tutors when the tutors section is opened
+      if (!tutorsLoaded) {
         loadMyTutors();
         loadAvailableTutors();
-      } else if (sectionId === 'bookings') {
-        loadUserBookings();
-      } else if (sectionId === 'sessions') {
-        loadUserSessionHistory();
+        tutorsLoaded = true;
       }
-    });
+    } else if (sectionId === 'bookings') {
+      if (!bookingsLoaded) {
+        loadUserBookings();
+        bookingsLoaded = true;
+      }
+    } else if (sectionId === 'sessions') {
+      // Only load sessions history on first visit to the tab
+      if (!sessionsLoaded) {
+        loadUserSessionHistory();
+        sessionsLoaded = true;
+      }
+    }
   });
+});
   
   // Set up tabs in the tutors section
   document.querySelectorAll('.tab').forEach(tab => {
@@ -2001,6 +2035,13 @@ auth.onAuthStateChanged((user) => {
   if (user) {
     currentUser = user;
     
+    // Reset loaded flags for new user
+    tutorsLoaded = false;
+    bookingsLoaded = false;
+    sessionsLoaded = false;
+    sessionsDataLoaded = false;
+    isFirstLoad = true;
+    lastVisible = null;    
     // Get user data from Firestore
     db.collection('students').doc(user.uid).get()
       .then((doc) => {
@@ -2031,7 +2072,14 @@ auth.onAuthStateChanged((user) => {
     // User is not logged in, redirect to login page
     window.location.href = 'student-login.html';
   }
+}); // <-- This closing brace and parenthesis were missing
+
+// Add this to your initDashboard() function for the history filter
+document.getElementById('historyFilter').addEventListener('change', function() {
+  // When filter changes, refresh the sessions history
+  refreshSessionsHistory();
 });
+
 </script>
 </body>
 </html>
