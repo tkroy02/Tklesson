@@ -1332,118 +1332,112 @@ function setupHistoryFilters() {
   
   if (!historyFilter || !actionTypeFilter) return;
   
-
-// Apply filters to sessions using real Firestore queries
-function applyFilters() {
-    const timeFilter = document.getElementById('historyFilter').value;
-    const actionFilter = document.getElementById('actionTypeFilter').value;
+  // Combined filter function
+  const applyFilters = () => {
+    const timeFilter = historyFilter.value;
+    const actionFilter = actionTypeFilter.value;
     
-    const userId = auth.currentUser.uid;
-    let query = db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .orderBy('date', 'desc')
-        .limit(50); // Increased limit for filtering
+    let filteredSessions = [...sessionsData];
     
-    // Apply time filter directly in the query
+    // Apply time filter based on actual date objects
     if (timeFilter !== 'all') {
-        const now = new Date();
-        let startDate;
-        
-        switch(timeFilter) {
-            case 'month':
-                startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-                break;
-            case '3months':
-                startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
-                break;
-            case 'year':
-                startDate = new Date(now.getFullYear(), 0, 1);
-                break;
-            default:
-                startDate = null;
-        }
-        
-        if (startDate) {
-            query = query.where('date', '>=', firebase.firestore.Timestamp.fromDate(startDate));
-        }
+      const now = new Date();
+      let startDate;
+      
+      switch(timeFilter) {
+        case 'month':
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+          break;
+        case '3months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+          break;
+        case 'quarter':
+          const currentQuarter = Math.floor(now.getMonth() / 3);
+          startDate = new Date(now.getFullYear(), currentQuarter * 3, 1);
+          break;
+        case 'year':
+          startDate = new Date(now.getFullYear(), 0, 1);
+          break;
+      }
+      
+      filteredSessions = filteredSessions.filter(session => {
+        return session.actionTime >= startDate;
+      });
     }
     
-    // Execute the query
-    query.get().then((querySnapshot) => {
-        if (querySnapshot.empty) {
-            document.getElementById('sessionsContainer').innerHTML = 
-                '<div class="empty-state"><i class="fas fa-history"></i><h3>No Sessions Found</h3><p>No sessions match your filters.</p></div>';
-            return;
-        }
-        
-        let sessions = [];
-        querySnapshot.forEach(doc => {
-            const session = doc.data();
-            session.id = doc.id;
-            sessions.push(session);
-        });
-        
-        
-// Display filtered sessions
-function displayFilteredSessions(sessions) {
-    const container = document.getElementById('sessionsContainer');
-    
-    if (sessions.length === 0) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-search"></i><h3>No Matching Sessions</h3><p>No sessions match your current filters.</p></div>';
-        return;
+    // Apply action type filter
+    if (actionFilter !== 'all') {
+      filteredSessions = filteredSessions.filter(session => {
+        return session.actionType.toLowerCase() === actionFilter.toLowerCase();
+      });
     }
     
-    let html = `
-        <table class="sessions-table">
-            <thead>
-                <tr>
-                    <th>Session Date</th>
-                    <th>Session Time</th>
-                    <th>Tutor</th>
-                    <th>Subject</th>
-                    <th>Duration</th>
-                    <th>Status</th>
-                    <th>Action Date</th>
-                    <th>Action Type</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
+    // Display filtered results
+    displaySessions(filteredSessions);
     
-    sessions.forEach(session => {
-        const sessionDate = session.date.toDate();
-        const formattedDate = sessionDate.toLocaleDateString();
-        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        const { actionTime, actionType } = getActionTimestamp(session);
-        const actionDate = actionTime.toLocaleDateString();
-        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        html += `
-            <tr>
-                <td>${formattedDate}</td>
-                <td>${formattedTime}</td>
-                <td>${session.tutorName || 'Unknown'}</td>
-                <td>${session.subject || 'No subject'}</td>
-                <td>${session.duration || '1'} hours</td>
-                <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
-                <td class="timestamp-cell">
-                    <div>${actionDate}</div>
-                    <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
-                </td>
-                <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
-            </tr>
-        `;
-    });
-    
-    html += '</tbody></table>';
-    container.innerHTML = html;
-    
-    // Hide load more button when filtering
-    document.getElementById('loadMoreBtn').style.display = 'none';
+    // Show message if no results
+    if (filteredSessions.length === 0) {
+      const container = document.getElementById('sessionsContainer');
+      container.innerHTML = '<p>No sessions match your filters.</p>';
+    }
+  };
+  
+  // Add event listeners
+  historyFilter.addEventListener('change', applyFilters);
+  actionTypeFilter.addEventListener('change', applyFilters);
 }
 
-       
+// Replace the existing displaySessions function in Experiment 2 with this one from sura.txt
+function displaySessions(sessions) {
+  const container = document.getElementById('sessionsContainer');
+  
+  let html = `
+    <table class="sessions-table">
+      <thead>
+        <tr>
+          <th>Session Date</th>
+          <th>Session Time</th>
+          <th>Tutor</th>
+          <th>Subject</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Action Date</th>
+          <th>Action Type</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  
+  sessions.forEach(session => {
+    const sessionDate = session.date;
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const actionTime = session.actionTime;
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
+        <td>${session.tutorName}</td>
+        <td>${session.subject}</td>
+        <td>${session.duration} hours</td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status}</span></td>
+        <td>
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: #888;">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(session.actionType)}">${session.actionType}</span></td>
+      </tr>
+    `;
+  });
+  
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+      
 // Example of creating a session with proper timestamps
 const sessionData = {
   // ... existing fields ...
@@ -2902,16 +2896,21 @@ function initDashboard() {
     }
   });
   
-  // Set up history filter event listener
-document.getElementById('historyFilter').addEventListener('change', function() {
-    applyFilters(); // This now uses real Firestore data
+  // Set up mobile menu toggle
+  document.getElementById('menuToggle').addEventListener('click', function() {
+    document.getElementById('sidebar').classList.toggle('active');
+  });
+  
+  // Add history filter event listener (INSIDE the function)
+  document.getElementById('historyFilter').addEventListener('change', function() {
+  // When filter changes, apply filters to current data
+  if (sessionsDataLoaded) {
+    setupHistoryFilters();
+  } else {
+    // If data not loaded yet, refresh will handle it
+    refreshSessionsHistory();
+  }
 });
-
-// Set up action type filter event listener  
-document.getElementById('actionTypeFilter').addEventListener('change', function() {
-    applyFilters(); // This now uses real Firestore data
-});
-
 
 // Add event listener for action type filter
 document.getElementById('actionTypeFilter').addEventListener('change', function() {
