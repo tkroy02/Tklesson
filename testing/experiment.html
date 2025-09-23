@@ -539,6 +539,8 @@ body {
   gap: 12px;
 }
 
+
+
 .btn-primary {
   background: var(--primary);
   color: white;
@@ -758,12 +760,24 @@ body {
   margin-bottom: 24px;
 }
 
+.sessions-table th:nth-child(7),
+.sessions-table td:nth-child(7) {
+    white-space: nowrap;
+    min-width: 160px;
+}
+
+.timestamp-cell {
+    font-size: 12px;
+    color: var(--gray);
+}
+
 .sessions-table th,
 .sessions-table td {
   padding: 12px 16px;
   text-align: left;
   border-bottom: 1px solid var(--gray-light);
 }
+
 
 .sessions-table th {
   background: var(--gray-light);
@@ -1174,17 +1188,31 @@ body {
     <h3><i class="fas fa-history"></i> Sessions History</h3>
   </div>
   
-  <div style="margin-bottom: 20px;">
-    <label>Filter by:</label>
-    <select id="historyFilter" class="form-control" style="width: 200px;">
-      <option value="all">All Time</option>
-      <option value="month">This Month</option>
-      <option value="3months">Last 3 Months</option>
-      <option value="year">This Year</option>
-    </select>
+  <div style="margin-bottom: 20px; display: flex; gap: 15px; align-items: center;">
+    <div>
+      <label>Filter by:</label>
+      <select id="historyFilter" class="form-control" style="width: 200px;">
+        <option value="all">All Time</option>
+        <option value="month">This Month</option>
+        <option value="3months">Last 3 Months</option>
+        <option value="year">This Year</option>
+      </select>
+    </div>
+    <div>
+      <label>Action Type:</label>
+      <select id="actionTypeFilter" class="form-control" style="width: 200px;">
+        <option value="all">All Actions</option>
+        <option value="booked">Booked</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="cancelled">Cancelled</option>
+        <option value="rescheduled">Rescheduled</option>
+        <option value="completed">Completed</option>
+      </select>
+    </div>
   </div>
+
   
-  <div id="sessionsContainer">
+ <div id="sessionsContainer">
     <div class="spinner" id="sessionsSpinner"></div>
   </div>
   <button id="loadMoreBtn" class="btn-outline" style="display: none; margin: 20px auto;">
@@ -1242,16 +1270,28 @@ function appendSessionHistory(snapshot) {
   let html = '';
   snapshot.forEach(doc => {
     const session = doc.data();
-    const date = session.date.toDate();
-    const formattedDate = date.toLocaleDateString();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Determine the most relevant action timestamp and type
+    const { actionTime, actionType } = getActionTimestamp(session);
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
       <tr>
         <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
         <td>${session.subject || 'No subject'}</td>
         <td>${session.duration || '1'} hours</td>
-        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
       </tr>
     `;
   });
@@ -1274,6 +1314,96 @@ function setupActivityListeners() {
   menuItems.forEach(item => {
     item.addEventListener('click', resetInactivityTimer);
   });
+}
+
+// Enhanced filtering system for sessions history
+function setupHistoryFilters() {
+  const historyFilter = document.getElementById('historyFilter');
+  const actionTypeFilter = document.getElementById('actionTypeFilter');
+  
+  if (!historyFilter || !actionTypeFilter) return;
+  
+  // Combined filter function
+  const applyFilters = () => {
+    const timeFilter = historyFilter.value;
+    const actionFilter = actionTypeFilter.value;
+    const rows = document.querySelectorAll('#sessionsContainer tbody tr');
+    
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+      let showRow = true;
+      
+      // Apply time filter
+      if (timeFilter !== 'all') {
+        const actionDateText = row.cells[6].textContent.trim();
+        const actionDate = new Date(actionDateText);
+        const now = new Date();
+        
+        switch(timeFilter) {
+          case 'month':
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            showRow = showRow && (actionDate >= startOfMonth);
+            break;
+          case '3months':
+            const threeMonthsAgo = new Date();
+            threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+            showRow = showRow && (actionDate >= threeMonthsAgo);
+            break;
+          case 'year':
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+            showRow = showRow && (actionDate >= startOfYear);
+            break;
+        }
+      }
+      
+// Example of creating a session with proper timestamps
+const sessionData = {
+  // ... existing fields ...
+  bookedAt: new Date(), // When initially booked
+  confirmedAt: null, // Set when confirmed
+  cancelledAt: null, // Set when cancelled
+  rescheduleRequestedAt: null, // Set when reschedule requested
+  rescheduleAcceptedAt: null, // Set when reschedule accepted
+  completedAt: null, // Set when completed
+  // ... other fields ...
+};
+
+      // Apply action type filter
+      if (actionFilter !== 'all') {
+        const actionType = row.cells[7].textContent.trim().toLowerCase();
+        showRow = showRow && (actionType === actionFilter);
+      }
+      
+      row.style.display = showRow ? '' : 'none';
+      if (showRow) visibleCount++;
+    });
+    
+    // Show message if no results
+    const table = document.querySelector('#sessionsContainer table');
+    let noResultsMsg = table.querySelector('.no-results-message');
+    
+    if (visibleCount === 0) {
+      if (!noResultsMsg) {
+        noResultsMsg = document.createElement('tr');
+        noResultsMsg.className = 'no-results-message';
+        noResultsMsg.innerHTML = `
+          <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
+            <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
+            <h4>No matching sessions found</h4>
+            <p>Try adjusting your filters</p>
+          </td>
+        `;
+        table.querySelector('tbody').appendChild(noResultsMsg);
+      }
+    } else if (noResultsMsg) {
+      noResultsMsg.remove();
+    }
+  };
+  
+  // Add event listeners
+  historyFilter.addEventListener('change', applyFilters);
+  actionTypeFilter.addEventListener('change', applyFilters);
 }
 
 // Update upcoming sessions count
@@ -1713,11 +1843,12 @@ function viewRescheduleRequest(bookingId) {
 
 
 // Load session history
+// Enhanced session history loading with action dates
 function loadSessionHistory(snapshot) {
   const container = document.getElementById('sessionsContainer');
   
   if (snapshot.empty) {
-    container.innerHTML = '<p>No session history found.</p>';
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
     return;
   }
   
@@ -1725,11 +1856,14 @@ function loadSessionHistory(snapshot) {
     <table class="sessions-table">
       <thead>
         <tr>
-          <th>Date</th>
+          <th>Session Date</th>
+          <th>Session Time</th>
           <th>Tutor</th>
           <th>Subject</th>
           <th>Duration</th>
           <th>Status</th>
+          <th>Action Date</th>
+          <th>Action Type</th>
         </tr>
       </thead>
       <tbody>
@@ -1737,27 +1871,145 @@ function loadSessionHistory(snapshot) {
   
   snapshot.forEach(doc => {
     const session = doc.data();
-    const date = session.date.toDate();
-    const formattedDate = date.toLocaleDateString();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Determine the most relevant action timestamp and type
+    const { actionTime, actionType } = getActionTimestamp(session);
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
       <tr>
         <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
         <td>${session.subject || 'No subject'}</td>
         <td>${session.duration || '1'} hours</td>
-        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
       </tr>
     `;
   });
   
-  html += `
-      </tbody>
-    </table>
-  `;
-  
+  html += '</tbody></table>';
   container.innerHTML = html;
+  
+  // Add filter functionality
+  setupHistoryFilters();
 }
+
+// Helper function to determine action timestamp and type
+function getActionTimestamp(session) {
+  let actionTime = new Date();
+  let actionType = 'booked';
+  
+  // Priority order for action timestamps
+  if (session.cancelledAt) {
+    actionTime = session.cancelledAt.toDate();
+    actionType = 'cancelled';
+  } else if (session.rescheduleAcceptedAt) {
+    actionTime = session.rescheduleAcceptedAt.toDate();
+    actionType = 'rescheduled';
+  } else if (session.rescheduleRequestedAt) {
+    actionTime = session.rescheduleRequestedAt.toDate();
+    actionType = 'reschedule_requested';
+  } else if (session.confirmedAt) {
+    actionTime = session.confirmedAt.toDate();
+    actionType = 'confirmed';
+  } else if (session.completedAt) {
+    actionTime = session.completedAt.toDate();
+    actionType = 'completed';
+  } else if (session.bookedAt) {
+    actionTime = session.bookedAt.toDate();
+    actionType = 'booked';
+  } else {
+    actionTime = session.date.toDate();
+    actionType = 'scheduled';
+  }
+  
+  return { actionTime, actionType };
+}
+
+// Helper function for status badge classes
+function getStatusClass(status) {
+  switch(status) {
+    case 'completed': return 'status-verified';
+    case 'confirmed': return 'status-verified';
+    case 'cancelled': return 'status-pending';
+    case 'reschedule_requested': return 'status-warning';
+    default: return 'status-pending';
+  }
+}
+
+// Helper function for action type badge classes
+function getActionTypeClass(actionType) {
+  switch(actionType) {
+    case 'completed': return 'status-verified';
+    case 'confirmed': return 'status-verified';
+    case 'booked': return 'status-pending';
+    case 'cancelled': return 'status-pending';
+    case 'rescheduled': return 'status-warning';
+    case 'reschedule_requested': return 'status-warning';
+    default: return 'status-pending';
+  }
+}
+
+
+// Also update the appendSessionHistory function
+function appendSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (snapshot.empty) {
+    return;
+  }
+  
+  let html = '';
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    
+    // Use the most relevant timestamp for "action time"
+    let actionTime = new Date();
+    if (session.cancelledAt) {
+      actionTime = session.cancelledAt.toDate();
+    } else if (session.confirmedAt) {
+      actionTime = session.confirmedAt.toDate();
+    } else if (session.bookedAt) {
+      actionTime = session.bookedAt.toDate();
+    } else if (session.rescheduleAcceptedAt) {
+      actionTime = session.rescheduleAcceptedAt.toDate();
+    } else {
+      actionTime = sessionDate;
+    }
+    
+    const formattedTime = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const actionDate = actionTime.toLocaleDateString();
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
+        <td>${actionDate} ${formattedTime}</td>
+      </tr>
+    `;
+  });
+  
+  // Append to existing table
+  const tbody = container.querySelector('tbody');
+  tbody.innerHTML += html;
+}
+
 
 // Load tutors for scheduling - UPDATED VERSION
 function loadTutorsForScheduling() {
@@ -2106,9 +2358,20 @@ function refreshSessionsHistory() {
   sessionsDataLoaded = false;
   isFirstLoad = true;
   lastVisible = null;
+  
+  // Store current filter values
+  const currentTimeFilter = document.getElementById('historyFilter').value;
+  const currentActionFilter = document.getElementById('actionTypeFilter').value;
+  
   loadUserSessionHistory();
+  
+  // Restore filter values after refresh
+  setTimeout(() => {
+    document.getElementById('historyFilter').value = currentTimeFilter;
+    document.getElementById('actionTypeFilter').value = currentActionFilter;
+    setupHistoryFilters();
+  }, 500);
 }
-
 
 // Update user stats
 function updateUserStats() {
@@ -2448,9 +2711,21 @@ function initDashboard() {
   
   // Add history filter event listener (INSIDE the function)
   document.getElementById('historyFilter').addEventListener('change', function() {
-    // When filter changes, refresh the sessions history
+  // When filter changes, apply filters to current data
+  if (sessionsDataLoaded) {
+    setupHistoryFilters();
+  } else {
+    // If data not loaded yet, refresh will handle it
     refreshSessionsHistory();
-  });
+  }
+});
+
+// Add event listener for action type filter
+document.getElementById('actionTypeFilter').addEventListener('change', function() {
+  if (sessionsDataLoaded) {
+    setupHistoryFilters();
+  }
+});
   
   // Load initial data
   loadUserBookings();
