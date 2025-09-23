@@ -1907,108 +1907,262 @@ function loadSessionHistory(snapshot) {
 // Helper function to determine action timestamp and type
 function getActionTimestamp(session) {
   let actionTime = new Date();
-  let actionType = 'booked';
+  let actionType = 'Unknown';
   
-  // Priority order for action timestamps
+  // Determine the most meaningful action based on available timestamps
   if (session.cancelledAt) {
     actionTime = session.cancelledAt.toDate();
-    actionType = 'cancelled';
-  } else if (session.rescheduleAcceptedAt) {
-    actionTime = session.rescheduleAcceptedAt.toDate();
-    actionType = 'rescheduled';
-  } else if (session.rescheduleRequestedAt) {
-    actionTime = session.rescheduleRequestedAt.toDate();
-    actionType = 'reschedule_requested';
-  } else if (session.confirmedAt) {
-    actionTime = session.confirmedAt.toDate();
-    actionType = 'confirmed';
+    // Determine who cancelled
+    if (session.cancelledBy === 'student') {
+      actionType = 'Student Cancelled';
+    } else if (session.cancelledBy === 'tutor') {
+      actionType = 'Tutor Cancelled';
+    } else {
+      actionType = 'Cancelled';
+    }
   } else if (session.completedAt) {
     actionTime = session.completedAt.toDate();
-    actionType = 'completed';
+    actionType = 'Completed';
+  } else if (session.rescheduleAcceptedAt) {
+    actionTime = session.rescheduleAcceptedAt.toDate();
+    actionType = 'Rescheduled';
+  } else if (session.rescheduleRequestedAt) {
+    actionTime = session.rescheduleRequestedAt.toDate();
+    // Determine who requested reschedule
+    if (session.rescheduleRequestedBy === 'tutor') {
+      actionType = 'Tutor Reschedule Request';
+    } else if (session.rescheduleRequestedBy === 'student') {
+      actionType = 'Student Reschedule Request';
+    } else {
+      actionType = 'Reschedule Requested';
+    }
+  } else if (session.confirmedAt) {
+    actionTime = session.confirmedAt.toDate();
+    // Determine how it was confirmed
+    if (session.autoConfirmed) {
+      actionType = 'Auto-Confirmed';
+    } else {
+      actionType = 'Tutor Confirmed';
+    }
   } else if (session.bookedAt) {
     actionTime = session.bookedAt.toDate();
-    actionType = 'booked';
+    actionType = 'Student Booked';
   } else {
     actionTime = session.date.toDate();
-    actionType = 'scheduled';
+    actionType = 'Scheduled';
   }
   
   return { actionTime, actionType };
 }
 
-// Helper function for status badge classes
-function getStatusClass(status) {
-  switch(status) {
-    case 'completed': return 'status-verified';
-    case 'confirmed': return 'status-verified';
-    case 'cancelled': return 'status-pending';
-    case 'reschedule_requested': return 'status-warning';
-    default: return 'status-pending';
-  }
-}
-
-// Helper function for action type badge classes
+// Update the getActionTypeClass function
 function getActionTypeClass(actionType) {
-  switch(actionType) {
-    case 'completed': return 'status-verified';
-    case 'confirmed': return 'status-verified';
-    case 'booked': return 'status-pending';
-    case 'cancelled': return 'status-pending';
-    case 'rescheduled': return 'status-warning';
-    case 'reschedule_requested': return 'status-warning';
-    default: return 'status-pending';
+  switch(actionType.toLowerCase()) {
+    case 'student booked':
+    case 'tutor confirmed':
+    case 'auto-confirmed':
+    case 'completed':
+      return 'status-verified';
+    case 'student cancelled':
+    case 'tutor cancelled':
+    case 'cancelled':
+      return 'status-pending';
+    case 'tutor reschedule request':
+    case 'student reschedule request':
+    case 'reschedule requested':
+    case 'rescheduled':
+      return 'status-warning';
+    default:
+      return 'status-pending';
   }
 }
 
-
-// Also update the appendSessionHistory function
-function appendSessionHistory(snapshot) {
+// Update the session history table generation
+function loadSessionHistory(snapshot) {
   const container = document.getElementById('sessionsContainer');
   
   if (snapshot.empty) {
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
     return;
   }
   
-  let html = '';
+  let html = `
+    <table class="sessions-table">
+      <thead>
+        <tr>
+          <th>Session Date</th>
+          <th>Session Time</th>
+          <th>Tutor</th>
+          <th>Subject</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Action Date</th>
+          <th>Action Type</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  
   snapshot.forEach(doc => {
     const session = doc.data();
     const sessionDate = session.date.toDate();
     const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
-    // Use the most relevant timestamp for "action time"
-    let actionTime = new Date();
-    if (session.cancelledAt) {
-      actionTime = session.cancelledAt.toDate();
-    } else if (session.confirmedAt) {
-      actionTime = session.confirmedAt.toDate();
-    } else if (session.bookedAt) {
-      actionTime = session.bookedAt.toDate();
-    } else if (session.rescheduleAcceptedAt) {
-      actionTime = session.rescheduleAcceptedAt.toDate();
-    } else {
-      actionTime = sessionDate;
-    }
-    
-    const formattedTime = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    // Determine the most relevant action timestamp and type
+    const { actionTime, actionType } = getActionTimestamp(session);
     const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
       <tr>
         <td>${formattedDate}</td>
-        <td>${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
+        <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
         <td>${session.subject || 'No subject'}</td>
         <td>${session.duration || '1'} hours</td>
-        <td><span class="status-badge ${session.status === 'completed' ? 'status-verified' : 'status-pending'}">${session.status || 'unknown'}</span></td>
-        <td>${actionDate} ${formattedTime}</td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
       </tr>
     `;
   });
   
-  // Append to existing table
-  const tbody = container.querySelector('tbody');
-  tbody.innerHTML += html;
+  html += '</tbody></table>';
+  container.innerHTML = html;
+  
+  // Add filter functionality
+  setupHistoryFilters();
 }
+
+// Update the filter function to handle the new action types
+function setupHistoryFilters() {
+  const historyFilter = document.getElementById('historyFilter');
+  const actionTypeFilter = document.getElementById('actionTypeFilter');
+  
+  if (!historyFilter || !actionTypeFilter) return;
+  
+  // Update action type filter options to match new types
+  actionTypeFilter.innerHTML = `
+    <option value="all">All Actions</option>
+    <option value="student booked">Student Booked</option>
+    <option value="tutor confirmed">Tutor Confirmed</option>
+    <option value="auto-confirmed">Auto-Confirmed</option>
+    <option value="completed">Completed</option>
+    <option value="student cancelled">Student Cancelled</option>
+    <option value="tutor cancelled">Tutor Cancelled</option>
+    <option value="tutor reschedule request">Tutor Reschedule Request</option>
+    <option value="student reschedule request">Student Reschedule Request</option>
+    <option value="rescheduled">Rescheduled</option>
+  `;
+  
+  // Combined filter function
+  const applyFilters = () => {
+    const timeFilter = historyFilter.value;
+    const actionFilter = actionTypeFilter.value.toLowerCase();
+    const rows = document.querySelectorAll('#sessionsContainer tbody tr');
+    
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+      let showRow = true;
+      
+      // Apply time filter
+      if (timeFilter !== 'all') {
+        const actionDateText = row.cells[6].textContent.trim();
+        const actionDate = new Date(actionDateText);
+        const now = new Date();
+        
+        switch(timeFilter) {
+          case 'month':
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            showRow = showRow && (actionDate >= startOfMonth);
+            break;
+          case '3months':
+            const threeMonthsAgo = new Date();
+            threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+            showRow = showRow && (actionDate >= threeMonthsAgo);
+            break;
+          case 'year':
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+            showRow = showRow && (actionDate >= startOfYear);
+            break;
+        }
+      }
+      
+      // Apply action type filter
+      if (actionFilter !== 'all') {
+        const actionType = row.cells[7].textContent.trim().toLowerCase();
+        showRow = showRow && (actionType === actionFilter);
+      }
+      
+      row.style.display = showRow ? '' : 'none';
+      if (showRow) visibleCount++;
+    });
+    
+    // Show message if no results
+    const table = document.querySelector('#sessionsContainer table');
+    let noResultsMsg = table.querySelector('.no-results-message');
+    
+    if (visibleCount === 0) {
+      if (!noResultsMsg) {
+        noResultsMsg = document.createElement('tr');
+        noResultsMsg.className = 'no-results-message';
+        noResultsMsg.innerHTML = `
+          <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
+            <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
+            <h4>No matching sessions found</h4>
+            <p>Try adjusting your filters</p>
+          </td>
+        `;
+        table.querySelector('tbody').appendChild(noResultsMsg);
+      }
+    } else if (noResultsMsg) {
+      noResultsMsg.remove();
+    }
+  };
+  
+  // Add event listeners
+  historyFilter.addEventListener('change', applyFilters);
+  actionTypeFilter.addEventListener('change', applyFilters);
+}
+
+// Update the booking function to include who performed the action
+// In your scheduling form submission, update the booking creation:
+function updateBookingCreation() {
+  // In the scheduling form submission, add:
+  const bookingData = {
+    // ... existing fields ...
+    bookedAt: new Date(),
+    bookedBy: 'student', // Add this field
+    // ... other fields ...
+  };
+}
+
+// Update the cancel function to track who cancelled
+async function cancelBooking(bookingId) {
+  if (confirm('Are you sure you want to cancel this booking?')) {
+    // Update the booking status to cancelled
+    db.collection('bookedSessions').doc(bookingId).update({
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      cancelledBy: 'student' // Add this field
+    })
+    .then(() => {
+      alert('Booking cancelled successfully.');
+      loadUserBookings();
+    })
+    .catch((error) => {
+      console.error('Error cancelling booking:', error);
+      alert('Failed to cancel booking. Please try again.');
+    });
+  }
+}
+  
+
 
 
 // Load tutors for scheduling - UPDATED VERSION
