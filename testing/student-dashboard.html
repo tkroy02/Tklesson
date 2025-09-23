@@ -1607,35 +1607,97 @@ function getProposedTime(booking) {
 // Accept reschedule request
 async function acceptReschedule(bookingId) {
     try {
-        // Find the reschedule request to get the proposed new time
+        if (!confirm('Are you sure you want to accept the new session time?')) {
+            return;
+        }
+
+        // Find the reschedule request
         const rescheduleQuery = await db.collection('rescheduleRequests')
             .where('sessionId', '==', bookingId)
             .where('status', '==', 'pending')
             .get();
             
         if (rescheduleQuery.empty) {
-            alert('No reschedule request found for this booking.');
+            alert('No pending reschedule request found for this booking.');
             return;
         }
         
-        const rescheduleRequest = rescheduleQuery.docs[0].data();
-        const newDate = rescheduleRequest.requestedDate;
-        const originalDate = rescheduleRequest.originalDate;
+        const rescheduleDoc = rescheduleQuery.docs[0];
+        const rescheduleData = rescheduleDoc.data();
+        const newDate = rescheduleData.requestedDate;
         
-        const respondedAt = new Date();
-        
-        // Update the booking with the new date
+        // Update the booking with new date and status
         await db.collection('bookedSessions').doc(bookingId).update({
             date: newDate,
             status: 'confirmed',
             rescheduleStatus: 'accepted',
-            rescheduleRespondedAt: respondedAt,
-            rescheduleTimeline: {
-                requestedAt: rescheduleRequest.requestedAt || new Date(),
-                respondedAt: respondedAt,
-                acceptedAt: respondedAt
-            }
+            rescheduleRespondedAt: new Date()
         });
+        
+        // Update reschedule request status
+        await db.collection('rescheduleRequests').doc(rescheduleDoc.id).update({
+            status: 'accepted',
+            respondedAt: new Date()
+        });
+        
+        alert('Reschedule accepted! The session time has been updated.');
+        loadUserBookings(); // Refresh display
+        
+    } catch (error) {
+        console.error('Error accepting reschedule:', error);
+        alert('Failed to accept reschedule. Please try again.');
+    }
+}
+
+// Decline reschedule request - COMPLETE VERSION
+async function declineReschedule(bookingId) {
+    try {
+        const reason = prompt('Please provide a reason for declining the reschedule request:');
+        if (reason === null || reason.trim() === '') {
+            alert('Please provide a reason to decline the request.');
+            return;
+        }
+        
+        if (!confirm('Are you sure you want to decline the reschedule request?')) {
+            return;
+        }
+
+        // Find the reschedule request
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (rescheduleQuery.empty) {
+            alert('No pending reschedule request found for this booking.');
+            return;
+        }
+        
+        const rescheduleDoc = rescheduleQuery.docs[0];
+        
+        // Update booking status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed', // Keep as confirmed but decline reschedule
+            rescheduleStatus: 'declined',
+            rescheduleDeclineReason: reason,
+            rescheduleRespondedAt: new Date()
+        });
+        
+        // Update reschedule request status
+        await db.collection('rescheduleRequests').doc(rescheduleDoc.id).update({
+            status: 'declined',
+            respondedAt: new Date(),
+            declineReason: reason
+        });
+        
+        alert('Reschedule request declined.');
+        loadUserBookings(); // Refresh display
+        
+    } catch (error) {
+        console.error('Error declining reschedule:', error);
+        alert('Failed to decline reschedule. Please try again.');
+    }
+}
         
         // Also update in sessions history if it exists
         await updateSessionHistory(bookingId, newDate, originalDate);
