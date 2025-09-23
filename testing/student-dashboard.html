@@ -1289,7 +1289,7 @@ function appendSessionHistory(snapshot) {
     const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
-      <tr data-timestamp="${actionTime.toISOString()}">
+      <tr>
         <td>${formattedDate}</td>
         <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
@@ -1303,10 +1303,12 @@ function appendSessionHistory(snapshot) {
         <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
       </tr>
     `;
+  });
   
   // Append to existing table
   const tbody = container.querySelector('tbody');
   tbody.innerHTML += html;
+}
 
 
 function setupActivityListeners() {
@@ -1330,6 +1332,7 @@ function setupHistoryFilters() {
   
   if (!historyFilter || !actionTypeFilter) return;
   
+  // Combined filter function
   const applyFilters = () => {
     const timeFilter = historyFilter.value;
     const actionFilter = actionTypeFilter.value;
@@ -1340,33 +1343,41 @@ function setupHistoryFilters() {
     rows.forEach(row => {
       let showRow = true;
       
-      // Apply time filter using data-timestamp
+      // Apply time filter
       if (timeFilter !== 'all') {
-        const timestamp = row.getAttribute('data-timestamp');
-        const actionDate = new Date(timestamp);
+        const actionDateText = row.cells[6].textContent.trim();
+        const actionDate = new Date(actionDateText);
         const now = new Date();
         
-        if (isNaN(actionDate.getTime())) {
-          showRow = false; // Invalid date, hide row
-        } else {
-          switch(timeFilter) {
-            case 'month':
-              const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-              showRow = showRow && (actionDate >= startOfMonth);
-              break;
-            case '3months':
-              const threeMonthsAgo = new Date();
-              threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-              showRow = showRow && (actionDate >= threeMonthsAgo);
-              break;
-            case 'year':
-              const startOfYear = new Date(now.getFullYear(), 0, 1);
-              showRow = showRow && (actionDate >= startOfYear);
-              break;
-          }
+        switch(timeFilter) {
+          case 'month':
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            showRow = showRow && (actionDate >= startOfMonth);
+            break;
+          case '3months':
+            const threeMonthsAgo = new Date();
+            threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+            showRow = showRow && (actionDate >= threeMonthsAgo);
+            break;
+          case 'year':
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+            showRow = showRow && (actionDate >= startOfYear);
+            break;
         }
       }
       
+// Example of creating a session with proper timestamps
+const sessionData = {
+  // ... existing fields ...
+  bookedAt: new Date(), // When initially booked
+  confirmedAt: null, // Set when confirmed
+  cancelledAt: null, // Set when cancelled
+  rescheduleRequestedAt: null, // Set when reschedule requested
+  rescheduleAcceptedAt: null, // Set when reschedule accepted
+  completedAt: null, // Set when completed
+  // ... other fields ...
+};
+
       // Apply action type filter
       if (actionFilter !== 'all') {
         const actionType = row.cells[7].textContent.trim().toLowerCase();
@@ -1398,48 +1409,6 @@ function setupHistoryFilters() {
       noResultsMsg.remove();
     }
   };
-  
-  // REMOVED DUPLICATE EVENT LISTENERS - KEEP ONLY ONE SET:
-  historyFilter.addEventListener('change', applyFilters);
-  actionTypeFilter.addEventListener('change', applyFilters);
-}      
- 
-    // Apply action type filter
-      if (actionFilter !== 'all') {
-        const actionType = row.cells[7].textContent.trim().toLowerCase();
-        showRow = showRow && (actionType === actionFilter);
-      }
-      
-      row.style.display = showRow ? '' : 'none';
-      if (showRow) visibleCount++;
-    });
-    
-    // Show message if no results
-    const table = document.querySelector('#sessionsContainer table');
-    let noResultsMsg = table.querySelector('.no-results-message');
-    
-    if (visibleCount === 0) {
-      if (!noResultsMsg) {
-        noResultsMsg = document.createElement('tr');
-        noResultsMsg.className = 'no-results-message';
-        noResultsMsg.innerHTML = `
-          <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
-            <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
-            <h4>No matching sessions found</h4>
-            <p>Try adjusting your filters</p>
-          </td>
-        `;
-        table.querySelector('tbody').appendChild(noResultsMsg);
-      }
-    } else if (noResultsMsg) {
-      noResultsMsg.remove();
-    }
-  };
-  
-  historyFilter.addEventListener('change', applyFilters);
-  actionTypeFilter.addEventListener('change', applyFilters);
-}
-
   
   // Add event listeners
   historyFilter.addEventListener('change', applyFilters);
@@ -2015,7 +1984,7 @@ function loadSessionHistory(snapshot) {
     const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
     html += `
-      <tr data-timestamp="${actionTime.toISOString()}">
+      <tr>
         <td>${formattedDate}</td>
         <td>${formattedTime}</td>
         <td>${session.tutorName || 'Unknown'}</td>
@@ -2037,7 +2006,7 @@ function loadSessionHistory(snapshot) {
   // Add filter functionality
   setupHistoryFilters();
 }
-  
+
 // Add missing helper functions
 function updateUpcomingSessionsCount(count) {
     const countElement = document.getElementById('upcomingSessionsCount');
@@ -2101,45 +2070,38 @@ function loadBookings(snapshot) {
 }
 
 function appendSessionHistory(snapshot) {
-  const container = document.getElementById('sessionsContainer');
-  
-  if (snapshot.empty) {
-    return;
-  }
-  
-  let html = '';
-  snapshot.forEach(doc => {
-    const session = doc.data();
-    const sessionDate = session.date.toDate();
-    const formattedDate = sessionDate.toLocaleDateString();
-    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const container = document.querySelector('#sessionsContainer tbody');
     
-    // Determine the most relevant action timestamp and type
-    const { actionTime, actionType } = getActionTimestamp(session);
-    const actionDate = actionTime.toLocaleDateString();
-    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${formattedDate}</td>
+            <td>${formattedTime}</td>
+            <td>${session.tutorName || 'Unknown'}</td>
+            <td>${session.subject || 'No subject'}</td>
+            <td>${session.duration || '1'} hours</td>
+            <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+            <td class="timestamp-cell">
+                <div>${actionDate}</div>
+                <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+            </td>
+            <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+        `;
+        container.appendChild(row);
+    });
     
-    html += `
-      <tr data-timestamp="${actionTime.toISOString()}">
-        <td>${formattedDate}</td>
-        <td>${formattedTime}</td>
-        <td>${session.tutorName || 'Unknown'}</td>
-        <td>${session.subject || 'No subject'}</td>
-        <td>${session.duration || '1'} hours</td>
-        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
-        <td class="timestamp-cell">
-          <div>${actionDate}</div>
-          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
-        </td>
-        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
-      </tr>
-    `;
-  }); // ← THIS BRACKET WAS MISSING!
-  
-  // Append to existing table
-  const tbody = container.querySelector('tbody');
-  tbody.innerHTML += html;
+    setupHistoryFilters();
 }
+
 // Add missing activity timer functions
 function resetInactivityTimer() {
     // Implementation depends on your requirements
@@ -2475,19 +2437,16 @@ let lastVisible = null;
 let isFirstLoad = true;
 
 function loadUserSessionHistory(loadMore = false) {
-  // If this is not a "load more" action and data is already loaded, return
-  if (!loadMore && sessionsDataLoaded) {
-    return;
-  }
-  
   const userId = auth.currentUser.uid;
   let query = db.collection('bookedSessions')
     .where('studentId', '==', userId)
-    .orderBy('date', 'desc')
-    .limit(10);
+    .orderBy('date', 'desc');
 
-  if (loadMore && lastVisible) {
-    query = query.startAfter(lastVisible);
+  // Apply limit only for initial load and load more
+  if (!loadMore) {
+    query = query.limit(20);
+  } else if (lastVisible) {
+    query = query.startAfter(lastVisible).limit(20);
   }
 
   query.get().then((querySnapshot) => {
@@ -2495,388 +2454,208 @@ function loadUserSessionHistory(loadMore = false) {
       lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
     }
     
-    if (isFirstLoad || loadMore) {
-      if (loadMore) {
-        appendSessionHistory(querySnapshot);
-      } else {
-        loadSessionHistory(querySnapshot);
-        sessionsDataLoaded = true; // Mark as loaded
-      }
-      isFirstLoad = false;
+    if (loadMore) {
+      appendSessionHistory(querySnapshot);
+    } else {
+      loadSessionHistory(querySnapshot);
+      sessionsDataLoaded = true;
     }
     
     // Show/hide load more button
     document.getElementById('loadMoreBtn').style.display = 
-      querySnapshot.docs.length === 10 ? 'block' : 'none';
+      querySnapshot.docs.length === 20 ? 'block' : 'none';
+      
+    // Apply filters after loading data
+    setTimeout(() => {
+      applyHistoryFilters();
+    }, 100);
+  }).catch((error) => {
+    console.error('Error loading session history:', error);
+    document.getElementById('sessionsContainer').innerHTML = 
+      '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load session history. Please try again.</p></div>';
   });
 }
 
-// Add this function for manual refresh when needed
-function refreshSessionsHistory() {
-  sessionsDataLoaded = false;
-  isFirstLoad = true;
-  lastVisible = null;
+// Enhanced session history loading with proper data structure
+function loadSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
   
-  // Store current filter values
-  const currentTimeFilter = document.getElementById('historyFilter').value;
-  const currentActionFilter = document.getElementById('actionTypeFilter').value;
+  if (snapshot.empty) {
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
+    return;
+  }
   
-  loadUserSessionHistory();
+  let html = `
+    <table class="sessions-table">
+      <thead>
+        <tr>
+          <th>Session Date</th>
+          <th>Session Time</th>
+          <th>Tutor</th>
+          <th>Subject</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Action Date</th>
+          <th>Action Type</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
   
-  // Restore filter values after refresh
-  setTimeout(() => {
-    document.getElementById('historyFilter').value = currentTimeFilter;
-    document.getElementById('actionTypeFilter').value = currentActionFilter;
-    setupHistoryFilters();
-  }, 500);
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Get action timestamp and type with fallbacks
+    const { actionTime, actionType } = getActionTimestamp(session);
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    html += `
+      <tr data-action-type="${actionType.toLowerCase()}" data-action-date="${actionTime.getTime()}">
+        <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+      </tr>
+    `;
+  });
+  
+  html += '</tbody></table>';
+  container.innerHTML = html;
 }
 
-// Update user stats
-function updateUserStats() {
-  const userId = auth.currentUser.uid;
+// Improved action timestamp detection
+function getActionTimestamp(session) {
+  let actionTime = session.date.toDate(); // Default to session date
+  let actionType = 'Scheduled';
   
-  // Count tutors (this is a simplified version)
-  db.collection('sessions')
-    .where('studentId', '==', userId)
-    .where('status', '==', 'completed')
-    .get()
-    .then((querySnapshot) => {
-      const tutorIds = [];
-      let totalHours = 0;
-      
-      querySnapshot.forEach((doc) => {
-        const session = doc.data();
-        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
-          tutorIds.push(session.tutorId);
-        }
-        totalHours += parseFloat(session.duration) || 1;
-      });
-      
-      document.getElementById('tutorsCount').textContent = tutorIds.length;
-      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
-    })
-    .catch((error) => {
-      console.error('Error loading stats:', error);
-    });
+  // Check various timestamp fields in order of importance
+  if (session.cancelledAt) {
+    actionTime = session.cancelledAt.toDate();
+    actionType = session.cancelledBy === 'student' ? 'Student Cancelled' : 
+                session.cancelledBy === 'tutor' ? 'Tutor Cancelled' : 'Cancelled';
+  } else if (session.completedAt) {
+    actionTime = session.completedAt.toDate();
+    actionType = 'Completed';
+  } else if (session.rescheduleAcceptedAt) {
+    actionTime = session.rescheduleAcceptedAt.toDate();
+    actionType = 'Rescheduled';
+  } else if (session.rescheduleRequestedAt) {
+    actionTime = session.rescheduleRequestedAt.toDate();
+    actionType = session.rescheduleRequestedBy === 'tutor' ? 'Tutor Reschedule Request' :
+                session.rescheduleRequestedBy === 'student' ? 'Student Reschedule Request' : 'Reschedule Requested';
+  } else if (session.confirmedAt) {
+    actionTime = session.confirmedAt.toDate();
+    actionType = session.autoConfirmed ? 'Auto-Confirmed' : 'Tutor Confirmed';
+  } else if (session.bookedAt) {
+    actionTime = session.bookedAt.toDate();
+    actionType = 'Student Booked';
+  }
+  
+  return { actionTime, actionType };
 }
 
-// Initialize the dashboard
-function initDashboard() {
-  // Set up navigation
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-      e.preventDefault();
+// Enhanced filter application
+function applyHistoryFilters() {
+  const timeFilter = document.getElementById('historyFilter').value;
+  const actionFilter = document.getElementById('actionTypeFilter').value;
+  const rows = document.querySelectorAll('#sessionsContainer tbody tr');
+  
+  let visibleCount = 0;
+  const now = new Date();
+  
+  rows.forEach(row => {
+    let showRow = true;
+    
+    // Apply time filter based on action date
+    if (timeFilter !== 'all') {
+      const actionTimestamp = parseInt(row.getAttribute('data-action-date'));
+      const actionDate = new Date(actionTimestamp);
       
-      // Update active menu item
-      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-      this.classList.add('active');
-      
-      // Show the corresponding section
-      const sectionId = this.getAttribute('data-section');
-      document.querySelectorAll('.dashboard-section').forEach(section => {
-        section.classList.remove('active');
-      });
-      document.getElementById(sectionId).classList.add('active');
-
-      // Load specific data based on the section - ONLY if not already loaded
-      if (sectionId === 'scheduling') {
-        loadTutorsForScheduling();
-      } else if (sectionId === 'tutors') {
-        // Load both my tutors and available tutors when the tutors section is opened
-        if (!tutorsLoaded) {
-          loadMyTutors();
-          loadAvailableTutors();
-          tutorsLoaded = true;
-        }
-      } else if (sectionId === 'bookings') {
-        if (!bookingsLoaded) {
-          loadUserBookings();
-          bookingsLoaded = true;
-        }
-      } else if (sectionId === 'sessions') {
-        // Only load sessions history on first visit to the tab
-        if (!sessionsLoaded) {
-          loadUserSessionHistory();
-          sessionsLoaded = true;
-        }
+      switch(timeFilter) {
+        case 'month':
+          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+          showRow = showRow && (actionDate >= startOfMonth);
+          break;
+        case '3months':
+          const threeMonthsAgo = new Date();
+          threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+          showRow = showRow && (actionDate >= threeMonthsAgo);
+          break;
+        case 'year':
+          const startOfYear = new Date(now.getFullYear(), 0, 1);
+          showRow = showRow && (actionDate >= startOfYear);
+          break;
       }
-    });
+    }
+    
+    // Apply action type filter
+    if (actionFilter !== 'all') {
+      const rowActionType = row.getAttribute('data-action-type');
+      showRow = showRow && (rowActionType === actionFilter.toLowerCase());
+    }
+    
+    row.style.display = showRow ? '' : 'none';
+    if (showRow) visibleCount++;
   });
   
-  // Set up tabs in the tutors section
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-      // Update active tab
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      this.classList.add('active');
+  // Show no results message if needed
+  showNoResultsMessage(visibleCount);
+}
+
+function showNoResultsMessage(visibleCount) {
+  const container = document.getElementById('sessionsContainer');
+  let noResultsMsg = container.querySelector('.no-results-message');
+  
+  if (visibleCount === 0) {
+    if (!noResultsMsg) {
+      noResultsMsg = document.createElement('div');
+      noResultsMsg.className = 'no-results-message empty-state';
+      noResultsMsg.innerHTML = `
+        <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
+        <h3>No matching sessions found</h3>
+        <p>Try adjusting your filters</p>
+      `;
       
-      // Show the corresponding tab content
-      const tabId = this.getAttribute('data-tab');
-      document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-      });
-      document.getElementById(`${tabId}-tab`).classList.add('active');
-      
-      // Show search only for available tutors
-      const searchContainer = document.getElementById('tutorSearchContainer');
-      if (tabId === 'available-tutors') {
-        searchContainer.style.display = 'block';
-      } else {
-        searchContainer.style.display = 'none';
+      const table = container.querySelector('table');
+      if (table) {
+        table.style.display = 'none';
       }
-    });
-  });
-  
-  // Set up tutor selection change event
-  document.getElementById('tutor').addEventListener('change', function() {
-    const tutorId = this.value;
-    const subjectSelect = document.getElementById('subject');
-    const priceSummary = document.getElementById('priceSummary');
-    const hourlyRateSpan = document.getElementById('hourlyRate');
-    const durationDisplay = document.getElementById('durationDisplay');
-    const totalPriceSpan = document.getElementById('totalPrice');
-    
-    if (!tutorId) {
-      subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
-      subjectSelect.disabled = true;
-      priceSummary.style.display = 'none';
-      return;
+      container.appendChild(noResultsMsg);
     }
-    
-    // Get tutor data to populate subjects and hourly rate
-    db.collection('tutors').doc(tutorId).get()
-      .then((doc) => {
-        if (doc.exists) {
-          const tutor = doc.data();
-          
-          // Populate subjects
-          subjectSelect.innerHTML = '';
-          let subjects = [];
-          
-          // Check for nested subjects structure
-          if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-            subjects = tutor.subjects.subjects;
-          } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-            // Fallback for different structure
-            subjects = tutor.subjects;
-          }
-          
-          if (subjects.length > 0) {
-            subjects.forEach(subject => {
-              const option = document.createElement('option');
-              option.value = subject;
-              option.textContent = subject;
-              subjectSelect.appendChild(option);
-            });
-            subjectSelect.disabled = false;
-          } else {
-            subjectSelect.innerHTML = '<option value="">No subjects available</option>';
-            subjectSelect.disabled = true;
-          }
-          
-          // Show price summary
-          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-          const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-          const totalPrice = hourlyRate * duration;
-          
-          hourlyRateSpan.textContent = hourlyRate;
-          durationDisplay.textContent = duration;
-          totalPriceSpan.textContent = totalPrice.toFixed(2);
-          priceSummary.style.display = 'block';
-        }
-      })
-      .catch((error) => {
-        console.error('Error loading tutor details:', error);
-        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-        subjectSelect.disabled = true;
-        priceSummary.style.display = 'none';
-      });
-  });
-  
-  // Set up duration change event to update price
-  document.getElementById('duration').addEventListener('change', function() {
-    const tutorSelect = document.getElementById('tutor');
-    const tutorId = tutorSelect.value;
-    
-    if (!tutorId) return;
-    
-    // Get tutor hourly rate
-    db.collection('tutors').doc(tutorId).get()
-      .then((doc) => {
-        if (doc.exists) {
-          const tutor = doc.data();
-          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-          const duration = parseFloat(this.value) || 1.5;
-          const totalPrice = hourlyRate * duration;
-          
-          document.getElementById('hourlyRate').textContent = hourlyRate;
-          document.getElementById('durationDisplay').textContent = duration;
-          document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-        }
-      })
-      .catch((error) => {
-        console.error('Error loading tutor details:', error);
-      });
-  });
-  
-  // Set up scheduling form submission
-  document.getElementById('schedulingForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const tutorId = document.getElementById('tutor').value;
-    const subject = document.getElementById('subject').value;
-    const date = document.getElementById('date').value;
-    const time = document.getElementById('time').value;
-    const duration = document.getElementById('duration').value;
-    const sessionType = document.getElementById('sessionType').value;
-    const notes = document.getElementById('notes').value;
-    
-    if (!tutorId || !subject || !date || !time) {
-      alert('Please fill in all required fields.');
-      return;
-    }
-    
-    // Combine date and time
-    const dateTime = new Date(`${date}T${time}`);
-    
-    // Get tutor details for the booking
-    db.collection('tutors').doc(tutorId).get()
-      .then((tutorDoc) => {
-        if (!tutorDoc.exists) {
-          alert('Selected tutor not found.');
-          return;
-        }
-        
-        const tutor = tutorDoc.data();
-        const studentId = auth.currentUser.uid;
-        const studentName = userData?.name || 'Unknown Student';
-        
-        // Generate a unique slot ID
-        const slotId = 'slot_' + Date.now();
-        
-        // Create booking in the bookedSessions collection
-        db.collection('bookedSessions').add({
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: dateTime,
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-        })
-        .then((docRef) => {
-          alert('Session booked successfully! It is now pending confirmation from the tutor.');
-          document.getElementById('schedulingForm').reset();
-          document.getElementById('priceSummary').style.display = 'none';
-          document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-          document.getElementById('subject').disabled = true;
-          
-          // Immediately add the new booking to the UI
-          addBookingToUI(docRef.id, {
-            slotId: slotId,
-            tutorId: tutorId,
-            tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-            studentId: studentId,
-            studentName: studentName,
-            subject: subject,
-            date: firebase.firestore.Timestamp.fromDate(dateTime),
-            duration: duration,
-            sessionType: sessionType,
-            notes: notes,
-            status: 'pending',
-            bookedAt: new Date(),
-            hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-            totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-          });
-        })
-        .catch((error) => {
-          console.error('Error creating booking:', error);
-          alert('Failed to book session. Please try again.');
-        });
-      })
-      .catch((error) => {
-        console.error('Error getting tutor details:', error);
-        alert('Failed to book session. Please try again.');
-      });
-  });
-  
-  // Set up edit profile button
-  document.getElementById('editProfileBtn').addEventListener('click', function() {
-    const profileForm = document.getElementById('profileForm');
-    if (profileForm.style.display === 'none') {
-      profileForm.style.display = 'block';
-      this.textContent = 'Cancel Edit';
-    } else {
-      profileForm.style.display = 'none';
-      this.textContent = 'Edit Profile';
-    }
-  });
-  
-  // Set up save profile button
-  document.getElementById('saveProfileBtn').addEventListener('click', function() {
-    const name = document.getElementById('fullName').value;
-    const phone = document.getElementById('phone').value;
-    
-    if (!name) {
-      alert('Please enter your name.');
-      return;
-    }
-    
-    // Update user data in Firestore
-    const userId = auth.currentUser.uid;
-    db.collection('students').doc(userId).update({
-      name: name,
-      phone: phone,
-      updatedAt: new Date()
-    })
-    .then(() => {
-      alert('Profile updated successfully!');
-      document.getElementById('profileForm').style.display = 'none';
-      document.getElementById('editProfileBtn').textContent = 'Edit Profile';
-      
-      // Update displayed user info
-      document.getElementById('userName').textContent = name;
-      document.getElementById('profileName').textContent = name;
-      userData.name = name;
-      userData.phone = phone;
-    })
-    .catch((error) => {
-      console.error('Error updating profile:', error);
-      alert('Failed to update profile. Please try again.');
-    });
-  });
-  
-  // Set up logout button
-  document.getElementById('logoutBtn').addEventListener('click', function() {
-    if (confirm('Are you sure you want to logout?')) {
-      auth.signOut().then(() => {
-        window.location.href = 'student-login.html';
-      });
-    }
-  });
-  
-  // Set up mobile menu toggle
-  document.getElementById('menuToggle').addEventListener('click', function() {
-    document.getElementById('sidebar').classList.toggle('active');
-  });
-  
-  // Add history filter event listener (INSIDE the function)
-  document.getElementById('historyFilter').addEventListener('change', function() {
-  // When filter changes, apply filters to current data
-  if (sessionsDataLoaded) {
-    setupHistoryFilters();
   } else {
-    // If data not loaded yet, refresh will handle it
-    refreshSessionsHistory();
+    if (noResultsMsg) {
+      noResultsMsg.remove();
+    }
+    const table = container.querySelector('table');
+    if (table) {
+      table.style.display = '';
+    }
+  }
+}
+
+// Update the filter event listeners in initDashboard function:
+// Replace the existing filter event listeners with:
+
+// History filter event listener
+document.getElementById('historyFilter').addEventListener('change', function() {
+  if (sessionsDataLoaded) {
+    applyHistoryFilters();
+  } else {
+    loadUserSessionHistory();
   }
 });
+
 
 // Add event listener for action type filter
 document.getElementById('actionTypeFilter').addEventListener('change', function() {
