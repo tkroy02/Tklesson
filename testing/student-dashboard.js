@@ -1,3 +1,27 @@
+// Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
+  authDomain: "tk-scheduler.firebaseapp.com",
+  projectId: "tk-scheduler",
+  storageBucket: "tk-scheduler.appspot.com",
+  messagingSenderId: "746606755052",
+  appId: "1:746606755052:web:d7eae92976cb2f2fa9f9c9",
+  measurementId: "G-Q5L607R3N7"
+};
+
+// Initialize Firebase with error handling
+try {
+  firebase.initializeApp(firebaseConfig);
+} catch (error) {
+  console.error('Firebase initialization failed:', error);
+}
+
+// Initialize Firebase services with null checks
+const auth = firebase.auth?.() || null;
+const db = firebase.firestore?.() || null;
+
+
+
 // Profile Edit Button Handler
 document.getElementById('editProfileBtn').addEventListener('click', function() {
   const profileForm = document.getElementById('profileForm');
