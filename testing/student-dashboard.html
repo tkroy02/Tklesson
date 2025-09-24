@@ -1462,49 +1462,73 @@ function loadTutorsForScheduling() {
 }
 
 // Set up scheduling form submission
-  document.getElementById('schedulingForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const tutorId = document.getElementById('tutor').value;
-    const subject = document.getElementById('subject').value;
-    const date = document.getElementById('date').value;
-    const time = document.getElementById('time').value;
-    const duration = document.getElementById('duration').value;
-    const sessionType = document.getElementById('sessionType').value;
-    const notes = document.getElementById('notes').value;
-    
-    if (!tutorId || !subject || !date || !time) {
-      alert('Please fill in all required fields.');
-      return;
-    }
-    
-    // Combine date and time
-    const dateTime = new Date(`${date}T${time}`);
-    
-    // Get tutor details for the booking
-    db.collection('tutors').doc(tutorId).get()
-      .then((tutorDoc) => {
-        if (!tutorDoc.exists) {
-          alert('Selected tutor not found.');
-          return;
-        }
+document.getElementById('schedulingForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  
+  const tutorId = document.getElementById('tutor').value;
+  const subject = document.getElementById('subject').value;
+  const date = document.getElementById('date').value;
+  const time = document.getElementById('time').value;
+  const duration = document.getElementById('duration').value;
+  const sessionType = document.getElementById('sessionType').value;
+  const notes = document.getElementById('notes').value;
+  
+  if (!tutorId || !subject || !date || !time) {
+    alert('Please fill in all required fields.');
+    return;
+  }
+  
+  // Combine date and time
+  const dateTime = new Date(`${date}T${time}`);
+  
+  // Get tutor details for the booking
+  db.collection('tutors').doc(tutorId).get()
+    .then((tutorDoc) => {
+      if (!tutorDoc.exists) {
+        alert('Selected tutor not found.');
+        return;
+      }
+      
+      const tutor = tutorDoc.data();
+      const studentId = auth.currentUser.uid;
+      const studentName = userData?.name || 'Unknown Student';
+      
+      // Generate a unique slot ID
+      const slotId = 'slot_' + Date.now();
+      
+      // Create booking in the bookedSessions collection
+      db.collection('bookedSessions').add({
+        slotId: slotId,
+        tutorId: tutorId,
+        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+        studentId: studentId,
+        studentName: studentName,
+        subject: subject,
+        date: dateTime,
+        duration: duration,
+        sessionType: sessionType,
+        notes: notes,
+        status: 'pending',
+        bookedAt: new Date(),
+        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+      })
+      .then((docRef) => {
+        alert('Session booked successfully! It is now pending confirmation from the tutor.');
+        document.getElementById('schedulingForm').reset();
+        document.getElementById('priceSummary').style.display = 'none';
+        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+        document.getElementById('subject').disabled = true;
         
-        const tutor = tutorDoc.data();
-        const studentId = auth.currentUser.uid;
-        const studentName = userData?.name || 'Unknown Student';
-        
-        // Generate a unique slot ID
-        const slotId = 'slot_' + Date.now();
-        
-        // Create booking in the bookedSessions collection
-        db.collection('bookedSessions').add({
+        // Immediately add the new booking to the UI
+        addBookingToUI(docRef.id, {
           slotId: slotId,
           tutorId: tutorId,
           tutorName: tutor.personal?.fullName || 'Unknown Tutor',
           studentId: studentId,
           studentName: studentName,
           subject: subject,
-          date: dateTime,
+          date: firebase.firestore.Timestamp.fromDate(dateTime),
           duration: duration,
           sessionType: sessionType,
           notes: notes,
@@ -1512,224 +1536,111 @@ function loadTutorsForScheduling() {
           bookedAt: new Date(),
           hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
           totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-        })
-        .then((docRef) => {
-          alert('Session booked successfully! It is now pending confirmation from the tutor.');
-          document.getElementById('schedulingForm').reset();
-          document.getElementById('priceSummary').style.display = 'none';
-          document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-          document.getElementById('subject').disabled = true;
-          
-          // Immediately add the new booking to the UI
-          addBookingToUI(docRef.id, {
-            slotId: slotId,
-            tutorId: tutorId,
-            tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-            studentId: studentId,
-            studentName: studentName,
-            subject: subject,
-            date: firebase.firestore.Timestamp.fromDate(dateTime),
-            duration: duration,
-            sessionType: sessionType,
-            notes: notes,
-            status: 'pending',
-            bookedAt: new Date(),
-            hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-            totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-          });
-        })
-        .catch((error) => {
-          console.error('Error creating booking:', error);
-          alert('Failed to book session. Please try again.');
         });
       })
       .catch((error) => {
-        console.error('Error getting tutor details:', error);
+        console.error('Error creating booking:', error);
         alert('Failed to book session. Please try again.');
       });
-  });
+    })
+    .catch((error) => {
+      console.error('Error getting tutor details:', error);
+      alert('Failed to book session. Please try again.');
+    });
+});
 
 // Set up tutor selection change event
-  document.getElementById('tutor').addEventListener('change', function() {
-    const tutorId = this.value;
-    const subjectSelect = document.getElementById('subject');
-    const priceSummary = document.getElementById('priceSummary');
-    const hourlyRateSpan = document.getElementById('hourlyRate');
-    const durationDisplay = document.getElementById('durationDisplay');
-    const totalPriceSpan = document.getElementById('totalPrice');
-    
-    if (!tutorId) {
-      subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+document.getElementById('tutor').addEventListener('change', function() {
+  const tutorId = this.value;
+  const subjectSelect = document.getElementById('subject');
+  const priceSummary = document.getElementById('priceSummary');
+  const hourlyRateSpan = document.getElementById('hourlyRate');
+  const durationDisplay = document.getElementById('durationDisplay');
+  const totalPriceSpan = document.getElementById('totalPrice');
+  
+  if (!tutorId) {
+    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+    subjectSelect.disabled = true;
+    priceSummary.style.display = 'none';
+    return;
+  }
+  
+  // Get tutor data to populate subjects and hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        
+        // Populate subjects
+        subjectSelect.innerHTML = '';
+        let subjects = [];
+        
+        // Check for nested subjects structure
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjects = tutor.subjects.subjects;
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          // Fallback for different structure
+          subjects = tutor.subjects;
+        }
+        
+        if (subjects.length > 0) {
+          subjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject;
+            option.textContent = subject;
+            subjectSelect.appendChild(option);
+          });
+          subjectSelect.disabled = false;
+        } else {
+          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+          subjectSelect.disabled = true;
+        }
+        
+        // Show price summary
+        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+        const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+        const totalPrice = hourlyRate * duration;
+        
+        hourlyRateSpan.textContent = hourlyRate;
+        durationDisplay.textContent = duration;
+        totalPriceSpan.textContent = totalPrice.toFixed(2);
+        priceSummary.style.display = 'block';
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
       subjectSelect.disabled = true;
       priceSummary.style.display = 'none';
-      return;
-    }
-    
-    // Get tutor data to populate subjects and hourly rate
-    db.collection('tutors').doc(tutorId).get()
-      .then((doc) => {
-        if (doc.exists) {
-          const tutor = doc.data();
-          
-          // Populate subjects
-          subjectSelect.innerHTML = '';
-          let subjects = [];
-          
-          // Check for nested subjects structure
-          if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-            subjects = tutor.subjects.subjects;
-          } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-            // Fallback for different structure
-            subjects = tutor.subjects;
-          }
-          
-          if (subjects.length > 0) {
-            subjects.forEach(subject => {
-              const option = document.createElement('option');
-              option.value = subject;
-              option.textContent = subject;
-              subjectSelect.appendChild(option);
-            });
-            subjectSelect.disabled = false;
-          } else {
-            subjectSelect.innerHTML = '<option value="">No subjects available</option>';
-            subjectSelect.disabled = true;
-          }
-          
-          // Show price summary
-          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-          const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-          const totalPrice = hourlyRate * duration;
-          
-          hourlyRateSpan.textContent = hourlyRate;
-          durationDisplay.textContent = duration;
-          totalPriceSpan.textContent = totalPrice.toFixed(2);
-          priceSummary.style.display = 'block';
-        }
-      })
-      .catch((error) => {
-        console.error('Error loading tutor details:', error);
-        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-        subjectSelect.disabled = true;
-        priceSummary.style.display = 'none';
-      });
-  });
+    });
+});
 
-  // Set up duration change event to update price
-  document.getElementById('duration').addEventListener('change', function() {
-    const tutorSelect = document.getElementById('tutor');
-    const tutorId = tutorSelect.value;
-    
-    if (!tutorId) return;
-    
-    // Get tutor hourly rate
-    db.collection('tutors').doc(tutorId).get()
-      .then((doc) => {
-        if (doc.exists) {
-          const tutor = doc.data();
-          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-          const duration = parseFloat(this.value) || 1.5;
-          const totalPrice = hourlyRate * duration;
-          
-          document.getElementById('hourlyRate').textContent = hourlyRate;
-          document.getElementById('durationDisplay').textContent = duration;
-          document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-        }
-      })
-      .catch((error) => {
-        console.error('Error loading tutor details:', error);
-      });
-  });
-
-// Set up scheduling form submission
-  document.getElementById('schedulingForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const tutorId = document.getElementById('tutor').value;
-    const subject = document.getElementById('subject').value;
-    const date = document.getElementById('date').value;
-    const time = document.getElementById('time').value;
-    const duration = document.getElementById('duration').value;
-    const sessionType = document.getElementById('sessionType').value;
-    const notes = document.getElementById('notes').value;
-    
-    if (!tutorId || !subject || !date || !time) {
-      alert('Please fill in all required fields.');
-      return;
-    }
-    
-    // Combine date and time
-    const dateTime = new Date(`${date}T${time}`);
-    
-    // Get tutor details for the booking
-    db.collection('tutors').doc(tutorId).get()
-      .then((tutorDoc) => {
-        if (!tutorDoc.exists) {
-          alert('Selected tutor not found.');
-          return;
-        }
-        
-        const tutor = tutorDoc.data();
-        const studentId = auth.currentUser.uid;
-        const studentName = userData?.name || 'Unknown Student';
-        
-        // Generate a unique slot ID
-        const slotId = 'slot_' + Date.now();
-        
-        // Create booking in the bookedSessions collection
-        db.collection('bookedSessions').add({
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: dateTime,
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-        })
-        .then((docRef) => {
-          alert('Session booked successfully! It is now pending confirmation from the tutor.');
-          document.getElementById('schedulingForm').reset();
-          document.getElementById('priceSummary').style.display = 'none';
-          document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-          document.getElementById('subject').disabled = true;
-          
-          // Immediately add the new booking to the UI
-          addBookingToUI(docRef.id, {
-            slotId: slotId,
-            tutorId: tutorId,
-            tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-            studentId: studentId,
-            studentName: studentName,
-            subject: subject,
-            date: firebase.firestore.Timestamp.fromDate(dateTime),
-            duration: duration,
-            sessionType: sessionType,
-            notes: notes,
-            status: 'pending',
-            bookedAt: new Date(),
-            hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-            totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-          });
-        })
-        .catch((error) => {
-          console.error('Error creating booking:', error);
-          alert('Failed to book session. Please try again.');
-        });
-      })
-      .catch((error) => {
-        console.error('Error getting tutor details:', error);
-        alert('Failed to book session. Please try again.');
-      });
-  });
-
+// Set up duration change event to update price
+document.getElementById('duration').addEventListener('change', function() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorId = tutorSelect.value;
   
+  if (!tutorId) return;
+  
+  // Get tutor hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+        const duration = parseFloat(this.value) || 1.5;
+        const totalPrice = hourlyRate * duration;
+        
+        document.getElementById('hourlyRate').textContent = hourlyRate;
+        document.getElementById('durationDisplay').textContent = duration;
+        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+    });
+});
+
 // Add new booking to UI immediately
 function addBookingToUI(bookingId, bookingData) {
   const container = document.getElementById('bookingsContainer');
@@ -1812,12 +1723,13 @@ if (sectionId === 'scheduling') {
       }
   });
 
-  
 //Scheduling Section ends. All JS functionalities of the scheduling section ends here
+
   
 </script>
 </body>
 </html>
+
 
 
 
