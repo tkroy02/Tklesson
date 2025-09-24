@@ -1726,9 +1726,63 @@ if (sectionId === 'scheduling') {
 
 //My Tutors Section starts here. All JS functionalities of the My Tutors section starts here
 
-// VARIABLE DECLARATIONS - MUST BE AT THE TOP
+// Real-time listener for reschedule requests
+// Add these missing variable declarations at the top
+let sessionsDataLoaded = false;
 let tutorsLoaded = false;
+let bookingsLoaded = false;
+let sessionsLoaded = false;
+let currentUser = null;
+let userData = null;
+let inactivityTimer;
 
+// Load available tutors
+function loadAvailableTutors() {
+  const container = document.getElementById('availableTutorsContainer');
+  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const tutorCard = document.createElement('div');
+        tutorCard.className = 'tutor-card';
+        tutorCard.innerHTML = `
+          <div class="tutor-header">
+            <div class="tutor-avatar">
+              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
+            </div>
+            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+          </div>
+          <div class="tutor-details">
+            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+          </div>
+        `;
+        container.appendChild(tutorCard);
+      });
+    })
+    .catch((error) => {
+      console.error('Error loading available tutors:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+    });
+}
+  
 // Load my tutors (tutors the student has previously booked with)
 function loadMyTutors() {
   const container = document.getElementById('myTutorsContainer');
@@ -1806,53 +1860,6 @@ function loadMyTutors() {
     });
 }
 
-// Load available tutors
-function loadAvailableTutors() {
-  const container = document.getElementById('availableTutorsContainer');
-  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
-  
-  // Query tutors who are available and approved
-  db.collection('tutors')
-    .where('available', '==', true)
-    .where('approved', '==', true)
-    .get()
-    .then((querySnapshot) => {
-      container.innerHTML = '';
-      
-      if (querySnapshot.empty) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
-        return;
-      }
-      
-      querySnapshot.forEach((doc) => {
-        const tutor = doc.data();
-        const tutorCard = document.createElement('div');
-        tutorCard.className = 'tutor-card';
-        tutorCard.innerHTML = `
-          <div class="tutor-header">
-            <div class="tutor-avatar">
-              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
-            </div>
-            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
-            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
-          </div>
-          <div class="tutor-details">
-            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
-            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
-            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
-            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
-            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
-          </div>
-        `;
-        container.appendChild(tutorCard);
-      });
-    })
-    .catch((error) => {
-      console.error('Error loading available tutors:', error);
-      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
-    });
-}
-
 // Book a tutor
 function bookTutor(tutorId) {
   // Switch to scheduling tab and pre-select the tutor
@@ -1873,64 +1880,6 @@ function bookTutor(tutorId) {
   }, 100);
 }
 
-// EVENT LISTENERS - MUST BE AFTER FUNCTION DECLARATIONS BUT CAN BE CALLED LATER
-function setupTutorsNavigation() {
-  // Navigation logic for My Tutors section
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-      e.preventDefault();
-      
-      // Update active menu item
-      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-      this.classList.add('active');
-      
-      // Show the corresponding section
-      const sectionId = this.getAttribute('data-section');
-      document.querySelectorAll('.dashboard-section').forEach(section => {
-        section.classList.remove('active');
-      });
-      document.getElementById(sectionId).classList.add('active');
-
-      // Load specific data based on the section
-      if (sectionId === 'tutors') {
-        // Load both my tutors and available tutors when the tutors section is opened
-        if (!tutorsLoaded) {
-          loadMyTutors();
-          loadAvailableTutors();
-          tutorsLoaded = true;
-        }
-      }
-    });
-  });
-
-  // Set up tabs in the tutors section
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-      // Update active tab
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      this.classList.add('active');
-      
-      // Show the corresponding tab content
-      const tabId = this.getAttribute('data-tab');
-      document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-      });
-      document.getElementById(`${tabId}-tab`).classList.add('active');
-      
-      // Show search only for available tutors
-      const searchContainer = document.getElementById('tutorSearchContainer');
-      if (tabId === 'available-tutors') {
-        searchContainer.style.display = 'block';
-      } else {
-        searchContainer.style.display = 'none';
-      }
-    });
-  });
-}
-
-// Call this function after Firebase authentication is complete
-// Add this to your auth.onAuthStateChanged callback:
-// setupTutorsNavigation();
   
 //My Tutors Section ends here. All JS functionalities of the My Tutors section ends here
 
@@ -1938,6 +1887,7 @@ function setupTutorsNavigation() {
 </script>
 </body>
 </html>
+
 
 
 
