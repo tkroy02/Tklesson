@@ -1093,3 +1093,210 @@ function showLoadingState(bookingId, isLoading) {
     }
 }
 
+/**
+ * Loads and displays user bookings from Firestore
+ * @param {string} userId - Optional user ID (defaults to current user)
+ */
+async function loadUserBookings(userId = null) {
+    try {
+        // Get current user if no userId provided
+        const currentUser = auth?.currentUser;
+        if (!currentUser && !userId) {
+            console.error('No user logged in');
+            showNotification('Please log in to view bookings', 'error');
+            return;
+        }
+
+        const targetUserId = userId || currentUser?.uid;
+        const container = document.getElementById('bookingsContainer');
+        
+        if (!container) {
+            console.error('Bookings container not found');
+            return;
+        }
+
+        // Show loading state
+        container.innerHTML = `
+            <div class="loading-state">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading your bookings...</p>
+            </div>
+        `;
+
+        // Query upcoming bookings
+        const now = new Date();
+        const bookingsQuery = db.collection('bookedSessions')
+            .where('studentId', '==', targetUserId)
+            .where('date', '>=', now)
+            .orderBy('date', 'asc')
+            .limit(50);
+
+        const snapshot = await bookingsQuery.get();
+        
+        // Use your existing loadBookings function
+        await loadBookings(snapshot);
+        
+        // Update upcoming sessions count
+        updateUpcomingSessionsCount(snapshot.size);
+        
+        console.log(`Loaded ${snapshot.size} upcoming bookings`);
+        
+    } catch (error) {
+        console.error('Error loading user bookings:', error);
+        
+        const container = document.getElementById('bookingsContainer');
+        if (container) {
+            container.innerHTML = `
+                <div class="error-state">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <h4>Error Loading Bookings</h4>
+                    <p>${error.message}</p>
+                    <button onclick="loadUserBookings()" class="btn-primary">
+                        <i class="fas fa-redo"></i> Try Again
+                    </button>
+                </div>
+            `;
+        }
+        
+        showNotification('Failed to load bookings', 'error');
+    }
+}
+
+/**
+ * Real-time listener for booking updates
+ */
+function setupBookingsRealTimeListener(userId = null) {
+    try {
+        const currentUser = auth?.currentUser;
+        const targetUserId = userId || currentUser?.uid;
+        
+        if (!targetUserId) {
+            console.warn('No user ID for real-time listener');
+            return;
+        }
+
+        const now = new Date();
+        
+        // Listen for real-time updates
+        return db.collection('bookedSessions')
+            .where('studentId', '==', targetUserId)
+            .where('date', '>=', now)
+            .orderBy('date', 'asc')
+            .onSnapshot({
+                next: (snapshot) => {
+                    console.log('Real-time booking update received');
+                    loadBookings(snapshot); // Reuse your existing function
+                    updateUpcomingSessionsCount(snapshot.size);
+                },
+                error: (error) => {
+                    console.error('Real-time listener error:', error);
+                    // Don't show error to user - it might be temporary
+                }
+            });
+            
+    } catch (error) {
+        console.error('Error setting up real-time listener:', error);
+    }
+}
+
+/**
+ * Enhanced version with filtering options
+ */
+async function loadUserBookingsWithFilters(options = {}) {
+    const defaultOptions = {
+        userId: null,
+        status: null, // 'confirmed', 'pending', etc.
+        limit: 50,
+        upcomingOnly: true
+    };
+    
+    const config = { ...defaultOptions, ...options };
+    
+    try {
+        const currentUser = auth?.currentUser;
+        const targetUserId = config.userId || currentUser?.uid;
+        
+        if (!targetUserId) {
+            throw new Error('User not authenticated');
+        }
+
+        let query = db.collection('bookedSessions')
+            .where('studentId', '==', targetUserId);
+
+        // Apply filters
+        if (config.upcomingOnly) {
+            query = query.where('date', '>=', new Date());
+        }
+        
+        if (config.status) {
+            query = query.where('status', '==', config.status);
+        }
+
+        query = query.orderBy('date', config.upcomingOnly ? 'asc' : 'desc')
+                    .limit(config.limit);
+
+        const snapshot = await query.get();
+        await loadBookings(snapshot);
+        
+        return snapshot;
+        
+    } catch (error) {
+        console.error('Error loading filtered bookings:', error);
+        throw error;
+    }
+}
+
+/**
+ * Initialize bookings system when page loads
+ */
+function initializeBookingsSystem() {
+    // Load initial bookings
+    auth?.onAuthStateChanged((user) => {
+        if (user) {
+            loadUserBookings(user.uid);
+            setupBookingsRealTimeListener(user.uid);
+        } else {
+            // User logged out - clear bookings
+            const container = document.getElementById('bookingsContainer');
+            if (container) {
+                container.innerHTML = '<p>Please log in to view your bookings</p>';
+            }
+            updateUpcomingSessionsCount(0);
+        }
+    });
+}
+
+// Add to your existing DOMContentLoaded event listener
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        activityMonitor = new ActivityMonitor();
+        historyFilters = new HistoryFilters();
+        
+        // Initialize bookings system
+        initializeBookingsSystem();
+        
+        window.activityMonitor = activityMonitor;
+        window.historyFilters = historyFilters;
+        
+    } catch (error) {
+        console.error('Initialization error:', error);
+    }
+});
+
+// Cleanup real-time listener when needed
+let bookingsUnsubscribe = null;
+
+function cleanupBookingsListener() {
+    if (bookingsUnsubscribe) {
+        bookingsUnsubscribe();
+        bookingsUnsubscribe = null;
+    }
+}
+
+// Update your beforeunload handler
+window.addEventListener('beforeunload', () => {
+    if (activityMonitor) activityMonitor.cleanup();
+    if (historyFilters) historyFilters.cleanup();
+    cleanupBookingsListener();
+});
+
