@@ -1,3 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard | Learning Scheduler</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDKs - Using compat version for easier integration -->
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore-compat.js"></script>
+
+<style>
+/* Your existing CSS styles */
+:root {
+  --primary: #4361ee;
+  --primary-light: #6a7eee;
+  --primary-dark: #2f4ac0;
+  --secondary: #3a0ca3;
+  --accent: #f72585;
+  --accent-light: #ff5da2;
+  --light: #f8f9fa;
+  --dark: #212529;
+  --dark-light: #424649;
+  --success: #4cc9f0;
+  --success-light: #7ad7f5;
+  --error: #e63946;
+  --warning: #ffc107;
+  --gray: #6c757d;
+  --gray-light: #e9ecef;
+  --border-radius: 16px;
+  --border-radius-sm: 8px;
+  --box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  --box-shadow-hover: 0 15px 35px rgba(0, 0, 0, 0.12);
+  --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  --glass-bg: rgba(255, 255, 255, 0.08);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Poppins', sans-serif;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+  min-height: 100vh;
+  color: var(--dark);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+.dashboard-container {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Sidebar Styles */
+.sidebar {
+  width: 280px;
+  background: linear-gradient(to bottom, var(--primary), var(--secondary));
+  color: white;
+  position: fixed;
+  height: 100vh;
+  overflow-y: auto;
+  transition: var(--transition);
+  z-index: 1000;
+  box-shadow: var(--box-shadow);
+}
+
+/* Ensure menu toggle is only visible on mobile */
+@media (min-width: 769px) {
+  .menu-toggle {
+    display: none !important;
+  }
+}
+
+/* Loading spinner */
+.spinner {
+  /* spinner-specific styles go here */
+}
+
+/* Sidebar header */
+.sidebar-header {
+  padding: 24px 20px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+/* Logo */
+.logo {
+  display: flex;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.logo img {
+  width: 40px;
+  height: 40px;
+  margin-right: 12px;
+  object-fit: contain;
+}
+
+.logo h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+}
+
+.user-avatar {
+  width: 50px;
+  height: 50px;
+  background: var(--glass-bg);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 12px;
+  font-size: 20px;
+}
+
+.user-details h3 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.user-details p {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.sidebar-menu {
+  list-style: none;
+  padding: 16px 0;
+}
+
+.menu-item {
+  margin-bottom: 4px;
+}
+
+.menu-item a {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  transition: var(--transition);
+  font-weight: 500;
+}
+
+.menu-item a:hover, .menu-item a.active {
+  background: var(--glass-bg);
+  color: white;
+  border-left: 4px solid var(--accent);
+}
+
+.menu-item i {
+  margin-right: 12px;
+  font-size: 18px;
+  width: 24px;
+  text-align: center;
+}
+
+.empty-state, .error-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--gray);
+}
+
+.empty-state i, .error-state i {
+  margin-bottom: 15px;
+  color: var(--primary-light);
+}
+
+.empty-state i {
+  color: var(--gray-light);
+}
+
+.error-state i {
+  color: var(--error);
+}
+
+.empty-state h3, .error-state h3 {
+  margin-bottom: 10px;
+  color: var(--dark);
+}
+  
+/* Main Content Styles */
+.main-content {
+  flex: 1;
+  margin-left: 280px;
+  padding: 24px;
+  transition: var(--transition);
+}
+
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  background: white;
+  padding: 16px 24px;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+}
+
+.page-title h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--primary-dark);
+}
+
+.page-title p {
+  color: var(--gray);
+  font-size: 14px;
+}
+
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.notification-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--gray-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: var(--accent);
+  color: white;
+  font-size: 10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logout-btn {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: var(--transition);
+}
+
+.logout-btn:hover {
+  background: var(--primary-dark);
+}
+
+/* Stats Container */
+.stats-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.stat-card {
+  background: white;
+  padding: 24px;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  display: flex;
+  flex-direction: column;
+  transition: var(--transition);
+}
+
+.stat-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--box-shadow-hover);
+}
+
+.stat-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  font-size: 24px;
+}
+
+.stat-icon.blue {
+  background: rgba(67, 97, 238, 0.1);
+  color: var(--primary);
+}
+
+.stat-icon.green {
+  background: rgba(76, 201, 240, 0.1);
+  color: var(--success);
+}
+
+.stat-icon.pink {
+  background: rgba(247, 37, 133, 0.1);
+  color: var(--accent);
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  color: var(--gray);
+  font-size: 14px;
+}
+
+/* Dashboard Sections */
+.dashboard-section {
+  display: none;
+  background: white;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  padding: 24px;
+  margin-bottom: 30px;
+}
+
+.dashboard-section.active {
+  display: block;
+  animation: fadeIn 0.5s ease;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--gray-light);
+}
+
+.section-header h3 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--primary-dark);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Profile Card */
+.profile-card {
+  display: flex;
+  align-items: center;
+  background: var(--gray-light);
+  padding: 24px;
+  border-radius: var(--border-radius);
+  margin-bottom: 24px;
+}
+
+.profile-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  margin-right: 20px;
+}
+
+.profile-details {
+  flex: 1;
+}
+
+.profile-details h3 {
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+
+.profile-details p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--gray);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status-verified {
+  background: rgba(76, 201, 240, 0.1);
+  color: var(--success);
+}
+
+.status-pending {
+  background: rgba(255, 193, 7, 0.1);
+  color: var(--warning);
+}
+
+.edit-profile-btn {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.edit-profile-btn:hover {
+  background: var(--primary-dark);
+}
+
+/* Forms */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--dark);
+}
+
+.form-control {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--gray-light);
+  border-radius: var(--border-radius-sm);
+  font-family: 'Poppins', sans-serif;
+  transition: var(--transition);
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.1);
+}
+
+.save-btn {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.save-btn:hover {
+  background: var(--primary-dark);
+}
+
+
+/* Session Cards */
+.session-card {
+  background: white;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: var(--transition);
+}
+
+.session-card:hover {
+  box-shadow: var(--box-shadow-hover);
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.session-title {
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--primary-dark);
+}
+
+.session-date {
+  color: var(--gray);
+  font-size: 14px;
+}
+
+.session-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.session-detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--gray);
+}
+
+.session-actions {
+  display: flex;
+  gap: 12px;
+}
+
+
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.btn-primary:hover {
+  background: var(--primary-dark);
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  padding: 8px 16px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.btn-outline:hover {
+  background: var(--primary);
+  color: white;
+}
+
+.btn-success {
+    background: var(--success);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    font-weight: 500;
+    transition: var(--transition);
+}
+
+.btn-success:hover {
+    background: var(--success-light);
+}
+
+.btn-danger {
+    background: var(--error);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    font-weight: 500;
+    transition: var(--transition);
+}
+
+.btn-danger:hover {
+    background: #c53030;
+}
+
+
+/* Tutors Container */
+.tutors-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.tutor-card {
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.tutor-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+}
+
+.tutor-avatar img {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.tutor-header {
+  padding: 20px;
+  text-align: center;
+  background: linear-gradient(to right, var(--primary-light), var(--primary));
+  color: white;
+}
+
+.tutor-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.tutor-rating i {
+  color: #FFD700; /* Gold color for stars */
+}
+
+.tutor-count {
+  margin-bottom: 15px;
+  font-weight: 500;
+  color: var(--gray);
+}
+
+.no-results {
+  color: var(--error);
+  font-style: italic;
+}
+
+.tutor-name {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.tutor-subject {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.tutor-details {
+  padding: 20px;
+}
+
+.tutor-details p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--gray);
+}
+
+.status-cancelled {
+    background: rgba(230, 57, 70, 0.1);
+    color: var(--error);
+}
+
+.status-warning {
+    background: rgba(255, 193, 7, 0.1);
+    color: var(--warning);
+}
+
+/* Reschedule status styles for student dashboard */
+.session-card.reschedule-requested {
+    border-left: 4px solid var(--warning);
+}
+
+.status-reschedule-requested {
+    background: rgba(255, 193, 7, 0.1);
+    color: var(--warning);
+}
+
+.reschedule-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+/* State styles */
+.loading-state, .empty-state, .error-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--gray);
+}
+
+.loading-state i, .empty-state i, .error-state i {
+  margin-bottom: 15px;
+  color: var(--primary-light);
+}
+
+.empty-state i {
+  color: var(--gray-light);
+}
+
+.error-state i {
+  color: var(--error);
+}
+
+.empty-state h3, .error-state h3 {
+  margin-bottom: 10px;
+  color: var(--dark);
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--gray-light);
+  margin-bottom: 24px;
+}
+
+.tab {
+  padding: 12px 24px;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--gray);
+  transition: var(--transition);
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom: 2px solid var(--primary);
+}
+
+.tab:hover {
+  color: var(--primary-dark);
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* Tables */
+.sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 24px;
+}
+
+.sessions-table th:nth-child(7),
+.sessions-table td:nth-child(7) {
+    white-space: nowrap;
+    min-width: 160px;
+}
+
+.timestamp-cell {
+    font-size: 12px;
+    color: var(--gray);
+}
+
+.sessions-table th,
+.sessions-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--gray-light);
+}
+
+
+.sessions-table th {
+  background: var(--gray-light);
+  font-weight: 600;
+}
+
+.sessions-table tr:hover {
+  background: rgba(67, 97, 238, 0.03);
+}
+
+/* Menu Toggle for Mobile */
+.menu-toggle {
+  display: none;
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 1100;
+  background: var(--primary);
+  color: white;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--box-shadow);
+}
+
+/* Loading spinner */
+.spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 4px solid var(--primary);
+  width: 30px;
+  height: 30px;
+  animation: spin 1s linear infinite;
+  margin: 20px auto;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 240px;
+  }
+
+  .main-content {
+    margin-left: 240px;
+  }
+
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .menu-toggle {
+    display: flex;
+  }
+
+  .sidebar {
+    transform: translateX(-100%);
+  }
+
+  .sidebar.active {
+    transform: translateX(0);
+  }
+
+  .main-content {
+    margin-left: 0;
+    padding: 80px 16px 24px;
+  }
+
+  .top-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .stats-container {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .profile-avatar {
+    margin-right: 0;
+    margin-bottom: 16px;
+  }
+
+  .tutors-container {
+    grid-template-columns: 1fr;
+  }
+
+  .session-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .session-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .tabs {
+    flex-direction: column;
+  }
+
+  .tab {
+    border-bottom: 1px solid var(--gray-light);
+  }
+
+  .tab.active {
+    border-bottom: 2px solid var(--primary);
+  }
+}
+</style>
+</head>
+<body>
+<div class="menu-toggle" id="menuToggle">
+  <i class="fas fa-bars"></i>
+</div>
+
+<div class="dashboard-container">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <img src="Tklesson3.png" alt="Tklesson Logo">
+        <h1>Tklesson</h1>
+      </div>
+      <div class="user-info">
+        <div class="user-avatar">
+          <i class="fas fa-user"></i>
+        </div>
+        <div class="user-details">
+          <h3 id="userName">Loading...</h3>
+          <p id="userRole">Student</p>
+        </div>
+      </div>
+    </div>
+
+    <ul class="sidebar-menu">
+      <li class="menu-item">
+        <a href="#profile" class="active" data-section="profile">
+          <i class="fas fa-user-circle"></i>
+          <span>Profile</span>
+        </a>
+      </li>
+      <li class="menu-item">
+        <a href="#scheduling" data-section="scheduling">
+          <i class="fas fa-calendar-alt"></i>
+          <span>Scheduling</span>
+        </a>
+      </li>
+      <li class="menu-item">
+        <a href="#tutors" data-section="tutors">
+          <i class="fas fa-user-tie"></i>
+          <span>My Tutors</span>
+        </a>
+      </li>
+      <li class="menu-item">
+        <a href="#bookings" data-section="bookings">
+          <i class="fas fa-bookmark"></i>
+          <span>My Bookings</span>
+        </a>
+      </li>
+      <li class="menu-item">
+        <a href="#sessions" data-section="sessions">
+          <i class="fas fa-history"></i>
+          <span>Sessions History</span>
+        </a>
+      </li>
+    </ul>
+  </aside>
+
+  <main class="main-content">
+    <div class="top-bar">
+      <div class="page-title">
+        <h2>Student Dashboard</h2>
+        <p>Welcome back! Here's your learning overview</p>
+      </div>
+      <div class="top-bar-actions">
+        <div class="notification-btn">
+          <i class="fas fa-bell"></i>
+          <span class="notification-badge">3</span>
+        </div>
+        <button class="logout-btn" id="logoutBtn">
+          <i class="fas fa-sign-out-alt"></i> Logout
+        </button>
+      </div>
+    </div>
+
+    <div class="stats-container">
+      <div class="stat-card">
+        <div class="stat-icon blue">
+          <i class="fas fa-bookmark"></i>
+        </div>
+        <div class="stat-value" id="upcomingSessionsCount">0</div>
+        <div class="stat-label">Upcoming Sessions</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon green">
+          <i class="fas fa-user-tie"></i>
+        </div>
+        <div class="stat-value" id="tutorsCount">0</div>
+        <div class="stat-label">Active Tutors</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon pink">
+          <i class="fas fa-clock"></i>
+        </div>
+        <div class="stat-value" id="hoursLearned">0</div>
+        <div class="stat-label">Hours Learned</div>
+      </div>
+    </div>
+
+    <section id="profile" class="dashboard-section active">
+      <div class="section-header">
+        <h3><i class="fas fa-user-circle"></i> Profile Information</h3>
+      </div>
+
+      <div class="profile-card">
+        <div class="profile-avatar">
+          <i class="fas fa-user"></i>
+        </div>
+        <div class="profile-details">
+          <h3 id="profileName">Loading...</h3>
+          <p><i class="fas fa-envelope"></i> <span id="profileEmail">Loading...</span></p>
+          <p><i class="fas fa-user-tag"></i> <span id="profileRole">Student Account</span></p>
+          <span class="status-badge status-verified" id="profileStatus">Verified</span>
+        </div>
+        <button class="edit-profile-btn" id="editProfileBtn">Edit Profile</button>
+      </div>
+
+      <div class="section-header">
+        <h3><i class="fas fa-cog"></i> Account Settings</h3>
+      </div>
+
+      <form id="profileForm" style="display: none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fullName">Full Name</label>
+            <!-- Changed id from "name" to "fullName" -->
+            <input type="text" id="fullName" class="form-control">
+          </div>
+          <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" class="form-control" disabled>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" class="form-control">
+          </div>
+          <div class="form-group">
+            <label for="role">Account Type</label>
+            <input type="text" id="role" class="form-control" value="Student" disabled>
+          </div>
+        </div>
+        <button type="button" class="save-btn" id="saveProfileBtn">Save Changes</button>
+      </form>
+    </section>
+
+    <section id="scheduling" class="dashboard-section">
+      <div class="section-header">
+        <h3><i class="fas fa-calendar-alt"></i> New Booking</h3>
+      </div>
+      
+      <form id="schedulingForm">
+        <div class="form-group">
+          <label for="tutor">Select Tutor *</label>
+          <select id="tutor" class="form-control" required>
+            <option value="">Select a tutor...</option>
+            <!-- Tutors will be loaded here -->
+          </select>
+          <div class="spinner" id="tutorSpinner" style="display: none;"></div>
+        </div>
+        
+        <div class="form-group">
+          <label for="subject">Subject *</label>
+          <select id="subject" class="form-control" required disabled>
+            <option value="">Select a tutor first</option>
+          </select>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="date">Date *</label>
+            <input type="date" id="date" class="form-control" required 
+                   min="<?php echo date('Y-m-d'); ?>">
+          </div>
+          <div class="form-group">
+            <label for="time">Time *</label>
+            <input type="time" id="time" class="form-control" required 
+                   min="08:00" max="20:00">
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="duration">Duration *</label>
+            <select id="duration" class="form-control" required>
+              <option value="1">1 hour</option>
+              <option value="1.5" selected>1.5 hours</option>
+              <option value="2">2 hours</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="sessionType">Session Type *</label>
+            <select id="sessionType" class="form-control" required>
+              <option value="online">Online (Google Meet)</option>
+              <option value="in-person">In-Person</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="notes">Session Notes (Optional)</label>
+          <textarea id="notes" class="form-control" rows="4" 
+                    placeholder="What would you like to focus on during this session? Any specific topics or areas of difficulty?"></textarea>
+        </div>
+        
+        <div class="form-group" id="priceSummary" style="display: none;">
+          <h4>Price Summary</h4>
+          <p>Hourly Rate: $<span id="hourlyRate">0</span></p>
+          <p>Duration: <span id="durationDisplay">0</span> hours</p>
+          <p><strong>Total: $<span id="totalPrice">0</span></strong></p>
+        </div>
+        
+        <button type="submit" class="save-btn" id="scheduleBtn">
+          <i class="fas fa-calendar-check"></i> Schedule Session
+        </button>
+      </form>
+    </section>
+
+    <section id="tutors" class="dashboard-section">
+      <div class="section-header">
+        <h3><i class="fas fa-user-tie"></i> Find Tutors</h3>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" data-tab="my-tutors">My Tutors</div>
+        <div class="tab" data-tab="available-tutors">Available Tutors</div>
+      </div>
+
+      <div class="search-container" style="margin-bottom: 20px; display: none;" id="tutorSearchContainer">
+        <input type="text" id="tutorSearch" class="form-control" placeholder="Search tutors by name or subject...">
+      </div>
+
+      <div class="tab-content active" id="my-tutors-tab">
+        <div id="myTutorsContainer">
+          <p>Loading your tutors...</p>
+        </div>
+      </div>
+
+      <div class="tab-content" id="available-tutors-tab">
+        <div id="availableTutorsContainer">
+          <div class="spinner" id="tutorsSpinner"></div>
+        </div>
+      </div>
+    </section>
+
+<section id="bookings" class="dashboard-section">
+    <div class="section-header">
+        <h3><i class="fas fa-bookmark"></i> My Bookings</h3>
+    </div>
+    
+    <!-- Add filter for reschedule requests -->
+    <div style="margin-bottom: 20px;">
+        <label>Filter by:</label>
+        <select id="bookingFilter" class="form-control" style="width: 200px;">
+            <option value="all">All Bookings</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="reschedule">Reschedule Requests</option>
+            <option value="pending">Pending</option>
+        </select>
+    </div>
+    
+    <div id="bookingsContainer">
+        <p>Loading your bookings...</p>
+    </div>
+</section>
+
+    <section id="sessions" class="dashboard-section">
+  <div class="section-header">
+    <h3><i class="fas fa-history"></i> Sessions History</h3>
+  </div>
+  
+  <div style="margin-bottom: 20px; display: flex; gap: 15px; align-items: center;">
+    <div>
+      <label>Filter by:</label>
+      <select id="historyFilter" class="form-control" style="width: 200px;">
+        <option value="all">All Time</option>
+        <option value="month">This Month</option>
+        <option value="3months">Last 3 Months</option>
+        <option value="year">This Year</option>
+      </select>
+    </div>
+    <div>
+      <label>Action Type:</label>
+      <select id="actionTypeFilter" class="form-control" style="width: 200px;">
+        <option value="all">All Actions</option>
+        <option value="student booked">Student Booked</option>
+    <option value="tutor confirmed">Tutor Confirmed</option>
+    <option value="auto-confirmed">Auto-Confirmed</option>
+    <option value="completed">Completed</option>
+    <option value="student cancelled">Student Cancelled</option>
+    <option value="tutor cancelled">Tutor Cancelled</option>
+    <option value="tutor reschedule request">Tutor Reschedule Request</option>
+    <option value="student reschedule request">Student Reschedule Request</option>
+    <option value="rescheduled">Rescheduled</option>
+      </select>
+    </div>
+  </div>
+
+  
+ <div id="sessionsContainer">
+    <div class="spinner" id="sessionsSpinner"></div>
+  </div>
+  <button id="loadMoreBtn" class="btn-outline" style="display: none; margin: 20px auto;">
+    <i class="fas fa-chevron-down"></i> Load More Sessions
+  </button>
+</section>
+
+
+<script>
 // Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
@@ -9,689 +1247,221 @@ const firebaseConfig = {
   measurementId: "G-Q5L607R3N7"
 };
 
-// Initialize Firebase with error handling
-try {
-  firebase.initializeApp(firebaseConfig);
-} catch (error) {
-  console.error('Firebase initialization failed:', error);
+// Initialize Firebase with compat version
+firebase.initializeApp(firebaseConfig);
+
+// Initialize Firebase services
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+function resetInactivityTimer() {
+  // Clear existing timer
+  clearTimeout(inactivityTimer);
+
+  // Set new timer (2 hours = 2 * 60 * 60 * 1000 milliseconds)
+  inactivityTimer = setTimeout(logoutDueToInactivity, 2 * 60 * 60 * 1000);
 }
 
-// Initialize Firebase services with null checks
-const auth = firebase.auth?.() || null;
-const db = firebase.firestore?.() || null;
-
-
-
-// Profile Edit Button Handler
-document.getElementById('editProfileBtn').addEventListener('click', function() {
-  const profileForm = document.getElementById('profileForm');
-  if (profileForm.style.display === 'none') {
-    profileForm.style.display = 'block';
-    this.textContent = 'Cancel Edit';
-  } else {
-    profileForm.style.display = 'none';
-    this.textContent = 'Edit Profile';
-  }
-});
-
-// Save Profile Button Handler
-document.getElementById('saveProfileBtn').addEventListener('click', function() {
-  const name = document.getElementById('fullName').value;
-  const phone = document.getElementById('phone').value;
-  
-  if (!name) {
-    alert('Please enter your name.');
-    return;
-  }
-  
-  // Update user data in Firestore
-  const userId = auth.currentUser.uid;
-  db.collection('students').doc(userId).update({
-    name: name,
-    phone: phone,
-    updatedAt: new Date()
-  })
-  .then(() => {
-    alert('Profile updated successfully!');
-    document.getElementById('profileForm').style.display = 'none';
-    document.getElementById('editProfileBtn').textContent = 'Edit Profile';
-    
-    // Update displayed user info
-    document.getElementById('userName').textContent = name;
-    document.getElementById('profileName').textContent = name;
-    userData.name = name;
-    userData.phone = phone;
-  })
-  .catch((error) => {
-    console.error('Error updating profile:', error);
-    alert('Failed to update profile. Please try again.');
-  });
-});
-
-// Logout Button Handler
-document.getElementById('logoutBtn').addEventListener('click', function() {
-  if (confirm('Are you sure you want to logout?')) {
-    auth.signOut().then(() => {
-      window.location.href = 'student-login.html';
-    });
-  }
-});
-
-// User Data Loading (from auth state change)
-auth.onAuthStateChanged((user) => {
-  if (user) {
-    currentUser = user;
-    
-    // Get user data from Firestore
-    db.collection('students').doc(user.uid).get()
-      .then((doc) => {
-        if (doc.exists) {
-          userData = doc.data();
-          
-          // Update UI with user data
-          document.getElementById('userName').textContent = userData.name || 'Unknown User';
-          document.getElementById('profileName').textContent = userData.name || 'Unknown User';
-          document.getElementById('profileEmail').textContent = user.email;
-          document.getElementById('fullName').value = userData.name || '';
-          document.getElementById('email').value = user.email;
-          document.getElementById('phone').value = userData.phone || '';
-        } else {
-          console.error('No user data found');
-          alert('Error loading user data. Please try logging in again.');
-          auth.signOut();
-        }
-      })
-      .catch((error) => {
-        console.error('Error getting user data:', error);
-        alert('Error loading user data. Please try again.');
-      });
-  } else {
-    // User is not logged in, redirect to login page
+function logoutDueToInactivity() {
+  alert('You have been logged out due to inactivity.');
+  auth.signOut().then(() => {
     window.location.href = 'student-login.html';
-  }
-});
-
-
-
-function loadTutorsForScheduling() {
-  const tutorSelect = document.getElementById('tutor');
-  const tutorSpinner = document.getElementById('tutorSpinner');
-  
-  // Clear existing options except the first one
-  while (tutorSelect.options.length > 1) {
-    tutorSelect.remove(1);
-  }
-  
-  tutorSpinner.style.display = 'block';
-  
-  // Query tutors who are available and approved
-  db.collection('tutors')
-    .where('available', '==', true)
-    .where('approved', '==', true)
-    .get()
-    .then((querySnapshot) => {
-      tutorSpinner.style.display = 'none';
-      
-      if (querySnapshot.empty) {
-        tutorSelect.innerHTML = '<option value="">No available tutors found</option>';
-        return;
-      }
-      
-      querySnapshot.forEach((doc) => {
-        const tutor = doc.data();
-        const option = document.createElement('option');
-        option.value = doc.id;
-        
-        // Extract tutor name and subjects
-        const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
-        let subjectsText = 'No subjects listed';
-        
-        // Check for nested subjects structure
-        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-          subjectsText = tutor.subjects.subjects.join(', ');
-        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-          subjectsText = tutor.subjects.join(', ');
-        }
-        
-        option.textContent = `${tutorName} - ${subjectsText}`;
-        option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
-        tutorSelect.appendChild(option);
-      });
-    })
-    .catch((error) => {
-      tutorSpinner.style.display = 'none';
-      console.error('Error loading tutors:', error);
-      alert('Failed to load tutors. Please try again.');
-    });
-}
-
-
-// Set up tutor selection change event
-document.getElementById('tutor').addEventListener('change', function() {
-  const tutorId = this.value;
-  const subjectSelect = document.getElementById('subject');
-  const priceSummary = document.getElementById('priceSummary');
-  const hourlyRateSpan = document.getElementById('hourlyRate');
-  const durationDisplay = document.getElementById('durationDisplay');
-  const totalPriceSpan = document.getElementById('totalPrice');
-  
-  if (!tutorId) {
-    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
-    subjectSelect.disabled = true;
-    priceSummary.style.display = 'none';
-    return;
-  }
-  
-  // Get tutor data to populate subjects and hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        
-        // Populate subjects
-        subjectSelect.innerHTML = '';
-        let subjects = [];
-        
-        // Check for nested subjects structure
-        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-          subjects = tutor.subjects.subjects;
-        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-          subjects = tutor.subjects;
-        }
-        
-        if (subjects.length > 0) {
-          subjects.forEach(subject => {
-            const option = document.createElement('option');
-            option.value = subject;
-            option.textContent = subject;
-            subjectSelect.appendChild(option);
-          });
-          subjectSelect.disabled = false;
-        } else {
-          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
-          subjectSelect.disabled = true;
-        }
-        
-        // Show price summary
-        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-        const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-        const totalPrice = hourlyRate * duration;
-        
-        hourlyRateSpan.textContent = hourlyRate;
-        durationDisplay.textContent = duration;
-        totalPriceSpan.textContent = totalPrice.toFixed(2);
-        priceSummary.style.display = 'block';
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-      subjectSelect.disabled = true;
-      priceSummary.style.display = 'none';
-    });
-});
-
-
-
-// Set up duration change event to update price
-document.getElementById('duration').addEventListener('change', function() {
-  const tutorSelect = document.getElementById('tutor');
-  const tutorId = tutorSelect.value;
-  
-  if (!tutorId) return;
-  
-  // Get tutor hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-        const duration = parseFloat(this.value) || 1.5;
-        const totalPrice = hourlyRate * duration;
-        
-        document.getElementById('hourlyRate').textContent = hourlyRate;
-        document.getElementById('durationDisplay').textContent = duration;
-        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-    });
-});
-
-
-// Set up scheduling form submission
-document.getElementById('schedulingForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  
-  const tutorId = document.getElementById('tutor').value;
-  const subject = document.getElementById('subject').value;
-  const date = document.getElementById('date').value;
-  const time = document.getElementById('time').value;
-  const duration = document.getElementById('duration').value;
-  const sessionType = document.getElementById('sessionType').value;
-  const notes = document.getElementById('notes').value;
-  
-  if (!tutorId || !subject || !date || !time) {
-    alert('Please fill in all required fields.');
-    return;
-  }
-  
-  // Combine date and time
-  const dateTime = new Date(`${date}T${time}`);
-  
-  // Get tutor details for the booking
-  db.collection('tutors').doc(tutorId).get()
-    .then((tutorDoc) => {
-      if (!tutorDoc.exists) {
-        alert('Selected tutor not found.');
-        return;
-      }
-      
-      const tutor = tutorDoc.data();
-      const studentId = auth.currentUser.uid;
-      const studentName = userData?.name || 'Unknown Student';
-      
-      // Generate a unique slot ID
-      const slotId = 'slot_' + Date.now();
-      
-      // Create booking in the bookedSessions collection
-      db.collection('bookedSessions').add({
-        slotId: slotId,
-        tutorId: tutorId,
-        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-        studentId: studentId,
-        studentName: studentName,
-        subject: subject,
-        date: dateTime,
-        duration: duration,
-        sessionType: sessionType,
-        notes: notes,
-        status: 'pending',
-        bookedAt: new Date(),
-        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-      })
-      .then((docRef) => {
-        alert('Session booked successfully! It is now pending confirmation from the tutor.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-        
-        // Immediately add the new booking to the UI
-        addBookingToUI(docRef.id, {
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: firebase.firestore.Timestamp.fromDate(dateTime),
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
-        });
-      })
-      .catch((error) => {
-        console.error('Error creating booking:', error);
-        alert('Failed to book session. Please try again.');
-      });
-    })
-    .catch((error) => {
-      console.error('Error getting tutor details:', error);
-      alert('Failed to book session. Please try again.');
-    });
-});
-
-
-// Add new booking to UI immediately
-function addBookingToUI(bookingId, bookingData) {
-  const container = document.getElementById('bookingsContainer');
-  
-  // Format date and time
-  const date = bookingData.date.toDate();
-  const formattedDate = date.toLocaleDateString();
-  const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-  
-  // Create booking card HTML
-  const bookingCard = `
-    <div class="session-card" id="booking-${bookingId}">
-      <div class="session-header">
-        <div class="session-title">${bookingData.subject || 'No subject'}</div>
-        <div class="session-date">${formattedDate} at ${formattedTime}</div>
-      </div>
-      <div class="session-details">
-        <div class="session-detail">
-          <i class="fas fa-user-tie"></i>
-          <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-clock"></i>
-          <span>Duration: ${bookingData.duration || '1'} hours</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-video"></i>
-          <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-        </div>
-        <div class="session-detail">
-          <i class="fas fa-hourglass-half"></i>
-          <span>Status: <span class="status-badge status-pending">Pending</span></span>
-        </div>
-      </div>
-      <div class="session-actions">
-        <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
-      </div>
-    </div>
-  `;
-  
-  // If container has empty state message, replace it
-  if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
-    container.innerHTML = bookingCard;
-  } else {
-    // Prepend the new booking to the top
-    container.innerHTML = bookingCard + container.innerHTML;
-  }
-  
-  // Update upcoming sessions count
-  const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
-  document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
-}
-
-
-// Book a tutor function (used from tutors section)
-function bookTutor(tutorId) {
-  // Switch to scheduling tab and pre-select the tutor
-  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-  document.querySelector('.dashboard-section.active').classList.remove('active');
-  
-  document.querySelector('a[data-section="scheduling"]').classList.add('active');
-  document.getElementById('scheduling').classList.add('active');
-  
-  // Wait for the scheduling section to be visible, then select the tutor
-  setTimeout(() => {
-    const tutorSelect = document.getElementById('tutor');
-    tutorSelect.value = tutorId;
-    
-    // Trigger change event to load subjects
-    const event = new Event('change');
-    tutorSelect.dispatchEvent(event);
-  }, 100);
-}
-
-
-// In the navigation setup - loads scheduling data when section is activated
-if (sectionId === 'scheduling') {
-  loadTutorsForScheduling();
-}
-
-
-// Loading Tutors
-
-function loadMyTutors() {
-  const container = document.getElementById('myTutorsContainer');
-  container.innerHTML = '<div class="spinner"></div>';
-  
-  // Get the current user ID
-  const userId = auth.currentUser.uid;
-  
-  // Query sessions where this student is involved and status is completed
-  db.collection('sessions')
-    .where('studentId', '==', userId)
-    .where('status', '==', 'completed')
-    .get()
-    .then((querySnapshot) => {
-      container.innerHTML = '';
-      
-      if (querySnapshot.empty) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
-        return;
-      }
-      
-      // Collect unique tutor IDs
-      const tutorIds = [];
-      querySnapshot.forEach((doc) => {
-        const session = doc.data();
-        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
-          tutorIds.push(session.tutorId);
-        }
-      });
-      
-      if (tutorIds.length === 0) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
-        return;
-      }
-      
-      // Get tutor details for each tutor ID
-      const tutorPromises = tutorIds.map(tutorId => 
-        db.collection('tutors').doc(tutorId).get()
-      );
-      
-      Promise.all(tutorPromises)
-        .then((tutorSnapshots) => {
-          tutorSnapshots.forEach((tutorDoc) => {
-            if (tutorDoc.exists) {
-              const tutor = tutorDoc.data();
-              const tutorCard = document.createElement('div');
-              tutorCard.className = 'tutor-card';
-              tutorCard.innerHTML = `
-                <div class="tutor-header">
-                  <div class="tutor-avatar">
-                    <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.name}">
-                  </div>
-                  <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
-                  <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
-                </div>
-                <div class="tutor-details">
-                  <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
-                  <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
-                  <p><i class="fas fa-clock"></i> Last session: Completed</p>
-                  <button class="btn-primary" onclick="bookTutor('${tutorDoc.id}')">Book Again</button>
-                </div>
-              `;
-              container.appendChild(tutorCard);
-            }
-          });
-        })
-        .catch((error) => {
-          console.error('Error loading tutor details:', error);
-          container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
-        });
-    })
-    .catch((error) => {
-      console.error('Error loading sessions:', error);
-      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
-    });
-}
-
-
-function loadAvailableTutors() {
-  const container = document.getElementById('availableTutorsContainer');
-  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
-  
-  // Query tutors who are available and approved
-  db.collection('tutors')
-    .where('available', '==', true)
-    .where('approved', '==', true)
-    .get()
-    .then((querySnapshot) => {
-      container.innerHTML = '';
-      
-      if (querySnapshot.empty) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
-        return;
-      }
-      
-      querySnapshot.forEach((doc) => {
-        const tutor = doc.data();
-        const tutorCard = document.createElement('div');
-        tutorCard.className = 'tutor-card';
-        tutorCard.innerHTML = `
-          <div class="tutor-header">
-            <div class="tutor-avatar">
-              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
-            </div>
-            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
-            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
-          </div>
-          <div class="tutor-details">
-            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
-            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
-            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
-            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
-            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
-          </div>
-        `;
-        container.appendChild(tutorCard);
-      });
-    })
-    .catch((error) => {
-      console.error('Error loading available tutors:', error);
-      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
-    });
-}
-
-
-function bookTutor(tutorId) {
-  // Switch to scheduling tab and pre-select the tutor
-  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-  document.querySelector('.dashboard-section.active').classList.remove('active');
-  
-  document.querySelector('a[data-section="scheduling"]').classList.add('active');
-  document.getElementById('scheduling').classList.add('active');
-  
-  // Wait for the scheduling section to be visible, then select the tutor
-  setTimeout(() => {
-    const tutorSelect = document.getElementById('tutor');
-    tutorSelect.value = tutorId;
-    
-    // Trigger change event to load subjects
-    const event = new Event('change');
-    tutorSelect.dispatchEvent(event);
-  }, 100);
-}
-
-
-// Set up tabs in the tutors section
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', function() {
-    // Update active tab
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    this.classList.add('active');
-    
-    // Show the corresponding tab content
-    const tabId = this.getAttribute('data-tab');
-    document.querySelectorAll('.tab-content').forEach(content => {
-      content.classList.remove('active');
-    });
-    document.getElementById(`${tabId}-tab`).classList.add('active');
-    
-    // Show search only for available tutors
-    const searchContainer = document.getElementById('tutorSearchContainer');
-    if (tabId === 'available-tutors') {
-      searchContainer.style.display = 'block';
-    } else {
-      searchContainer.style.display = 'none';
-    }
   });
-});
+}
 
-
-} else if (sectionId === 'tutors') {
-  // Load both my tutors and available tutors when the tutors section is opened
-  if (!tutorsLoaded) {
-    loadMyTutors();
-    loadAvailableTutors();
-    tutorsLoaded = true;
+function appendSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (snapshot.empty) {
+    return;
   }
+  
+  let html = '';
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Determine the most relevant action timestamp and type
+    const { actionTime, actionType } = getActionTimestamp(session);
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+      </tr>
+    `;
+  });
+  
+  // Append to existing table
+  const tbody = container.querySelector('tbody');
+  tbody.innerHTML += html;
 }
 
 
-//Dashboard Display Features
+function setupActivityListeners() {
+  const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+
+  events.forEach(event => {
+    document.addEventListener(event, resetInactivityTimer);
+  });
+
+  // Also reset timer when navigating between sections
+  const menuItems = document.querySelectorAll('.menu-item a');
+  menuItems.forEach(item => {
+    item.addEventListener('click', resetInactivityTimer);
+  });
+}
+
+function setupHistoryFilters() {
+  const historyFilter = document.getElementById('historyFilter');
+  const actionTypeFilter = document.getElementById('actionTypeFilter');
+  
+  if (!historyFilter || !actionTypeFilter) return;
+  
+  // Combined filter function
+  const applyFilters = () => {
+    const timeFilter = historyFilter.value;
+    const actionFilter = actionTypeFilter.value;
+    const rows = document.querySelectorAll('#sessionsContainer tbody tr');
+    
+    let visibleCount = 0;
+    
+    // Get current date for time calculations
+    const now = new Date();
+    
+    rows.forEach(row => {
+      let showRow = true;
+      
+      // Apply time filter based on ACTION DATE (7th column) instead of session date
+      if (timeFilter !== 'all') {
+        const actionDateText = row.cells[6].textContent.trim(); // 7th column (index 6) is Action Date
+        const actionDate = new Date(actionDateText);
+        
+        if (!isNaN(actionDate.getTime())) { // Check if date is valid
+          let startDate;
+          
+          switch(timeFilter) {
+            case 'month':
+              startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+              break;
+            case '3months':
+              startDate = new Date(now);
+              startDate.setMonth(now.getMonth() - 3);
+              break;
+            case 'year':
+              startDate = new Date(now.getFullYear(), 0, 1);
+              break;
+            default:
+              startDate = null;
+          }
+          
+          if (startDate && actionDate < startDate) {
+            showRow = false;
+          }
+        }
+      }
+      
+      // Apply action type filter (8th column)
+      if (actionFilter !== 'all' && showRow) {
+        const actionType = row.cells[7].textContent.trim().toLowerCase();
+        showRow = actionType === actionFilter.toLowerCase();
+      }
+      
+      row.style.display = showRow ? '' : 'none';
+      if (showRow) visibleCount++;
+    });
+    
+    // Show message if no results
+    const table = document.querySelector('#sessionsContainer table');
+    let noResultsMsg = table.querySelector('.no-results-message');
+    
+    if (visibleCount === 0) {
+      if (!noResultsMsg) {
+        noResultsMsg = document.createElement('tr');
+        noResultsMsg.className = 'no-results-message';
+        noResultsMsg.innerHTML = `
+          <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
+            <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
+            <h4>No matching sessions found</h4>
+            <p>Try adjusting your filters</p>
+          </td>
+        `;
+        table.querySelector('tbody').appendChild(noResultsMsg);
+      }
+    } else if (noResultsMsg) {
+      noResultsMsg.remove();
+    }
+  };
+  
+  // Add event listeners
+  historyFilter.addEventListener('change', applyFilters);
+  actionTypeFilter.addEventListener('change', applyFilters);
+}
+
+
 // Update upcoming sessions count
 function updateUpcomingSessionsCount(count) {
   document.getElementById('upcomingSessionsCount').textContent = count;
 }
 
-// Update user stats (called during initialization)
-function updateUserStats() {
-  const userId = auth.currentUser.uid;
-  
-  db.collection('sessions')
-    .where('studentId', '==', userId)
-    .where('status', '==', 'completed')
-    .get()
-    .then((querySnapshot) => {
-      const tutorIds = [];
-      let totalHours = 0;
-      
-      querySnapshot.forEach((doc) => {
-        const session = doc.data();
-        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
-          tutorIds.push(session.tutorId);
+// FIXED: Get proposed time from rescheduleRequests collection
+async function getProposedTime(bookingId) {
+    try {
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            const newDate = request.requestedDate.toDate();
+            return newDate.toLocaleString();
         }
-        totalHours += parseFloat(session.duration) || 1;
-      });
-      
-      document.getElementById('tutorsCount').textContent = tutorIds.length;
-      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
-    })
-    .catch((error) => {
-      console.error('Error loading stats:', error);
-    });
+        return 'Not specified';
+    } catch (error) {
+        console.error('Error getting proposed time:', error);
+        return 'Not specified';
+    }
 }
 
-// Load user bookings (updates upcoming sessions count)
-function loadUserBookings() {
-    const userId = auth.currentUser.uid;
-    
-    db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
-        .where('date', '>=', new Date())
-        .orderBy('date', 'asc')
-        .get()
-        .then((querySnapshot) => {
-            updateUpcomingSessionsCount(querySnapshot.size);
-            loadBookings(querySnapshot);
-        })
-        .catch((error) => {
-            console.error('Error loading booked sessions:', error);
-        });
+// FIXED: Get reason from rescheduleRequests collection  
+async function getRescheduleReason(bookingId) {
+    try {
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            return request.reason || 'No reason provided';
+        }
+        return 'No reason provided';
+    } catch (error) {
+        console.error('Error getting reschedule reason:', error);
+        return 'No reason provided';
+    }
 }
 
-
-// Load user bookings
-function loadUserBookings() {
-    const userId = auth.currentUser.uid;
-    
-    // Query upcoming bookings including reschedule requests
-    db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
-        .where('date', '>=', new Date())
-        .orderBy('date', 'asc')
-        .get()
-        .then((querySnapshot) => {
-            updateUpcomingSessionsCount(querySnapshot.size);
-            loadBookings(querySnapshot);
-        })
-        .catch((error) => {
-            console.error('Error loading booked sessions:', error);
-            document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
-        });
-}
-
-// Load bookings into UI
+// Load bookings
 function loadBookings(snapshot) {
     const container = document.getElementById('bookingsContainer');
     
     if (snapshot.empty) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
+        container.innerHTML = '<p>You have no upcoming bookings.</p>';
         return;
     }
     
@@ -777,9 +1547,8 @@ function loadBookings(snapshot) {
     
     // Add filter functionality
     setupBookingFilter();
-}
 
-// Load reschedule data from rescheduleRequests collection
+// Helper function to load reschedule data from rescheduleRequests collection
 async function loadRescheduleData(bookingId) {
     try {
         const rescheduleQuery = await db.collection('rescheduleRequests')
@@ -819,25 +1588,20 @@ async function loadRescheduleData(bookingId) {
     }
 }
 
-// Cancel a booking
-function cancelBooking(bookingId) {
-    if (confirm('Are you sure you want to cancel this booking?')) {
-        // Update the booking status to cancelled
-        db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelledBy: 'student'
-        })
-        .then(() => {
-            alert('Booking cancelled successfully.');
-            // Reload the bookings
-            loadUserBookings();
-        })
-        .catch((error) => {
-            console.error('Error cancelling booking:', error);
-            alert('Failed to cancel booking. Please try again.');
-        });
+
+// Remove the old getProposedTime function since we're not using it anymore    
+
+    // Add filter functionality
+    setupBookingFilter();
+}
+
+// Helper function to get proposed time from reschedule request
+function getProposedTime(booking) {
+    if (booking.rescheduleRequestedDate) {
+        const newDate = booking.rescheduleRequestedDate.toDate();
+        return newDate.toLocaleString();
     }
+    return 'Not specified';
 }
 
 // Accept reschedule request
@@ -888,6 +1652,52 @@ async function acceptReschedule(bookingId) {
     }
 }
 
+
+// Helper function to update session history
+async function updateSessionHistory(bookingId, newDate, originalDate) {
+    try {
+        // Check if this session exists in history
+        const sessionQuery = await db.collection('sessions')
+            .where('bookingId', '==', bookingId)
+            .get();
+            
+        if (!sessionQuery.empty) {
+            // Update existing session record
+            const sessionDoc = sessionQuery.docs[0];
+            await db.collection('sessions').doc(sessionDoc.id).update({
+                date: newDate,
+                originalDate: originalDate,
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date()
+            });
+        } else {
+            // Create a new session history record
+            const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+            const booking = bookingDoc.data();
+            
+            await db.collection('sessions').add({
+                bookingId: bookingId,
+                tutorId: booking.tutorId,
+                tutorName: booking.tutorName,
+                studentId: booking.studentId,
+                studentName: booking.studentName,
+                subject: booking.subject,
+                date: newDate,
+                originalDate: originalDate,
+                duration: booking.duration,
+                sessionType: booking.sessionType,
+                status: 'rescheduled',
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date(),
+                createdAt: new Date()
+            });
+        }
+    } catch (error) {
+        console.error('Error updating session history:', error);
+        // Don't fail the whole operation if history update fails
+    }
+}
+
 // Decline reschedule request
 async function declineReschedule(bookingId) {
     const reason = prompt('Please provide a reason for declining the reschedule request:');
@@ -935,50 +1745,6 @@ async function updateRescheduleRequest(bookingId, status) {
     }
 }
 
-// Helper function to update session history
-async function updateSessionHistory(bookingId, newDate, originalDate) {
-    try {
-        // Check if this session exists in history
-        const sessionQuery = await db.collection('sessions')
-            .where('bookingId', '==', bookingId)
-            .get();
-            
-        if (!sessionQuery.empty) {
-            // Update existing session record
-            const sessionDoc = sessionQuery.docs[0];
-            await db.collection('sessions').doc(sessionDoc.id).update({
-                date: newDate,
-                originalDate: originalDate,
-                rescheduled: true,
-                rescheduleAcceptedAt: new Date()
-            });
-        } else {
-            // Create a new session history record
-            const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-            const booking = bookingDoc.data();
-            
-            await db.collection('sessions').add({
-                bookingId: bookingId,
-                tutorId: booking.tutorId,
-                tutorName: booking.tutorName,
-                studentId: booking.studentId,
-                studentName: booking.studentName,
-                subject: booking.subject,
-                date: newDate,
-                originalDate: originalDate,
-                duration: booking.duration,
-                sessionType: booking.sessionType,
-                status: 'rescheduled',
-                rescheduled: true,
-                rescheduleAcceptedAt: new Date(),
-                createdAt: new Date()
-            });
-        }
-    } catch (error) {
-        console.error('Error updating session history:', error);
-        // Don't fail the whole operation if history update fails
-    }
-}
 
 // Setup booking filter
 function setupBookingFilter() {
@@ -1018,6 +1784,17 @@ function setupBookingFilter() {
     });
 }
 
+
+// Real-time listener for reschedule requests
+// Add these missing variable declarations at the top
+let sessionsDataLoaded = false;
+let tutorsLoaded = false;
+let bookingsLoaded = false;
+let sessionsLoaded = false;
+let currentUser = null;
+let userData = null;
+let inactivityTimer;
+
 // Real-time listener for reschedule requests
 function setupRescheduleListener() {
     const userId = auth.currentUser.uid;
@@ -1040,87 +1817,75 @@ function setupRescheduleListener() {
         });
 }
 
-// Add new booking to UI immediately
-function addBookingToUI(bookingId, bookingData) {
-    const container = document.getElementById('bookingsContainer');
-    
-    // Format date and time
-    const date = bookingData.date.toDate();
-    const formattedDate = date.toLocaleDateString();
-    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    // Create booking card HTML
-    const bookingCard = `
-        <div class="session-card" id="booking-${bookingId}">
-            <div class="session-header">
-                <div class="session-title">${bookingData.subject || 'No subject'}</div>
-                <div class="session-date">${formattedDate} at ${formattedTime}</div>
+// Show notification for new reschedule request
+function showRescheduleNotification(bookingId, booking) {
+    // You can implement a toast notification system here
+    const notification = `
+        <div class="notification-toast">
+            <i class="fas fa-clock"></i>
+            <div>
+                <strong>Reschedule Request</strong>
+                <p>${booking.tutorName} has requested to reschedule your ${booking.subject} session.</p>
             </div>
-            <div class="session-details">
-                <div class="session-detail">
-                    <i class="fas fa-user-tie"></i>
-                    <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-clock"></i>
-                    <span>Duration: ${bookingData.duration || '1'} hours</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-video"></i>
-                    <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-hourglass-half"></i>
-                    <span>Status: <span class="status-badge status-pending">Pending</span></span>
-                </div>
-            </div>
-            <div class="session-actions">
-                <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
-            </div>
+            <button onclick="viewRescheduleRequest('${bookingId}')">Review</button>
         </div>
     `;
     
-    // If container has empty state message, replace it
-    if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
-        container.innerHTML = bookingCard;
-    } else {
-        // Prepend the new booking to the top
-        container.innerHTML = bookingCard + container.innerHTML;
-    }
+    // Add to notification system or show as alert
+    alert(`New reschedule request from ${booking.tutorName} for your ${booking.subject} session. Check your bookings to respond.`);
+}
+
+function viewRescheduleRequest(bookingId) {
+    // Switch to bookings section and highlight the specific booking
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelector('.dashboard-section.active').classList.remove('active');
     
-    // Update upcoming sessions count
-    const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
-    document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+    document.querySelector('a[data-section="bookings"]').classList.add('active');
+    document.getElementById('bookings').classList.add('active');
+    
+    // Scroll to the specific booking
+    setTimeout(() => {
+        const bookingElement = document.getElementById(`booking-${bookingId}`);
+        if (bookingElement) {
+            bookingElement.scrollIntoView({ behavior: 'smooth' });
+            bookingElement.style.animation = 'pulse 2s infinite';
+        }
+    }, 100);
 }
 
-// Update upcoming sessions count
-function updateUpcomingSessionsCount(count) {
-    const countElement = document.getElementById('upcomingSessionsCount');
-    if (countElement) {
-        countElement.textContent = count;
+// Helper function to get CSS class for status badges
+function getStatusClass(status) {
+    switch(status) {
+        case 'confirmed':
+        case 'completed':
+            return 'status-verified';
+        case 'pending':
+            return 'status-pending';
+        case 'cancelled':
+            return 'status-cancelled';
+        case 'reschedule_requested':
+            return 'status-reschedule-requested';
+        default:
+            return 'status-pending';
     }
 }
 
-
-//Session History Data Structure
-
-// Available timestamp fields in bookedSessions collection
-bookedAt: timestamp        // When student initially booked
-confirmedAt: timestamp     // When tutor confirmed
-cancelledAt: timestamp     // When session was cancelled
-rescheduleRequestedAt: timestamp  // When reschedule was requested
-rescheduleRespondedAt: timestamp  // When reschedule was responded to
-date: timestamp            // Scheduled session date/time
-
+// Helper function to determine action timestamp and type
 function getActionTimestamp(session) {
   let actionTime = new Date();
   let actionType = 'Unknown';
   
-  // Priority order for determining the most relevant action
+  // Determine the most meaningful action based on available timestamps
   if (session.cancelledAt) {
     actionTime = session.cancelledAt.toDate();
-    actionType = session.cancelledBy === 'student' ? 'Student Cancelled' : 
-                session.cancelledBy === 'tutor' ? 'Tutor Cancelled' : 'Cancelled';
+    // Determine who cancelled
+    if (session.cancelledBy === 'student') {
+      actionType = 'Student Cancelled';
+    } else if (session.cancelledBy === 'tutor') {
+      actionType = 'Tutor Cancelled';
+    } else {
+      actionType = 'Cancelled';
+    }
   } else if (session.completedAt) {
     actionTime = session.completedAt.toDate();
     actionType = 'Completed';
@@ -1129,11 +1894,22 @@ function getActionTimestamp(session) {
     actionType = 'Rescheduled';
   } else if (session.rescheduleRequestedAt) {
     actionTime = session.rescheduleRequestedAt.toDate();
-    actionType = session.rescheduleRequestedBy === 'tutor' ? 'Tutor Reschedule Request' :
-                session.rescheduleRequestedBy === 'student' ? 'Student Reschedule Request' : 'Reschedule Requested';
+    // Determine who requested reschedule
+    if (session.rescheduleRequestedBy === 'tutor') {
+      actionType = 'Tutor Reschedule Request';
+    } else if (session.rescheduleRequestedBy === 'student') {
+      actionType = 'Student Reschedule Request';
+    } else {
+      actionType = 'Reschedule Requested';
+    }
   } else if (session.confirmedAt) {
     actionTime = session.confirmedAt.toDate();
-    actionType = session.autoConfirmed ? 'Auto-Confirmed' : 'Tutor Confirmed';
+    // Determine how it was confirmed
+    if (session.autoConfirmed) {
+      actionType = 'Auto-Confirmed';
+    } else {
+      actionType = 'Tutor Confirmed';
+    }
   } else if (session.bookedAt) {
     actionTime = session.bookedAt.toDate();
     actionType = 'Student Booked';
@@ -1145,52 +1921,988 @@ function getActionTimestamp(session) {
   return { actionTime, actionType };
 }
 
-function getStatusClass(status) {
-  switch(status) {
-    case 'confirmed':
-    case 'completed': return 'status-verified';
-    case 'pending': return 'status-pending';
-    case 'cancelled': return 'status-cancelled';
-    case 'reschedule_requested': return 'status-reschedule-requested';
-    default: return 'status-pending';
-  }
-}
-
+// Update the getActionTypeClass function
 function getActionTypeClass(actionType) {
   switch(actionType.toLowerCase()) {
     case 'student booked':
     case 'tutor confirmed':
     case 'auto-confirmed':
-    case 'completed': return 'status-verified';
+    case 'completed':
+      return 'status-verified';
     case 'student cancelled':
     case 'tutor cancelled':
-    case 'cancelled': return 'status-pending';
+    case 'cancelled':
+      return 'status-pending';
     case 'tutor reschedule request':
     case 'student reschedule request':
     case 'reschedule requested':
-    case 'rescheduled': return 'status-warning';
-    default: return 'status-pending';
+    case 'rescheduled':
+      return 'status-warning';
+    default:
+      return 'status-pending';
+  }
+}
+
+// Load session history (SINGLE declaration)
+function loadSessionHistory(snapshot) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (snapshot.empty) {
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
+    return;
+  }
+  
+  let html = `
+    <table class="sessions-table">
+      <thead>
+        <tr>
+          <th>Session Date</th>
+          <th>Session Time</th>
+          <th>Tutor</th>
+          <th>Subject</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Action Date</th>
+          <th>Action Type</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  
+  snapshot.forEach(doc => {
+    const session = doc.data();
+    const sessionDate = session.date.toDate();
+    const formattedDate = sessionDate.toLocaleDateString();
+    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Determine the most relevant action timestamp and type
+    const { actionTime, actionType } = getActionTimestamp(session);
+    const actionDate = actionTime.toLocaleDateString();
+    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    html += `
+      <tr>
+        <td>${formattedDate}</td>
+        <td>${formattedTime}</td>
+        <td>${session.tutorName || 'Unknown'}</td>
+        <td>${session.subject || 'No subject'}</td>
+        <td>${session.duration || '1'} hours</td>
+        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+        <td class="timestamp-cell">
+          <div>${actionDate}</div>
+          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+        </td>
+        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+      </tr>
+    `;
+  });
+  
+  html += '</tbody></table>';
+  container.innerHTML = html;
+  
+  // Add filter functionality
+  setupHistoryFilters();
+}
+
+// Add missing helper functions
+function updateUpcomingSessionsCount(count) {
+    const countElement = document.getElementById('upcomingSessionsCount');
+    if (countElement) {
+        countElement.textContent = count;
+    }
+}
+
+function loadBookings(snapshot) {
+    const container = document.getElementById('bookingsContainer');
+    
+    if (snapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
+        return;
+    }
+    
+    let html = '';
+    snapshot.forEach(doc => {
+        const booking = doc.data();
+        const date = booking.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        html += `
+            <div class="session-card" id="booking-${doc.id}">
+                <div class="session-header">
+                    <div class="session-title">${booking.subject || 'No subject'}</div>
+                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-tie"></i>
+                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i>
+                        <span>Duration: ${booking.duration || '1'} hours</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-video"></i>
+                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-hourglass-half"></i>
+                        <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
+                    </div>
+                </div>
+                <div class="session-actions">
+                    ${booking.status === 'reschedule_requested' ? 
+                        `<button class="btn-primary" onclick="respondToReschedule('${doc.id}', 'accept')">Accept</button>
+                         <button class="btn-outline" onclick="respondToReschedule('${doc.id}', 'decline')">Decline</button>` :
+                        `<button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>`
+                    }
+                    ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+function appendSessionHistory(snapshot) {
+    const container = document.querySelector('#sessionsContainer tbody');
+    
+    snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${formattedDate}</td>
+            <td>${formattedTime}</td>
+            <td>${session.tutorName || 'Unknown'}</td>
+            <td>${session.subject || 'No subject'}</td>
+            <td>${session.duration || '1'} hours</td>
+            <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+            <td class="timestamp-cell">
+                <div>${actionDate}</div>
+                <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+            </td>
+            <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+        `;
+        container.appendChild(row);
+    });
+    
+    setupHistoryFilters();
+}
+
+// Add missing activity timer functions
+function resetInactivityTimer() {
+    // Implementation depends on your requirements
+    console.log('Inactivity timer reset');
+}
+
+function setupActivityListeners() {
+    // Implementation depends on your requirements
+    console.log('Activity listeners setup');
+}
+
+// Add missing function for reschedule response
+function respondToReschedule(bookingId, response) {
+    if (response === 'accept') {
+        // Logic to accept reschedule
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed',
+            rescheduleAcceptedAt: new Date()
+        });
+    } else {
+        // Logic to decline reschedule
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed', // or whatever status it should return to
+            rescheduleDeclinedAt: new Date()
+        });
+    }
+}  
+
+
+// Load tutors for scheduling - UPDATED VERSION
+function loadTutorsForScheduling() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorSpinner = document.getElementById('tutorSpinner');
+  
+  // Clear existing options except the first one
+  while (tutorSelect.options.length > 1) {
+    tutorSelect.remove(1);
+  }
+  
+  tutorSpinner.style.display = 'block';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      tutorSpinner.style.display = 'none';
+      
+      if (querySnapshot.empty) {
+        tutorSelect.innerHTML = '<option value="">No available tutors found</option>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const option = document.createElement('option');
+        option.value = doc.id;
+        
+        // Extract tutor name and subjects based on your data structure
+        const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
+        let subjectsText = 'No subjects listed';
+        
+        // Check for nested subjects structure
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjectsText = tutor.subjects.subjects.join(', ');
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          // Fallback for different structure
+          subjectsText = tutor.subjects.join(', ');
+        }
+        
+        option.textContent = `${tutorName} - ${subjectsText}`;
+        option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
+        tutorSelect.appendChild(option);
+      });
+    })
+    .catch((error) => {
+      tutorSpinner.style.display = 'none';
+      console.error('Error loading tutors:', error);
+      alert('Failed to load tutors. Please try again.');
+    });
+}
+
+// Load available tutors
+function loadAvailableTutors() {
+  const container = document.getElementById('availableTutorsContainer');
+  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const tutorCard = document.createElement('div');
+        tutorCard.className = 'tutor-card';
+        tutorCard.innerHTML = `
+          <div class="tutor-header">
+            <div class="tutor-avatar">
+              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
+            </div>
+            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+          </div>
+          <div class="tutor-details">
+            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+          </div>
+        `;
+        container.appendChild(tutorCard);
+      });
+    })
+    .catch((error) => {
+      console.error('Error loading available tutors:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+    });
+}
+  
+// Load my tutors (tutors the student has previously booked with)
+function loadMyTutors() {
+  const container = document.getElementById('myTutorsContainer');
+  container.innerHTML = '<div class="spinner"></div>';
+  
+  // Get the current user ID
+  const userId = auth.currentUser.uid;
+  
+  // Query sessions where this student is involved and status is completed
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Collect unique tutor IDs
+      const tutorIds = [];
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+      });
+      
+      if (tutorIds.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Get tutor details for each tutor ID
+      const tutorPromises = tutorIds.map(tutorId => 
+        db.collection('tutors').doc(tutorId).get()
+      );
+      
+      Promise.all(tutorPromises)
+        .then((tutorSnapshots) => {
+          tutorSnapshots.forEach((tutorDoc) => {
+            if (tutorDoc.exists) {
+              const tutor = tutorDoc.data();
+              const tutorCard = document.createElement('div');
+              tutorCard.className = 'tutor-card';
+              tutorCard.innerHTML = `
+                <div class="tutor-header">
+                  <div class="tutor-avatar">
+                    <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.name}">
+                  </div>
+                  <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+                  <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+                </div>
+                <div class="tutor-details">
+                  <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+                  <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+                  <p><i class="fas fa-clock"></i> Last session: Completed</p>
+                  <button class="btn-primary" onclick="bookTutor('${tutorDoc.id}')">Book Again</button>
+                </div>
+              `;
+              container.appendChild(tutorCard);
+            }
+          });
+        })
+        .catch((error) => {
+          console.error('Error loading tutor details:', error);
+          container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+        });
+    })
+    .catch((error) => {
+      console.error('Error loading sessions:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+    });
+}
+
+// Book a tutor
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelector('.dashboard-section.active').classList.remove('active');
+  
+  document.querySelector('a[data-section="scheduling"]').classList.add('active');
+  document.getElementById('scheduling').classList.add('active');
+  
+  // Wait for the scheduling section to be visible, then select the tutor
+  setTimeout(() => {
+    const tutorSelect = document.getElementById('tutor');
+    tutorSelect.value = tutorId;
+    
+    // Trigger change event to load subjects
+    const event = new Event('change');
+    tutorSelect.dispatchEvent(event);
+  }, 100);
+}
+
+// Join a session
+function joinSession(sessionId) {
+  alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
+  // In a real app, this would redirect to the video meeting or open it in a modal
+}
+
+// Cancel a booking
+function cancelBooking(bookingId) {
+  if (confirm('Are you sure you want to cancel this booking?')) {
+    // Update the booking status to cancelled
+    db.collection('bookedSessions').doc(bookingId).update({
+      status: 'cancelled',
+      cancelledAt: new Date()
+    })
+    .then(() => {
+      alert('Booking cancelled successfully.');
+      // Reload the bookings
+      loadUserBookings();
+    })
+    .catch((error) => {
+      console.error('Error cancelling booking:', error);
+      alert('Failed to cancel booking. Please try again.');
+    });
   }
 }
 
 
-// Query to load session history
-function loadUserSessionHistory(loadMore = false) {
-  const userId = auth.currentUser.uid;
-  let query = db.collection('bookedSessions')
-    .where('studentId', '==', userId)
-    .orderBy('date', 'desc')  // Most recent first
-    .limit(10);               // Pagination
-
-  // Additional filtering options available:
-  const filterOptions = {
-    time: ['all', 'month', '3months', 'year'],
-    actionType: [
-      'all', 'student booked', 'tutor confirmed', 'auto-confirmed',
-      'completed', 'student cancelled', 'tutor cancelled',
-      'tutor reschedule request', 'student reschedule request', 'rescheduled'
-    ]
-  };
+// Add new booking to UI immediately
+function addBookingToUI(bookingId, bookingData) {
+  const container = document.getElementById('bookingsContainer');
+  
+  // Format date and time
+  const date = bookingData.date.toDate();
+  const formattedDate = date.toLocaleDateString();
+  const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  
+  // Create booking card HTML
+  const bookingCard = `
+    <div class="session-card" id="booking-${bookingId}">
+      <div class="session-header">
+        <div class="session-title">${bookingData.subject || 'No subject'}</div>
+        <div class="session-date">${formattedDate} at ${formattedTime}</div>
+      </div>
+      <div class="session-details">
+        <div class="session-detail">
+          <i class="fas fa-user-tie"></i>
+          <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-clock"></i>
+          <span>Duration: ${bookingData.duration || '1'} hours</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-video"></i>
+          <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-hourglass-half"></i>
+          <span>Status: <span class="status-badge status-pending">Pending</span></span>
+        </div>
+      </div>
+      <div class="session-actions">
+        <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  // If container has empty state message, replace it
+  if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
+    container.innerHTML = bookingCard;
+  } else {
+    // Prepend the new booking to the top
+    container.innerHTML = bookingCard + container.innerHTML;
+  }
+  
+  // Update upcoming sessions count
+  const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
+  document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
 }
 
 
+
+// Load user bookings
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
+    
+    // Query upcoming bookings including reschedule requests
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            loadBookings(querySnapshot);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+            document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+        });
+}
+
+
+let lastVisible = null;
+let isFirstLoad = true;
+
+function loadUserSessionHistory(loadMore = false) {
+  // If this is not a "load more" action and data is already loaded, return
+  if (!loadMore && sessionsDataLoaded) {
+    return;
+  }
+  
+  const userId = auth.currentUser.uid;
+  let query = db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc')
+    .limit(10);
+
+  if (loadMore && lastVisible) {
+    query = query.startAfter(lastVisible);
+  }
+
+  query.get().then((querySnapshot) => {
+    if (!querySnapshot.empty) {
+      lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
+    }
+    
+    if (isFirstLoad || loadMore) {
+      if (loadMore) {
+        appendSessionHistory(querySnapshot);
+      } else {
+        loadSessionHistory(querySnapshot);
+        sessionsDataLoaded = true; // Mark as loaded
+      }
+      isFirstLoad = false;
+    }
+    
+    // Show/hide load more button
+    document.getElementById('loadMoreBtn').style.display = 
+      querySnapshot.docs.length === 10 ? 'block' : 'none';
+  });
+}
+
+// Add this function for manual refresh when needed
+function refreshSessionsHistory() {
+  sessionsDataLoaded = false;
+  isFirstLoad = true;
+  lastVisible = null;
+  
+  // Store current filter values
+  const currentTimeFilter = document.getElementById('historyFilter').value;
+  const currentActionFilter = document.getElementById('actionTypeFilter').value;
+  
+  loadUserSessionHistory();
+  
+  // Restore filter values after refresh
+  setTimeout(() => {
+    document.getElementById('historyFilter').value = currentTimeFilter;
+    document.getElementById('actionTypeFilter').value = currentActionFilter;
+    setupHistoryFilters();
+  }, 500);
+}
+
+// Update user stats
+function updateUserStats() {
+  const userId = auth.currentUser.uid;
+  
+  // Count tutors (this is a simplified version)
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      const tutorIds = [];
+      let totalHours = 0;
+      
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+        totalHours += parseFloat(session.duration) || 1;
+      });
+      
+      document.getElementById('tutorsCount').textContent = tutorIds.length;
+      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
+    })
+    .catch((error) => {
+      console.error('Error loading stats:', error);
+    });
+}
+
+// Initialize the dashboard
+function initDashboard() {
+  // Set up navigation
+  document.querySelectorAll('.menu-item a').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.preventDefault();
+      
+      // Update active menu item
+      document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+      this.classList.add('active');
+      
+      // Show the corresponding section
+      const sectionId = this.getAttribute('data-section');
+      document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
+      });
+      document.getElementById(sectionId).classList.add('active');
+
+      // Load specific data based on the section - ONLY if not already loaded
+      if (sectionId === 'scheduling') {
+        loadTutorsForScheduling();
+      } else if (sectionId === 'tutors') {
+        // Load both my tutors and available tutors when the tutors section is opened
+        if (!tutorsLoaded) {
+          loadMyTutors();
+          loadAvailableTutors();
+          tutorsLoaded = true;
+        }
+      } else if (sectionId === 'bookings') {
+        if (!bookingsLoaded) {
+          loadUserBookings();
+          bookingsLoaded = true;
+        }
+      } else if (sectionId === 'sessions') {
+        // Only load sessions history on first visit to the tab
+        if (!sessionsLoaded) {
+          loadUserSessionHistory();
+          sessionsLoaded = true;
+        }
+      }
+    });
+  });
+  
+  // Set up tabs in the tutors section
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      // Update active tab
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      
+      // Show the corresponding tab content
+      const tabId = this.getAttribute('data-tab');
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      document.getElementById(`${tabId}-tab`).classList.add('active');
+      
+      // Show search only for available tutors
+      const searchContainer = document.getElementById('tutorSearchContainer');
+      if (tabId === 'available-tutors') {
+        searchContainer.style.display = 'block';
+      } else {
+        searchContainer.style.display = 'none';
+      }
+    });
+  });
+  
+  // Set up tutor selection change event
+  document.getElementById('tutor').addEventListener('change', function() {
+    const tutorId = this.value;
+    const subjectSelect = document.getElementById('subject');
+    const priceSummary = document.getElementById('priceSummary');
+    const hourlyRateSpan = document.getElementById('hourlyRate');
+    const durationDisplay = document.getElementById('durationDisplay');
+    const totalPriceSpan = document.getElementById('totalPrice');
+    
+    if (!tutorId) {
+      subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+      subjectSelect.disabled = true;
+      priceSummary.style.display = 'none';
+      return;
+    }
+    
+    // Get tutor data to populate subjects and hourly rate
+    db.collection('tutors').doc(tutorId).get()
+      .then((doc) => {
+        if (doc.exists) {
+          const tutor = doc.data();
+          
+          // Populate subjects
+          subjectSelect.innerHTML = '';
+          let subjects = [];
+          
+          // Check for nested subjects structure
+          if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+            subjects = tutor.subjects.subjects;
+          } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+            // Fallback for different structure
+            subjects = tutor.subjects;
+          }
+          
+          if (subjects.length > 0) {
+            subjects.forEach(subject => {
+              const option = document.createElement('option');
+              option.value = subject;
+              option.textContent = subject;
+              subjectSelect.appendChild(option);
+            });
+            subjectSelect.disabled = false;
+          } else {
+            subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+            subjectSelect.disabled = true;
+          }
+          
+          // Show price summary
+          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+          const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+          const totalPrice = hourlyRate * duration;
+          
+          hourlyRateSpan.textContent = hourlyRate;
+          durationDisplay.textContent = duration;
+          totalPriceSpan.textContent = totalPrice.toFixed(2);
+          priceSummary.style.display = 'block';
+        }
+      })
+      .catch((error) => {
+        console.error('Error loading tutor details:', error);
+        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+        subjectSelect.disabled = true;
+        priceSummary.style.display = 'none';
+      });
+  });
+  
+  // Set up duration change event to update price
+  document.getElementById('duration').addEventListener('change', function() {
+    const tutorSelect = document.getElementById('tutor');
+    const tutorId = tutorSelect.value;
+    
+    if (!tutorId) return;
+    
+    // Get tutor hourly rate
+    db.collection('tutors').doc(tutorId).get()
+      .then((doc) => {
+        if (doc.exists) {
+          const tutor = doc.data();
+          const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+          const duration = parseFloat(this.value) || 1.5;
+          const totalPrice = hourlyRate * duration;
+          
+          document.getElementById('hourlyRate').textContent = hourlyRate;
+          document.getElementById('durationDisplay').textContent = duration;
+          document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+        }
+      })
+      .catch((error) => {
+        console.error('Error loading tutor details:', error);
+      });
+  });
+  
+  // Set up scheduling form submission
+  document.getElementById('schedulingForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const tutorId = document.getElementById('tutor').value;
+    const subject = document.getElementById('subject').value;
+    const date = document.getElementById('date').value;
+    const time = document.getElementById('time').value;
+    const duration = document.getElementById('duration').value;
+    const sessionType = document.getElementById('sessionType').value;
+    const notes = document.getElementById('notes').value;
+    
+    if (!tutorId || !subject || !date || !time) {
+      alert('Please fill in all required fields.');
+      return;
+    }
+    
+    // Combine date and time
+    const dateTime = new Date(`${date}T${time}`);
+    
+    // Get tutor details for the booking
+    db.collection('tutors').doc(tutorId).get()
+      .then((tutorDoc) => {
+        if (!tutorDoc.exists) {
+          alert('Selected tutor not found.');
+          return;
+        }
+        
+        const tutor = tutorDoc.data();
+        const studentId = auth.currentUser.uid;
+        const studentName = userData?.name || 'Unknown Student';
+        
+        // Generate a unique slot ID
+        const slotId = 'slot_' + Date.now();
+        
+        // Create booking in the bookedSessions collection
+        db.collection('bookedSessions').add({
+          slotId: slotId,
+          tutorId: tutorId,
+          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+          studentId: studentId,
+          studentName: studentName,
+          subject: subject,
+          date: dateTime,
+          duration: duration,
+          sessionType: sessionType,
+          notes: notes,
+          status: 'pending',
+          bookedAt: new Date(),
+          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+        })
+        .then((docRef) => {
+          alert('Session booked successfully! It is now pending confirmation from the tutor.');
+          document.getElementById('schedulingForm').reset();
+          document.getElementById('priceSummary').style.display = 'none';
+          document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+          document.getElementById('subject').disabled = true;
+          
+          // Immediately add the new booking to the UI
+          addBookingToUI(docRef.id, {
+            slotId: slotId,
+            tutorId: tutorId,
+            tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+            studentId: studentId,
+            studentName: studentName,
+            subject: subject,
+            date: firebase.firestore.Timestamp.fromDate(dateTime),
+            duration: duration,
+            sessionType: sessionType,
+            notes: notes,
+            status: 'pending',
+            bookedAt: new Date(),
+            hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+            totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+          });
+        })
+        .catch((error) => {
+          console.error('Error creating booking:', error);
+          alert('Failed to book session. Please try again.');
+        });
+      })
+      .catch((error) => {
+        console.error('Error getting tutor details:', error);
+        alert('Failed to book session. Please try again.');
+      });
+  });
+  
+  // Set up edit profile button
+  document.getElementById('editProfileBtn').addEventListener('click', function() {
+    const profileForm = document.getElementById('profileForm');
+    if (profileForm.style.display === 'none') {
+      profileForm.style.display = 'block';
+      this.textContent = 'Cancel Edit';
+    } else {
+      profileForm.style.display = 'none';
+      this.textContent = 'Edit Profile';
+    }
+  });
+  
+  // Set up save profile button
+  document.getElementById('saveProfileBtn').addEventListener('click', function() {
+    const name = document.getElementById('fullName').value;
+    const phone = document.getElementById('phone').value;
+    
+    if (!name) {
+      alert('Please enter your name.');
+      return;
+    }
+    
+    // Update user data in Firestore
+    const userId = auth.currentUser.uid;
+    db.collection('students').doc(userId).update({
+      name: name,
+      phone: phone,
+      updatedAt: new Date()
+    })
+    .then(() => {
+      alert('Profile updated successfully!');
+      document.getElementById('profileForm').style.display = 'none';
+      document.getElementById('editProfileBtn').textContent = 'Edit Profile';
+      
+      // Update displayed user info
+      document.getElementById('userName').textContent = name;
+      document.getElementById('profileName').textContent = name;
+      userData.name = name;
+      userData.phone = phone;
+    })
+    .catch((error) => {
+      console.error('Error updating profile:', error);
+      alert('Failed to update profile. Please try again.');
+    });
+  });
+  
+  // Set up logout button
+  document.getElementById('logoutBtn').addEventListener('click', function() {
+    if (confirm('Are you sure you want to logout?')) {
+      auth.signOut().then(() => {
+        window.location.href = 'student-login.html';
+      });
+    }
+  });
+  
+  // Set up mobile menu toggle
+  document.getElementById('menuToggle').addEventListener('click', function() {
+    document.getElementById('sidebar').classList.toggle('active');
+  });
+  
+  // Add history filter event listener (INSIDE the function)
+  document.getElementById('historyFilter').addEventListener('change', function() {
+  // When filter changes, apply filters to current data
+  if (sessionsDataLoaded) {
+    setupHistoryFilters();
+  } else {
+    // If data not loaded yet, refresh will handle it
+    refreshSessionsHistory();
+  }
+});
+
+// Add event listener for action type filter
+document.getElementById('actionTypeFilter').addEventListener('change', function() {
+  if (sessionsDataLoaded) {
+    setupHistoryFilters();
+  }
+});
+  
+  // Load initial data
+  loadUserBookings();
+  loadUserSessionHistory();
+  updateUserStats();
+  
+  // Start inactivity timer
+  resetInactivityTimer();
+  setupActivityListeners();
+}
+
+// Check authentication state
+auth.onAuthStateChanged((user) => {
+  if (user) {
+    currentUser = user;
+
+    // Setup real-time listener for reschedule requests
+    setupRescheduleListener();
+    
+    // Reset loaded flags for new user
+    tutorsLoaded = false;
+    bookingsLoaded = false;
+    sessionsLoaded = false;
+    sessionsDataLoaded = false;
+    isFirstLoad = true;
+    lastVisible = null;    
+    
+    // Get user data from Firestore
+    db.collection('students').doc(user.uid).get()
+      .then((doc) => {
+        if (doc.exists) {
+          userData = doc.data();
+          
+          // Update UI with user data
+          document.getElementById('userName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileEmail').textContent = user.email;
+          document.getElementById('fullName').value = userData.name || '';
+          document.getElementById('email').value = user.email;
+          document.getElementById('phone').value = userData.phone || '';
+          
+          // Initialize the dashboard
+          initDashboard();
+        } else {
+          console.error('No user data found');
+          alert('Error loading user data. Please try logging in again.');
+          auth.signOut();
+        }
+      })
+      .catch((error) => {
+        console.error('Error getting user data:', error);
+        alert('Error loading user data. Please try again.');
+      });
+  } else {
+    // User is not logged in, redirect to login page
+    window.location.href = 'student-login.html';
+  }
+});
+  
+</script>
+</body>
+</html>
+    
