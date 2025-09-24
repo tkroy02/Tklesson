@@ -1964,11 +1964,13 @@ function loadUserBookings() {
                 const booking = doc.data();
                 const bookingId = doc.id;
                 
-                // Check for pending reschedule requests
+                // IMPORTANT: Use a fresh query with no caching
                 const rescheduleQuery = await db.collection('rescheduleRequests')
                     .where('sessionId', '==', bookingId)
                     .where('status', '==', 'pending')
-                    .get();
+                    .get({ source: 'server' }); // Force fresh data from server
+                
+                console.log(`Booking ${bookingId}: Found ${rescheduleQuery.size} pending reschedule requests`);
                 
                 return {
                     id: bookingId,
@@ -1991,11 +1993,19 @@ function loadUserBookings() {
             }
         });
 }
-
+  
 // CORRECTED respondToReschedule function:
 function respondToReschedule(bookingId, response) {
     if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
         return;
+    }
+
+    // Immediately update the UI to provide feedback
+    const bookingElement = document.getElementById(`booking-${bookingId}`);
+    if (bookingElement) {
+        bookingElement.style.opacity = '0.7';
+        const buttons = bookingElement.querySelectorAll('button');
+        buttons.forEach(btn => btn.disabled = true);
     }
 
     // First, get the reschedule request for this booking
@@ -2006,6 +2016,12 @@ function respondToReschedule(bookingId, response) {
         .then((querySnapshot) => {
             if (querySnapshot.empty) {
                 alert('No pending reschedule request found for this booking.');
+                // Reset UI
+                if (bookingElement) {
+                    bookingElement.style.opacity = '1';
+                    const buttons = bookingElement.querySelectorAll('button');
+                    buttons.forEach(btn => btn.disabled = false);
+                }
                 return;
             }
 
@@ -2025,7 +2041,7 @@ function respondToReschedule(bookingId, response) {
                     rescheduleAcceptedAt: new Date()
                 });
 
-                // Update the reschedule request status
+                // Update the reschedule request status to 'accepted'
                 const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
                 batch.update(rescheduleRef, {
                     status: 'accepted',
@@ -2046,17 +2062,25 @@ function respondToReschedule(bookingId, response) {
         })
         .then(() => {
             alert(`Reschedule request ${response}ed successfully.`);
-            // Force a complete reload by adding a small delay
+            
+            // Force a complete reload with cache busting
             setTimeout(() => {
+                console.log('Reloading bookings after reschedule response...');
                 loadUserBookings();
-            }, 100);
+            }, 1000); // Increased delay to ensure Firestore propagation
         })
         .catch((error) => {
             console.error('Error responding to reschedule request:', error);
             alert('Failed to respond to reschedule request. Please try again.');
+            
+            // Reset UI on error
+            if (bookingElement) {
+                bookingElement.style.opacity = '1';
+                const buttons = bookingElement.querySelectorAll('button');
+                buttons.forEach(btn => btn.disabled = false);
+            }
         });
 }
-
   
 
 // Function for reschedule response - CORRECTED VERSION
@@ -2522,5 +2546,6 @@ function getStatusClass(status) {
 </script>
 </body>
 </html>
+
 
 
