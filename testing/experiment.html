@@ -1505,10 +1505,11 @@ function loadBookings(snapshot) {
                         <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
                     </div>
                     ${hasRescheduleRequest ? `
-                    <div class="session-detail">
-                        <i class="fas fa-info-circle"></i>
-                        <span>New Time Proposed: <span id="proposedTime-${doc.id}">Loading...</span></span>
-                    </div>
+<div class="reschedule-actions">
+    <button class="btn-success" onclick="acceptReschedule('${doc.id}')">Accept New Time</button>
+    <button class="btn-danger" onclick="declineReschedule('${doc.id}')">Decline</button>
+</div>
+` : ''}
                     <div class="session-detail">
                         <i class="fas fa-comment"></i>
                         <span>Reason: <span id="rescheduleReason-${doc.id}">Loading...</span></span>
@@ -1606,12 +1607,6 @@ function getProposedTime(booking) {
 
 // Accept reschedule request
 async function acceptReschedule(bookingId) {
-    console.log('Accept reschedule called for booking:', bookingId);
-    
-    if (!confirm('Are you sure you want to accept the new session time?')) {
-        return;
-    }
-
     try {
         // Find the reschedule request to get the proposed new time
         const rescheduleQuery = await db.collection('rescheduleRequests')
@@ -1626,6 +1621,7 @@ async function acceptReschedule(bookingId) {
         
         const rescheduleRequest = rescheduleQuery.docs[0].data();
         const newDate = rescheduleRequest.requestedDate;
+        const originalDate = rescheduleRequest.originalDate;
         
         const respondedAt = new Date();
         
@@ -1634,10 +1630,18 @@ async function acceptReschedule(bookingId) {
             date: newDate,
             status: 'confirmed',
             rescheduleStatus: 'accepted',
-            rescheduleRespondedAt: respondedAt
+            rescheduleRespondedAt: respondedAt,
+            rescheduleTimeline: {
+                requestedAt: rescheduleRequest.requestedAt || new Date(),
+                respondedAt: respondedAt,
+                acceptedAt: respondedAt
+            }
         });
         
-        // Update the reschedule request status (use your existing function)
+        // Also update in sessions history if it exists
+        await updateSessionHistory(bookingId, newDate, originalDate);
+        
+        // Update the reschedule request status
         await updateRescheduleRequest(bookingId, 'accepted');
         
         alert('Reschedule accepted! The session has been updated.');
@@ -1648,77 +1652,7 @@ async function acceptReschedule(bookingId) {
         alert('Failed to accept reschedule. Please try again.');
     }
 }
-  
-// Helper function to reset button state
-function resetButton(button, originalText) {
-    button.innerHTML = originalText;
-    button.disabled = false;
-}
 
-// Decline reschedule request - COMPLETE VERSION
-async function declineReschedule(bookingId) {
-    console.log('Decline reschedule called for:', bookingId);
-    
-    const reason = prompt('Please provide a reason for declining the reschedule request:');
-    if (reason === null || reason.trim() === '') {
-        alert('Please provide a reason to decline the reschedule request.');
-        return;
-    }
-
-    try {
-        // Show loading state
-        const declineBtn = document.querySelector(`button[onclick="declineReschedule('${bookingId}')"]`);
-        const originalText = declineBtn.innerHTML;
-        declineBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-        declineBtn.disabled = true;
-
-        // Find the reschedule request
-        const rescheduleQuery = await db.collection('rescheduleRequests')
-            .where('sessionId', '==', bookingId)
-            .where('status', '==', 'pending')
-            .get();
-            
-        if (rescheduleQuery.empty) {
-            alert('No pending reschedule request found for this booking.');
-            resetButton(declineBtn, originalText);
-            return;
-        }
-        
-        const rescheduleDoc = rescheduleQuery.docs[0];
-        const respondedAt = new Date();
-        
-        // Update the booking status back to confirmed
-        await db.collection('bookedSessions').doc(bookingId).update({
-            status: 'confirmed',
-            rescheduleStatus: 'declined',
-            rescheduleDeclineReason: reason.trim(),
-            rescheduleRespondedAt: respondedAt
-        });
-        
-        // Update the reschedule request status
-        await db.collection('rescheduleRequests').doc(rescheduleDoc.id).update({
-            status: 'declined',
-            respondedAt: respondedAt,
-            declineReason: reason.trim()
-        });
-        
-        alert('Reschedule request declined.');
-        
-        // Refresh the bookings display
-        loadUserBookings();
-        
-    } catch (error) {
-        console.error('Error declining reschedule:', error);
-        alert('Failed to decline reschedule. Please try again.');
-        
-        // Reset button on error
-        const declineBtn = document.querySelector(`button[onclick="declineReschedule('${bookingId}')"]`);
-        if (declineBtn) {
-            declineBtn.innerHTML = 'Decline';
-            declineBtn.disabled = false;
-        }
-    }
-}
 
 // Helper function to update session history
 async function updateSessionHistory(bookingId, newDate, originalDate) {
@@ -1811,7 +1745,7 @@ async function updateRescheduleRequest(bookingId, status) {
         console.error('Error updating reschedule request:', error);
     }
 }
-  
+
 
 // Setup booking filter
 function setupBookingFilter() {
@@ -2131,8 +2065,21 @@ function loadBookings(snapshot) {
     });
     
     container.innerHTML = html;
-}
 
+// Re-attach event listeners to the new buttons
+container.querySelectorAll('.btn-success').forEach(button => {
+    button.addEventListener('click', function() {
+        const bookingId = this.closest('.session-card').id.replace('booking-', '');
+        acceptReschedule(bookingId);
+    });
+});
+
+container.querySelectorAll('.btn-danger').forEach(button => {
+    button.addEventListener('click', function() {
+        const bookingId = this.closest('.session-card').id.replace('booking-', '');
+        declineReschedule(bookingId);
+    });
+});
 function appendSessionHistory(snapshot) {
     const container = document.querySelector('#sessionsContainer tbody');
     
@@ -2968,10 +2915,6 @@ auth.onAuthStateChanged((user) => {
     window.location.href = 'student-login.html';
   }
 });
-
-console.log('Testing function accessibility...');
-console.log('acceptReschedule:', typeof acceptReschedule);
-console.log('declineReschedule:', typeof declineReschedule);
   
 </script>
 </body>
