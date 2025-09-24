@@ -1325,6 +1325,7 @@ function setupActivityListeners() {
   });
 }
 
+// Enhanced filtering system for sessions history
 function setupHistoryFilters() {
   const historyFilter = document.getElementById('historyFilter');
   const actionTypeFilter = document.getElementById('actionTypeFilter');
@@ -1339,45 +1340,48 @@ function setupHistoryFilters() {
     
     let visibleCount = 0;
     
-    // Get current date for time calculations
-    const now = new Date();
-    
     rows.forEach(row => {
       let showRow = true;
       
-      // Apply time filter based on ACTION DATE (7th column) instead of session date
+      // Apply time filter
       if (timeFilter !== 'all') {
-        const actionDateText = row.cells[6].textContent.trim(); // 7th column (index 6) is Action Date
+        const actionDateText = row.cells[6].textContent.trim();
         const actionDate = new Date(actionDateText);
+        const now = new Date();
         
-        if (!isNaN(actionDate.getTime())) { // Check if date is valid
-          let startDate;
-          
-          switch(timeFilter) {
-            case 'month':
-              startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-              break;
-            case '3months':
-              startDate = new Date(now);
-              startDate.setMonth(now.getMonth() - 3);
-              break;
-            case 'year':
-              startDate = new Date(now.getFullYear(), 0, 1);
-              break;
-            default:
-              startDate = null;
-          }
-          
-          if (startDate && actionDate < startDate) {
-            showRow = false;
-          }
+        switch(timeFilter) {
+          case 'month':
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            showRow = showRow && (actionDate >= startOfMonth);
+            break;
+          case '3months':
+            const threeMonthsAgo = new Date();
+            threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+            showRow = showRow && (actionDate >= threeMonthsAgo);
+            break;
+          case 'year':
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+            showRow = showRow && (actionDate >= startOfYear);
+            break;
         }
       }
       
-      // Apply action type filter (8th column)
-      if (actionFilter !== 'all' && showRow) {
+// Example of creating a session with proper timestamps
+const sessionData = {
+  // ... existing fields ...
+  bookedAt: new Date(), // When initially booked
+  confirmedAt: null, // Set when confirmed
+  cancelledAt: null, // Set when cancelled
+  rescheduleRequestedAt: null, // Set when reschedule requested
+  rescheduleAcceptedAt: null, // Set when reschedule accepted
+  completedAt: null, // Set when completed
+  // ... other fields ...
+};
+
+      // Apply action type filter
+      if (actionFilter !== 'all') {
         const actionType = row.cells[7].textContent.trim().toLowerCase();
-        showRow = actionType === actionFilter.toLowerCase();
+        showRow = showRow && (actionType === actionFilter);
       }
       
       row.style.display = showRow ? '' : 'none';
@@ -1410,7 +1414,6 @@ function setupHistoryFilters() {
   historyFilter.addEventListener('change', applyFilters);
   actionTypeFilter.addEventListener('change', applyFilters);
 }
-
 
 // Update upcoming sessions count
 function updateUpcomingSessionsCount(count) {
