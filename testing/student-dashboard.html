@@ -2304,6 +2304,7 @@ function respondToReschedule(bookingId, response) {
 }
 
 // Also, update the loadUserBookings function to properly handle reschedule requests:
+// CORRECTED loadUserBookings function:
 function loadUserBookings() {
     const userId = auth.currentUser.uid;
     
@@ -2318,14 +2319,14 @@ function loadUserBookings() {
             updateUpcomingSessionsCount(querySnapshot.size);
             
             // For each booking, check if there's a pending reschedule request
-            const bookingsWithRescheduleInfo = querySnapshot.docs.map(async (doc) => {
+            const bookingPromises = querySnapshot.docs.map(async (doc) => {
                 const booking = doc.data();
                 const bookingId = doc.id;
                 
-                // Check for pending reschedule requests
+                // Check for pending reschedule requests - IMPORTANT: Only get PENDING requests
                 const rescheduleQuery = await db.collection('rescheduleRequests')
                     .where('sessionId', '==', bookingId)
-                    .where('status', '==', 'pending')
+                    .where('status', '==', 'pending') // This is correct
                     .get();
                 
                 return {
@@ -2336,7 +2337,7 @@ function loadUserBookings() {
                 };
             });
             
-            return Promise.all(bookingsWithRescheduleInfo);
+            return Promise.all(bookingPromises);
         })
         .then((bookingsWithRescheduleInfo) => {
             loadBookingsDisplay(bookingsWithRescheduleInfo);
@@ -2350,7 +2351,72 @@ function loadUserBookings() {
         });
 }
 
-// Update the loadBookingsDisplay function to use the enhanced data:
+// ENHANCED respondToReschedule function with better state management:
+function respondToReschedule(bookingId, response) {
+    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
+        return;
+    }
+
+    // First, get the reschedule request for this booking
+    db.collection('rescheduleRequests')
+        .where('sessionId', '==', bookingId)
+        .where('status', '==', 'pending')
+        .get()
+        .then((querySnapshot) => {
+            if (querySnapshot.empty) {
+                alert('No pending reschedule request found for this booking.');
+                return;
+            }
+
+            const rescheduleRequestDoc = querySnapshot.docs[0];
+            const rescheduleRequestId = rescheduleRequestDoc.id;
+            const rescheduleRequest = rescheduleRequestDoc.data();
+
+            if (response === 'accept') {
+                // Accept the reschedule - update both the booking and the reschedule request
+                const batch = db.batch();
+                
+                // Update the booking with the new date
+                const bookingRef = db.collection('bookedSessions').doc(bookingId);
+                batch.update(bookingRef, {
+                    date: rescheduleRequest.requestedDate,
+                    status: 'confirmed',
+                    rescheduleAcceptedAt: new Date()
+                });
+
+                // Update the reschedule request status to 'accepted'
+                const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
+                batch.update(rescheduleRef, {
+                    status: 'accepted',
+                    respondedAt: new Date(),
+                    response: 'accepted'
+                });
+
+                // Commit the batch
+                return batch.commit();
+            } else {
+                // Decline the reschedule - update only the reschedule request
+                return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
+                    status: 'declined',
+                    respondedAt: new Date(),
+                    response: 'declined'
+                });
+            }
+        })
+        .then(() => {
+            alert(`Reschedule request ${response}ed successfully.`);
+            // Force reload with cache-busting
+            setTimeout(() => {
+                loadUserBookings();
+            }, 500); // Increased delay to ensure Firestore updates
+        })
+        .catch((error) => {
+            console.error('Error responding to reschedule request:', error);
+            alert('Failed to respond to reschedule request. Please try again.');
+        });
+}
+
+// UPDATED loadBookingsDisplay with better reschedule logic:
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2366,8 +2432,14 @@ function loadBookingsDisplay(bookings) {
         const formattedDate = date.toLocaleDateString();
         const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
+        // DEBUG: Log booking info to see what's happening
+        console.log('Booking:', booking.id, 'Status:', booking.status, 'HasPendingReschedule:', booking.hasPendingReschedule);
+        
         // Check if there's a pending reschedule with proposed new date
         let rescheduleInfo = '';
+        let showRescheduleButtons = false;
+        
+        // ONLY show reschedule info if there's actually a pending reschedule
         if (booking.hasPendingReschedule && booking.rescheduleRequest) {
             const newDate = booking.rescheduleRequest.requestedDate.toDate();
             const newFormattedDate = newDate.toLocaleDateString();
@@ -2383,6 +2455,7 @@ function loadBookingsDisplay(bookings) {
                     <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
                 </div>
             `;
+            showRescheduleButtons = true;
         }
         
         html += `
@@ -2411,7 +2484,7 @@ function loadBookingsDisplay(bookings) {
                     ${rescheduleInfo}
                 </div>
                 <div class="session-actions">
-                    ${booking.hasPendingReschedule ? 
+                    ${showRescheduleButtons ? 
                         `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
                          <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
                         `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
@@ -2449,4 +2522,5 @@ function getStatusClass(status) {
 </script>
 </body>
 </html>
+
 
