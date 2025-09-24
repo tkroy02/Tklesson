@@ -1300,3 +1300,528 @@ window.addEventListener('beforeunload', () => {
     cleanupBookingsListener();
 });
 
+/**
+ * Cancels a booking with comprehensive error handling and user confirmation
+ * @param {string} bookingId - Firestore document ID of the booking to cancel
+ */
+async function cancelBooking(bookingId) {
+    // Validation
+    if (!bookingId || typeof bookingId !== 'string') {
+        showNotification('Invalid booking ID', 'error');
+        return;
+    }
+
+    // Get booking details for confirmation
+    let bookingData;
+    try {
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        if (!bookingDoc.exists) {
+            showNotification('Booking not found', 'error');
+            return;
+        }
+        bookingData = bookingDoc.data();
+    } catch (error) {
+        console.error('Error fetching booking details:', error);
+        showNotification('Error loading booking details', 'error');
+        return;
+    }
+
+    // Prevent cancelling past sessions
+    const sessionDate = bookingData.date?.toDate();
+    if (sessionDate && sessionDate < new Date()) {
+        showNotification('Cannot cancel past sessions', 'warning');
+        return;
+    }
+
+    // Prevent cancelling already cancelled/completed sessions
+    if (bookingData.status === 'cancelled' || bookingData.status === 'completed') {
+        showNotification(`Session is already ${bookingData.status}`, 'warning');
+        return;
+    }
+
+    // Confirmation dialog with booking details
+    const sessionTime = sessionDate ? sessionDate.toLocaleString() : 'Unknown time';
+    const confirmMessage = `Are you sure you want to cancel this session?\n\n` +
+                          `Subject: ${bookingData.subject || 'Unknown'}\n` +
+                          `Tutor: ${bookingData.tutorName || 'Unknown'}\n` +
+                          `Date: ${sessionTime}\n` +
+                          `Duration: ${bookingData.duration || '1'} hour(s)`;
+
+    if (!confirm(confirmMessage)) {
+        return; // User cancelled
+    }
+
+    // Optional: Get cancellation reason
+    const cancellationReason = await getCancellationReason();
+    if (cancellationReason === null) {
+        return; // User cancelled the reason prompt
+    }
+
+    try {
+        // Show loading state
+        showLoadingState(bookingId, true, 'Cancelling...');
+
+        const cancelledAt = new Date();
+        
+        // Update the booking with cancellation details
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: cancelledAt,
+            cancellationReason: cancellationReason,
+            lastUpdated: cancelledAt
+        });
+
+        // Create cancellation record (optional - for history/analytics)
+        await createCancellationRecord(bookingId, bookingData, cancellationReason);
+
+        // Notify tutor (if you have a notifications system)
+        await notifyTutorCancellation(bookingId, bookingData, cancellationReason);
+
+        showNotification('Session cancelled successfully', 'success');
+        
+        // Refresh the bookings list
+        loadUserBookings();
+
+    } catch (error) {
+        console.error('Error cancelling booking:', error);
+        showNotification('Failed to cancel session. Please try again.', 'error');
+    } finally {
+        showLoadingState(bookingId, false);
+    }
+}
+
+/**
+ * Prompts user for cancellation reason
+ * @returns {Promise<string|null>} Reason or null if cancelled
+ */
+async function getCancellationReason() {
+    const reasons = [
+        'Schedule conflict',
+        'Found another tutor',
+        'No longer needed',
+        'Price concerns',
+        'Other'
+    ];
+
+    // Create a custom modal instead of native prompt for better UX
+    return new Promise((resolve) => {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+        `;
+
+        modal.innerHTML = `
+            <div style="background: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 400px;">
+                <h3>Reason for Cancellation</h3>
+                <select id="cancellationReasonSelect" style="width: 100%; padding: 8px; margin: 10px 0;">
+                    <option value="">Select a reason...</option>
+                    ${reasons.map(reason => `<option value="${reason}">${reason}</option>`).join('')}
+                </select>
+                <textarea id="customReason" placeholder="Custom reason (optional)" 
+                         style="width: 100%; padding: 8px; margin: 10px 0; display: none;"></textarea>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
+                    <button onclick="closeCancellationModal(null)">Cancel</button>
+                    <button onclick="submitCancellationReason()" style="background: #dc3545; color: white;">Confirm Cancellation</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Handle select change
+        const select = modal.querySelector('#cancellationReasonSelect');
+        const textarea = modal.querySelector('#customReason');
+        
+        select.addEventListener('change', (e) => {
+            textarea.style.display = e.target.value === 'Other' ? 'block' : 'none';
+        });
+
+        // Global functions for modal buttons
+        window.closeCancellationModal = (reason) => {
+            document.body.removeChild(modal);
+            delete window.closeCancellationModal;
+            delete window.submitCancellationReason;
+            resolve(reason);
+        };
+
+        window.submitCancellationReason = () => {
+            const selectedReason = select.value;
+            const customReason = textarea.value.trim();
+            
+            if (!selectedReason) {
+                alert('Please select a cancellation reason');
+                return;
+            }
+
+            const finalReason = selectedReason === 'Other' && customReason ? 
+                               customReason : selectedReason;
+            
+            closeCancellationModal(finalReason);
+        };
+    });
+}
+
+/**
+ * Creates a cancellation record for history/analytics
+ */
+async function createCancellationRecord(bookingId, bookingData, reason) {
+    try {
+        await db.collection('cancellationRecords').add({
+            bookingId: bookingId,
+            originalBooking: bookingData,
+            cancelledAt: new Date(),
+            reason: reason,
+            studentId: bookingData.studentId,
+            tutorId: bookingData.tutorId,
+            sessionDate: bookingData.date
+        });
+    } catch (error) {
+        console.error('Error creating cancellation record:', error);
+        // Non-critical - don't fail the main cancellation
+    }
+}
+
+/**
+ * Notifies tutor about cancellation
+ */
+async function notifyTutorCancellation(bookingId, bookingData, reason) {
+    try {
+        await db.collection('notifications').add({
+            type: 'session_cancelled',
+            userId: bookingData.tutorId,
+            title: 'Session Cancelled',
+            message: `Student ${bookingData.studentName} cancelled ${bookingData.subject} session`,
+            data: {
+                bookingId: bookingId,
+                reason: reason,
+                sessionDate: bookingData.date
+            },
+            timestamp: new Date(),
+            read: false
+        });
+    } catch (error) {
+        console.error('Error notifying tutor:', error);
+        // Non-critical
+    }
+}
+
+/**
+ * Shows loading state for cancellation button
+ */
+function showLoadingState(bookingId, isLoading, text = 'Cancelling...') {
+    const buttons = document.querySelectorAll(`[onclick="cancelBooking('${bookingId}')"]`);
+    
+    buttons.forEach(button => {
+        if (isLoading) {
+            button.disabled = true;
+            button.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${text}`;
+        } else {
+            button.disabled = false;
+            button.innerHTML = 'Cancel';
+            button.onclick = () => cancelBooking(bookingId); // Restore onclick
+        }
+    });
+}
+
+/**
+ * Simplified version without modal (uses native prompt)
+ */
+async function getCancellationReasonSimple() {
+    const reason = prompt('Please provide a reason for cancellation (optional):');
+    return reason ? reason.trim() : 'No reason provided';
+}
+
+/* ------------------------------
+   Notification System
+--------------------------------*/
+
+/**
+ * Shows user notifications (toast-style)
+ * @param {string} message - Notification text
+ * @param {string} type - 'success', 'error', 'warning', 'info'
+ */
+function showNotification(message, type = 'info') {
+    // Remove existing notifications to prevent duplicates
+    const existingNotifications = document.querySelectorAll('.custom-notification');
+    existingNotifications.forEach(notification => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    });
+
+    const notification = document.createElement('div');
+    notification.className = `custom-notification notification-${type}`;
+    
+    const icons = {
+        success: 'fa-check-circle',
+        error: 'fa-exclamation-circle',
+        warning: 'fa-exclamation-triangle',
+        info: 'fa-info-circle'
+    };
+
+    notification.innerHTML = `
+        <i class="fas ${icons[type] || 'fa-info-circle'}"></i>
+        <span>${escapeHtml(message)}</span>
+        <button onclick="this.parentElement.remove()" class="notification-close">
+            <i class="fas fa-times"></i>
+        </button>
+    `;
+
+    // Add styles if not already added
+    if (!document.querySelector('#notification-styles')) {
+        const styles = document.createElement('style');
+        styles.id = 'notification-styles';
+        styles.textContent = `
+            .custom-notification {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #333;
+                color: white;
+                padding: 15px 20px;
+                border-radius: 4px;
+                z-index: 10000;
+                max-width: 400px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                animation: slideIn 0.3s ease;
+            }
+            .notification-success { background: #28a745; }
+            .notification-error { background: #dc3545; }
+            .notification-warning { background: #ffc107; color: #000; }
+            .notification-info { background: #17a2b8; }
+            .notification-close {
+                background: none;
+                border: none;
+                color: inherit;
+                cursor: pointer;
+                padding: 0;
+                margin-left: auto;
+            }
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(styles);
+    }
+
+    document.body.appendChild(notification);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 5000);
+}
+
+/* ------------------------------
+   Session Management
+--------------------------------*/
+
+/**
+ * Handles joining a session (video call or in-person)
+ * @param {string} bookingId - Booking to join
+ */
+async function joinSession(bookingId) {
+    try {
+        if (!bookingId) {
+            showNotification('Invalid session ID', 'error');
+            return;
+        }
+
+        // Get session details
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        if (!bookingDoc.exists) {
+            showNotification('Session not found', 'error');
+            return;
+        }
+
+        const booking = bookingDoc.data();
+        const sessionTime = booking.date?.toDate();
+
+        // Check if session is in the future
+        if (sessionTime && sessionTime > new Date()) {
+            showNotification('Session has not started yet', 'warning');
+            return;
+        }
+
+        // Check if session is too old (more than 2 hours past end time)
+        const sessionEndTime = new Date(sessionTime);
+        sessionEndTime.setHours(sessionEndTime.getHours() + (parseFloat(booking.duration) || 1));
+        
+        if (new Date() > sessionEndTime) {
+            showNotification('This session has already ended', 'warning');
+            return;
+        }
+
+        // Determine join method based on session type
+        if (booking.sessionType === 'online') {
+            await joinOnlineSession(bookingId, booking);
+        } else {
+            await joinInPersonSession(bookingId, booking);
+        }
+
+    } catch (error) {
+        console.error('Error joining session:', error);
+        showNotification('Failed to join session', 'error');
+    }
+}
+
+/**
+ * Joins an online session (video call)
+ */
+async function joinOnlineSession(bookingId, booking) {
+    // For now, show a message - integrate with your video provider later
+    showNotification(`Joining online session with ${booking.tutorName}...`, 'info');
+    
+    // Example integration points:
+    // - Zoom: window.open(booking.zoomLink)
+    // - Google Meet: window.open(booking.meetLink)
+    // - Custom video: window.open(`video-call.html?booking=${bookingId}`)
+    
+    console.log('Would join video call for booking:', bookingId);
+}
+
+/**
+ * Joins an in-person session
+ */
+async function joinInPersonSession(bookingId, booking) {
+    showNotification(`Preparing in-person session details...`, 'info');
+    
+    // Show location details
+    const location = booking.location || 'Location not specified';
+    alert(`In-person session details:\n\nTutor: ${booking.tutorName}\nLocation: ${location}\nTime: ${booking.date?.toDate().toLocaleString()}`);
+}
+
+/* ------------------------------
+   Notification Sending
+--------------------------------*/
+
+/**
+ * Sends notification to tutor about reschedule response
+ */
+async function sendRescheduleResponseNotification(bookingId, response, reason = '') {
+    try {
+        // Get booking details
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        if (!bookingDoc.exists) return;
+
+        const booking = bookingDoc.data();
+        
+        // Create notification in Firestore
+        await db.collection('notifications').add({
+            type: 'reschedule_response',
+            userId: booking.tutorId,
+            title: `Reschedule ${response}`,
+            message: `Student ${booking.studentName} ${response} your reschedule request`,
+            data: {
+                bookingId: bookingId,
+                response: response,
+                reason: reason,
+                studentName: booking.studentName,
+                subject: booking.subject
+            },
+            timestamp: new Date(),
+            read: false
+        });
+
+        console.log(`Reschedule ${response} notification sent to tutor`);
+        
+    } catch (error) {
+        console.error('Error sending notification:', error);
+        // Non-critical - don't fail the main operation
+    }
+}
+
+/* ------------------------------
+   Simplified Session History Update
+--------------------------------*/
+
+/**
+ * Minimal session history update (optional)
+ */
+async function updateSessionHistory(bookingId, newDate, originalDate) {
+    try {
+        // Just update the main booking record
+        await db.collection('bookedSessions').doc(bookingId).update({
+            date: newDate,
+            originalDate: originalDate,
+            lastUpdated: new Date()
+        });
+    } catch (error) {
+        console.error('Error updating session history:', error);
+        // Non-critical
+    }
+}
+
+/* ------------------------------
+   Booking Loading (if not already defined)
+--------------------------------*/
+
+/**
+ * Loads user bookings - main entry point
+ */
+async function loadUserBookings() {
+    try {
+        const user = auth?.currentUser;
+        if (!user) {
+            showNotification('Please log in to view bookings', 'warning');
+            return;
+        }
+
+        const now = new Date();
+        const snapshot = await db.collection('bookedSessions')
+            .where('studentId', '==', user.uid)
+            .where('date', '>=', now)
+            .orderBy('date', 'asc')
+            .get();
+
+        await loadBookings(snapshot); // Use your existing function
+        
+    } catch (error) {
+        console.error('Error loading user bookings:', error);
+        showNotification('Failed to load bookings', 'error');
+    }
+}
+
+/* ------------------------------
+   Initialize Everything
+--------------------------------*/
+
+// Update your DOMContentLoaded to initialize everything
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        // Initialize core components
+        activityMonitor = new ActivityMonitor();
+        historyFilters = new HistoryFilters();
+        
+        // Load initial data when user is authenticated
+        auth?.onAuthStateChanged((user) => {
+            if (user) {
+                loadUserBookings();
+                // You might also want to load session history here
+            }
+        });
+        
+        // Make available globally
+        window.activityMonitor = activityMonitor;
+        window.historyFilters = historyFilters;
+        
+    } catch (error) {
+        console.error('Initialization error:', error);
+    }
+});
+
