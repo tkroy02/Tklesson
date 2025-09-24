@@ -1292,6 +1292,8 @@ function initDashboard() {
     });
   });
 
+  //Profile Section begins. All JS functionalities of the profile section starts here
+  
   // Set up profile editing
   document.getElementById('editProfileBtn').addEventListener('click', function() {
     const form = document.getElementById('profileForm');
@@ -1400,7 +1402,256 @@ function saveProfile() {
 
 // Initialize the dashboard when the page loads
 document.addEventListener('DOMContentLoaded', initDashboard);
+
+//Profile Section neds. All JS functionalities of the profile section ends here
+
+//Scheduling Section begins. All JS functionalities of the scheduling section begins here
+  // Load tutors for scheduling
+function loadTutorsForScheduling() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorSpinner = document.getElementById('tutorSpinner');
+  
+  // Clear existing options except the first one
+  while (tutorSelect.options.length > 1) {
+    tutorSelect.remove(1);
+  }
+  
+  tutorSpinner.style.display = 'block';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      tutorSpinner.style.display = 'none';
+      
+      if (querySnapshot.empty) {
+        tutorSelect.innerHTML = '<option value="">No tutors available at the moment</option>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const option = document.createElement('option');
+        option.value = doc.id;
+        option.textContent = `${tutor.name} - ${tutor.subjects ? tutor.subjects.join(', ') : 'General'}`;
+        tutorSelect.appendChild(option);
+      });
+    })
+    .catch((error) => {
+      tutorSpinner.style.display = 'none';
+      console.error('Error loading tutors:', error);
+      tutorSelect.innerHTML = '<option value="">Error loading tutors</option>';
+    });
+}
+
+// Load subjects for selected tutor
+function loadTutorSubjects(tutorId) {
+  const subjectSelect = document.getElementById('subject');
+  const priceSummary = document.getElementById('priceSummary');
+  
+  // Reset subject select
+  subjectSelect.innerHTML = '<option value="">Loading subjects...</option>';
+  subjectSelect.disabled = true;
+  priceSummary.style.display = 'none';
+  
+  if (!tutorId) {
+    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+    return;
+  }
+  
+  // Get tutor data
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        
+        // Clear and populate subjects
+        subjectSelect.innerHTML = '';
+        
+        if (tutor.subjects && tutor.subjects.length > 0) {
+          tutor.subjects.forEach((subject) => {
+            const option = document.createElement('option');
+            option.value = subject;
+            option.textContent = subject;
+            subjectSelect.appendChild(option);
+          });
+          subjectSelect.disabled = false;
+        } else {
+          subjectSelect.innerHTML = '<option value="general">General Tutoring</option>';
+          subjectSelect.disabled = false;
+        }
+        
+        // Update price summary
+        const hourlyRate = tutor.hourlyRate || 30; // Default rate if not set
+        document.getElementById('hourlyRate').textContent = hourlyRate;
+        updatePriceSummary();
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor subjects:', error);
+      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+    });
+}
+
+// Update price summary when duration changes
+function updatePriceSummary() {
+  const duration = parseFloat(document.getElementById('duration').value);
+  const hourlyRate = parseFloat(document.getElementById('hourlyRate').textContent);
+  const totalPrice = hourlyRate * duration;
+  
+  document.getElementById('durationDisplay').textContent = duration;
+  document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+  document.getElementById('priceSummary').style.display = 'block';
+}
+
+// Handle scheduling form submission
+function handleScheduleSession(e) {
+  e.preventDefault();
+  
+  const tutorId = document.getElementById('tutor').value;
+  const subject = document.getElementById('subject').value;
+  const date = document.getElementById('date').value;
+  const time = document.getElementById('time').value;
+  const duration = parseFloat(document.getElementById('duration').value);
+  const sessionType = document.getElementById('sessionType').value;
+  const notes = document.getElementById('notes').value;
+  
+  if (!tutorId || !subject || !date || !time) {
+    alert('Please fill in all required fields');
+    return;
+  }
+  
+  const scheduleBtn = document.getElementById('scheduleBtn');
+  const originalText = scheduleBtn.innerHTML;
+  
+  scheduleBtn.disabled = true;
+  scheduleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scheduling...';
+  
+  const user = auth.currentUser;
+  if (!user) {
+    alert('You must be logged in to schedule a session');
+    scheduleBtn.disabled = false;
+    scheduleBtn.innerHTML = originalText;
+    return;
+  }
+  
+  // Create session data
+  const sessionData = {
+    studentId: user.uid,
+    studentName: user.displayName || 'Student',
+    tutorId: tutorId,
+    subject: subject,
+    date: date,
+    time: time,
+    duration: duration,
+    sessionType: sessionType,
+    notes: notes,
+    status: 'pending',
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  
+  // Add session to Firestore
+  db.collection('sessions').add(sessionData)
+    .then((docRef) => {
+      console.log('Session scheduled with ID: ', docRef.id);
+      alert('Session scheduled successfully!');
+      
+      // Reset form
+      document.getElementById('schedulingForm').reset();
+      document.getElementById('priceSummary').style.display = 'none';
+      
+      // Update dashboard stats
+      updateDashboardStats();
+    })
+    .catch((error) => {
+      console.error('Error scheduling session: ', error);
+      alert('Error scheduling session. Please try again.');
+    })
+    .finally(() => {
+      scheduleBtn.disabled = false;
+      scheduleBtn.innerHTML = originalText;
+    });
+}
+
+// Update dashboard statistics
+function updateDashboardStats() {
+  const user = auth.currentUser;
+  if (!user) return;
+  
+  const now = new Date();
+  
+  // Count upcoming sessions
+  db.collection('sessions')
+    .where('studentId', '==', user.uid)
+    .where('status', 'in', ['pending', 'confirmed'])
+    .where('date', '>=', now.toISOString().split('T')[0])
+    .get()
+    .then((querySnapshot) => {
+      document.getElementById('upcomingSessionsCount').textContent = querySnapshot.size;
+    });
+  
+  // Count active tutors (tutors the student has sessions with)
+  db.collection('sessions')
+    .where('studentId', '==', user.uid)
+    .where('status', 'in', ['pending', 'confirmed'])
+    .get()
+    .then((querySnapshot) => {
+      const tutorIds = new Set();
+      querySnapshot.forEach((doc) => {
+        tutorIds.add(doc.data().tutorId);
+      });
+      document.getElementById('tutorsCount').textContent = tutorIds.size;
+    });
+  
+  // Calculate hours learned (completed sessions)
+  db.collection('sessions')
+    .where('studentId', '==', user.uid)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      let totalHours = 0;
+      querySnapshot.forEach((doc) => {
+        totalHours += doc.data().duration || 0;
+      });
+      document.getElementById('hoursLearned').textContent = totalHours;
+    });
+}
+
+// Initialize scheduling functionality
+function initScheduling() {
+  // Load tutors for scheduling dropdown
+  loadTutorsForScheduling();
+  
+  // Event listeners for scheduling
+  document.getElementById('tutor').addEventListener('change', function() {
+    loadTutorSubjects(this.value);
+  });
+  
+  document.getElementById('duration').addEventListener('change', updatePriceSummary);
+  
+  document.getElementById('schedulingForm').addEventListener('submit', handleScheduleSession);
+  
+  // Update price summary when page loads if tutor is selected
+  const tutorSelect = document.getElementById('tutor');
+  if (tutorSelect.value) {
+    loadTutorSubjects(tutorSelect.value);
+  }
+}
+
+// Initialize when DOM is loaded
+document.addEventListener('DOMContentLoaded', function() {
+  // Initialize scheduling functionality
+  initScheduling();
+  
+  // Update dashboard stats
+  updateDashboardStats();
+});
+
+//Scheduling Section begins. All JS functionalities of the scheduling section begins here
+  
 </script>
 </body>
 </html>
-
