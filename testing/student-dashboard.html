@@ -1949,64 +1949,38 @@ function updateUpcomingSessionsCount(count) {
 function loadUserBookings() {
     const userId = auth.currentUser.uid;
     
-    console.log('=== LOADING BOOKINGS - DEBUG MODE ===');
-    
-    // First, get ALL reschedule requests for this user's bookings
+    // Query upcoming bookings - FORCE SERVER-SIDE DATA
     db.collection('bookedSessions')
         .where('studentId', '==', userId)
         .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
         .where('date', '>=', new Date())
         .orderBy('date', 'asc')
-        .get()
+        .get({ source: 'server' }) // ← THIS IS THE KEY: force fresh data
         .then((querySnapshot) => {
             updateUpcomingSessionsCount(querySnapshot.size);
             
-            // Get all booking IDs first
-            const bookingIds = querySnapshot.docs.map(doc => doc.id);
-            console.log('Booking IDs to check:', bookingIds);
+            // For each booking, check if there's a pending reschedule request
+            const bookingPromises = querySnapshot.docs.map(async (doc) => {
+                const booking = doc.data();
+                const bookingId = doc.id;
+                
+                // Check for pending reschedule requests - ALSO FORCE SERVER-SIDE
+                const rescheduleQuery = await db.collection('rescheduleRequests')
+                    .where('sessionId', '==', bookingId)
+                    .where('status', '==', 'pending')
+                    .get({ source: 'server' }); // ← FORCE FRESH DATA HERE TOO
+                
+                return {
+                    id: bookingId,
+                    ...booking,
+                    hasPendingReschedule: !rescheduleQuery.empty,
+                    rescheduleRequest: rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data()
+                };
+            });
             
-            // Now query ALL reschedule requests for these bookings
-            return db.collection('rescheduleRequests')
-                .where('sessionId', 'in', bookingIds)
-                .get()
-                .then((rescheduleSnapshot) => {
-                    console.log('Found reschedule requests:', rescheduleSnapshot.docs.map(doc => {
-                        return {id: doc.id, sessionId: doc.data().sessionId, status: doc.data().status};
-                    }));
-                    
-                    // Create a map of sessionId -> pending reschedule request
-                    const pendingReschedules = new Map();
-                    rescheduleSnapshot.docs.forEach(doc => {
-                        const request = doc.data();
-                        if (request.status === 'pending') {
-                            pendingReschedules.set(request.sessionId, request);
-                        }
-                    });
-                    
-                    console.log('Pending reschedules map:', Array.from(pendingReschedules.entries()));
-                    
-                    // Combine the data
-                    const bookingsWithRescheduleInfo = querySnapshot.docs.map(doc => {
-                        const booking = doc.data();
-                        const bookingId = doc.id;
-                        const hasPendingReschedule = pendingReschedules.has(bookingId);
-                        const rescheduleRequest = hasPendingReschedule ? pendingReschedules.get(bookingId) : null;
-                        
-                        console.log(`Booking ${bookingId}: status=${booking.status}, hasPendingReschedule=${hasPendingReschedule}`);
-                        
-                        return {
-                            id: bookingId,
-                            ...booking,
-                            hasPendingReschedule: hasPendingReschedule,
-                            rescheduleRequest: rescheduleRequest
-                        };
-                    });
-                    
-                    return bookingsWithRescheduleInfo;
-                });
+            return Promise.all(bookingPromises);
         })
         .then((bookingsWithRescheduleInfo) => {
-            console.log('Final bookings data:', bookingsWithRescheduleInfo);
             loadBookingsDisplay(bookingsWithRescheduleInfo);
         })
         .catch((error) => {
@@ -2016,79 +1990,70 @@ function loadUserBookings() {
                 container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
             }
         });
-}  
+}
 
-// CORRECTED respondToReschedule function:
+  // CORRECTED respondToReschedule function:
 function respondToReschedule(bookingId, response) {
     if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
         return;
     }
 
-    console.log(`Responding to reschedule for ${bookingId} with ${response}`);
-
-    // Disable buttons immediately
-    const bookingElement = document.getElementById(`booking-${bookingId}`);
-    if (bookingElement) {
-        const buttons = bookingElement.querySelectorAll('button');
-        buttons.forEach(btn => btn.disabled = true);
-    }
-
-    // Find and update the reschedule request
+    // First, get the reschedule request for this booking
     db.collection('rescheduleRequests')
         .where('sessionId', '==', bookingId)
         .where('status', '==', 'pending')
         .get()
         .then((querySnapshot) => {
             if (querySnapshot.empty) {
-                throw new Error('No pending reschedule request found');
+                alert('No pending reschedule request found for this booking.');
+                return;
             }
 
             const rescheduleRequestDoc = querySnapshot.docs[0];
             const rescheduleRequestId = rescheduleRequestDoc.id;
             const rescheduleRequest = rescheduleRequestDoc.data();
 
-            console.log('Found reschedule request:', rescheduleRequestId, 'with status:', rescheduleRequest.status);
-
-            const batch = db.batch();
-            const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
-            
             if (response === 'accept') {
-                // Update booking with new date
+                // Accept the reschedule - update both the booking and the reschedule request
+                const batch = db.batch();
+                
+                // Update the booking with the new date
                 const bookingRef = db.collection('bookedSessions').doc(bookingId);
                 batch.update(bookingRef, {
                     date: rescheduleRequest.requestedDate,
-                    status: 'confirmed'
+                    status: 'confirmed',
+                    rescheduleAcceptedAt: new Date()
                 });
-                
-                // Update reschedule request
+
+                // Update the reschedule request status
+                const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
                 batch.update(rescheduleRef, {
                     status: 'accepted',
-                    respondedAt: new Date()
+                    respondedAt: new Date(),
+                    response: 'accepted'
                 });
+
+                // Commit the batch
+                return batch.commit();
             } else {
-                // Just update reschedule request
-                batch.update(rescheduleRef, {
+                // Decline the reschedule - update only the reschedule request
+                return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
                     status: 'declined',
-                    respondedAt: new Date()
+                    respondedAt: new Date(),
+                    response: 'declined'
                 });
             }
-
-            return batch.commit();
         })
         .then(() => {
-            console.log('Reschedule update committed successfully');
             alert(`Reschedule request ${response}ed successfully.`);
-            
-            // Force hard reload after a delay
-            setTimeout(() => {
-                console.log('=== FORCING RELOAD ===');
-                loadUserBookings();
-            }, 800);
+            // Reload immediately - the server-side query will get fresh data
+            loadUserBookings();
         })
         .catch((error) => {
-            console.error('Error responding to reschedule:', error);
-            alert('Error: ' + error.message);
-            
+            console.error('Error responding to reschedule request:', error);
+            alert('Failed to respond to reschedule request. Please try again.');
+        });
+}            
             // Re-enable buttons on error
             if (bookingElement) {
                 const buttons = bookingElement.querySelectorAll('button');
@@ -2572,6 +2537,7 @@ function getStatusClass(status) {
 </script>
 </body>
 </html>
+
 
 
 
