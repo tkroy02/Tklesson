@@ -556,12 +556,26 @@ function getStatusClass(status) {
  */
 function getActionTypeClass(actionType) {
   const actionMap = {
-    [ACTION_TYPES.SCHEDULED]: 'action-scheduled',
+    [ACTION_TYPES.COMPLETED]: 'action-completed',
+    [ACTION_TYPES.STUDENT_BOOKED]: 'action-booked',
+    [ACTION_TYPES.TUTOR_CONFIRMED]: 'action-confirmed',
+    [ACTION_TYPES.AUTO_CONFIRMED]: 'action-confirmed',
+    [ACTION_TYPES.RESCHEDULE_ACCEPTED]: 'action-resolved',
+    
+    // Warning/neutral actions  
+    [ACTION_TYPES.TUTOR_RESCHEDULE_REQUEST]: 'action-warning',
+    [ACTION_TYPES.STUDENT_RESCHEDULE_REQUEST]: 'action-warning',
+    
+    // Negative actions
+    [ACTION_TYPES.STUDENT_CANCELLED]: 'action-cancelled',
+    [ACTION_TYPES.TUTOR_CANCELLED]: 'action-cancelled',
     [ACTION_TYPES.CANCELLED]: 'action-cancelled',
-    [ACTION_TYPES.COMPLETED]: 'action-completed'
+    
+    // Default
+    [ACTION_TYPES.SCHEDULED]: 'action-scheduled'
   };
   
-  return actionMap[actionType?.toLowerCase()] || 'action-unknown';
+  return actionMap[actionType] || 'action-unknown';
 }
 
 /* ------------------------------
@@ -1999,3 +2013,4 @@ const ACTION_TYPES = {
 function isValidDate(date) {
   return date instanceof Date && !isNaN(date.getTime());
 }
+
