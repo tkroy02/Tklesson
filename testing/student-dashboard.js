@@ -1,2016 +1,1172 @@
-// Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyBjo5LY4EsFlX8j_8NbLUObooUsCqJM8KM",
-  authDomain: "tk-scheduler.firebaseapp.com",
-  projectId: "tk-scheduler",
-  storageBucket: "tk-scheduler.appspot.com",
-  messagingSenderId: "746606755052",
-  appId: "1:746606755052:web:d7eae92976cb2f2fa9f9c9",
-  measurementId: "G-Q5L607R3N7"
-};
+// Profile Edit Button Handler
+document.getElementById('editProfileBtn').addEventListener('click', function() {
+  const profileForm = document.getElementById('profileForm');
+  if (profileForm.style.display === 'none') {
+    profileForm.style.display = 'block';
+    this.textContent = 'Cancel Edit';
+  } else {
+    profileForm.style.display = 'none';
+    this.textContent = 'Edit Profile';
+  }
+});
 
-// Initialize Firebase with error handling
-try {
-  firebase.initializeApp(firebaseConfig);
-} catch (error) {
-  console.error('Firebase initialization failed:', error);
-}
-
-// Initialize Firebase services with null checks
-const auth = firebase.auth?.() || null;
-const db = firebase.firestore?.() || null;
-
-// Constants
-const SESSION_STATUS = {
-  COMPLETED: 'completed',
-  PENDING: 'pending', 
-  CANCELLED: 'cancelled'
-};
-
-const ACTION_TYPES = {
-  SCHEDULED: 'scheduled',
-  CANCELLED: 'cancelled',
-  COMPLETED: 'completed'
-};
-
-const TIME_FILTERS = {
-  ALL: 'all',
-  MONTH: 'month',
-  THREE_MONTHS: '3months',
-  YEAR: 'year'
-};
-
-/* ------------------------------
-   Session History Rendering
---------------------------------*/
-
-/**
- * Displays tutoring sessions in a table with error handling and performance optimizations
- * @param {firebase.firestore.QuerySnapshot} snapshot - Firestore query snapshot
- */
-function appendSessionHistory(snapshot) {
-  const container = document.getElementById('sessionsContainer');
+// Save Profile Button Handler
+document.getElementById('saveProfileBtn').addEventListener('click', function() {
+  const name = document.getElementById('fullName').value;
+  const phone = document.getElementById('phone').value;
   
-  if (!container) {
-    console.error('Sessions container not found');
+  if (!name) {
+    alert('Please enter your name.');
     return;
   }
   
-  // Clear previous content and show loading state
-  container.innerHTML = '<tr><td colspan="8">Loading sessions...</td></tr>';
-  
-  if (!snapshot) {
-    container.innerHTML = '<tr><td colspan="8">Error loading data</td></tr>';
-    return;
-  }
-  
-  if (snapshot.empty) {
-    container.innerHTML = '<tr><td colspan="8">No sessions found</td></tr>';
-    return;
-  }
-  
-  try {
-    const fragment = document.createDocumentFragment();
-    let validSessionCount = 0;
+  // Update user data in Firestore
+  const userId = auth.currentUser.uid;
+  db.collection('students').doc(userId).update({
+    name: name,
+    phone: phone,
+    updatedAt: new Date()
+  })
+  .then(() => {
+    alert('Profile updated successfully!');
+    document.getElementById('profileForm').style.display = 'none';
+    document.getElementById('editProfileBtn').textContent = 'Edit Profile';
     
-    snapshot.forEach(doc => {
-      if (!doc.exists) return;
-      
-      const session = doc.data();
-      if (isValidSession(session)) {
-        const row = createSessionRow(session);
-        if (row) {
-          fragment.appendChild(row);
-          validSessionCount++;
-        }
-      }
-    });
-    
-    if (validSessionCount === 0) {
-      container.innerHTML = '<tr><td colspan="8">No valid sessions found</td></tr>';
-      return;
-    }
-    
-    // Efficient batch update
-    container.innerHTML = '';
-    container.appendChild(fragment);
-    
-    // Refresh filters if they exist
-    if (window.historyFilters) {
-      window.historyFilters.refresh();
-    }
-    
-  } catch (error) {
-    console.error('Error rendering sessions:', error);
-    container.innerHTML = '<tr><td colspan="8">Error displaying sessions</td></tr>';
-  }
-}
+    // Update displayed user info
+    document.getElementById('userName').textContent = name;
+    document.getElementById('profileName').textContent = name;
+    userData.name = name;
+    userData.phone = phone;
+  })
+  .catch((error) => {
+    console.error('Error updating profile:', error);
+    alert('Failed to update profile. Please try again.');
+  });
+});
 
-/**
- * XSS protection utility function
- * @param {string} str - String to escape
- * @returns {string} Escaped string
- */
-function escapeHtml(str) {
-  if (str == null) return '';
-  
-  const div = document.createElement('div');
-  div.textContent = String(str);
-  return div.innerHTML;
-}
-
-/**
- * Creates a table row for a session
- * @param {Object} session - Session data
- * @returns {HTMLTableRowElement} Table row element
- */
-function createSessionRow(session) {
-  try {
-    const row = document.createElement('tr');
-    const sessionDate = session.date.toDate();
-    
-    // Format dates with fallbacks
-    const formattedDate = sessionDate.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-    
-    const formattedTime = sessionDate.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-    
-    const { actionTime, actionType } = getActionTimestamp(session);
-    const actionDate = actionTime.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-    
-    const actionTimeFormatted = actionTime.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-    
-    // Store raw data for filtering
-    row.dataset.date = actionTime.toISOString();
-    row.dataset.actionType = actionType.toLowerCase();
-    row.dataset.status = (session.status || '').toLowerCase();
-    
-    row.innerHTML = `
-      <td>${escapeHtml(formattedDate)}</td>
-      <td>${escapeHtml(formattedTime)}</td>
-      <td>${escapeHtml(session.tutorName || 'Unknown')}</td>
-      <td>${escapeHtml(session.subject || 'No subject')}</td>
-      <td>${escapeHtml((session.duration || '1') + ' hours')}</td>
-      <td>
-        <span class="status-badge ${getStatusClass(session.status)}">
-          ${escapeHtml(session.status || 'unknown')}
-        </span>
-      </td>
-      <td class="timestamp-cell">
-        <div>${escapeHtml(actionDate)}</div>
-        <div class="timestamp-time">${escapeHtml(actionTimeFormatted)}</div>
-      </td>
-      <td>
-        <span class="status-badge ${getActionTypeClass(actionType)}">
-          ${escapeHtml(actionType)}
-        </span>
-      </td>
-    `;
-    
-    return row;
-  } catch (error) {
-    console.error('Error creating session row:', error, session);
-    return null;
-  }
-}
-
-/**
- * Validates session data structure
- * @param {Object} session - Session data to validate
- * @returns {boolean} True if valid
- */
-function isValidSession(session) {
-  return session && 
-         session.date && 
-         typeof session.date.toDate === 'function' &&
-         session.tutorName !== undefined;
-}
-
-/* ------------------------------
-   Activity Monitor (Inactivity logout)
---------------------------------*/
-class ActivityMonitor {
-  constructor(timeoutMs = 2 * 60 * 60 * 1000) { // default 2 hours
-    this.timeoutMs = timeoutMs;
-    this.timer = null;
-    this.handlers = new Map();
-    this.isActive = true;
-    
-    this.setupActivityListeners();
-    this.resetInactivityTimer();
-  }
-
-  /**
-   * Sets up activity event listeners
-   */
-  setupActivityListeners() {
-    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'];
-    
-    events.forEach(event => {
-      const handler = () => this.handleActivity();
-      document.addEventListener(event, handler, { passive: true });
-      this.handlers.set(event, handler);
-    });
-
-    // Section navigation listeners
-    const menuItems = document.querySelectorAll('.menu-item a');
-    menuItems.forEach((item, index) => {
-      const handler = () => this.handleActivity();
-      item.addEventListener('click', handler);
-      this.handlers.set(`menuItem-${index}`, handler);
-    });
-  }
-
-  /**
-   * Handles user activity
-   */
-  handleActivity() {
-    if (!this.isActive) return;
-    this.resetInactivityTimer();
-  }
-
-  /**
-   * Resets the inactivity timer
-   */
-  resetInactivityTimer() {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.logoutDueToInactivity(), this.timeoutMs);
-  }
-
-  /**
-   * Handles logout due to inactivity
-   */
-  async logoutDueToInactivity() {
-    if (!this.isActive) return;
-    
-    this.isActive = false;
-    
-    try {
-      // Show gentle notification instead of alert
-      this.showLogoutNotification();
-      
-      // Small delay to let user see the notification
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      if (auth) {
-        await auth.signOut();
-      }
-      
+// Logout Button Handler
+document.getElementById('logoutBtn').addEventListener('click', function() {
+  if (confirm('Are you sure you want to logout?')) {
+    auth.signOut().then(() => {
       window.location.href = 'student-login.html';
-    } catch (error) {
-      console.error('Logout error:', error);
-      window.location.href = 'student-login.html';
-    }
-  }
-
-  /**
-   * Shows a user-friendly logout notification
-   */
-  showLogoutNotification() {
-    // Create a non-intrusive notification
-    const notification = document.createElement('div');
-    notification.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: #ff6b6b;
-      color: white;
-      padding: 12px 20px;
-      border-radius: 4px;
-      z-index: 10000;
-      font-family: inherit;
-    `;
-    notification.textContent = 'Session expired due to inactivity. Redirecting to login...';
-    
-    document.body.appendChild(notification);
-    
-    // Auto-remove after 3 seconds
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.parentNode.removeChild(notification);
-      }
-    }, 3000);
-  }
-
-  /**
-   * Pauses the activity monitor (useful during loading states)
-   */
-  pause() {
-    this.isActive = false;
-    clearTimeout(this.timer);
-  }
-
-  /**
-   * Resumes the activity monitor
-   */
-  resume() {
-    this.isActive = true;
-    this.resetInactivityTimer();
-  }
-
-  /**
-   * Cleans up event listeners and timers
-   */
-  cleanup() {
-    this.isActive = false;
-    clearTimeout(this.timer);
-    
-    this.handlers.forEach((handler, key) => {
-      if (key.startsWith('menuItem-')) {
-        const index = key.split('-')[1];
-        const menuItems = document.querySelectorAll('.menu-item a');
-        if (menuItems[index]) {
-          menuItems[index].removeEventListener('click', handler);
-        }
-      } else {
-        document.removeEventListener(key, handler);
-      }
     });
-    
-    this.handlers.clear();
   }
+});
+
+// User Data Loading (from auth state change)
+auth.onAuthStateChanged((user) => {
+  if (user) {
+    currentUser = user;
+    
+    // Get user data from Firestore
+    db.collection('students').doc(user.uid).get()
+      .then((doc) => {
+        if (doc.exists) {
+          userData = doc.data();
+          
+          // Update UI with user data
+          document.getElementById('userName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileName').textContent = userData.name || 'Unknown User';
+          document.getElementById('profileEmail').textContent = user.email;
+          document.getElementById('fullName').value = userData.name || '';
+          document.getElementById('email').value = user.email;
+          document.getElementById('phone').value = userData.phone || '';
+        } else {
+          console.error('No user data found');
+          alert('Error loading user data. Please try logging in again.');
+          auth.signOut();
+        }
+      })
+      .catch((error) => {
+        console.error('Error getting user data:', error);
+        alert('Error loading user data. Please try again.');
+      });
+  } else {
+    // User is not logged in, redirect to login page
+    window.location.href = 'student-login.html';
+  }
+});
+
+
+
+function loadTutorsForScheduling() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorSpinner = document.getElementById('tutorSpinner');
+  
+  // Clear existing options except the first one
+  while (tutorSelect.options.length > 1) {
+    tutorSelect.remove(1);
+  }
+  
+  tutorSpinner.style.display = 'block';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      tutorSpinner.style.display = 'none';
+      
+      if (querySnapshot.empty) {
+        tutorSelect.innerHTML = '<option value="">No available tutors found</option>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const option = document.createElement('option');
+        option.value = doc.id;
+        
+        // Extract tutor name and subjects
+        const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
+        let subjectsText = 'No subjects listed';
+        
+        // Check for nested subjects structure
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjectsText = tutor.subjects.subjects.join(', ');
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          subjectsText = tutor.subjects.join(', ');
+        }
+        
+        option.textContent = `${tutorName} - ${subjectsText}`;
+        option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
+        tutorSelect.appendChild(option);
+      });
+    })
+    .catch((error) => {
+      tutorSpinner.style.display = 'none';
+      console.error('Error loading tutors:', error);
+      alert('Failed to load tutors. Please try again.');
+    });
 }
 
-/* ------------------------------
-   History Filters
---------------------------------*/
-class HistoryFilters {
-  constructor() {
-    this.historyFilter = document.getElementById('historyFilter');
-    this.actionTypeFilter = document.getElementById('actionTypeFilter');
-    this.isInitialized = false;
-    
-    this.init();
-  }
 
-  /**
-   * Initializes the filter system
-   */
-  init() {
-    if (!this.validateElements()) {
-      console.warn('History filters: Required elements not found');
-      return;
-    }
-    
-    this.setupEventListeners();
-    this.applyFilters();
-    this.isInitialized = true;
-    
-    console.log('History filters initialized successfully');
+// Set up tutor selection change event
+document.getElementById('tutor').addEventListener('change', function() {
+  const tutorId = this.value;
+  const subjectSelect = document.getElementById('subject');
+  const priceSummary = document.getElementById('priceSummary');
+  const hourlyRateSpan = document.getElementById('hourlyRate');
+  const durationDisplay = document.getElementById('durationDisplay');
+  const totalPriceSpan = document.getElementById('totalPrice');
+  
+  if (!tutorId) {
+    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+    subjectSelect.disabled = true;
+    priceSummary.style.display = 'none';
+    return;
   }
+  
+  // Get tutor data to populate subjects and hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        
+        // Populate subjects
+        subjectSelect.innerHTML = '';
+        let subjects = [];
+        
+        // Check for nested subjects structure
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjects = tutor.subjects.subjects;
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          subjects = tutor.subjects;
+        }
+        
+        if (subjects.length > 0) {
+          subjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject;
+            option.textContent = subject;
+            subjectSelect.appendChild(option);
+          });
+          subjectSelect.disabled = false;
+        } else {
+          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+          subjectSelect.disabled = true;
+        }
+        
+        // Show price summary
+        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+        const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+        const totalPrice = hourlyRate * duration;
+        
+        hourlyRateSpan.textContent = hourlyRate;
+        durationDisplay.textContent = duration;
+        totalPriceSpan.textContent = totalPrice.toFixed(2);
+        priceSummary.style.display = 'block';
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+      subjectSelect.disabled = true;
+      priceSummary.style.display = 'none';
+    });
+});
 
-  /**
-   * Validates required DOM elements
-   */
-  validateElements() {
-    return !!(this.historyFilter && this.actionTypeFilter);
+
+
+// Set up duration change event to update price
+document.getElementById('duration').addEventListener('change', function() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorId = tutorSelect.value;
+  
+  if (!tutorId) return;
+  
+  // Get tutor hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+        const duration = parseFloat(this.value) || 1.5;
+        const totalPrice = hourlyRate * duration;
+        
+        document.getElementById('hourlyRate').textContent = hourlyRate;
+        document.getElementById('durationDisplay').textContent = duration;
+        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+    });
+});
+
+
+// Set up scheduling form submission
+document.getElementById('schedulingForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  
+  const tutorId = document.getElementById('tutor').value;
+  const subject = document.getElementById('subject').value;
+  const date = document.getElementById('date').value;
+  const time = document.getElementById('time').value;
+  const duration = document.getElementById('duration').value;
+  const sessionType = document.getElementById('sessionType').value;
+  const notes = document.getElementById('notes').value;
+  
+  if (!tutorId || !subject || !date || !time) {
+    alert('Please fill in all required fields.');
+    return;
   }
-
-  /**
-   * Sets up event listeners with debouncing
-   */
-  setupEventListeners() {
-    const debouncedApplyFilters = this.debounce(() => this.applyFilters(), 150);
-    
-    this.historyFilter.addEventListener('change', debouncedApplyFilters);
-    this.actionTypeFilter.addEventListener('change', debouncedApplyFilters);
-    
-    // Store cleanup references
-    this.cleanupHandlers = {
-      historyFilter: () => this.historyFilter.removeEventListener('change', debouncedApplyFilters),
-      actionTypeFilter: () => this.actionTypeFilter.removeEventListener('change', debouncedApplyFilters)
-    };
-  }
-
-  /**
-   * Debounce function for performance
-   */
-  debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-      const later = () => {
-        clearTimeout(timeout);
-        func(...args);
-      };
-      clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
-    };
-  }
-
-  /**
-   * Gets start date for time-based filtering
-   */
-  getStartDateForFilter(timeFilter) {
-    const now = new Date();
-    
-    switch(timeFilter) {
-      case TIME_FILTERS.MONTH:
-        return new Date(now.getFullYear(), now.getMonth(), 1);
-      case TIME_FILTERS.THREE_MONTHS:
-        return new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
-      case TIME_FILTERS.YEAR:
-        return new Date(now.getFullYear(), 0, 1);
-      default:
-        return null;
-    }
-  }
-
-  /**
-   * Applies current filters to the session list
-   */
-  applyFilters() {
-    if (!this.isInitialized) return;
-    
-    try {
-      const timeFilter = this.historyFilter.value;
-      const actionFilter = this.actionTypeFilter.value.toLowerCase();
-      const startDate = timeFilter !== TIME_FILTERS.ALL ? this.getStartDateForFilter(timeFilter) : null;
+  
+  // Combine date and time
+  const dateTime = new Date(`${date}T${time}`);
+  
+  // Get tutor details for the booking
+  db.collection('tutors').doc(tutorId).get()
+    .then((tutorDoc) => {
+      if (!tutorDoc.exists) {
+        alert('Selected tutor not found.');
+        return;
+      }
       
-      const rows = document.querySelectorAll('#sessionsContainer tr[data-date]');
-      let visibleCount = 0;
+      const tutor = tutorDoc.data();
+      const studentId = auth.currentUser.uid;
+      const studentName = userData?.name || 'Unknown Student';
       
-      rows.forEach(row => {
-        const shouldShow = this.shouldShowRow(row, startDate, actionFilter);
-        row.style.display = shouldShow ? '' : 'none';
-        if (shouldShow) visibleCount++;
+      // Generate a unique slot ID
+      const slotId = 'slot_' + Date.now();
+      
+      // Create booking in the bookedSessions collection
+      db.collection('bookedSessions').add({
+        slotId: slotId,
+        tutorId: tutorId,
+        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+        studentId: studentId,
+        studentName: studentName,
+        subject: subject,
+        date: dateTime,
+        duration: duration,
+        sessionType: sessionType,
+        notes: notes,
+        status: 'pending',
+        bookedAt: new Date(),
+        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+      })
+      .then((docRef) => {
+        alert('Session booked successfully! It is now pending confirmation from the tutor.');
+        document.getElementById('schedulingForm').reset();
+        document.getElementById('priceSummary').style.display = 'none';
+        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+        document.getElementById('subject').disabled = true;
+        
+        // Immediately add the new booking to the UI
+        addBookingToUI(docRef.id, {
+          slotId: slotId,
+          tutorId: tutorId,
+          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+          studentId: studentId,
+          studentName: studentName,
+          subject: subject,
+          date: firebase.firestore.Timestamp.fromDate(dateTime),
+          duration: duration,
+          sessionType: sessionType,
+          notes: notes,
+          status: 'pending',
+          bookedAt: new Date(),
+          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+        });
+      })
+      .catch((error) => {
+        console.error('Error creating booking:', error);
+        alert('Failed to book session. Please try again.');
+      });
+    })
+    .catch((error) => {
+      console.error('Error getting tutor details:', error);
+      alert('Failed to book session. Please try again.');
+    });
+});
+
+
+// Add new booking to UI immediately
+function addBookingToUI(bookingId, bookingData) {
+  const container = document.getElementById('bookingsContainer');
+  
+  // Format date and time
+  const date = bookingData.date.toDate();
+  const formattedDate = date.toLocaleDateString();
+  const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  
+  // Create booking card HTML
+  const bookingCard = `
+    <div class="session-card" id="booking-${bookingId}">
+      <div class="session-header">
+        <div class="session-title">${bookingData.subject || 'No subject'}</div>
+        <div class="session-date">${formattedDate} at ${formattedTime}</div>
+      </div>
+      <div class="session-details">
+        <div class="session-detail">
+          <i class="fas fa-user-tie"></i>
+          <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-clock"></i>
+          <span>Duration: ${bookingData.duration || '1'} hours</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-video"></i>
+          <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+        </div>
+        <div class="session-detail">
+          <i class="fas fa-hourglass-half"></i>
+          <span>Status: <span class="status-badge status-pending">Pending</span></span>
+        </div>
+      </div>
+      <div class="session-actions">
+        <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  // If container has empty state message, replace it
+  if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
+    container.innerHTML = bookingCard;
+  } else {
+    // Prepend the new booking to the top
+    container.innerHTML = bookingCard + container.innerHTML;
+  }
+  
+  // Update upcoming sessions count
+  const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
+  document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+}
+
+
+// Book a tutor function (used from tutors section)
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelector('.dashboard-section.active').classList.remove('active');
+  
+  document.querySelector('a[data-section="scheduling"]').classList.add('active');
+  document.getElementById('scheduling').classList.add('active');
+  
+  // Wait for the scheduling section to be visible, then select the tutor
+  setTimeout(() => {
+    const tutorSelect = document.getElementById('tutor');
+    tutorSelect.value = tutorId;
+    
+    // Trigger change event to load subjects
+    const event = new Event('change');
+    tutorSelect.dispatchEvent(event);
+  }, 100);
+}
+
+
+// In the navigation setup - loads scheduling data when section is activated
+if (sectionId === 'scheduling') {
+  loadTutorsForScheduling();
+}
+
+
+// Loading Tutors
+
+function loadMyTutors() {
+  const container = document.getElementById('myTutorsContainer');
+  container.innerHTML = '<div class="spinner"></div>';
+  
+  // Get the current user ID
+  const userId = auth.currentUser.uid;
+  
+  // Query sessions where this student is involved and status is completed
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Collect unique tutor IDs
+      const tutorIds = [];
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
       });
       
-      this.updateNoResultsMessage(visibleCount);
+      if (tutorIds.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Tutors Yet</h3><p>You haven\'t had any sessions with tutors yet. Book your first session to get started!</p></div>';
+        return;
+      }
       
-    } catch (error) {
-      console.error('Error applying filters:', error);
-    }
-  }
+      // Get tutor details for each tutor ID
+      const tutorPromises = tutorIds.map(tutorId => 
+        db.collection('tutors').doc(tutorId).get()
+      );
+      
+      Promise.all(tutorPromises)
+        .then((tutorSnapshots) => {
+          tutorSnapshots.forEach((tutorDoc) => {
+            if (tutorDoc.exists) {
+              const tutor = tutorDoc.data();
+              const tutorCard = document.createElement('div');
+              tutorCard.className = 'tutor-card';
+              tutorCard.innerHTML = `
+                <div class="tutor-header">
+                  <div class="tutor-avatar">
+                    <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.name}">
+                  </div>
+                  <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+                  <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+                </div>
+                <div class="tutor-details">
+                  <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+                  <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+                  <p><i class="fas fa-clock"></i> Last session: Completed</p>
+                  <button class="btn-primary" onclick="bookTutor('${tutorDoc.id}')">Book Again</button>
+                </div>
+              `;
+              container.appendChild(tutorCard);
+            }
+          });
+        })
+        .catch((error) => {
+          console.error('Error loading tutor details:', error);
+          container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+        });
+    })
+    .catch((error) => {
+      console.error('Error loading sessions:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+    });
+}
 
-  /**
-   * Determines if a row should be shown based on filters
-   */
-  shouldShowRow(row, startDate, actionFilter) {
-    // Time filter
-    if (startDate) {
-      const rowDate = new Date(row.dataset.date);
-      if (rowDate < startDate) return false;
-    }
-    
-    // Action type filter
-    if (actionFilter !== TIME_FILTERS.ALL) {
-      const rowActionType = row.dataset.actionType;
-      if (rowActionType !== actionFilter) return false;
-    }
-    
-    return true;
-  }
 
-  /**
-   * Updates the no results message
-   */
-  updateNoResultsMessage(visibleCount) {
-    const container = document.getElementById('sessionsContainer');
-    if (!container) return;
-    
-    let noResultsMsg = container.querySelector('.no-results-message');
-    
-    if (visibleCount === 0 && !noResultsMsg) {
-      noResultsMsg = document.createElement('tr');
-      noResultsMsg.className = 'no-results-message';
-      noResultsMsg.innerHTML = `
-        <td colspan="8">
-          <div class="no-results-content">
-            <i class="fas fa-search"></i>
-            <h4>No matching sessions found</h4>
-            <p>Try adjusting your filters</p>
+function loadAvailableTutors() {
+  const container = document.getElementById('availableTutorsContainer');
+  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const tutorCard = document.createElement('div');
+        tutorCard.className = 'tutor-card';
+        tutorCard.innerHTML = `
+          <div class="tutor-header">
+            <div class="tutor-avatar">
+              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName}">
+            </div>
+            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
           </div>
-        </td>
-      `;
-      container.appendChild(noResultsMsg);
-    } else if (visibleCount > 0 && noResultsMsg) {
-      noResultsMsg.remove();
-    }
-  }
-
-  /**
-   * Refreshes filters after content updates
-   */
-  refresh() {
-    if (this.isInitialized) {
-      this.applyFilters();
-    }
-  }
-
-  /**
-   * Cleans up event listeners
-   */
-  cleanup() {
-    if (this.cleanupHandlers) {
-      this.cleanupHandlers.historyFilter();
-      this.cleanupHandlers.actionTypeFilter();
-    }
-    this.isInitialized = false;
-  }
+          <div class="tutor-details">
+            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+          </div>
+        `;
+        container.appendChild(tutorCard);
+      });
+    })
+    .catch((error) => {
+      console.error('Error loading available tutors:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+    });
 }
 
-/* ------------------------------
-   Helper Functions
---------------------------------*/
 
-/**
- * Extracts action timestamp and type from session data
- */
-function getActionTimestamp(session) {
-  return {
-    actionTime: session.date?.toDate() || new Date(),
-    actionType: session.actionType || ACTION_TYPES.SCHEDULED
-  };
-}
-
-/**
- * Gets CSS class for session status
- */
-function getStatusClass(status) {
-  const statusMap = {
-    [SESSION_STATUS.COMPLETED]: 'status-completed',
-    [SESSION_STATUS.PENDING]: 'status-pending',
-    [SESSION_STATUS.CANCELLED]: 'status-cancelled'
-  };
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelector('.dashboard-section.active').classList.remove('active');
   
-  return statusMap[status?.toLowerCase()] || 'status-unknown';
-}
-
-/**
- * Gets CSS class for action type
- */
-function getActionTypeClass(actionType) {
-  const actionMap = {
-    [ACTION_TYPES.COMPLETED]: 'action-completed',
-    [ACTION_TYPES.STUDENT_BOOKED]: 'action-booked',
-    [ACTION_TYPES.TUTOR_CONFIRMED]: 'action-confirmed',
-    [ACTION_TYPES.AUTO_CONFIRMED]: 'action-confirmed',
-    [ACTION_TYPES.RESCHEDULE_ACCEPTED]: 'action-resolved',
-    
-    // Warning/neutral actions  
-    [ACTION_TYPES.TUTOR_RESCHEDULE_REQUEST]: 'action-warning',
-    [ACTION_TYPES.STUDENT_RESCHEDULE_REQUEST]: 'action-warning',
-    
-    // Negative actions
-    [ACTION_TYPES.STUDENT_CANCELLED]: 'action-cancelled',
-    [ACTION_TYPES.TUTOR_CANCELLED]: 'action-cancelled',
-    [ACTION_TYPES.CANCELLED]: 'action-cancelled',
-    
-    // Default
-    [ACTION_TYPES.SCHEDULED]: 'action-scheduled'
-  };
+  document.querySelector('a[data-section="scheduling"]').classList.add('active');
+  document.getElementById('scheduling').classList.add('active');
   
-  return actionMap[actionType] || 'action-unknown';
+  // Wait for the scheduling section to be visible, then select the tutor
+  setTimeout(() => {
+    const tutorSelect = document.getElementById('tutor');
+    tutorSelect.value = tutorId;
+    
+    // Trigger change event to load subjects
+    const event = new Event('change');
+    tutorSelect.dispatchEvent(event);
+  }, 100);
 }
 
-/* ------------------------------
-   Initialization
---------------------------------*/
 
-// Initialize components with error handling
-let activityMonitor;
-let historyFilters;
-
-document.addEventListener('DOMContentLoaded', () => {
-  try {
-    activityMonitor = new ActivityMonitor();
-    historyFilters = new HistoryFilters();
+// Set up tabs in the tutors section
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    // Update active tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    this.classList.add('active');
     
-    // Make available globally for debugging
-    window.activityMonitor = activityMonitor;
-    window.historyFilters = historyFilters;
+    // Show the corresponding tab content
+    const tabId = this.getAttribute('data-tab');
+    document.querySelectorAll('.tab-content').forEach(content => {
+      content.classList.remove('active');
+    });
+    document.getElementById(`${tabId}-tab`).classList.add('active');
     
-  } catch (error) {
-    console.error('Initialization error:', error);
-  }
+    // Show search only for available tutors
+    const searchContainer = document.getElementById('tutorSearchContainer');
+    if (tabId === 'available-tutors') {
+      searchContainer.style.display = 'block';
+    } else {
+      searchContainer.style.display = 'none';
+    }
+  });
 });
 
-// Cleanup on page unload
-window.addEventListener('beforeunload', () => {
-  if (activityMonitor) {
-    activityMonitor.cleanup();
-  }
-  if (historyFilters) {
-    historyFilters.cleanup();
-  }
-});
 
-// Constants for consistency
-const FALLBACK_MESSAGES = {
-    NOT_SPECIFIED: 'Not specified',
-    ERROR: 'Error retrieving time'
-};
+} else if (sectionId === 'tutors') {
+  // Load both my tutors and available tutors when the tutors section is opened
+  if (!tutorsLoaded) {
+    loadMyTutors();
+    loadAvailableTutors();
+    tutorsLoaded = true;
+  }
+}
 
-/**
- * Updates upcoming sessions count with safety checks
- */
+
+//Dashboard Display Features
+// Update upcoming sessions count
 function updateUpcomingSessionsCount(count) {
-    const countElement = document.getElementById('upcomingSessionsCount');
-    if (!countElement) {
-        console.warn('Upcoming sessions count element not found');
-        return false;
-    }
+  document.getElementById('upcomingSessionsCount').textContent = count;
+}
+
+// Update user stats (called during initialization)
+function updateUserStats() {
+  const userId = auth.currentUser.uid;
+  
+  db.collection('sessions')
+    .where('studentId', '==', userId)
+    .where('status', '==', 'completed')
+    .get()
+    .then((querySnapshot) => {
+      const tutorIds = [];
+      let totalHours = 0;
+      
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+        totalHours += parseFloat(session.duration) || 1;
+      });
+      
+      document.getElementById('tutorsCount').textContent = tutorIds.length;
+      document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
+    })
+    .catch((error) => {
+      console.error('Error loading stats:', error);
+    });
+}
+
+// Load user bookings (updates upcoming sessions count)
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
     
-    countElement.textContent = count;
-    return true;
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            loadBookings(querySnapshot);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+        });
 }
 
-/**
- * Fetches proposed reschedule time with comprehensive error handling
- */
-async function getProposedTime(bookingId) {
-    if (!isValidBookingId(bookingId)) {
-        return FALLBACK_MESSAGES.NOT_SPECIFIED;
-    }
 
-    try {
-        const proposedTime = await fetchProposedTimeFromFirestore(bookingId);
-        return proposedTime || FALLBACK_MESSAGES.NOT_SPECIFIED;
-    } catch (error) {
-        console.error(`Error getting proposed time for booking ${bookingId}:`, error);
-        return FALLBACK_MESSAGES.ERROR;
-    }
-}
-
-// Helper functions
-function isValidBookingId(bookingId) {
-    return bookingId && typeof bookingId === 'string' && bookingId.length > 0;
-}
-
-async function fetchProposedTimeFromFirestore(bookingId) {
-    const snapshot = await db.collection('rescheduleRequests')
-        .where('sessionId', '==', bookingId)
-        .where('status', '==', 'pending')
-        .limit(1)
-        .get();
-
-    if (snapshot.empty) return null;
-
-    const request = snapshot.docs[0].data();
-    return formatProposedTime(request.requestedDate);
-}
-
-function formatProposedTime(timestamp) {
-    if (!timestamp || typeof timestamp.toDate !== 'function') return null;
+// Load user bookings
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
     
-    const date = timestamp.toDate();
-    return isValidDate(date) ? date.toLocaleString() : null;
+    // Query upcoming bookings including reschedule requests
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            loadBookings(querySnapshot);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+            document.getElementById('bookingsContainer').innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+        });
 }
 
-function isValidDate(date) {
-    return date instanceof Date && !isNaN(date.getTime());
-}
-
-const RESCHEDULE_MESSAGES = {
-    NO_REASON: 'No reason provided',
-    ERROR: 'Error retrieving reason'
-};
-
-async function getRescheduleReason(bookingId) {
-    if (!bookingId || typeof bookingId !== 'string') {
-        return RESCHEDULE_MESSAGES.NO_REASON;
-    }
-
-    try {
-        const snapshot = await db.collection('rescheduleRequests')
-            .where('sessionId', '==', bookingId)
-            .where('status', '==', 'pending')
-            .limit(1)
-            .get();
-            
-        return snapshot.empty ? 
-            RESCHEDULE_MESSAGES.NO_REASON : 
-            (snapshot.docs[0].data().reason || RESCHEDULE_MESSAGES.NO_REASON);
-            
-    } catch (error) {
-        console.error('Error getting reschedule reason:', error);
-        return RESCHEDULE_MESSAGES.ERROR;
-    }
-}
-
-// Constants for consistency
-const BOOKING_STATUS = {
-    CONFIRMED: 'confirmed',
-    RESCHEDULE_REQUESTED: 'reschedule_requested',
-    PENDING: 'pending'
-};
-
-const STATUS_CLASSES = {
-    [BOOKING_STATUS.CONFIRMED]: 'status-verified',
-    [BOOKING_STATUS.RESCHEDULE_REQUESTED]: 'status-reschedule-requested',
-    [BOOKING_STATUS.PENDING]: 'status-pending'
-};
-
-const STATUS_TEXTS = {
-    [BOOKING_STATUS.CONFIRMED]: 'Confirmed',
-    [BOOKING_STATUS.RESCHEDULE_REQUESTED]: 'Reschedule Requested',
-    [BOOKING_STATUS.PENDING]: 'Pending'
-};
-
-/**
- * Loads and displays bookings with proper error handling and XSS protection
- * @param {firebase.firestore.QuerySnapshot} snapshot - Firestore query snapshot
- */
-async function loadBookings(snapshot) {
+// Load bookings into UI
+function loadBookings(snapshot) {
     const container = document.getElementById('bookingsContainer');
     
-    if (!container) {
-        console.error('Bookings container not found');
+    if (snapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
         return;
     }
     
-    // Show loading state
-    container.innerHTML = '<div class="loading">Loading bookings...</div>';
-    
-    try {
-        if (!snapshot) {
-            throw new Error('No snapshot provided');
-        }
-        
-        if (snapshot.empty) {
-            container.innerHTML = '<p class="no-bookings">You have no upcoming bookings.</p>';
-            return;
-        }
-        
-        const bookings = await processBookings(snapshot);
-        renderBookings(container, bookings);
-        setupBookingFilter();
-        
-    } catch (error) {
-        console.error('Error loading bookings:', error);
-        container.innerHTML = '<p class="error">Error loading bookings. Please try again.</p>';
-    }
-}
-
-/**
- * Processes booking data and fetches additional reschedule info
- */
-async function processBookings(snapshot) {
-    const bookings = [];
-    const reschedulePromises = [];
+    let html = '';
+    const bookingPromises = [];
     
     snapshot.forEach(doc => {
-        const booking = {
-            id: doc.id,
-            ...doc.data(),
-            date: doc.data().date?.toDate?.(),
-            hasRescheduleRequest: doc.data().status === BOOKING_STATUS.RESCHEDULE_REQUESTED
-        };
+        const booking = doc.data();
+        const date = booking.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
-        bookings.push(booking);
-        
-        if (booking.hasRescheduleRequest) {
-            reschedulePromises.push(
-                loadRescheduleData(booking.id).then(data => {
-                    booking.rescheduleData = data;
-                })
-            );
-        }
-    });
-    
-    // Wait for all reschedule data to load
-    await Promise.allSettled(reschedulePromises);
-    return bookings;
-}
+        // Check if this booking has a reschedule request
+        const hasRescheduleRequest = booking.status === 'reschedule_requested';
+        const statusClass = booking.status === 'confirmed' ? 'status-verified' : 
+                           hasRescheduleRequest ? 'status-reschedule-requested' : 'status-pending';
+        const statusText = booking.status === 'confirmed' ? 'Confirmed' : 
+                          hasRescheduleRequest ? 'Reschedule Requested' : 'Pending';
 
-/**
- * Renders bookings to the container efficiently
- */
-function renderBookings(container, bookings) {
-    const fragment = document.createDocumentFragment();
-    
-    bookings.forEach(booking => {
-        const card = createBookingCard(booking);
-        if (card) {
-            fragment.appendChild(card);
-        }
-    });
-    
-    container.innerHTML = '';
-    container.appendChild(fragment);
-}
-
-/**
- * Creates a booking card element with XSS protection
- */
-function createBookingCard(booking) {
-    try {
-        const card = document.createElement('div');
-        card.className = `session-card ${booking.hasRescheduleRequest ? 'reschedule-requested' : ''}`;
-        card.id = `booking-${escapeHtml(booking.id)}`;
-        
-        const date = booking.date || new Date();
-        const formattedDate = isValidDate(date) ? date.toLocaleDateString() : 'Invalid date';
-        const formattedTime = isValidDate(date) ? date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Invalid time';
-        
-        const statusClass = STATUS_CLASSES[booking.status] || 'status-pending';
-        const statusText = STATUS_TEXTS[booking.status] || 'Pending';
-        
-        card.innerHTML = `
-            <div class="session-header">
-                <div class="session-title">${escapeHtml(booking.subject || 'No subject')}</div>
-                <div class="session-date">${escapeHtml(formattedDate)} at ${escapeHtml(formattedTime)}</div>
-            </div>
-            <div class="session-details">
-                ${createSessionDetail('fa-user-tie', 'Tutor:', escapeHtml(booking.tutorName || 'Unknown'))}
-                ${createSessionDetail('fa-clock', 'Duration:', `${escapeHtml(booking.duration || '1')} hours`)}
-                ${createSessionDetail('fa-video', 'Type:', escapeHtml(booking.sessionType === 'in-person' ? 'In-Person' : 'Online'))}
-                ${createSessionDetail('fa-hourglass-half', 'Status:', `<span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>`)}
-                ${booking.hasRescheduleRequest ? createRescheduleDetails(booking) : ''}
-            </div>
-            <div class="session-actions">
-                ${createActionButtons(booking)}
+        html += `
+            <div class="session-card ${hasRescheduleRequest ? 'reschedule-requested' : ''}" id="booking-${doc.id}">
+                <div class="session-header">
+                    <div class="session-title">${booking.subject || 'No subject'}</div>
+                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-tie"></i>
+                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i>
+                        <span>Duration: ${booking.duration || '1'} hours</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-video"></i>
+                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-hourglass-half"></i>
+                        <span>Status: <span class="status-badge ${statusClass}">${statusText}</span></span>
+                    </div>
+                    ${hasRescheduleRequest ? `
+                    <div class="session-detail">
+                        <i class="fas fa-info-circle"></i>
+                        <span>New Time Proposed: <span id="proposedTime-${doc.id}">Loading...</span></span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-comment"></i>
+                        <span>Reason: <span id="rescheduleReason-${doc.id}">Loading...</span></span>
+                    </div>
+                    ` : ''}
+                </div>
+                <div class="session-actions">
+                    ${booking.status === 'confirmed' ? 
+                      `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : 
+                      ''}
+                    ${hasRescheduleRequest ? `
+                    <div class="reschedule-actions">
+                        <button class="btn-success" onclick="acceptReschedule('${doc.id}')">Accept New Time</button>
+                        <button class="btn-danger" onclick="declineReschedule('${doc.id}')">Decline</button>
+                    </div>
+                    ` : ''}
+                    <button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>
+                </div>
             </div>
         `;
         
-        return card;
-    } catch (error) {
-        console.error('Error creating booking card:', error, booking);
-        return null;
-    }
-}
+        // Store promise for loading reschedule data if needed
+        if (hasRescheduleRequest) {
+            bookingPromises.push(loadRescheduleData(doc.id));
+        }
+    });
 
-/**
- * Creates session detail HTML
- */
-function createSessionDetail(icon, label, value) {
-    return `
-        <div class="session-detail">
-            <i class="fas ${icon}"></i>
-            <span>${escapeHtml(label)} ${value}</span>
-        </div>
-    `;
-}
-
-/**
- * Creates reschedule details section
- */
-function createRescheduleDetails(booking) {
-    const proposedTime = booking.rescheduleData?.proposedTime || 'Loading...';
-    const reason = booking.rescheduleData?.reason || 'Loading...';
+    container.innerHTML = html;
     
-    return `
-        ${createSessionDetail('fa-info-circle', 'New Time Proposed:', `<span id="proposedTime-${escapeHtml(booking.id)}">${escapeHtml(proposedTime)}</span>`)}
-        ${createSessionDetail('fa-comment', 'Reason:', `<span id="rescheduleReason-${escapeHtml(booking.id)}">${escapeHtml(reason)}</span>`)}
-    `;
+    // Load reschedule data for all bookings that need it
+    Promise.all(bookingPromises).then(() => {
+        console.log('All reschedule data loaded');
+    }).catch(error => {
+        console.error('Error loading reschedule data:', error);
+    });
+    
+    // Add filter functionality
+    setupBookingFilter();
 }
 
-/**
- * Creates action buttons based on booking status
- */
-function createActionButtons(booking) {
-    const buttons = [];
-    
-    if (booking.status === BOOKING_STATUS.CONFIRMED) {
-        buttons.push(`<button class="btn-primary" onclick="joinSession('${escapeHtml(booking.id)}')">Join Session</button>`);
-    }
-    
-    if (booking.hasRescheduleRequest) {
-        buttons.push(`
-            <div class="reschedule-actions">
-                <button class="btn-success" onclick="acceptReschedule('${escapeHtml(booking.id)}')">Accept New Time</button>
-                <button class="btn-danger" onclick="declineReschedule('${escapeHtml(booking.id)}')">Decline</button>
-            </div>
-        `);
-    }
-    
-    buttons.push(`<button class="btn-outline" onclick="cancelBooking('${escapeHtml(booking.id)}')">Cancel</button>`);
-    
-    return buttons.join('');
-}
-
-/**
- * XSS protection function
- */
-function escapeHtml(str) {
-    if (str == null) return '';
-    const div = document.createElement('div');
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-/**
- * Validates date object
- */
-function isValidDate(date) {
-    return date instanceof Date && !isNaN(date.getTime());
-}
-
-/**
- * Enhanced reschedule data loading
- */
+// Load reschedule data from rescheduleRequests collection
 async function loadRescheduleData(bookingId) {
     try {
-        // Use your existing getProposedTime and getRescheduleReason functions
-        const [proposedTime, reason] = await Promise.all([
-            getProposedTime(bookingId),
-            getRescheduleReason(bookingId)
-        ]);
-        
-        return { proposedTime, reason };
-    } catch (error) {
-        console.error(`Error loading reschedule data for booking ${bookingId}:`, error);
-        return { proposedTime: 'Error', reason: 'Error loading details' };
-    }
-}
-
-// Accept reschedule request with enhanced features
-async function acceptReschedule(bookingId) {
-    // Validation
-    if (!bookingId) {
-        alert('Invalid booking ID');
-        return;
-    }
-    
-    // Confirmation
-    if (!confirm('Are you sure you want to accept this reschedule request?')) {
-        return;
-    }
-    
-    try {
-        // Show loading state
-        showLoadingState(bookingId, true);
-        
         const rescheduleQuery = await db.collection('rescheduleRequests')
             .where('sessionId', '==', bookingId)
             .where('status', '==', 'pending')
-            .limit(1)
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const request = rescheduleQuery.docs[0].data();
+            const newDate = request.requestedDate.toDate();
+            const proposedTime = newDate.toLocaleString();
+            const reason = request.reason || 'No reason provided';
+            
+            // Update the UI elements
+            const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+            const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+            
+            if (proposedTimeElement) proposedTimeElement.textContent = proposedTime;
+            if (reasonElement) reasonElement.textContent = reason;
+        } else {
+            // No reschedule request found, show default values
+            const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+            const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+            
+            if (proposedTimeElement) proposedTimeElement.textContent = 'Not specified';
+            if (reasonElement) reasonElement.textContent = 'No reason provided';
+        }
+    } catch (error) {
+        console.error('Error loading reschedule data:', error);
+        
+        // Show error state
+        const proposedTimeElement = document.getElementById(`proposedTime-${bookingId}`);
+        const reasonElement = document.getElementById(`rescheduleReason-${bookingId}`);
+        
+        if (proposedTimeElement) proposedTimeElement.textContent = 'Error loading';
+        if (reasonElement) reasonElement.textContent = 'Error loading';
+    }
+}
+
+// Cancel a booking
+function cancelBooking(bookingId) {
+    if (confirm('Are you sure you want to cancel this booking?')) {
+        // Update the booking status to cancelled
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: 'student'
+        })
+        .then(() => {
+            alert('Booking cancelled successfully.');
+            // Reload the bookings
+            loadUserBookings();
+        })
+        .catch((error) => {
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking. Please try again.');
+        });
+    }
+}
+
+// Accept reschedule request
+async function acceptReschedule(bookingId) {
+    try {
+        // Find the reschedule request to get the proposed new time
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
             .get();
             
         if (rescheduleQuery.empty) {
-            alert('No pending reschedule request found for this booking.');
+            alert('No reschedule request found for this booking.');
             return;
         }
         
-        const rescheduleDoc = rescheduleQuery.docs[0];
-        const rescheduleRequest = rescheduleDoc.data();
+        const rescheduleRequest = rescheduleQuery.docs[0].data();
         const newDate = rescheduleRequest.requestedDate;
+        const originalDate = rescheduleRequest.originalDate;
+        
         const respondedAt = new Date();
         
-        // Use batch write for atomic operation
-        const batch = db.batch();
-        
-        // Update booking
-        const bookingRef = db.collection('bookedSessions').doc(bookingId);
-        batch.update(bookingRef, {
+        // Update the booking with the new date
+        await db.collection('bookedSessions').doc(bookingId).update({
             date: newDate,
             status: 'confirmed',
             rescheduleStatus: 'accepted',
             rescheduleRespondedAt: respondedAt,
-            lastUpdated: respondedAt
+            rescheduleTimeline: {
+                requestedAt: rescheduleRequest.requestedAt || new Date(),
+                respondedAt: respondedAt,
+                acceptedAt: respondedAt
+            }
         });
         
-        // Update reschedule request
-        const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleDoc.id);
-        batch.update(rescheduleRef, {
-            status: 'accepted',
-            respondedAt: respondedAt,
-            acceptedAt: respondedAt
-        });
+        // Also update in sessions history if it exists
+        await updateSessionHistory(bookingId, newDate, originalDate);
         
-        await batch.commit();
+        // Update the reschedule request status
+        await updateRescheduleRequest(bookingId, 'accepted');
         
-        // Update session history (non-critical)
-        await updateSessionHistory(bookingId, newDate, rescheduleRequest.originalDate);
-        
-        // Show success
-        showNotification('Reschedule accepted! Session updated successfully.', 'success');
-        loadUserBookings(); // Refresh display
+        alert('Reschedule accepted! The session has been updated.');
+        loadUserBookings(); // Refresh the bookings display
         
     } catch (error) {
         console.error('Error accepting reschedule:', error);
-        showNotification('Failed to accept reschedule. Please try again.', 'error');
-    } finally {
-        showLoadingState(bookingId, false);
+        alert('Failed to accept reschedule. Please try again.');
     }
 }
 
-// Decline reschedule request with enhanced features
+// Decline reschedule request
 async function declineReschedule(bookingId) {
-    // Validation
-    if (!bookingId || typeof bookingId !== 'string') {
-        showNotification('Invalid booking ID', 'error');
-        return;
-    }
-    
-    // Get reason with validation
-    const reason = await getDeclineReason();
-    if (!reason) return; // User cancelled or invalid reason
-    
-    // Confirmation
-    if (!confirm(`Decline this reschedule request?\nReason: ${reason}`)) {
-        return;
-    }
+    const reason = prompt('Please provide a reason for declining the reschedule request:');
+    if (reason === null) return; // User cancelled
     
     try {
-        showLoadingState(bookingId, true);
-        
-        const rescheduleQuery = await db.collection('rescheduleRequests')
-            .where('sessionId', '==', bookingId)
-            .where('status', '==', 'pending')
-            .limit(1)
-            .get();
-            
-        if (rescheduleQuery.empty) {
-            showNotification('No pending reschedule request found.', 'warning');
-            return;
-        }
-        
-        // Atomic batch operation
-        const batch = db.batch();
-        const respondedAt = new Date();
-        const rescheduleDoc = rescheduleQuery.docs[0];
-        const rescheduleRequest = rescheduleDoc.data();
-        
-        // Update booking
-        const bookingRef = db.collection('bookedSessions').doc(bookingId);
-        batch.update(bookingRef, {
+        // Update the booking status back to confirmed (no date change needed)
+        await db.collection('bookedSessions').doc(bookingId).update({
             status: 'confirmed',
             rescheduleStatus: 'declined',
             rescheduleDeclineReason: reason,
-            rescheduleRespondedAt: respondedAt,
-            rescheduleTimeline: {
-                ...rescheduleRequest.rescheduleTimeline,
-                respondedAt: respondedAt,
-                declinedAt: respondedAt,
-                declineReason: reason
-            },
-            lastUpdated: respondedAt
+            rescheduleRespondedAt: new Date()
         });
         
-        // Update reschedule request
-        const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleDoc.id);
-        batch.update(rescheduleRef, {
-            status: 'declined',
-            respondedAt: respondedAt,
-            declinedAt: respondedAt,
-            declineReason: reason,
-            studentRespondedAt: respondedAt
-        });
+        // Update the reschedule request status
+        await updateRescheduleRequest(bookingId, 'declined');
         
-        await batch.commit();
-        
-        // Send notification to tutor
-        await sendRescheduleResponseNotification(bookingId, 'declined', reason);
-        
-        showNotification('Reschedule request declined successfully.', 'success');
-        loadUserBookings();
+        alert('Reschedule request declined.');
+        loadUserBookings(); // Refresh the bookings display
         
     } catch (error) {
         console.error('Error declining reschedule:', error);
-        showNotification('Failed to decline reschedule. Please try again.', 'error');
-    } finally {
-        showLoadingState(bookingId, false);
+        alert('Failed to decline reschedule. Please try again.');
     }
 }
 
-// Helper function to get decline reason with validation
-async function getDeclineReason() {
-    while (true) {
-        const reason = prompt('Please provide a reason for declining the reschedule request:');
-        
-        if (reason === null) {
-            return null; // User cancelled
-        }
-        
-        if (reason && reason.trim().length >= 5) {
-            return reason.trim();
-        }
-        
-        alert('Please provide a reason with at least 5 characters.');
-    }
-}
-
-// Loading state management
-function showLoadingState(bookingId, isLoading) {
-    const button = document.querySelector(`[onclick="declineReschedule('${bookingId}')"]`);
-    if (button) {
-        button.disabled = isLoading;
-        button.innerHTML = isLoading ? 
-            '<i class="fas fa-spinner fa-spin"></i> Declining...' : 
-            'Decline';
-    }
-}
-
-/**
- * Loads and displays user bookings from Firestore
- * @param {string} userId - Optional user ID (defaults to current user)
- */
-async function loadUserBookings(userId = null) {
+// Update reschedule request in the rescheduleRequests collection
+async function updateRescheduleRequest(bookingId, status) {
     try {
-        // Get current user if no userId provided
-        const currentUser = auth?.currentUser;
-        if (!currentUser && !userId) {
-            console.error('No user logged in');
-            showNotification('Please log in to view bookings', 'error');
-            return;
-        }
-
-        const targetUserId = userId || currentUser?.uid;
-        const container = document.getElementById('bookingsContainer');
-        
-        if (!container) {
-            console.error('Bookings container not found');
-            return;
-        }
-
-        // Show loading state
-        container.innerHTML = `
-            <div class="loading-state">
-                <i class="fas fa-spinner fa-spin"></i>
-                <p>Loading your bookings...</p>
-            </div>
-        `;
-
-        // Query upcoming bookings
-        const now = new Date();
-        const bookingsQuery = db.collection('bookedSessions')
-            .where('studentId', '==', targetUserId)
-            .where('date', '>=', now)
-            .orderBy('date', 'asc')
-            .limit(50);
-
-        const snapshot = await bookingsQuery.get();
-        
-        // Use your existing loadBookings function
-        await loadBookings(snapshot);
-        
-        // Update upcoming sessions count
-        updateUpcomingSessionsCount(snapshot.size);
-        
-        console.log(`Loaded ${snapshot.size} upcoming bookings`);
-        
-    } catch (error) {
-        console.error('Error loading user bookings:', error);
-        
-        const container = document.getElementById('bookingsContainer');
-        if (container) {
-            container.innerHTML = `
-                <div class="error-state">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <h4>Error Loading Bookings</h4>
-                    <p>${error.message}</p>
-                    <button onclick="loadUserBookings()" class="btn-primary">
-                        <i class="fas fa-redo"></i> Try Again
-                    </button>
-                </div>
-            `;
-        }
-        
-        showNotification('Failed to load bookings', 'error');
-    }
-}
-
-/**
- * Real-time listener for booking updates
- */
-function setupBookingsRealTimeListener(userId = null) {
-    try {
-        const currentUser = auth?.currentUser;
-        const targetUserId = userId || currentUser?.uid;
-        
-        if (!targetUserId) {
-            console.warn('No user ID for real-time listener');
-            return;
-        }
-
-        const now = new Date();
-        
-        // Listen for real-time updates
-        return db.collection('bookedSessions')
-            .where('studentId', '==', targetUserId)
-            .where('date', '>=', now)
-            .orderBy('date', 'asc')
-            .onSnapshot({
-                next: (snapshot) => {
-                    console.log('Real-time booking update received');
-                    loadBookings(snapshot); // Reuse your existing function
-                    updateUpcomingSessionsCount(snapshot.size);
-                },
-                error: (error) => {
-                    console.error('Real-time listener error:', error);
-                    // Don't show error to user - it might be temporary
-                }
+        // Find the reschedule request for this booking
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+            
+        if (!rescheduleQuery.empty) {
+            const requestDoc = rescheduleQuery.docs[0];
+            await db.collection('rescheduleRequests').doc(requestDoc.id).update({
+                status: status,
+                respondedAt: new Date()
             });
-            
+        }
     } catch (error) {
-        console.error('Error setting up real-time listener:', error);
+        console.error('Error updating reschedule request:', error);
     }
 }
 
-/**
- * Enhanced version with filtering options
- */
-async function loadUserBookingsWithFilters(options = {}) {
-    const defaultOptions = {
-        userId: null,
-        status: null, // 'confirmed', 'pending', etc.
-        limit: 50,
-        upcomingOnly: true
-    };
-    
-    const config = { ...defaultOptions, ...options };
-    
-    try {
-        const currentUser = auth?.currentUser;
-        const targetUserId = config.userId || currentUser?.uid;
-        
-        if (!targetUserId) {
-            throw new Error('User not authenticated');
-        }
-
-        let query = db.collection('bookedSessions')
-            .where('studentId', '==', targetUserId);
-
-        // Apply filters
-        if (config.upcomingOnly) {
-            query = query.where('date', '>=', new Date());
-        }
-        
-        if (config.status) {
-            query = query.where('status', '==', config.status);
-        }
-
-        query = query.orderBy('date', config.upcomingOnly ? 'asc' : 'desc')
-                    .limit(config.limit);
-
-        const snapshot = await query.get();
-        await loadBookings(snapshot);
-        
-        return snapshot;
-        
-    } catch (error) {
-        console.error('Error loading filtered bookings:', error);
-        throw error;
-    }
-}
-
-/**
- * Initialize bookings system when page loads
- */
-function initializeBookingsSystem() {
-    // Load initial bookings
-    auth?.onAuthStateChanged((user) => {
-        if (user) {
-            loadUserBookings(user.uid);
-            setupBookingsRealTimeListener(user.uid);
-        } else {
-            // User logged out - clear bookings
-            const container = document.getElementById('bookingsContainer');
-            if (container) {
-                container.innerHTML = '<p>Please log in to view your bookings</p>';
-            }
-            updateUpcomingSessionsCount(0);
-        }
-    });
-}
-
-// Add to your existing DOMContentLoaded event listener
-document.addEventListener('DOMContentLoaded', () => {
-    try {
-        activityMonitor = new ActivityMonitor();
-        historyFilters = new HistoryFilters();
-        
-        // Initialize bookings system
-        initializeBookingsSystem();
-        
-        window.activityMonitor = activityMonitor;
-        window.historyFilters = historyFilters;
-        
-    } catch (error) {
-        console.error('Initialization error:', error);
-    }
-});
-
-// Cleanup real-time listener when needed
-let bookingsUnsubscribe = null;
-
-function cleanupBookingsListener() {
-    if (bookingsUnsubscribe) {
-        bookingsUnsubscribe();
-        bookingsUnsubscribe = null;
-    }
-}
-
-// Update your beforeunload handler
-window.addEventListener('beforeunload', () => {
-    if (activityMonitor) activityMonitor.cleanup();
-    if (historyFilters) historyFilters.cleanup();
-    cleanupBookingsListener();
-});
-
-/**
- * Cancels a booking with comprehensive error handling and user confirmation
- * @param {string} bookingId - Firestore document ID of the booking to cancel
- */
-async function cancelBooking(bookingId) {
-    // Validation
-    if (!bookingId || typeof bookingId !== 'string') {
-        showNotification('Invalid booking ID', 'error');
-        return;
-    }
-
-    // Get booking details for confirmation
-    let bookingData;
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) {
-            showNotification('Booking not found', 'error');
-            return;
-        }
-        bookingData = bookingDoc.data();
-    } catch (error) {
-        console.error('Error fetching booking details:', error);
-        showNotification('Error loading booking details', 'error');
-        return;
-    }
-
-    // Prevent cancelling past sessions
-    const sessionDate = bookingData.date?.toDate();
-    if (sessionDate && sessionDate < new Date()) {
-        showNotification('Cannot cancel past sessions', 'warning');
-        return;
-    }
-
-    // Prevent cancelling already cancelled/completed sessions
-    if (bookingData.status === 'cancelled' || bookingData.status === 'completed') {
-        showNotification(`Session is already ${bookingData.status}`, 'warning');
-        return;
-    }
-
-    // Confirmation dialog with booking details
-    const sessionTime = sessionDate ? sessionDate.toLocaleString() : 'Unknown time';
-    const confirmMessage = `Are you sure you want to cancel this session?\n\n` +
-                          `Subject: ${bookingData.subject || 'Unknown'}\n` +
-                          `Tutor: ${bookingData.tutorName || 'Unknown'}\n` +
-                          `Date: ${sessionTime}\n` +
-                          `Duration: ${bookingData.duration || '1'} hour(s)`;
-
-    if (!confirm(confirmMessage)) {
-        return; // User cancelled
-    }
-
-    // Optional: Get cancellation reason
-    const cancellationReason = await getCancellationReason();
-    if (cancellationReason === null) {
-        return; // User cancelled the reason prompt
-    }
-
-    try {
-        // Show loading state
-        showLoadingState(bookingId, true, 'Cancelling...');
-
-        const cancelledAt = new Date();
-        
-        // Update the booking with cancellation details
-        await db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: cancelledAt,
-            cancellationReason: cancellationReason,
-            lastUpdated: cancelledAt
-        });
-
-        // Create cancellation record (optional - for history/analytics)
-        await createCancellationRecord(bookingId, bookingData, cancellationReason);
-
-        // Notify tutor (if you have a notifications system)
-        await notifyTutorCancellation(bookingId, bookingData, cancellationReason);
-
-        showNotification('Session cancelled successfully', 'success');
-        
-        // Refresh the bookings list
-        loadUserBookings();
-
-    } catch (error) {
-        console.error('Error cancelling booking:', error);
-        showNotification('Failed to cancel session. Please try again.', 'error');
-    } finally {
-        showLoadingState(bookingId, false);
-    }
-}
-
-/**
- * Prompts user for cancellation reason
- * @returns {Promise<string|null>} Reason or null if cancelled
- */
-async function getCancellationReason() {
-    const reasons = [
-        'Schedule conflict',
-        'Found another tutor',
-        'No longer needed',
-        'Price concerns',
-        'Other'
-    ];
-
-    // Create a custom modal instead of native prompt for better UX
-    return new Promise((resolve) => {
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 10000;
-        `;
-
-        modal.innerHTML = `
-            <div style="background: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 400px;">
-                <h3>Reason for Cancellation</h3>
-                <select id="cancellationReasonSelect" style="width: 100%; padding: 8px; margin: 10px 0;">
-                    <option value="">Select a reason...</option>
-                    ${reasons.map(reason => `<option value="${reason}">${reason}</option>`).join('')}
-                </select>
-                <textarea id="customReason" placeholder="Custom reason (optional)" 
-                         style="width: 100%; padding: 8px; margin: 10px 0; display: none;"></textarea>
-                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
-                    <button onclick="closeCancellationModal(null)">Cancel</button>
-                    <button onclick="submitCancellationReason()" style="background: #dc3545; color: white;">Confirm Cancellation</button>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(modal);
-
-        // Handle select change
-        const select = modal.querySelector('#cancellationReasonSelect');
-        const textarea = modal.querySelector('#customReason');
-        
-        select.addEventListener('change', (e) => {
-            textarea.style.display = e.target.value === 'Other' ? 'block' : 'none';
-        });
-
-        // Global functions for modal buttons
-        window.closeCancellationModal = (reason) => {
-            document.body.removeChild(modal);
-            delete window.closeCancellationModal;
-            delete window.submitCancellationReason;
-            resolve(reason);
-        };
-
-        window.submitCancellationReason = () => {
-            const selectedReason = select.value;
-            const customReason = textarea.value.trim();
-            
-            if (!selectedReason) {
-                alert('Please select a cancellation reason');
-                return;
-            }
-
-            const finalReason = selectedReason === 'Other' && customReason ? 
-                               customReason : selectedReason;
-            
-            closeCancellationModal(finalReason);
-        };
-    });
-}
-
-/**
- * Creates a cancellation record for history/analytics
- */
-async function createCancellationRecord(bookingId, bookingData, reason) {
-    try {
-        await db.collection('cancellationRecords').add({
-            bookingId: bookingId,
-            originalBooking: bookingData,
-            cancelledAt: new Date(),
-            reason: reason,
-            studentId: bookingData.studentId,
-            tutorId: bookingData.tutorId,
-            sessionDate: bookingData.date
-        });
-    } catch (error) {
-        console.error('Error creating cancellation record:', error);
-        // Non-critical - don't fail the main cancellation
-    }
-}
-
-/**
- * Notifies tutor about cancellation
- */
-async function notifyTutorCancellation(bookingId, bookingData, reason) {
-    try {
-        await db.collection('notifications').add({
-            type: 'session_cancelled',
-            userId: bookingData.tutorId,
-            title: 'Session Cancelled',
-            message: `Student ${bookingData.studentName} cancelled ${bookingData.subject} session`,
-            data: {
-                bookingId: bookingId,
-                reason: reason,
-                sessionDate: bookingData.date
-            },
-            timestamp: new Date(),
-            read: false
-        });
-    } catch (error) {
-        console.error('Error notifying tutor:', error);
-        // Non-critical
-    }
-}
-
-/**
- * Shows loading state for cancellation button
- */
-function showLoadingState(bookingId, isLoading, text = 'Cancelling...') {
-    const buttons = document.querySelectorAll(`[onclick="cancelBooking('${bookingId}')"]`);
-    
-    buttons.forEach(button => {
-        if (isLoading) {
-            button.disabled = true;
-            button.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${text}`;
-        } else {
-            button.disabled = false;
-            button.innerHTML = 'Cancel';
-            button.onclick = () => cancelBooking(bookingId); // Restore onclick
-        }
-    });
-}
-
-/**
- * Simplified version without modal (uses native prompt)
- */
-async function getCancellationReasonSimple() {
-    const reason = prompt('Please provide a reason for cancellation (optional):');
-    return reason ? reason.trim() : 'No reason provided';
-}
-
-/* ------------------------------
-   Notification System
---------------------------------*/
-
-/**
- * Shows user notifications (toast-style)
- * @param {string} message - Notification text
- * @param {string} type - 'success', 'error', 'warning', 'info'
- */
-function showNotification(message, type = 'info') {
-    // Remove existing notifications to prevent duplicates
-    const existingNotifications = document.querySelectorAll('.custom-notification');
-    existingNotifications.forEach(notification => {
-        if (notification.parentNode) {
-            notification.parentNode.removeChild(notification);
-        }
-    });
-
-    const notification = document.createElement('div');
-    notification.className = `custom-notification notification-${type}`;
-    
-    const icons = {
-        success: 'fa-check-circle',
-        error: 'fa-exclamation-circle',
-        warning: 'fa-exclamation-triangle',
-        info: 'fa-info-circle'
-    };
-
-    notification.innerHTML = `
-        <i class="fas ${icons[type] || 'fa-info-circle'}"></i>
-        <span>${escapeHtml(message)}</span>
-        <button onclick="this.parentElement.remove()" class="notification-close">
-            <i class="fas fa-times"></i>
-        </button>
-    `;
-
-    // Add styles if not already added
-    if (!document.querySelector('#notification-styles')) {
-        const styles = document.createElement('style');
-        styles.id = 'notification-styles';
-        styles.textContent = `
-            .custom-notification {
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                background: #333;
-                color: white;
-                padding: 15px 20px;
-                border-radius: 4px;
-                z-index: 10000;
-                max-width: 400px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                animation: slideIn 0.3s ease;
-            }
-            .notification-success { background: #28a745; }
-            .notification-error { background: #dc3545; }
-            .notification-warning { background: #ffc107; color: #000; }
-            .notification-info { background: #17a2b8; }
-            .notification-close {
-                background: none;
-                border: none;
-                color: inherit;
-                cursor: pointer;
-                padding: 0;
-                margin-left: auto;
-            }
-            @keyframes slideIn {
-                from { transform: translateX(100%); opacity: 0; }
-                to { transform: translateX(0); opacity: 1; }
-            }
-        `;
-        document.head.appendChild(styles);
-    }
-
-    document.body.appendChild(notification);
-
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.parentNode.removeChild(notification);
-        }
-    }, 5000);
-}
-
-/* ------------------------------
-   Session Management
---------------------------------*/
-
-/**
- * Handles joining a session (video call or in-person)
- * @param {string} bookingId - Booking to join
- */
-async function joinSession(bookingId) {
-    try {
-        if (!bookingId) {
-            showNotification('Invalid session ID', 'error');
-            return;
-        }
-
-        // Get session details
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) {
-            showNotification('Session not found', 'error');
-            return;
-        }
-
-        const booking = bookingDoc.data();
-        const sessionTime = booking.date?.toDate();
-
-        // Check if session is in the future
-        if (sessionTime && sessionTime > new Date()) {
-            showNotification('Session has not started yet', 'warning');
-            return;
-        }
-
-        // Check if session is too old (more than 2 hours past end time)
-        const sessionEndTime = new Date(sessionTime);
-        sessionEndTime.setHours(sessionEndTime.getHours() + (parseFloat(booking.duration) || 1));
-        
-        if (new Date() > sessionEndTime) {
-            showNotification('This session has already ended', 'warning');
-            return;
-        }
-
-        // Determine join method based on session type
-        if (booking.sessionType === 'online') {
-            await joinOnlineSession(bookingId, booking);
-        } else {
-            await joinInPersonSession(bookingId, booking);
-        }
-
-    } catch (error) {
-        console.error('Error joining session:', error);
-        showNotification('Failed to join session', 'error');
-    }
-}
-
-/**
- * Joins an online session (video call)
- */
-async function joinOnlineSession(bookingId, booking) {
-    // For now, show a message - integrate with your video provider later
-    showNotification(`Joining online session with ${booking.tutorName}...`, 'info');
-    
-    // Example integration points:
-    // - Zoom: window.open(booking.zoomLink)
-    // - Google Meet: window.open(booking.meetLink)
-    // - Custom video: window.open(`video-call.html?booking=${bookingId}`)
-    
-    console.log('Would join video call for booking:', bookingId);
-}
-
-/**
- * Joins an in-person session
- */
-async function joinInPersonSession(bookingId, booking) {
-    showNotification(`Preparing in-person session details...`, 'info');
-    
-    // Show location details
-    const location = booking.location || 'Location not specified';
-    alert(`In-person session details:\n\nTutor: ${booking.tutorName}\nLocation: ${location}\nTime: ${booking.date?.toDate().toLocaleString()}`);
-}
-
-/* ------------------------------
-   Notification Sending
---------------------------------*/
-
-/**
- * Sends notification to tutor about reschedule response
- */
-async function sendRescheduleResponseNotification(bookingId, response, reason = '') {
-    try {
-        // Get booking details
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) return;
-
-        const booking = bookingDoc.data();
-        
-        // Create notification in Firestore
-        await db.collection('notifications').add({
-            type: 'reschedule_response',
-            userId: booking.tutorId,
-            title: `Reschedule ${response}`,
-            message: `Student ${booking.studentName} ${response} your reschedule request`,
-            data: {
-                bookingId: bookingId,
-                response: response,
-                reason: reason,
-                studentName: booking.studentName,
-                subject: booking.subject
-            },
-            timestamp: new Date(),
-            read: false
-        });
-
-        console.log(`Reschedule ${response} notification sent to tutor`);
-        
-    } catch (error) {
-        console.error('Error sending notification:', error);
-        // Non-critical - don't fail the main operation
-    }
-}
-
-/* ------------------------------
-   Simplified Session History Update
---------------------------------*/
-
-/**
- * Minimal session history update (optional)
- */
+// Helper function to update session history
 async function updateSessionHistory(bookingId, newDate, originalDate) {
     try {
-        // Just update the main booking record
-        await db.collection('bookedSessions').doc(bookingId).update({
-            date: newDate,
-            originalDate: originalDate,
-            lastUpdated: new Date()
-        });
+        // Check if this session exists in history
+        const sessionQuery = await db.collection('sessions')
+            .where('bookingId', '==', bookingId)
+            .get();
+            
+        if (!sessionQuery.empty) {
+            // Update existing session record
+            const sessionDoc = sessionQuery.docs[0];
+            await db.collection('sessions').doc(sessionDoc.id).update({
+                date: newDate,
+                originalDate: originalDate,
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date()
+            });
+        } else {
+            // Create a new session history record
+            const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+            const booking = bookingDoc.data();
+            
+            await db.collection('sessions').add({
+                bookingId: bookingId,
+                tutorId: booking.tutorId,
+                tutorName: booking.tutorName,
+                studentId: booking.studentId,
+                studentName: booking.studentName,
+                subject: booking.subject,
+                date: newDate,
+                originalDate: originalDate,
+                duration: booking.duration,
+                sessionType: booking.sessionType,
+                status: 'rescheduled',
+                rescheduled: true,
+                rescheduleAcceptedAt: new Date(),
+                createdAt: new Date()
+            });
+        }
     } catch (error) {
         console.error('Error updating session history:', error);
-        // Non-critical
+        // Don't fail the whole operation if history update fails
     }
 }
 
-/* ------------------------------
-   Booking Loading (if not already defined)
---------------------------------*/
-
-/**
- * Loads user bookings - main entry point
- */
-async function loadUserBookings() {
-    try {
-        const user = auth?.currentUser;
-        if (!user) {
-            showNotification('Please log in to view bookings', 'warning');
-            return;
-        }
-
-        const now = new Date();
-        const snapshot = await db.collection('bookedSessions')
-            .where('studentId', '==', user.uid)
-            .where('date', '>=', now)
-            .orderBy('date', 'asc')
-            .get();
-
-        await loadBookings(snapshot); // Use your existing function
+// Setup booking filter
+function setupBookingFilter() {
+    const filterSelect = document.getElementById('bookingFilter');
+    if (!filterSelect) return;
+    
+    filterSelect.addEventListener('change', function() {
+        const filterValue = this.value;
+        const bookingCards = document.querySelectorAll('.session-card');
         
-    } catch (error) {
-        console.error('Error loading user bookings:', error);
-        showNotification('Failed to load bookings', 'error');
-    }
-}
-
-/* ------------------------------
-   Initialize Everything
---------------------------------*/
-
-// Update your DOMContentLoaded to initialize everything
-document.addEventListener('DOMContentLoaded', () => {
-    try {
-        // Initialize core components
-        activityMonitor = new ActivityMonitor();
-        historyFilters = new HistoryFilters();
-        
-        // Load initial data when user is authenticated
-        auth?.onAuthStateChanged((user) => {
-            if (user) {
-                loadUserBookings();
-                // You might also want to load session history here
+        bookingCards.forEach(card => {
+            switch(filterValue) {
+                case 'all':
+                    card.style.display = 'block';
+                    break;
+                case 'upcoming':
+                    card.style.display = 'block';
+                    // You might want to add logic to hide past sessions
+                    break;
+                case 'reschedule':
+                    if (card.classList.contains('reschedule-requested')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
+                case 'pending':
+                    const statusBadge = card.querySelector('.status-badge');
+                    if (statusBadge && statusBadge.textContent.includes('Pending')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
             }
         });
-        
-        // Make available globally
-        window.activityMonitor = activityMonitor;
-        window.historyFilters = historyFilters;
-        
-    } catch (error) {
-        console.error('Initialization error:', error);
-    }
-});
+    });
+}
 
-
-let rescheduleUnsubscribe = null;
-
+// Real-time listener for reschedule requests
 function setupRescheduleListener() {
-    // Clean up existing listener
-    if (rescheduleUnsubscribe) rescheduleUnsubscribe();
+    const userId = auth.currentUser.uid;
     
-    const user = auth.currentUser;
-    if (!user) return;
-    
-    rescheduleUnsubscribe = db.collection('bookedSessions')
-        .where('studentId', '==', user.uid)
-        .where('status', '==', 'reschedule_requested') // More specific
-        .onSnapshot({
-            next: (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added' || change.type === 'modified') {
-                        showRescheduleNotification(change.doc.id, change.doc.data());
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['reschedule_requested', 'confirmed', 'pending'])
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'modified') {
+                    const booking = change.doc.data();
+                    
+                    // Check if this is a new reschedule request
+                    if (booking.status === 'reschedule_requested') {
+                        // Show notification to student
+                        showRescheduleNotification(change.doc.id, booking);
                     }
-                });
-            },
-            error: (error) => console.error('Reschedule listener error:', error)
+                }
+            });
         });
 }
 
-// Cleanup function
-function cleanupRescheduleListener() {
-    if (rescheduleUnsubscribe) {
-        rescheduleUnsubscribe();
-        rescheduleUnsubscribe = null;
+// Add new booking to UI immediately
+function addBookingToUI(bookingId, bookingData) {
+    const container = document.getElementById('bookingsContainer');
+    
+    // Format date and time
+    const date = bookingData.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Create booking card HTML
+    const bookingCard = `
+        <div class="session-card" id="booking-${bookingId}">
+            <div class="session-header">
+                <div class="session-title">${bookingData.subject || 'No subject'}</div>
+                <div class="session-date">${formattedDate} at ${formattedTime}</div>
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-tie"></i>
+                    <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i>
+                    <span>Duration: ${bookingData.duration || '1'} hours</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-video"></i>
+                    <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-hourglass-half"></i>
+                    <span>Status: <span class="status-badge status-pending">Pending</span></span>
+                </div>
+            </div>
+            <div class="session-actions">
+                <button class="btn-outline" onclick="cancelBooking('${bookingId}')">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    // If container has empty state message, replace it
+    if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('<p>Loading')) {
+        container.innerHTML = bookingCard;
+    } else {
+        // Prepend the new booking to the top
+        container.innerHTML = bookingCard + container.innerHTML;
+    }
+    
+    // Update upcoming sessions count
+    const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
+    document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+}
+
+// Update upcoming sessions count
+function updateUpcomingSessionsCount(count) {
+    const countElement = document.getElementById('upcomingSessionsCount');
+    if (countElement) {
+        countElement.textContent = count;
     }
 }
 
-function viewRescheduleRequest(bookingId) {
-    // Switch to bookings section
-    switchToSection('bookings');
-    
-    // Scroll and highlight
-    setTimeout(() => {
-        const bookingElement = document.getElementById(`booking-${bookingId}`);
-        if (bookingElement) {
-            bookingElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            
-            // Add visual highlight
-            bookingElement.classList.add('highlight-pulse');
-            setTimeout(() => bookingElement.classList.remove('highlight-pulse'), 2000);
-        }
-    }, 100);
-}
 
-// Helper function (if you don't have one)
-function switchToSection(sectionName) {
-    // Your existing section switching logic
-    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-    document.querySelectorAll('.dashboard-section').forEach(s => s.classList.remove('active'));
-    
-    document.querySelector(`a[data-section="${sectionName}"]`).classList.add('active');
-    document.getElementById(sectionName).classList.add('active');
-}
+//Session History Data Structure
 
+// Available timestamp fields in bookedSessions collection
+bookedAt: timestamp        // When student initially booked
+confirmedAt: timestamp     // When tutor confirmed
+cancelledAt: timestamp     // When session was cancelled
+rescheduleRequestedAt: timestamp  // When reschedule was requested
+rescheduleRespondedAt: timestamp  // When reschedule was responded to
+date: timestamp            // Scheduled session date/time
 
-// Helper function to determine action timestamp and type
 function getActionTimestamp(session) {
   let actionTime = new Date();
-  let actionType = ACTION_TYPES.SCHEDULED;
+  let actionType = 'Unknown';
   
-  // Safety check for session data
-  if (!session || typeof session !== 'object') {
-    return { actionTime, actionType: 'Invalid Session' };
-  }
-
-  // Helper function to safely convert Firestore timestamp
-  const safeToDate = (timestamp) => {
-    if (!timestamp || typeof timestamp.toDate !== 'function') return null;
-    try {
-      const date = timestamp.toDate();
-      return isValidDate(date) ? date : null;
-    } catch (error) {
-      console.error('Date conversion error:', error);
-      return null;
-    }
-  };
-
-  // Determine the most meaningful action based on available timestamps
+  // Priority order for determining the most relevant action
   if (session.cancelledAt) {
-    const cancelledDate = safeToDate(session.cancelledAt);
-    if (cancelledDate) {
-      actionTime = cancelledDate;
-      // Determine who cancelled
-      if (session.cancelledBy === 'student') {
-        actionType = 'Student Cancelled';
-      } else if (session.cancelledBy === 'tutor') {
-        actionType = 'Tutor Cancelled';
-      } else {
-        actionType = ACTION_TYPES.CANCELLED;
-      }
-    }
+    actionTime = session.cancelledAt.toDate();
+    actionType = session.cancelledBy === 'student' ? 'Student Cancelled' : 
+                session.cancelledBy === 'tutor' ? 'Tutor Cancelled' : 'Cancelled';
   } else if (session.completedAt) {
-    const completedDate = safeToDate(session.completedAt);
-    if (completedDate) {
-      actionTime = completedDate;
-      actionType = ACTION_TYPES.COMPLETED;
-    }
+    actionTime = session.completedAt.toDate();
+    actionType = 'Completed';
   } else if (session.rescheduleAcceptedAt) {
-    const acceptedDate = safeToDate(session.rescheduleAcceptedAt);
-    if (acceptedDate) {
-      actionTime = acceptedDate;
-      actionType = 'Reschedule Accepted';
-    }
+    actionTime = session.rescheduleAcceptedAt.toDate();
+    actionType = 'Rescheduled';
   } else if (session.rescheduleRequestedAt) {
-    const requestedDate = safeToDate(session.rescheduleRequestedAt);
-    if (requestedDate) {
-      actionTime = requestedDate;
-      // Determine who requested reschedule
-      if (session.rescheduleRequestedBy === 'tutor') {
-        actionType = 'Tutor Reschedule Request';
-      } else if (session.rescheduleRequestedBy === 'student') {
-        actionType = 'Student Reschedule Request';
-      } else {
-        actionType = 'Reschedule Requested';
-      }
-    }
+    actionTime = session.rescheduleRequestedAt.toDate();
+    actionType = session.rescheduleRequestedBy === 'tutor' ? 'Tutor Reschedule Request' :
+                session.rescheduleRequestedBy === 'student' ? 'Student Reschedule Request' : 'Reschedule Requested';
   } else if (session.confirmedAt) {
-    const confirmedDate = safeToDate(session.confirmedAt);
-    if (confirmedDate) {
-      actionTime = confirmedDate;
-      // Determine how it was confirmed
-      actionType = session.autoConfirmed ? 'Auto-Confirmed' : 'Tutor Confirmed';
-    }
+    actionTime = session.confirmedAt.toDate();
+    actionType = session.autoConfirmed ? 'Auto-Confirmed' : 'Tutor Confirmed';
   } else if (session.bookedAt) {
-    const bookedDate = safeToDate(session.bookedAt);
-    if (bookedDate) {
-      actionTime = bookedDate;
-      actionType = 'Student Booked';
-    }
+    actionTime = session.bookedAt.toDate();
+    actionType = 'Student Booked';
   } else {
-    // Fallback to session date
-    const sessionDate = safeToDate(session.date);
-    if (sessionDate) {
-      actionTime = sessionDate;
-      actionType = ACTION_TYPES.SCHEDULED;
-    }
-  }
-  
-  // Final validation
-  if (!isValidDate(actionTime)) {
-    actionTime = new Date();
-    actionType = 'Date Error';
-    console.warn('Invalid action time for session:', session);
+    actionTime = session.date.toDate();
+    actionType = 'Scheduled';
   }
   
   return { actionTime, actionType };
 }
 
-// Add these constants if they don't exist
-const ACTION_TYPES = {
-  SCHEDULED: 'scheduled',
-  CANCELLED: 'cancelled', 
-  COMPLETED: 'completed',
-  // Add new ones for richer context
-  STUDENT_CANCELLED: 'student_cancelled',
-  TUTOR_CANCELLED: 'tutor_cancelled',
-  RESCHEDULE_ACCEPTED: 'reschedule_accepted',
-  TUTOR_RESCHEDULE_REQUEST: 'tutor_reschedule_request',
-  STUDENT_RESCHEDULE_REQUEST: 'student_reschedule_request',
-  AUTO_CONFIRMED: 'auto_confirmed',
-  TUTOR_CONFIRMED: 'tutor_confirmed',
-  STUDENT_BOOKED: 'student_booked'
-};
-
-// Date validation helper (you already have this)
-function isValidDate(date) {
-  return date instanceof Date && !isNaN(date.getTime());
+function getStatusClass(status) {
+  switch(status) {
+    case 'confirmed':
+    case 'completed': return 'status-verified';
+    case 'pending': return 'status-pending';
+    case 'cancelled': return 'status-cancelled';
+    case 'reschedule_requested': return 'status-reschedule-requested';
+    default: return 'status-pending';
+  }
 }
+
+function getActionTypeClass(actionType) {
+  switch(actionType.toLowerCase()) {
+    case 'student booked':
+    case 'tutor confirmed':
+    case 'auto-confirmed':
+    case 'completed': return 'status-verified';
+    case 'student cancelled':
+    case 'tutor cancelled':
+    case 'cancelled': return 'status-pending';
+    case 'tutor reschedule request':
+    case 'student reschedule request':
+    case 'reschedule requested':
+    case 'rescheduled': return 'status-warning';
+    default: return 'status-pending';
+  }
+}
+
+
+// Query to load session history
+function loadUserSessionHistory(loadMore = false) {
+  const userId = auth.currentUser.uid;
+  let query = db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc')  // Most recent first
+    .limit(10);               // Pagination
+
+  // Additional filtering options available:
+  const filterOptions = {
+    time: ['all', 'month', '3months', 'year'],
+    actionType: [
+      'all', 'student booked', 'tutor confirmed', 'auto-confirmed',
+      'completed', 'student cancelled', 'tutor cancelled',
+      'tutor reschedule request', 'student reschedule request', 'rescheduled'
+    ]
+  };
+}
+
 
