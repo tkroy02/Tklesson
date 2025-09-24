@@ -1928,6 +1928,195 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 //My Bookings Section starts here. All JS functionalities of the My Booking section starts here
 
+// Load user bookings
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
+    
+    // Query upcoming bookings including reschedule requests
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            loadBookingsDisplay(querySnapshot);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+            const container = document.getElementById('bookingsContainer');
+            if (container) {
+                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+            }
+        });
+}
+
+// Load bookings display
+function loadBookingsDisplay(snapshot) {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    if (snapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
+        return;
+    }
+    
+    let html = '';
+    snapshot.forEach(doc => {
+        const booking = doc.data();
+        const date = booking.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        html += `
+            <div class="session-card" id="booking-${doc.id}">
+                <div class="session-header">
+                    <div class="session-title">${booking.subject || 'No subject'}</div>
+                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-tie"></i>
+                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i>
+                        <span>Duration: ${booking.duration || '1'} hours</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-video"></i>
+                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-hourglass-half"></i>
+                        <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
+                    </div>
+                </div>
+                <div class="session-actions">
+                    ${booking.status === 'reschedule_requested' ? 
+                        `<button class="btn-primary" onclick="respondToReschedule('${doc.id}', 'accept')">Accept</button>
+                         <button class="btn-outline" onclick="respondToReschedule('${doc.id}', 'decline')">Decline</button>` :
+                        `<button class="btn-outline" onclick="cancelBooking('${doc.id}')">Cancel</button>`
+                    }
+                    ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${doc.id}')">Join Session</button>` : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+// Cancel a booking
+function cancelBooking(bookingId) {
+    if (confirm('Are you sure you want to cancel this booking?')) {
+        // Update the booking status to cancelled
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: new Date()
+        })
+        .then(() => {
+            alert('Booking cancelled successfully.');
+            // Reload the bookings
+            loadUserBookings();
+        })
+        .catch((error) => {
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking. Please try again.');
+        });
+    }
+}
+
+// Join a session
+function joinSession(sessionId) {
+    alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
+    // In a real app, this would redirect to the video meeting or open it in a modal
+}
+
+// Function for reschedule response
+function respondToReschedule(bookingId, response) {
+    if (response === 'accept') {
+        // Logic to accept reschedule
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed',
+            rescheduleAcceptedAt: new Date()
+        });
+    } else {
+        // Logic to decline reschedule
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed', // or whatever status it should return to
+            rescheduleDeclinedAt: new Date()
+        });
+    }
+}
+
+// Helper function to get CSS class for status badges
+function getStatusClass(status) {
+    switch(status) {
+        case 'confirmed':
+        case 'completed':
+            return 'status-verified';
+        case 'pending':
+            return 'status-pending';
+        case 'cancelled':
+            return 'status-cancelled';
+        case 'reschedule_requested':
+            return 'status-reschedule-requested';
+        default:
+            return 'status-pending';
+    }
+}
+
+// Update upcoming sessions count
+function updateUpcomingSessionsCount(count) {
+    const countElement = document.getElementById('upcomingSessionsCount');
+    if (countElement) {
+        countElement.textContent = count;
+    }
+}
+
+// Setup booking filter
+function setupBookingFilter() {
+    const filterSelect = document.getElementById('bookingFilter');
+    if (!filterSelect) return;
+    
+    filterSelect.addEventListener('change', function() {
+        const filterValue = this.value;
+        const bookingCards = document.querySelectorAll('.session-card');
+        
+        bookingCards.forEach(card => {
+            switch(filterValue) {
+                case 'all':
+                    card.style.display = 'block';
+                    break;
+                case 'upcoming':
+                    card.style.display = 'block';
+                    // You might want to add logic to hide past sessions
+                    break;
+                case 'reschedule':
+                    const statusBadge = card.querySelector('.status-badge');
+                    if (statusBadge && statusBadge.textContent.includes('reschedule')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
+                case 'pending':
+                    const statusBadgePending = card.querySelector('.status-badge');
+                    if (statusBadgePending && statusBadgePending.textContent.includes('Pending')) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                    break;
+            }
+        });
+    });
+}
+
+
+  
 
 //My Bookings Section ends here. All JS functionalities of the My Bookings section ends here
 
@@ -1935,6 +2124,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 </script>
 </body>
 </html>
+
 
 
 
