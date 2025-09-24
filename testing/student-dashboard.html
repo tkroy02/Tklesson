@@ -1273,6 +1273,19 @@ function initDashboard() {
       // Update active menu item
       document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
       this.classList.add('active');
+
+// Check authentication state
+    auth.onAuthStateChanged(user => {
+        if (user) {
+            currentUser = user;
+            loadUserData();
+            setupBookingListeners(); // Add this line
+        } else {
+            // Redirect to login if not authenticated
+            window.location.href = 'login.html';
+        }
+    });
+}
       
       // Show the corresponding section
       const sectionId = this.getAttribute('data-section');
@@ -2022,7 +2035,8 @@ function respondToReschedule(bookingId, response) {
                 batch.update(bookingRef, {
                     date: rescheduleRequest.requestedDate,
                     status: 'confirmed',
-                    rescheduleAcceptedAt: new Date()
+                    rescheduleAcceptedAt: new Date(),
+                    lastUpdated: new Date() // Add this to force refresh
                 });
 
                 // Update the reschedule request status
@@ -2030,7 +2044,8 @@ function respondToReschedule(bookingId, response) {
                 batch.update(rescheduleRef, {
                     status: 'accepted',
                     respondedAt: new Date(),
-                    response: 'accepted'
+                    response: 'accepted',
+                    lastUpdated: new Date() // Add this to force refresh
                 });
 
                 // Commit the batch
@@ -2040,14 +2055,17 @@ function respondToReschedule(bookingId, response) {
                 return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
                     status: 'declined',
                     respondedAt: new Date(),
-                    response: 'declined'
+                    response: 'declined',
+                    lastUpdated: new Date() // Add this to force refresh
                 });
             }
         })
         .then(() => {
             alert(`Reschedule request ${response}ed successfully.`);
-            // Reload the bookings to reflect the changes
-            loadUserBookings();
+            // Force a complete reload with a small delay to ensure data is updated
+            setTimeout(() => {
+                loadUserBookings(true); // Pass true to force refresh
+            }, 1000);
         })
         .catch((error) => {
             console.error('Error responding to reschedule request:', error);
@@ -2055,6 +2073,35 @@ function respondToReschedule(bookingId, response) {
         });
 }
 
+  // Add this function to set up real-time booking listeners
+function setupBookingListeners() {
+    const userId = auth.currentUser.uid;
+    
+    // Real-time listener for bookedSessions
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .onSnapshot((querySnapshot) => {
+            console.log('Bookings updated in real-time');
+            loadUserBookings();
+        }, (error) => {
+            console.error('Error in bookings listener:', error);
+        });
+    
+    // Real-time listener for reschedule requests
+    db.collection('rescheduleRequests')
+        .where('studentId', '==', userId)
+        .where('status', '==', 'pending')
+        .onSnapshot((querySnapshot) => {
+            console.log('Reschedule requests updated in real-time');
+            loadUserBookings();
+        }, (error) => {
+            console.error('Error in reschedule requests listener:', error);
+        });
+}
+  
 // Update the loadBookingsDisplay function to use the enhanced data:
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
@@ -2382,6 +2429,7 @@ function getStatusClass(status) {
 </script>
 </body>
 </html>
+
 
 
 
