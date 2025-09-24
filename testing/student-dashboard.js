@@ -1825,3 +1825,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+
+let rescheduleUnsubscribe = null;
+
+function setupRescheduleListener() {
+    // Clean up existing listener
+    if (rescheduleUnsubscribe) rescheduleUnsubscribe();
+    
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    rescheduleUnsubscribe = db.collection('bookedSessions')
+        .where('studentId', '==', user.uid)
+        .where('status', '==', 'reschedule_requested') // More specific
+        .onSnapshot({
+            next: (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added' || change.type === 'modified') {
+                        showRescheduleNotification(change.doc.id, change.doc.data());
+                    }
+                });
+            },
+            error: (error) => console.error('Reschedule listener error:', error)
+        });
+}
+
+// Cleanup function
+function cleanupRescheduleListener() {
+    if (rescheduleUnsubscribe) {
+        rescheduleUnsubscribe();
+        rescheduleUnsubscribe = null;
+    }
+}
+
+function viewRescheduleRequest(bookingId) {
+    // Switch to bookings section
+    switchToSection('bookings');
+    
+    // Scroll and highlight
+    setTimeout(() => {
+        const bookingElement = document.getElementById(`booking-${bookingId}`);
+        if (bookingElement) {
+            bookingElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Add visual highlight
+            bookingElement.classList.add('highlight-pulse');
+            setTimeout(() => bookingElement.classList.remove('highlight-pulse'), 2000);
+        }
+    }, 100);
+}
+
+// Helper function (if you don't have one)
+function switchToSection(sectionName) {
+    // Your existing section switching logic
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelectorAll('.dashboard-section').forEach(s => s.classList.remove('active'));
+    
+    document.querySelector(`a[data-section="${sectionName}"]`).classList.add('active');
+    document.getElementById(sectionName).classList.add('active');
+}
+
