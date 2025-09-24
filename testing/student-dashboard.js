@@ -1885,3 +1885,117 @@ function switchToSection(sectionName) {
     document.getElementById(sectionName).classList.add('active');
 }
 
+
+// Helper function to determine action timestamp and type
+function getActionTimestamp(session) {
+  let actionTime = new Date();
+  let actionType = ACTION_TYPES.SCHEDULED;
+  
+  // Safety check for session data
+  if (!session || typeof session !== 'object') {
+    return { actionTime, actionType: 'Invalid Session' };
+  }
+
+  // Helper function to safely convert Firestore timestamp
+  const safeToDate = (timestamp) => {
+    if (!timestamp || typeof timestamp.toDate !== 'function') return null;
+    try {
+      const date = timestamp.toDate();
+      return isValidDate(date) ? date : null;
+    } catch (error) {
+      console.error('Date conversion error:', error);
+      return null;
+    }
+  };
+
+  // Determine the most meaningful action based on available timestamps
+  if (session.cancelledAt) {
+    const cancelledDate = safeToDate(session.cancelledAt);
+    if (cancelledDate) {
+      actionTime = cancelledDate;
+      // Determine who cancelled
+      if (session.cancelledBy === 'student') {
+        actionType = 'Student Cancelled';
+      } else if (session.cancelledBy === 'tutor') {
+        actionType = 'Tutor Cancelled';
+      } else {
+        actionType = ACTION_TYPES.CANCELLED;
+      }
+    }
+  } else if (session.completedAt) {
+    const completedDate = safeToDate(session.completedAt);
+    if (completedDate) {
+      actionTime = completedDate;
+      actionType = ACTION_TYPES.COMPLETED;
+    }
+  } else if (session.rescheduleAcceptedAt) {
+    const acceptedDate = safeToDate(session.rescheduleAcceptedAt);
+    if (acceptedDate) {
+      actionTime = acceptedDate;
+      actionType = 'Reschedule Accepted';
+    }
+  } else if (session.rescheduleRequestedAt) {
+    const requestedDate = safeToDate(session.rescheduleRequestedAt);
+    if (requestedDate) {
+      actionTime = requestedDate;
+      // Determine who requested reschedule
+      if (session.rescheduleRequestedBy === 'tutor') {
+        actionType = 'Tutor Reschedule Request';
+      } else if (session.rescheduleRequestedBy === 'student') {
+        actionType = 'Student Reschedule Request';
+      } else {
+        actionType = 'Reschedule Requested';
+      }
+    }
+  } else if (session.confirmedAt) {
+    const confirmedDate = safeToDate(session.confirmedAt);
+    if (confirmedDate) {
+      actionTime = confirmedDate;
+      // Determine how it was confirmed
+      actionType = session.autoConfirmed ? 'Auto-Confirmed' : 'Tutor Confirmed';
+    }
+  } else if (session.bookedAt) {
+    const bookedDate = safeToDate(session.bookedAt);
+    if (bookedDate) {
+      actionTime = bookedDate;
+      actionType = 'Student Booked';
+    }
+  } else {
+    // Fallback to session date
+    const sessionDate = safeToDate(session.date);
+    if (sessionDate) {
+      actionTime = sessionDate;
+      actionType = ACTION_TYPES.SCHEDULED;
+    }
+  }
+  
+  // Final validation
+  if (!isValidDate(actionTime)) {
+    actionTime = new Date();
+    actionType = 'Date Error';
+    console.warn('Invalid action time for session:', session);
+  }
+  
+  return { actionTime, actionType };
+}
+
+// Add these constants if they don't exist
+const ACTION_TYPES = {
+  SCHEDULED: 'scheduled',
+  CANCELLED: 'cancelled', 
+  COMPLETED: 'completed',
+  // Add new ones for richer context
+  STUDENT_CANCELLED: 'student_cancelled',
+  TUTOR_CANCELLED: 'tutor_cancelled',
+  RESCHEDULE_ACCEPTED: 'reschedule_accepted',
+  TUTOR_RESCHEDULE_REQUEST: 'tutor_reschedule_request',
+  STUDENT_RESCHEDULE_REQUEST: 'student_reschedule_request',
+  AUTO_CONFIRMED: 'auto_confirmed',
+  TUTOR_CONFIRMED: 'tutor_confirmed',
+  STUDENT_BOOKED: 'student_booked'
+};
+
+// Date validation helper (you already have this)
+function isValidDate(date) {
+  return date instanceof Date && !isNaN(date.getTime());
+}
