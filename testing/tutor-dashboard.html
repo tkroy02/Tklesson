@@ -1690,141 +1690,122 @@ function loadUserSessionHistory(loadMore = false) {
   });
 }
 
-function loadSessionHistory(snapshot) {
-  const container = document.getElementById('sessionsContainer');
-
-  if (snapshot.empty) {
-    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
-    return;
-  }
-
-  let html = `
-    <table class="sessions-table">
-      <thead>
-        <tr>
-          <th>Session Date</th>
-          <th>Session Time</th>
-          <th>Student</th>
-          <th>Subject</th>
-          <th>Duration</th>
-          <th>Status</th>
-          <th>Action Date</th>
-          <th>Action Type</th>
-        </tr>
-      </thead>
-      <tbody>
-  `;
-
-  snapshot.forEach(doc => {
-    const session = doc.data();
-    const sessionDate = session.date.toDate();
-    const formattedDate = sessionDate.toLocaleDateString();
-    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-    const { actionTime, actionType } = getActionTimestamp(session);
-    const actionDate = actionTime.toLocaleDateString();
-    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-    html += `
-      <tr>
-        <td>${formattedDate}</td>
-        <td>${formattedTime}</td>
-        <td>${session.studentName || 'Unknown Student'}</td>
-        <td>${session.subject || 'No subject'}</td>
-        <td>${session.duration || '1'} hours</td>
-        <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
-        <td class="timestamp-cell">
-          <div>${actionDate}</div>
-          <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
-        </td>
-        <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
-      </tr>
+// Load session history - CORRECTED VERSION
+async function loadSessionHistory(snapshot) {
+    const sessionsContainer = document.getElementById('sessionsContainer');
+    
+    if (snapshot.empty) {
+        sessionsContainer.innerHTML = '<p>No session history found.</p>';
+        return;
+    }
+    
+    let sessionsHTML = '<table class="sessions-table">';
+    sessionsHTML += `
+        <thead>
+            <tr>
+                <th>Session Date</th>
+                <th>Session Time</th>
+                <th>Student</th>
+                <th>Subject</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Action Date</th>
+                <th>Action Type</th>
+            </tr>
+        </thead>
+        <tbody>
     `;
-  });
-
-  html += '</tbody></table>';
-  container.innerHTML = html;
-
-  setupHistoryFilters();
+    
+    // Process each session and fetch student data
+    for (const doc of snapshot.docs) {
+        const session = doc.data();
+        const date = session.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Get action timestamp and type
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Fetch student name from students collection
+        let studentName = 'Unknown Student';
+        if (session.studentId) {
+            try {
+                const studentDoc = await db.collection('students').doc(session.studentId).get();
+                if (studentDoc.exists) {
+                    const studentData = studentDoc.data();
+                    studentName = studentData.fullName || 'Unknown Student';
+                }
+            } catch (error) {
+                console.error("Error loading student data:", error);
+            }
+        }
+        
+        sessionsHTML += `
+            <tr>
+                <td>${formattedDate}</td>
+                <td>${formattedTime}</td>
+                <td>${studentName}</td>
+                <td>${session.subject || 'No subject'}</td>
+                <td>${session.duration || '1'} hours</td>
+                <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+                <td class="timestamp-cell">
+                    <div>${actionDate}</div>
+                    <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+                </td>
+                <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+            </tr>
+        `;
+    }
+    
+    sessionsHTML += '</tbody></table>';
+    sessionsContainer.innerHTML = sessionsHTML;
+    
+    // Apply filters after loading data
+    setupHistoryFilters();
 }
-
-function appendSessionHistory(snapshot) {
-  const container = document.querySelector('#sessionsContainer tbody');
-
-  snapshot.forEach(doc => {
-    const session = doc.data();
-    const sessionDate = session.date.toDate();
-    const formattedDate = sessionDate.toLocaleDateString();
-    const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-    const { actionTime, actionType } = getActionTimestamp(session);
-    const actionDate = actionTime.toLocaleDateString();
-    const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formattedDate}</td>
-      <td>${formattedTime}</td>
-      <td>${session.studentName || 'Unknown Student'}</td>
-      <td>${session.subject || 'No subject'}</td>
-      <td>${session.duration || '1'} hours</td>
-      <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
-      <td class="timestamp-cell">
-        <div>${actionDate}</div>
-        <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
-      </td>
-      <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
-    `;
-    container.appendChild(row);
-  });
-
-  setupHistoryFilters();
-}
-
+        
 // Helper functions
 function getActionTimestamp(session) {
-  let actionTime = new Date();
-  let actionType = 'Unknown';
+    let actionTime = new Date();
+    let actionType = 'Unknown';
 
-  if (session.cancelledAt) {
-    actionTime = session.cancelledAt.toDate();
-    if (session.cancelledBy === 'tutor') {
-      actionType = 'Tutor Cancelled';
-    } else if (session.cancelledBy === 'student') {
-      actionType = 'Student Cancelled';
+    if (session.cancelledAt) {
+        actionTime = session.cancelledAt.toDate();
+        actionType = 'Cancelled';
+    } else if (session.completedAt) {
+        actionTime = session.completedAt.toDate();
+        actionType = 'Completed';
+    } else if (session.confirmedAt) {
+        actionTime = session.confirmedAt.toDate();
+        actionType = 'Confirmed';
     } else {
-      actionType = 'Cancelled';
+        actionTime = session.date.toDate();
+        actionType = 'Scheduled';
     }
-  } else if (session.completedAt) {
-    actionTime = session.completedAt.toDate();
-    actionType = 'Completed';
-  } else if (session.rescheduleAcceptedAt) {
-    actionTime = session.rescheduleAcceptedAt.toDate();
-    actionType = 'Rescheduled';
-  } else if (session.rescheduleRequestedAt) {
-    actionTime = session.rescheduleRequestedAt.toDate();
-    if (session.rescheduleRequestedBy === 'tutor') {
-      actionType = 'Tutor Reschedule Request';
-    } else if (session.rescheduleRequestedBy === 'student') {
-      actionType = 'Student Reschedule Request';
-    } else {
-      actionType = 'Reschedule Requested';
-    }
-  } else if (session.confirmedAt) {
-    actionTime = session.confirmedAt.toDate();
-    if (session.autoConfirmed) {
-      actionType = 'Auto-Confirmed';
-    } else {
-      actionType = 'Tutor Confirmed';
-    }
-  } else if (session.bookedAt) {
-    actionTime = session.bookedAt.toDate();
-    actionType = 'Student Booked';
-  } else {
-    actionTime = session.date.toDate();
-    actionType = 'Scheduled';
-  }
 
+    return { actionTime, actionType };
+}
+
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'status-verified';
+        case 'cancelled': return 'status-cancelled';
+        case 'confirmed': return 'status-confirmed';
+        default: return 'status-pending';
+    }
+}
+
+function getActionTypeClass(actionType) {
+    switch(actionType.toLowerCase()) {
+        case 'completed': return 'status-verified';
+        case 'cancelled': return 'status-cancelled';
+        case 'confirmed': return 'status-confirmed';
+        default: return 'status-pending';
+    }
+}
+        
   return { actionTime, actionType };
 }
 
@@ -2930,6 +2911,7 @@ tabs.forEach(tab => {
 </script>
 </body>
 </html>
+
 
 
 
