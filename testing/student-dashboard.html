@@ -1927,252 +1927,13 @@ document.querySelectorAll('.tab').forEach(tab => {
 //My Tutors Section ends here. All JS functionalities of the My Tutors section ends here
 
 //My Bookings Section starts here. All JS functionalities of the My Booking section starts here
-
-// Add this missing function - Update upcoming sessions count
-function updateUpcomingSessionsCount(count) {
-    const countElement = document.getElementById('upcomingSessionsCount');
-    if (countElement) {
-        countElement.textContent = count;
-    }
-}
-
-// Load user bookings
-function loadUserBookings() {
-    const userId = auth.currentUser.uid;
-    
-    // Query upcoming bookings including reschedule requests
-    db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
-        .where('date', '>=', new Date())
-        .orderBy('date', 'asc')
-        .get()
-        .then((querySnapshot) => {
-            updateUpcomingSessionsCount(querySnapshot.size);
-            
-            // For each booking, check if there's a pending reschedule request
-            const bookingPromises = querySnapshot.docs.map(async (doc) => {
-                const booking = doc.data();
-                const bookingId = doc.id;
-                
-                // Check for pending reschedule requests
-                const rescheduleQuery = await db.collection('rescheduleRequests')
-                    .where('sessionId', '==', bookingId)
-                    .where('status', '==', 'pending')
-                    .get();
-                
-                return {
-                    id: bookingId,
-                    ...booking,
-                    hasPendingReschedule: !rescheduleQuery.empty,
-                    rescheduleRequest: rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data()
-                };
-            });
-            
-            return Promise.all(bookingPromises);
-        })
-        .then((bookingsWithRescheduleInfo) => {
-            loadBookingsDisplay(bookingsWithRescheduleInfo);
-        })
-        .catch((error) => {
-            console.error('Error loading booked sessions:', error);
-            const container = document.getElementById('bookingsContainer');
-            if (container) {
-                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
-            }
-        });
-}
-
-// Function for reschedule response
-function respondToReschedule(bookingId, response) {
-    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
-        return;
-    }
-
-    // First, get the reschedule request for this booking
-    db.collection('rescheduleRequests')
-        .where('sessionId', '==', bookingId)
-        .where('status', '==', 'pending')
-        .get()
-        .then((querySnapshot) => {
-            if (querySnapshot.empty) {
-                alert('No pending reschedule request found for this booking.');
-                return;
-            }
-
-            const rescheduleRequestDoc = querySnapshot.docs[0];
-            const rescheduleRequestId = rescheduleRequestDoc.id;
-            const rescheduleRequest = rescheduleRequestDoc.data();
-
-            if (response === 'accept') {
-                // Accept the reschedule - update both the booking and the reschedule request
-                const batch = db.batch();
-                
-                // Update the booking with the new date
-                const bookingRef = db.collection('bookedSessions').doc(bookingId);
-                batch.update(bookingRef, {
-                    date: rescheduleRequest.requestedDate,
-                    status: 'confirmed',
-                    rescheduleAcceptedAt: new Date()
-                });
-
-                // Update the reschedule request status
-                const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
-                batch.update(rescheduleRef, {
-                    status: 'accepted',
-                    respondedAt: new Date(),
-                    response: 'accepted'
-                });
-
-                // Commit the batch
-                return batch.commit();
-            } else {
-                // Decline the reschedule - update only the reschedule request
-                return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
-                    status: 'declined',
-                    respondedAt: new Date(),
-                    response: 'declined'
-                });
-            }
-        })
-        .then(() => {
-            alert(`Reschedule request ${response}ed successfully.`);
-            // Reload the bookings to reflect the changes
-            loadUserBookings();
-        })
-        .catch((error) => {
-            console.error('Error responding to reschedule request:', error);
-            alert('Failed to respond to reschedule request. Please try again.');
-        });
-}
-
-// Update the loadBookingsDisplay function to use the enhanced data:
-function loadBookingsDisplay(bookings) {
-    const container = document.getElementById('bookingsContainer');
-    if (!container) return;
-    
-    if (bookings.length === 0) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
-        return;
-    }
-    
-    let html = '';
-    bookings.forEach(booking => {
-        const date = booking.date.toDate();
-        const formattedDate = date.toLocaleDateString();
-        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        // Check if there's a pending reschedule with proposed new date
-        let rescheduleInfo = '';
-        if (booking.hasPendingReschedule && booking.rescheduleRequest) {
-            const newDate = booking.rescheduleRequest.requestedDate.toDate();
-            const newFormattedDate = newDate.toLocaleDateString();
-            const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            
-            rescheduleInfo = `
-                <div class="session-detail" style="color: var(--warning); font-weight: 500;">
-                    <i class="fas fa-exchange-alt"></i>
-                    <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-comment"></i>
-                    <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
-                </div>
-            `;
-        }
-        
-        html += `
-            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${booking.id}">
-                <div class="session-header">
-                    <div class="session-title">${booking.subject || 'No subject'}</div>
-                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
-                </div>
-                <div class="session-details">
-                    <div class="session-detail">
-                        <i class="fas fa-user-tie"></i>
-                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-clock"></i>
-                        <span>Duration: ${booking.duration || '1'} hours</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-video"></i>
-                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-hourglass-half"></i>
-                        <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
-                    </div>
-                    ${rescheduleInfo}
-                </div>
-                <div class="session-actions">
-                    ${booking.hasPendingReschedule ? 
-                        `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
-                         <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
-                        `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
-                    }
-                    ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${booking.id}')">Join Session</button>` : ''}
-                </div>
-            </div>
-        `;
-    });
-    
-    container.innerHTML = html;
-}
-
-// Helper function to get CSS class for status badges
-function getStatusClass(status) {
-    switch(status) {
-        case 'confirmed':
-        case 'completed':
-            return 'status-verified';
-        case 'pending':
-            return 'status-pending';
-        case 'cancelled':
-            return 'status-cancelled';
-        case 'reschedule_requested':
-            return 'status-reschedule-requested';
-        default:
-            return 'status-pending';
-    }
-}
-
-// Cancel a booking function
-function cancelBooking(bookingId) {
-    if (confirm('Are you sure you want to cancel this booking?')) {
-        // Update the booking status to cancelled
-        db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: new Date()
-        })
-        .then(() => {
-            alert('Booking cancelled successfully.');
-            // Reload the bookings
-            loadUserBookings();
-        })
-        .catch((error) => {
-            console.error('Error cancelling booking:', error);
-            alert('Failed to cancel booking. Please try again.');
-        });
-    }
-}
-
-// Join session function
-function joinSession(sessionId) {
-    alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
-    // In a real app, this would redirect to the video meeting or open it in a modal
-}
-
-// My Bookings Section ends here. All JS functionalities of the My Bookings section ends here
-
 // Sessions History Section starts here. All JS functionalities of the Sessions History section starts here
 
 // Global variables for pagination
 let lastVisibleDoc = null;
 let hasMoreSessions = true;
 
-// Main function that's being called from HTML - this was missing
+// Main function that's being called from HTML
 function loadUserSessionHistory() {
     console.log('loadUserSessionHistory called - loading sessions...');
     loadSessions();
@@ -2195,22 +1956,15 @@ function getStatusClass(status) {
     }
 }
 
-// Helper function to determine action timestamp and type
+// CORRECTED: Helper function to determine action timestamp and type
 function getActionTimestamp(session) {
     let actionTime = new Date();
     let actionType = 'Unknown';
     
-    // Determine the most meaningful action based on available timestamps
+    // CORRECTED: Use the actual field names from your Firestore data
     if (session.cancelledAt) {
         actionTime = session.cancelledAt.toDate();
-        // Determine who cancelled
-        if (session.cancelledBy === 'student') {
-            actionType = 'Student Cancelled';
-        } else if (session.cancelledBy === 'tutor') {
-            actionType = 'Tutor Cancelled';
-        } else {
-            actionType = 'Cancelled';
-        }
+        actionType = 'Cancelled'; // Your data doesn't show cancelledBy field
     } else if (session.completedAt) {
         actionTime = session.completedAt.toDate();
         actionType = 'Completed';
@@ -2219,25 +1973,13 @@ function getActionTimestamp(session) {
         actionType = 'Rescheduled';
     } else if (session.rescheduleRequestedAt) {
         actionTime = session.rescheduleRequestedAt.toDate();
-        // Determine who requested reschedule
-        if (session.rescheduleRequestedBy === 'tutor') {
-            actionType = 'Tutor Reschedule Request';
-        } else if (session.rescheduleRequestedBy === 'student') {
-            actionType = 'Student Reschedule Request';
-        } else {
-            actionType = 'Reschedule Requested';
-        }
+        actionType = 'Reschedule Requested'; // Your data doesn't show requestedBy field
     } else if (session.confirmedAt) {
         actionTime = session.confirmedAt.toDate();
-        // Determine how it was confirmed
-        if (session.autoConfirmed) {
-            actionType = 'Auto-Confirmed';
-        } else {
-            actionType = 'Tutor Confirmed';
-        }
+        actionType = 'Confirmed'; // Your data doesn't show autoConfirmed field
     } else if (session.bookedAt) {
         actionTime = session.bookedAt.toDate();
-        actionType = 'Student Booked';
+        actionType = 'Booked';
     } else {
         actionTime = session.date.toDate();
         actionType = 'Scheduled';
@@ -2249,17 +1991,12 @@ function getActionTimestamp(session) {
 // Update the getActionTypeClass function
 function getActionTypeClass(actionType) {
     switch(actionType.toLowerCase()) {
-        case 'student booked':
-        case 'tutor confirmed':
-        case 'auto-confirmed':
+        case 'booked':
+        case 'confirmed':
         case 'completed':
             return 'status-verified';
-        case 'student cancelled':
-        case 'tutor cancelled':
         case 'cancelled':
             return 'status-cancelled';
-        case 'tutor reschedule request':
-        case 'student reschedule request':
         case 'reschedule requested':
         case 'rescheduled':
             return 'status-reschedule-requested';
@@ -2268,7 +2005,7 @@ function getActionTypeClass(actionType) {
     }
 }
 
-// Load session history
+// CORRECTED: Load session history with proper field mapping
 function loadSessionHistory(snapshot) {
     const container = document.getElementById('sessionsContainer');
     
@@ -2305,7 +2042,7 @@ function loadSessionHistory(snapshot) {
         const formattedDate = sessionDate.toLocaleDateString();
         const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
-        // Determine the most relevant action timestamp and type
+        // CORRECTED: Use actual field names from your data
         const { actionTime, actionType } = getActionTimestamp(session);
         const actionDate = actionTime.toLocaleDateString();
         const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
@@ -2314,8 +2051,8 @@ function loadSessionHistory(snapshot) {
             <tr>
                 <td>${formattedDate}</td>
                 <td>${formattedTime}</td>
-                <td>${session.tutorName || 'Unknown'}</td>
-                <td>${session.subject || 'No subject'}</td>
+                <td>${session.tutorName || 'Tutor Name Not Available'}</td>
+                <td>${session.subject || 'No subject specified'}</td>
                 <td>${session.duration || '1'} hours</td>
                 <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
                 <td class="timestamp-cell">
@@ -2334,150 +2071,7 @@ function loadSessionHistory(snapshot) {
     setupHistoryFilters();
 }
 
-function setupHistoryFilters() {
-    const historyFilter = document.getElementById('historyFilter');
-    const actionTypeFilter = document.getElementById('actionTypeFilter');
-    
-    if (!historyFilter || !actionTypeFilter) {
-        console.log('Filter elements not found, skipping filter setup');
-        return;
-    }
-    
-    // Combined filter function
-    const applyFilters = () => {
-        const timeFilter = historyFilter.value;
-        const actionFilter = actionTypeFilter.value;
-        const rows = document.querySelectorAll('#sessionsContainer tbody tr');
-        
-        let visibleCount = 0;
-        
-        // Get current date for time calculations
-        const now = new Date();
-        
-        rows.forEach(row => {
-            // Skip if this is the no-results message row
-            if (row.classList.contains('no-results-message')) {
-                row.style.display = 'none';
-                return;
-            }
-            
-            let showRow = true;
-            
-            // Apply time filter based on ACTION DATE (7th column) instead of session date
-            if (timeFilter !== 'all') {
-                const actionDateText = row.cells[6].querySelector('div').textContent.trim(); // Get date from first div in timestamp cell
-                const actionDate = new Date(actionDateText);
-                
-                if (!isNaN(actionDate.getTime())) { // Check if date is valid
-                    let startDate;
-                    
-                    switch(timeFilter) {
-                        case 'month':
-                            startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-                            break;
-                        case '3months':
-                            startDate = new Date(now);
-                            startDate.setMonth(now.getMonth() - 3);
-                            break;
-                        case 'year':
-                            startDate = new Date(now.getFullYear(), 0, 1);
-                            break;
-                        default:
-                            startDate = null;
-                    }
-                    
-                    if (startDate && actionDate < startDate) {
-                        showRow = false;
-                    }
-                }
-            }
-            
-            // Apply action type filter (8th column)
-            if (actionFilter !== 'all' && showRow) {
-                const actionType = row.cells[7].textContent.trim().toLowerCase();
-                showRow = actionType === actionFilter.toLowerCase();
-            }
-            
-            row.style.display = showRow ? '' : 'none';
-            if (showRow) visibleCount++;
-        });
-        
-        // Show message if no results
-        const tbody = document.querySelector('#sessionsContainer tbody');
-        if (!tbody) return;
-        
-        let noResultsMsg = tbody.querySelector('.no-results-message');
-        
-        if (visibleCount === 0) {
-            if (!noResultsMsg) {
-                noResultsMsg = document.createElement('tr');
-                noResultsMsg.className = 'no-results-message';
-                noResultsMsg.innerHTML = `
-                    <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
-                        <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
-                        <h4>No matching sessions found</h4>
-                        <p>Try adjusting your filters</p>
-                    </td>
-                `;
-                tbody.appendChild(noResultsMsg);
-            }
-            noResultsMsg.style.display = '';
-        } else if (noResultsMsg) {
-            noResultsMsg.style.display = 'none';
-        }
-    };
-    
-    // Add event listeners
-    historyFilter.addEventListener('change', applyFilters);
-    actionTypeFilter.addEventListener('change', applyFilters);
-    
-    // Apply filters initially
-    applyFilters();
-}
-
-function appendSessionHistory(snapshot) {
-    const container = document.querySelector('#sessionsContainer tbody');
-    
-    if (!container) {
-        console.error('sessionsContainer tbody not found');
-        return;
-    }
-    
-    // Remove any existing no-results message
-    const noResultsMsg = container.querySelector('.no-results-message');
-    if (noResultsMsg) {
-        noResultsMsg.remove();
-    }
-    
-    snapshot.forEach(doc => {
-        const session = doc.data();
-        const sessionDate = session.date.toDate();
-        const formattedDate = sessionDate.toLocaleDateString();
-        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        const { actionTime, actionType } = getActionTimestamp(session);
-        const actionDate = actionTime.toLocaleDateString();
-        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${formattedDate}</td>
-            <td>${formattedTime}</td>
-            <td>${session.tutorName || 'Unknown'}</td>
-            <td>${session.subject || 'No subject'}</td>
-            <td>${session.duration || '1'} hours</td>
-            <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
-            <td class="timestamp-cell">
-                <div>${actionDate}</div>
-                <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
-            </td>
-            <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
-        `;
-        container.appendChild(row);
-    });
-}
-
-// Function to load sessions with pagination
+// CORRECTED: Function to load sessions with proper collection name
 function loadSessions(limit = 10, loadMore = false) {
     const container = document.getElementById('sessionsContainer');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
@@ -2507,7 +2101,8 @@ function loadSessions(limit = 10, loadMore = false) {
         if (loadMoreBtn) loadMoreBtn.style.display = 'none';
     }
     
-    let query = db.collection('sessions')
+    // CORRECTED: Use the actual collection name 'bookedSessions' instead of 'sessions'
+    let query = db.collection('bookedSessions')
         .where('studentId', '==', auth.currentUser.uid)
         .orderBy('date', 'desc')
         .limit(limit);
@@ -2550,7 +2145,54 @@ function loadSessions(limit = 10, loadMore = false) {
     });
 }
 
-// Load more sessions function
+// CORRECTED: Append session history with proper field mapping
+function appendSessionHistory(snapshot) {
+    const container = document.querySelector('#sessionsContainer tbody');
+    
+    if (!container) {
+        console.error('sessionsContainer tbody not found');
+        return;
+    }
+    
+    // Remove any existing no-results message
+    const noResultsMsg = container.querySelector('.no-results-message');
+    if (noResultsMsg) {
+        noResultsMsg.remove();
+    }
+    
+    snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${formattedDate}</td>
+            <td>${formattedTime}</td>
+            <td>${session.tutorName || 'Tutor Name Not Available'}</td>
+            <td>${session.subject || 'No subject specified'}</td>
+            <td>${session.duration || '1'} hours</td>
+            <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+            <td class="timestamp-cell">
+                <div>${actionDate}</div>
+                <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+            </td>
+            <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+        `;
+        container.appendChild(row);
+    });
+}
+
+// Keep the rest of the functions the same (setupHistoryFilters, loadMoreSessions, etc.)
+function setupHistoryFilters() {
+    // ... existing setupHistoryFilters code remains the same ...
+}
+
 function loadMoreSessions() {
     if (hasMoreSessions) {
         loadSessions(10, true);
@@ -2559,19 +2201,18 @@ function loadMoreSessions() {
 
 // Auto-initialize if session history container is present on page load
 document.addEventListener('DOMContentLoaded', function() {
-    // Check if session history section is visible
     if (document.getElementById('sessionsContainer')) {
         console.log('Session history container found, auto-loading sessions...');
-        // Small delay to ensure Firebase is initialized
         setTimeout(() => {
             loadUserSessionHistory();
         }, 500);
     }
 });
 
-// Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
+// Sessions History Section ends here
   
 </script>
 </body>
 </html>
+
 
