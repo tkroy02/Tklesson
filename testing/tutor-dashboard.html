@@ -168,6 +168,63 @@
             text-align: center;
         }
 
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.session-stats {
+    display: flex;
+    justify-content: space-around;
+    margin: 15px 0;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.stat-item {
+    text-align: center;
+}
+
+.stat-number {
+    display: block;
+    font-size: 1.5em;
+    font-weight: bold;
+    color: var(--primary);
+}
+
+.stat-label {
+    font-size: 0.8em;
+    color: #666;
+}
+
+.session-item {
+    transition: all 0.3s ease;
+}
+
+.session-item:hover {
+    transform: translateX(5px);
+}
+
+/* Status color classes for session items */
+.status-success { color: var(--success); }
+.status-primary { color: var(--primary); }
+.status-warning { color: var(--warning); }
+.status-error { color: var(--error); }
+.status-gray { color: var(--gray); }
+
+.status-success-light { background: rgba(76, 201, 240, 0.1); }
+.status-primary-light { background: rgba(67, 97, 238, 0.1); }
+.status-warning-light { background: rgba(255, 193, 7, 0.1); }
+.status-error-light { background: rgba(230, 57, 70, 0.1); }
+.status-gray-light { background: rgba(108, 117, 125, 0.1); }
+        
         /* Main Content Styles */
         .main-content {
             flex: 1;
@@ -2106,10 +2163,312 @@ function updatePendingCount(count) {
 
 // Tutoring Opportunities Section ends here. All JS functionalities of the Tutoring Opportunities section ends here
 
+// =============================================
+// MY STUDENTS SECTION - REAL IMPLEMENTATION
+// =============================================
+
+// Load students who have booked sessions with this tutor
+async function loadMyStudents() {
+    const container = document.getElementById('studentsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading students...</div>';
+    
+    try {
+        // Get all sessions for this tutor (excluding cancelled ones)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', 'in', ['pending', 'confirmed', 'completed', 'rescheduled'])
+            .orderBy('date', 'desc')
+            .get();
+        
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-users"></i>
+                    <h3>No Students Yet</h3>
+                    <p>Students will appear here once they book sessions with you.</p>
+                </div>
+            `;
+            document.getElementById('activeStudentsCount').textContent = '0';
+            return;
+        }
+        
+        // Organize students with their session data
+        const studentsMap = new Map();
+        const currentTime = new Date();
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            
+            if (session.studentId && session.studentName) {
+                if (!studentsMap.has(session.studentId)) {
+                    studentsMap.set(session.studentId, {
+                        studentId: session.studentId,
+                        studentName: session.studentName,
+                        sessions: [],
+                        totalSessions: 0,
+                        completedSessions: 0,
+                        upcomingSessions: 0,
+                        lastSessionDate: null,
+                        favoriteSubject: null,
+                        subjectCount: new Map()
+                    });
+                }
+                
+                const studentData = studentsMap.get(session.studentId);
+                studentData.sessions.push(session);
+                studentData.totalSessions++;
+                
+                // Track subject frequency
+                if (session.subject) {
+                    const currentCount = studentData.subjectCount.get(session.subject) || 0;
+                    studentData.subjectCount.set(session.subject, currentCount + 1);
+                }
+                
+                // Track session status
+                if (session.status === 'completed') {
+                    studentData.completedSessions++;
+                } else if (session.status === 'confirmed' || session.status === 'rescheduled') {
+                    const sessionDate = session.date.toDate();
+                    if (sessionDate > currentTime) {
+                        studentData.upcomingSessions++;
+                    }
+                }
+                
+                // Track last session date
+                const sessionDate = session.date.toDate();
+                if (!studentData.lastSessionDate || sessionDate > studentData.lastSessionDate) {
+                    studentData.lastSessionDate = sessionDate;
+                }
+            }
+        });
+        
+        // Determine favorite subject for each student
+        studentsMap.forEach(studentData => {
+            let maxCount = 0;
+            let favoriteSubject = null;
+            
+            studentData.subjectCount.forEach((count, subject) => {
+                if (count > maxCount) {
+                    maxCount = count;
+                    favoriteSubject = subject;
+                }
+            });
+            
+            studentData.favoriteSubject = favoriteSubject;
+        });
+        
+        // Convert map to array and sort by last session date (most recent first)
+        const studentsArray = Array.from(studentsMap.values()).sort((a, b) => 
+            b.lastSessionDate - a.lastSessionDate
+        );
+        
+        displayStudentsWithRealData(studentsArray, container);
+        
+    } catch (error) {
+        console.error("Error loading students:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Students</h3>
+                <p>Failed to load student information. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Display students with real session data
+function displayStudentsWithRealData(studentsArray, container) {
+    container.innerHTML = `
+        <div class="section-header">
+            <h3><i class="fas fa-chart-bar"></i> Student Overview</h3>
+        </div>
+        <div class="stats-container" style="margin-bottom: 30px;">
+            <div class="stat-card">
+                <div class="stat-icon blue">
+                    <i class="fas fa-users"></i>
+                </div>
+                <div class="stat-value">${studentsArray.length}</div>
+                <div class="stat-label">Total Students</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green">
+                    <i class="fas fa-calendar-check"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.upcomingSessions, 0)}</div>
+                <div class="stat-label">Upcoming Sessions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon pink">
+                    <i class="fas fa-graduation-cap"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.completedSessions, 0)}</div>
+                <div class="stat-label">Completed Sessions</div>
+            </div>
+        </div>
+        <div class="section-header">
+            <h3><i class="fas fa-list"></i> Student Directory</h3>
+        </div>
+        <div class="tutors-container" id="studentsDirectory"></div>
+    `;
+    
+    const studentsDirectory = document.getElementById('studentsDirectory');
+    
+    studentsArray.forEach((studentData, index) => {
+        const studentCard = createStudentCardWithRealData(studentData, index);
+        studentsDirectory.appendChild(studentCard);
+    });
+    
+    // Update active students count in dashboard stats
+    document.getElementById('activeStudentsCount').textContent = studentsArray.length;
+}
+
+// Create student card with real session data
+function createStudentCardWithRealData(studentData, index) {
+    const card = document.createElement('div');
+    card.className = 'tutor-card';
+    card.style.animationDelay = `${index * 0.1}s`;
+    card.style.opacity = '0';
+    card.style.animation = 'fadeInUp 0.6s ease forwards';
+    
+    const lastSessionDate = studentData.lastSessionDate ? 
+        studentData.lastSessionDate.toLocaleDateString() : 'No sessions yet';
+    
+    const favoriteSubject = studentData.favoriteSubject || 'Various subjects';
+    
+    card.innerHTML = `
+        <div class="tutor-header">
+            <div class="tutor-avatar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <i class="fas fa-user-graduate"></i>
+            </div>
+            <div class="tutor-name">${studentData.studentName}</div>
+            <div class="tutor-subject">${favoriteSubject}</div>
+        </div>
+        <div class="tutor-details">
+            <div class="session-stats">
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.totalSessions}</span>
+                    <span class="stat-label">Total Sessions</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.completedSessions}</span>
+                    <span class="stat-label">Completed</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.upcomingSessions}</span>
+                    <span class="stat-label">Upcoming</span>
+                </div>
+            </div>
+            <p><i class="fas fa-book"></i> <strong>Favorite Subject:</strong> ${favoriteSubject}</p>
+            <p><i class="fas fa-calendar"></i> <strong>Last Session:</strong> ${lastSessionDate}</p>
+            <p><i class="fas fa-star"></i> <strong>Student ID:</strong> ${studentData.studentId.substring(0, 8)}...</p>
+        </div>
+        <div class="session-actions" style="padding: 0 20px 20px; justify-content: center; gap: 10px;">
+            <button class="btn-primary view-sessions-btn" data-student-id="${studentData.studentId}">
+                <i class="fas fa-history"></i> View Sessions
+            </button>
+            <button class="btn-outline view-profile-btn" data-student-id="${studentData.studentId}">
+                <i class="fas fa-eye"></i> Profile
+            </button>
+        </div>
+    `;
+    
+    // Add event listeners
+    setTimeout(() => {
+        const viewSessionsBtn = card.querySelector('.view-sessions-btn');
+        const viewProfileBtn = card.querySelector('.view-profile-btn');
+        
+        if (viewSessionsBtn) {
+            viewSessionsBtn.addEventListener('click', () => viewStudentSessions(studentData));
+        }
+        if (viewProfileBtn) {
+            viewProfileBtn.addEventListener('click', () => viewStudentProfile(studentData));
+        }
+    }, 100);
+    
+    return card;
+}
+
+// View student sessions
+function viewStudentSessions(studentData) {
+    // Sort sessions by date (newest first)
+    const sortedSessions = studentData.sessions.sort((a, b) => b.date.toDate() - a.date.toDate());
+    
+    let sessionsHTML = `
+        <h4>Sessions with ${studentData.studentName}</h4>
+        <div style="max-height: 400px; overflow-y: auto; margin-top: 15px;">
+    `;
+    
+    sortedSessions.forEach(session => {
+        const sessionDate = session.date.toDate();
+        const statusClass = getStatusClass(session.status);
+        
+        sessionsHTML += `
+            <div class="session-item" style="border-left: 4px solid var(--${statusClass}); padding: 10px; margin: 10px 0; background: #f8f9fa; border-radius: 8px;">
+                <div style="display: flex; justify-content: between; align-items: center;">
+                    <strong>${session.subject || 'No subject'}</strong>
+                    <span class="status-badge" style="background: var(--${statusClass}-light); color: var(--${statusClass});">
+                        ${session.status}
+                    </span>
+                </div>
+                <div style="font-size: 0.9em; color: #666;">
+                    ${sessionDate.toLocaleDateString()} at ${sessionDate.toLocaleTimeString()}
+                </div>
+                <div style="font-size: 0.9em;">
+                    Duration: ${session.duration || '1.5'} hours • $${session.hourlyRate || '40'}/hour
+                </div>
+            </div>
+        `;
+    });
+    
+    sessionsHTML += `</div>`;
+    
+    alert(`Sessions for ${studentData.studentName}`);
+    // In a real implementation, you'd show this in a modal
+    console.log(sessionsHTML);
+}
+
+// View student profile (enhanced with real data)
+function viewStudentProfile(studentData) {
+    // This would typically fetch additional student details from Firestore
+    const modalContent = `
+        <h3>Student Profile: ${studentData.studentName}</h3>
+        <div style="text-align: left; margin-top: 15px;">
+            <p><strong>Student ID:</strong> ${studentData.studentId}</p>
+            <p><strong>Total Sessions:</strong> ${studentData.totalSessions}</p>
+            <p><strong>Completed Sessions:</strong> ${studentData.completedSessions}</p>
+            <p><strong>Upcoming Sessions:</strong> ${studentData.upcomingSessions}</p>
+            <p><strong>Favorite Subject:</strong> ${studentData.favoriteSubject || 'Various'}</p>
+            <p><strong>Last Session:</strong> ${studentData.lastSessionDate ? studentData.lastSessionDate.toLocaleDateString() : 'Never'}</p>
+        </div>
+    `;
+    
+    alert(`Profile: ${studentData.studentName}`);
+    // In a real implementation, you'd show this in a modal
+    console.log(modalContent);
+}
+
+// Helper function to get status class for styling
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'success';
+        case 'confirmed': return 'primary';
+        case 'pending': return 'warning';
+        case 'cancelled': return 'error';
+        case 'rescheduled': return 'info';
+        default: return 'gray';
+    }
+}
+
+//My Students Section Ends here.
+       
        
 </script>    
 </body>
 </html>
+
 
 
 
