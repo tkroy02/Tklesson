@@ -3141,7 +3141,198 @@ async function submitRescheduleRequest(sessionId) {
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
 // =============================================
-       
+
+// Load sessions history
+async function loadSessionsHistory() {
+    const container = document.getElementById('sessionsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading session history...</div>';
+    
+    try {
+        // Get all sessions for this tutor (past sessions)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('date', '<=', new Date())
+            .orderBy('date', 'desc')
+            .limit(50)
+            .get();
+        
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-history"></i>
+                    <h3>No Session History</h3>
+                    <p>Your completed sessions will appear here.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        let sessionsHTML = `
+            <div class="sessions-table-container">
+                <table class="sessions-table">
+                    <thead>
+                        <tr>
+                            <th>Date & Time</th>
+                            <th>Student</th>
+                            <th>Subject</th>
+                            <th>Duration</th>
+                            <th>Status</th>
+                            <th>Amount</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            sessionsHTML += createSessionHistoryRow(session, doc.id);
+        });
+        
+        sessionsHTML += `
+                    </tbody>
+                </table>
+            </div>
+        `;
+        
+        container.innerHTML = sessionsHTML;
+        
+        // Add event listeners to action buttons
+        addSessionHistoryListeners();
+        
+    } catch (error) {
+        console.error("Error loading session history:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading History</h3>
+                <p>Failed to load session history. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Create session history table row
+function createSessionHistoryRow(session, sessionId) {
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const statusClass = getStatusClass(session.status);
+    const amount = session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2);
+    
+    return `
+        <tr class="session-history-row">
+            <td>
+                <div>${formattedDate}</div>
+                <div class="timestamp-cell">${formattedTime}</div>
+            </td>
+            <td>${session.studentName || 'Unknown Student'}</td>
+            <td>${session.subject || 'General'}</td>
+            <td>${session.duration || '1.5'}h</td>
+            <td>
+                <span class="status-badge status-${statusClass}">${session.status}</span>
+            </td>
+            <td>$${amount}</td>
+            <td>
+                <button class="btn-outline view-session-btn" data-session-id="${sessionId}">
+                    <i class="fas fa-eye"></i> View
+                </button>
+            </td>
+        </tr>
+    `;
+}
+
+// Add event listeners to session history actions
+function addSessionHistoryListeners() {
+    document.querySelectorAll('.view-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            showSessionDetails(sessionId);
+        });
+    });
+}
+
+// Show session details (similar to booking details but for historical sessions)
+async function showSessionDetails(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session details not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        const date = session.date.toDate();
+        
+        const modalContent = `
+            <div class="session-details">
+                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">Session Details</h3>
+                
+                <div class="details-grid" style="display: grid; gap: 15px; margin-bottom: 20px;">
+                    <div class="detail-item">
+                        <strong>Student:</strong> ${session.studentName || 'Unknown'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Subject:</strong> ${session.subject || 'General Tutoring'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Date & Time:</strong> ${date.toLocaleString()}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Duration:</strong> ${session.duration || '1.5'} hours
+                    </div>
+                    <div class="detail-item">
+                        <strong>Session Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Total Amount:</strong> $${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Status:</strong> <span class="status-badge status-${session.status}">${session.status}</span>
+                    </div>
+                </div>
+                
+                ${session.notes ? `
+                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px;">
+                        <strong>Session Notes:</strong>
+                        <p style="margin-top: 5px; font-style: italic;">${session.notes}</p>
+                    </div>
+                ` : ''}
+                
+                ${session.confirmedAt ? `
+                    <div class="timestamp-info" style="font-size: 0.9em; color: #666; margin-top: 15px;">
+                        <strong>Confirmed:</strong> ${session.confirmedAt.toDate().toLocaleString()}
+                    </div>
+                ` : ''}
+            </div>
+        `;
+        
+        showBookingDetailsModal(modalContent);
+        
+    } catch (error) {
+        console.error("Error loading session details:", error);
+        alert('Error loading session details.');
+    }
+}
+
+// Helper function to get status class (ensure this exists)
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'success';
+        case 'confirmed': return 'primary';
+        case 'pending': return 'warning';
+        case 'cancelled': return 'error';
+        case 'rescheduled': return 'info';
+        case 'reschedule_requested': return 'warning';
+        default: return 'gray';
+    }
+}
 
        
 
@@ -3176,6 +3367,7 @@ function calculateInvoiceTotal() {
 </script>    
 </body>
 </html>
+
 
 
 
