@@ -2640,7 +2640,252 @@ function getStatusClass(status) {
 
 //My Students Section Ends here.
 
+// =============================================
+// MY BOOKINGS SECTION STARTS HERE
+// =============================================
 
+// Load tutor's bookings (confirmed and upcoming sessions)
+async function loadTutorBookings() {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner"></div>';
+    
+    try {
+        const userId = currentUser.uid;
+        
+        // Query upcoming bookings (confirmed sessions)
+        const querySnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', userId)
+            .where('status', 'in', ['confirmed', 'reschedule_requested'])
+            .where('date', '>=', new Date())
+            .orderBy('date', 'asc')
+            .get();
+        
+        if (querySnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h3>No Upcoming Bookings</h3>
+                    <p>You have no upcoming sessions scheduled.</p>
+                </div>
+            `;
+            confirmedSessions = [];
+            return;
+        }
+        
+        confirmedSessions = [];
+        let bookingsHTML = '';
+        
+        // Process each booking and fetch student details
+        for (const doc of querySnapshot.docs) {
+            const booking = doc.data();
+            booking.id = doc.id;
+            confirmedSessions.push(booking);
+            
+            // Fetch student name from student document
+            let studentName = 'Student';
+            if (booking.studentId && booking.studentId !== "students") {
+                try {
+                    const studentDoc = await db.collection('students').doc(booking.studentId).get();
+                    if (studentDoc.exists) {
+                        const studentData = studentDoc.data();
+                        studentName = studentData.fullName || 'Student';
+                    }
+                } catch (error) {
+                    console.error("Error loading student data:", error);
+                }
+            }
+            
+            // Create the booking card HTML
+            bookingsHTML += createTutorBookingCard(booking, studentName);
+        }
+        
+        container.innerHTML = bookingsHTML;
+        
+        // Add event listeners to action buttons
+        addBookingActionListeners();
+        
+    } catch (error) {
+        console.error("Error loading bookings:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Bookings</h3>
+                <p>Failed to load your bookings. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Create booking card HTML for tutor dashboard
+function createTutorBookingCard(booking, studentName) {
+    const date = booking.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const subject = booking.subject || 'General Tutoring';
+    const location = booking.sessionType || 'online';
+    const meetLink = booking.meetLink || '#';
+    
+    // Check if reschedule is requested
+    const isRescheduleRequested = booking.status === 'reschedule_requested';
+    
+    return `
+        <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+            <div class="session-header">
+                <div class="session-title">${subject} Session with ${studentName}</div>
+                <div class="session-date">${formattedDate}, ${formattedTime}</div>
+                ${isRescheduleRequested ? 
+                    '<span class="status-badge status-warning">Reschedule Requested</span>' : ''}
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-graduate"></i> Student: ${studentName}
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-book"></i> Subject: ${subject}
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i> Duration: ${booking.duration || '1.5'} hours
+                </div>
+                <div class="session-detail">
+                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    ${location === 'online' ? 'Online' : 'In-Person'}
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-dollar-sign"></i> Rate: $${booking.hourlyRate || '40'}/hour
+                </div>
+            </div>
+            <div class="session-actions">
+                ${location === 'online' ? 
+                    `<button class="btn-primary join-session-btn" data-meet-link="${meetLink}">Join Session</button>` : ''}
+                ${!isRescheduleRequested ? 
+                    `<button class="btn-outline reschedule-btn" data-session-id="${booking.id}">Reschedule</button>` : 
+                    `<button class="btn-outline" disabled>Reschedule Pending</button>`}
+                <button class="btn-danger cancel-booking-btn" data-session-id="${booking.id}">Cancel</button>
+            </div>
+        </div>
+    `;
+}
+
+// Add event listeners to booking action buttons
+function addBookingActionListeners() {
+    // Join session buttons
+    document.querySelectorAll('.join-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const meetLink = this.getAttribute('data-meet-link');
+            if (meetLink && meetLink !== '#') {
+                window.open(meetLink, '_blank');
+            } else {
+                alert('Meeting link not available');
+            }
+        });
+    });
+    
+    // Reschedule buttons
+    document.querySelectorAll('.reschedule-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            const booking = findBookingInCurrentSessions(sessionId);
+            
+            if (booking) {
+                openRescheduleModal(sessionId, booking);
+            } else {
+                console.error('Booking not found for session ID:', sessionId);
+                alert('Error: Booking not found. Please refresh the page.');
+            }
+        });
+    });
+    
+    // Cancel buttons
+    document.querySelectorAll('.cancel-booking-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            cancelTutorBooking(sessionId);
+        });
+    });
+}
+
+// Cancel a booking as tutor
+async function cancelTutorBooking(sessionId) {
+    if (!confirm('Are you sure you want to cancel this booking? The student will be notified.')) {
+        return;
+    }
+    
+    try {
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: 'tutor'
+        });
+        
+        alert('Booking cancelled successfully.');
+        
+        // Refresh the bookings display
+        loadTutorBookings();
+        
+    } catch (error) {
+        console.error("Error cancelling booking:", error);
+        alert('Error cancelling booking. Please try again.');
+    }
+}
+
+// Helper function to find booking in current sessions
+function findBookingInCurrentSessions(sessionId) {
+    // Search in both pending and confirmed sessions
+    const pendingSession = pendingSessions.find(session => session.id === sessionId);
+    const confirmedSession = confirmedSessions.find(session => session.id === sessionId);
+    
+    return pendingSession || confirmedSession || null;
+}
+
+// Initialize My Bookings section
+function initMyBookingsSection() {
+    // This function would be called when the My Bookings section is activated
+    console.log("Initializing My Bookings section");
+    
+    // Set up any additional event listeners or initializations specific to bookings
+    const bookingFilter = document.getElementById('bookingFilter');
+    if (bookingFilter) {
+        bookingFilter.addEventListener('change', function() {
+            filterBookings(this.value);
+        });
+    }
+}
+
+// Filter bookings by status
+function filterBookings(filterType) {
+    const bookingCards = document.querySelectorAll('.session-card');
+    
+    bookingCards.forEach(card => {
+        let showCard = true;
+        
+        switch(filterType) {
+            case 'upcoming':
+                showCard = !card.classList.contains('reschedule-pending');
+                break;
+            case 'reschedule':
+                showCard = card.classList.contains('reschedule-pending');
+                break;
+            case 'pending':
+                // This would need additional logic for pending status
+                showCard = card.querySelector('.status-badge')?.textContent === 'Pending';
+                break;
+            case 'all':
+            default:
+                showCard = true;
+        }
+        
+        card.style.display = showCard ? 'block' : 'none';
+    });
+}
+
+// =============================================
+// MY BOOKINGS SECTION ENDS HERE
+// =============================================
+
+       
 
 
 //My Invoice Section Starts here.
@@ -2674,6 +2919,7 @@ function calculateInvoiceTotal() {
 </script>    
 </body>
 </html>
+
 
 
 
