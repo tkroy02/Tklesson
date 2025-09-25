@@ -2381,7 +2381,7 @@ function getStatusClass(status) {
    
 // Sessions History Section starts here. All JS functionalities of the Sessions History section starts here
 
-// Global variables for pagination - REMOVED DUPLICATE DECLARATION
+// Global variables for pagination
 let lastVisibleDoc = null;
 let hasMoreSessions = true;
 
@@ -2482,80 +2482,76 @@ function getStatusClass(status) {
     }
 }
 
-// Helper function to determine action timestamp and type
+// CORRECTED: Helper function to determine action timestamp and type
 function getActionTimestamp(session) {
-  let actionTime = new Date();
-  let actionType = 'Unknown';
-  
-  // Determine the most meaningful action based on available timestamps
-  if (session.cancelledAt) {
-    actionTime = session.cancelledAt.toDate();
-    // Determine who cancelled
-    if (session.cancelledBy === 'student') {
-      actionType = 'Student Cancelled';
-    } else if (session.cancelledBy === 'tutor') {
-      actionType = 'Tutor Cancelled';
+    let actionTime = new Date();
+    let actionType = 'Unknown';
+    
+    // CORRECTED: Use only fields that actually exist in Firestore with fallback logic
+    if (session.cancelledAt) {
+        actionTime = session.cancelledAt.toDate();
+        // Use cancelledBy if it exists, otherwise infer based on current user context
+        if (session.cancelledBy) {
+            actionType = session.cancelledBy === 'student' ? 'Student Cancelled' : 'Tutor Cancelled';
+        } else {
+            // Infer based on user context - if current user is student, assume tutor cancelled
+            actionType = auth.currentUser.uid === session.studentId ? 'Tutor Cancelled' : 'Student Cancelled';
+        }
+    } else if (session.completedAt) {
+        actionTime = session.completedAt.toDate();
+        actionType = 'Completed';
+    } else if (session.rescheduleAcceptedAt) {
+        actionTime = session.rescheduleAcceptedAt.toDate();
+        actionType = 'Rescheduled';
+    } else if (session.rescheduleRequestedAt) {
+        actionTime = session.rescheduleRequestedAt.toDate();
+        // Use rescheduleRequestedBy if it exists
+        if (session.rescheduleRequestedBy) {
+            actionType = session.rescheduleRequestedBy === 'student' ? 'Student Reschedule Request' : 'Tutor Reschedule Request';
+        } else {
+            actionType = 'Reschedule Requested';
+        }
+    } else if (session.confirmedAt) {
+        actionTime = session.confirmedAt.toDate();
+        // Determine how it was confirmed
+        if (session.autoConfirmed) {
+            actionType = 'Auto-Confirmed';
+        } else {
+            actionType = 'Confirmed';
+        }
+    } else if (session.bookedAt) {
+        actionTime = session.bookedAt.toDate();
+        actionType = 'Student Booked';
     } else {
-      actionType = 'Cancelled';
+        actionTime = session.date.toDate();
+        actionType = 'Scheduled';
     }
-  } else if (session.completedAt) {
-    actionTime = session.completedAt.toDate();
-    actionType = 'Completed';
-  } else if (session.rescheduleAcceptedAt) {
-    actionTime = session.rescheduleAcceptedAt.toDate();
-    actionType = 'Rescheduled';
-  } else if (session.rescheduleRequestedAt) {
-    actionTime = session.rescheduleRequestedAt.toDate();
-    // Determine who requested reschedule
-    if (session.rescheduleRequestedBy === 'tutor') {
-      actionType = 'Tutor Reschedule Request';
-    } else if (session.rescheduleRequestedBy === 'student') {
-      actionType = 'Student Reschedule Request';
-    } else {
-      actionType = 'Reschedule Requested';
-    }
-  } else if (session.confirmedAt) {
-    actionTime = session.confirmedAt.toDate();
-    // Determine how it was confirmed
-    if (session.autoConfirmed) {
-      actionType = 'Auto-Confirmed';
-    } else if (session.tutorconfirmed === 'tutor') {
-      actionType = 'Tutor Confirmed';
-    } else if (session.studentconfirmed === 'student') {
-      actionType = 'Student Confirmed';
-    }
-  } else if (session.bookedAt) {
-    actionTime = session.bookedAt.toDate();
-    actionType = 'Student Booked';
-  } else {
-    actionTime = session.date.toDate();
-    actionType = 'Scheduled';
-  }
-  
-  return { actionTime, actionType };
+    
+    return { actionTime, actionType };
 }
 
-// Update the getActionTypeClass function
+// CORRECTED: Update the getActionTypeClass function with proper CSS classes
 function getActionTypeClass(actionType) {
-  switch(actionType.toLowerCase()) {
-    case 'student booked':
-    case 'tutor confirmed':
-    case 'student confirmed':
-    case 'auto-confirmed':
-    case 'completed':
-      return 'status-verified';
-    case 'student cancelled':
-    case 'tutor cancelled':
-    case 'cancelled':
-      return 'status-pending';
-    case 'tutor reschedule request':
-    case 'student reschedule request':
-    case 'reschedule requested':
-    case 'rescheduled':
-      return 'status-warning';
-    default:
-      return 'status-pending';
-  }
+    switch(actionType.toLowerCase()) {
+        case 'student booked':
+        case 'confirmed':
+        case 'auto-confirmed':
+        case 'completed':
+            return 'status-verified';
+        case 'student cancelled':
+        case 'tutor cancelled':
+        case 'cancelled':
+            return 'status-cancelled';
+        case 'tutor reschedule request':
+        case 'student reschedule request':
+        case 'reschedule requested':
+        case 'rescheduled':
+            return 'status-reschedule-requested';
+        case 'scheduled':
+            return 'status-pending';
+        default:
+            return 'status-pending';
+    }
 }
 
 // Load session history
@@ -2625,6 +2621,7 @@ function loadSessionHistory(snapshot) {
     setupHistoryFilters();
 }
 
+// CORRECTED: Filter function with simplified action type mappings
 function setupHistoryFilters() {
     const historyFilter = document.getElementById('historyFilter');
     const actionTypeFilter = document.getElementById('actionTypeFilter');
@@ -2683,7 +2680,7 @@ function setupHistoryFilters() {
                 }
             }
             
-            // Apply action type filter (8th column)
+            // CORRECTED: Apply action type filter with simplified mappings
             if (actionFilter !== 'all' && showRow) {
                 const actionTypeElement = row.cells[7].querySelector('.status-badge');
                 if (actionTypeElement) {
@@ -2693,24 +2690,14 @@ function setupHistoryFilters() {
                     // Handle filter value mappings
                     if (filterValue === 'student booked') {
                         showRow = actionType === 'student booked';
-                    } else if (filterValue === 'student confirmed') {
-                        showRow = actionType === 'student confirmed';
-                    } else if (filterValue === 'tutor confirmed') {
-                        showRow = actionType === 'tutor confirmed';
+                    } else if (filterValue === 'confirmed') {
+                        showRow = actionType === 'confirmed' || actionType === 'auto-confirmed';
                     } else if (filterValue === 'completed') {
                         showRow = actionType === 'completed';
-                    } else if (filterValue === 'student cancelled') {
-                        showRow = actionType === 'student cancelled';
-                    } else if (filterValue === 'tutor cancelled') {
-                        showRow = actionType === 'tutor cancelled';
-                    } else if (filterValue === 'auto-confirmed') {
-                        showRow = actionType === 'auto-confirmed';
-                    } else if (filterValue === 'student reschedule request') {
-                        showRow = actionType === 'student reschedule request';
-                    } else if (filterValue === 'tutor reschedule request') {
-                        showRow = actionType === 'tutor reschedule request';
-                    } else if (filterValue === 'rescheduled') {
-                        showRow = actionType === 'rescheduled';
+                    } else if (filterValue === 'cancelled') {
+                        showRow = actionType.includes('cancelled');
+                    } else if (filterValue === 'reschedule requested') {
+                        showRow = actionType.includes('reschedule');
                     } else if (filterValue === 'scheduled') {
                         showRow = actionType === 'scheduled';
                     } else {
@@ -2822,5 +2809,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 </body>
 </html>
+
 
 
