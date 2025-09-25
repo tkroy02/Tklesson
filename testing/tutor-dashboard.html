@@ -2168,6 +2168,163 @@ function updatePendingCount(count) {
 // =============================================
 
 // Load students who have booked sessions with this tutor
+async function loadMyStudents() {
+    const container = document.getElementById('studentsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading students...</div>';
+    
+    try {
+        // Get all sessions for this tutor (excluding cancelled ones)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', 'in', ['pending', 'confirmed', 'completed', 'rescheduled'])
+            .orderBy('date', 'desc')
+            .get();
+        
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-users"></i>
+                    <h3>No Students Yet</h3>
+                    <p>Students will appear here once they book sessions with you.</p>
+                </div>
+            `;
+            document.getElementById('activeStudentsCount').textContent = '0';
+            return;
+        }
+        
+        // Organize students with their session data
+        const studentsMap = new Map();
+        const currentTime = new Date();
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            
+            if (session.studentId && session.studentName) {
+                if (!studentsMap.has(session.studentId)) {
+                    studentsMap.set(session.studentId, {
+                        studentId: session.studentId,
+                        studentName: session.studentName,
+                        sessions: [],
+                        totalSessions: 0,
+                        completedSessions: 0,
+                        upcomingSessions: 0,
+                        lastSessionDate: null,
+                        favoriteSubject: null,
+                        subjectCount: new Map()
+                    });
+                }
+                
+                const studentData = studentsMap.get(session.studentId);
+                studentData.sessions.push(session);
+                studentData.totalSessions++;
+                
+                // Track subject frequency
+                if (session.subject) {
+                    const currentCount = studentData.subjectCount.get(session.subject) || 0;
+                    studentData.subjectCount.set(session.subject, currentCount + 1);
+                }
+                
+                // Track session status
+                if (session.status === 'completed') {
+                    studentData.completedSessions++;
+                } else if (session.status === 'confirmed' || session.status === 'rescheduled') {
+                    const sessionDate = session.date.toDate();
+                    if (sessionDate > currentTime) {
+                        studentData.upcomingSessions++;
+                    }
+                }
+                
+                // Track last session date
+                const sessionDate = session.date.toDate();
+                if (!studentData.lastSessionDate || sessionDate > studentData.lastSessionDate) {
+                    studentData.lastSessionDate = sessionDate;
+                }
+            }
+        });
+        
+        // Determine favorite subject for each student
+        studentsMap.forEach(studentData => {
+            let maxCount = 0;
+            let favoriteSubject = null;
+            
+            studentData.subjectCount.forEach((count, subject) => {
+                if (count > maxCount) {
+                    maxCount = count;
+                    favoriteSubject = subject;
+                }
+            });
+            
+            studentData.favoriteSubject = favoriteSubject;
+        });
+        
+        // Convert map to array and sort by last session date (most recent first)
+        const studentsArray = Array.from(studentsMap.values()).sort((a, b) => 
+            b.lastSessionDate - a.lastSessionDate
+        );
+        
+        displayStudentsWithRealData(studentsArray, container);
+        
+    } catch (error) {
+        console.error("Error loading students:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Students</h3>
+                <p>Failed to load student information. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Display students with real data
+function displayStudentsWithRealData(studentsArray, container) {
+    container.innerHTML = `
+        <div class="section-header">
+            <h3><i class="fas fa-chart-bar"></i> Student Overview</h3>
+        </div>
+        <div class="stats-container" style="margin-bottom: 30px;">
+            <div class="stat-card">
+                <div class="stat-icon blue">
+                    <i class="fas fa-users"></i>
+                </div>
+                <div class="stat-value">${studentsArray.length}</div>
+                <div class="stat-label">Total Students</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green">
+                    <i class="fas fa-calendar-check"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.upcomingSessions, 0)}</div>
+                <div class="stat-label">Upcoming Sessions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon pink">
+                    <i class="fas fa-graduation-cap"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.completedSessions, 0)}</div>
+                <div class="stat-label">Completed Sessions</div>
+            </div>
+        </div>
+        <div class="section-header">
+            <h3><i class="fas fa-list"></i> Student Directory</h3>
+        </div>
+        <div class="tutors-container" id="studentsDirectory"></div>
+    `;
+    
+    const studentsDirectory = document.getElementById('studentsDirectory');
+    
+    studentsArray.forEach((studentData, index) => {
+        const studentCard = createStudentCardWithRealData(studentData, index);
+        studentsDirectory.appendChild(studentCard);
+    });
+    
+    // Update active students count in dashboard stats
+    document.getElementById('activeStudentsCount').textContent = studentsArray.length;
+}
+
 // Enhanced function to load student profile data
 async function loadStudentProfileData(studentId) {
     try {
@@ -2469,12 +2626,55 @@ function showStudentSessionsModal(studentName, content) {
     modal.style.display = 'flex';
 }
 
+// Helper function to get status class for styling
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'success';
+        case 'confirmed': return 'primary';
+        case 'pending': return 'warning';
+        case 'cancelled': return 'error';
+        case 'rescheduled': return 'info';
+        default: return 'gray';
+    }
+}
+
 //My Students Section Ends here.
-       
+
+
+
+
+//My Invoice Section Starts here.
+
+// Setup invoice calculations (missing function)
+function setupInvoiceCalculations() {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const totalInput = document.getElementById('total');
+    
+    if (hoursInput && rateInput && totalInput) {
+        // Calculate total when hours change
+        hoursInput.addEventListener('input', calculateInvoiceTotal);
+        rateInput.addEventListener('input', calculateInvoiceTotal);
+        
+        // Initial calculation
+        calculateInvoiceTotal();
+    }
+}
+
+// Calculate invoice total
+function calculateInvoiceTotal() {
+    const hours = parseFloat(document.getElementById('hours').value) || 0;
+    const rate = parseFloat(document.getElementById('rate').value) || 0;
+    const total = hours * rate;
+    
+    document.getElementById('total').value = total.toFixed(2);
+}
+
        
 </script>    
 </body>
 </html>
+
 
 
 
