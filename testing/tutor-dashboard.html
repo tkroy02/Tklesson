@@ -3026,7 +3026,7 @@ function openRescheduleModal(sessionId) {
     let modal = document.getElementById('rescheduleModal');
     
     if (!modal) {
-        // Create the modal if it doesn't exist (using your existing modal structure)
+        // Create the modal if it doesn't exist
         modal = document.createElement('div');
         modal.id = 'rescheduleModal';
         modal.className = 'modal';
@@ -3060,78 +3060,230 @@ function openRescheduleModal(sessionId) {
             </div>
         `;
         document.body.appendChild(modal);
-        
-        // Add event listeners
-        const closeBtn = modal.querySelector('.close-modal');
-        const cancelBtn = modal.querySelector('#cancelRescheduleBtn');
-        const submitBtn = modal.querySelector('#submitRescheduleBtn');
-        
-        closeBtn.addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
-        
-        cancelBtn.addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
-        
-        submitBtn.addEventListener('click', () => {
-            submitRescheduleRequest(sessionId);
-        });
-        
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.style.display = 'none';
-            }
-        });
     }
     
     // Set minimum date to today
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('rescheduleDate').min = today;
     
-    // Clear form
+    // Clear form and set current session ID
     document.getElementById('rescheduleForm').reset();
+    modal.setAttribute('data-current-session-id', sessionId);
+    
+    // Remove existing event listeners and add new ones
+    const closeBtn = modal.querySelector('.close-modal');
+    const cancelBtn = modal.querySelector('#cancelRescheduleBtn');
+    const submitBtn = modal.querySelector('#submitRescheduleBtn');
+    
+    // Remove any existing event listeners by cloning and replacing
+    const newSubmitBtn = submitBtn.cloneNode(true);
+    submitBtn.parentNode.replaceChild(newSubmitBtn, submitBtn);
+    
+    const newCancelBtn = cancelBtn.cloneNode(true);
+    cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+    
+    const newCloseBtn = closeBtn.cloneNode(true);
+    closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+    
+    // Add fresh event listeners
+    newCloseBtn.addEventListener('click', closeRescheduleModal);
+    newCancelBtn.addEventListener('click', closeRescheduleModal);
+    newSubmitBtn.addEventListener('click', handleRescheduleSubmit);
+    
+    // Also handle form submission on Enter key
+    const form = document.getElementById('rescheduleForm');
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        handleRescheduleSubmit();
+    });
     
     modal.style.display = 'flex';
+    
+    // Focus on first input
+    document.getElementById('rescheduleDate').focus();
 }
 
-    // Submit reschedule request
-async function submitRescheduleRequest(sessionId) {
-    const date = document.getElementById('rescheduleDate').value;
-    const time = document.getElementById('rescheduleTime').value;
-    const reason = document.getElementById('rescheduleReason').value;
+// Close reschedule modal
+function closeRescheduleModal() {
+    const modal = document.getElementById('rescheduleModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Handle reschedule form submission
+function handleRescheduleSubmit() {
+    const modal = document.getElementById('rescheduleModal');
+    const sessionId = modal.getAttribute('data-current-session-id');
     
-    if (!date || !time || !reason) {
-        alert('Please fill in all fields.');
+    if (!sessionId) {
+        console.error('No session ID found for reschedule');
+        alert('Error: Session ID not found. Please try again.');
+        return;
+    }
+    
+    submitRescheduleRequest(sessionId);
+}
+
+// Submit reschedule request with better validation
+async function submitRescheduleRequest(sessionId) {
+    console.log('Submitting reschedule request for session:', sessionId);
+    
+    const dateInput = document.getElementById('rescheduleDate');
+    const timeInput = document.getElementById('rescheduleTime');
+    const reasonInput = document.getElementById('rescheduleReason');
+    
+    const date = dateInput.value;
+    const time = timeInput.value;
+    const reason = reasonInput.value.trim();
+    
+    // Validation
+    if (!date) {
+        alert('Please select a new date.');
+        dateInput.focus();
+        return;
+    }
+    
+    if (!time) {
+        alert('Please select a new time.');
+        timeInput.focus();
+        return;
+    }
+    
+    if (!reason) {
+        alert('Please provide a reason for rescheduling.');
+        reasonInput.focus();
+        return;
+    }
+    
+    if (reason.length < 10) {
+        alert('Please provide a more detailed reason (at least 10 characters).');
+        reasonInput.focus();
         return;
     }
     
     try {
+        // Create new datetime object
         const newDateTime = new Date(`${date}T${time}`);
+        const now = new Date();
         
+        // Validate that new date is in the future
+        if (newDateTime <= now) {
+            alert('Please select a future date and time for the rescheduled session.');
+            return;
+        }
+        
+        console.log('Updating session with reschedule request...');
+        
+        // Update the session with reschedule request
         await db.collection('bookedSessions').doc(sessionId).update({
             status: 'reschedule_requested',
-            rescheduleRequestedAt: new Date(),
+            rescheduleRequestedAt: firebase.firestore.FieldValue.serverTimestamp(),
             rescheduleReason: reason,
             proposedNewDate: newDateTime,
-            rescheduleRequestedBy: 'tutor'
+            rescheduleRequestedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
         
+        console.log('Reschedule request submitted successfully');
+        
         // Close modal
-        document.getElementById('rescheduleModal').style.display = 'none';
+        closeRescheduleModal();
         
         // Show success message
-        alert('Reschedule request submitted successfully!');
+        showNotification('Reschedule request submitted successfully! The student will be notified.', 'success');
         
-        // Refresh bookings
-        loadMyBookings();
+        // Refresh bookings after a short delay
+        setTimeout(() => {
+            loadMyBookings();
+        }, 1000);
         
     } catch (error) {
         console.error("Error submitting reschedule request:", error);
-        alert('Error submitting reschedule request. Please try again.');
+        
+        // More detailed error handling
+        if (error.code === 'not-found') {
+            alert('Error: Session not found. It may have been cancelled or deleted.');
+        } else if (error.code === 'permission-denied') {
+            alert('Error: You do not have permission to reschedule this session.');
+        } else {
+            alert('Error submitting reschedule request. Please try again.');
+        }
     }
 }
-       
+
+// Enhanced notification function
+function showNotification(message, type = 'info') {
+    // Remove any existing notifications
+    const existingNotification = document.getElementById('customNotification');
+    if (existingNotification) {
+        existingNotification.remove();
+    }
+    
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.id = 'customNotification';
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 15px 20px;
+        border-radius: 8px;
+        color: white;
+        font-weight: 500;
+        z-index: 10000;
+        max-width: 400px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        animation: slideIn 0.3s ease;
+    `;
+    
+    // Set background color based on type
+    switch(type) {
+        case 'success':
+            notification.style.background = 'var(--success)';
+            break;
+        case 'error':
+            notification.style.background = 'var(--error)';
+            break;
+        case 'warning':
+            notification.style.background = 'var(--warning)';
+            break;
+        default:
+            notification.style.background = 'var(--primary)';
+    }
+    
+    notification.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span>${message}</span>
+            <button onclick="this.parentElement.parentElement.remove()" 
+                    style="background: none; border: none; color: white; cursor: pointer; margin-left: 10px; font-size: 16px;">
+                &times;
+            </button>
+        </div>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentElement) {
+            notification.remove();
+        }
+    }, 5000);
+}
+
+// Add CSS for slide-in animation
+if (!document.getElementById('notificationStyles')) {
+    const style = document.createElement('style');
+    style.id = 'notificationStyles';
+    style.textContent = `
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    `;
+    document.head.appendChild(style);
+}       
        
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
@@ -3367,6 +3519,7 @@ function calculateInvoiceTotal() {
 </script>    
 </body>
 </html>
+
 
 
 
