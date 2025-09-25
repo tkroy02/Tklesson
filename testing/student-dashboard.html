@@ -1927,7 +1927,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 //My Tutors Section ends here. All JS functionalities of the My Tutors section ends here
 
 //My Bookings Section starts here. All JS functionalities of the My Booking section starts here
-
+  
+// Load user bookings
 // Add this missing function - Update upcoming sessions count
 function updateUpcomingSessionsCount(count) {
     const countElement = document.getElementById('upcomingSessionsCount');
@@ -1936,17 +1937,17 @@ function updateUpcomingSessionsCount(count) {
     }
 }
 
-// Load user bookings - SINGLE CORRECTED VERSION
+// Also, here's the corrected loadUserBookings function that uses the proper structure:
 function loadUserBookings() {
     const userId = auth.currentUser.uid;
     
-    // Query upcoming bookings - FORCE SERVER-SIDE DATA
+    // Query upcoming bookings including reschedule requests
     db.collection('bookedSessions')
         .where('studentId', '==', userId)
         .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
         .where('date', '>=', new Date())
         .orderBy('date', 'asc')
-        .get({ source: 'server' }) // Force fresh data
+        .get()
         .then((querySnapshot) => {
             updateUpcomingSessionsCount(querySnapshot.size);
             
@@ -1955,11 +1956,11 @@ function loadUserBookings() {
                 const booking = doc.data();
                 const bookingId = doc.id;
                 
-                // Check for pending reschedule requests - ALSO FORCE SERVER-SIDE
+                // Check for pending reschedule requests
                 const rescheduleQuery = await db.collection('rescheduleRequests')
                     .where('sessionId', '==', bookingId)
                     .where('status', '==', 'pending')
-                    .get({ source: 'server' }); // Force fresh data
+                    .get();
                 
                 return {
                     id: bookingId,
@@ -1982,12 +1983,6 @@ function loadUserBookings() {
             }
         });
 }
-
-// SINGLE CORRECTED respondToReschedule function:
-function respondToReschedule(bookingId, response) {
-    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
-        return;
-    }
 
     // First, get the reschedule request for this booking
     db.collection('rescheduleRequests')
@@ -2037,10 +2032,8 @@ function respondToReschedule(bookingId, response) {
         })
         .then(() => {
             alert(`Reschedule request ${response}ed successfully.`);
-            // Wait 2 seconds to ensure Firestore processes the update completely
-            setTimeout(() => {
-                loadUserBookings();
-            }, 2000);
+            // Reload the bookings to reflect the changes
+            loadUserBookings();
         })
         .catch((error) => {
             console.error('Error responding to reschedule request:', error);
@@ -2048,7 +2041,7 @@ function respondToReschedule(bookingId, response) {
         });
 }
 
-// CORRECTED loadBookingsDisplay function (no duplicates):
+// Update the loadBookingsDisplay function to use the enhanced data:
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2140,7 +2133,7 @@ function getStatusClass(status) {
     }
 }
 
-// Cancel a booking function
+// Cancel a booking function (make sure this exists)
 function cancelBooking(bookingId) {
     if (confirm('Are you sure you want to cancel this booking?')) {
         // Update the booking status to cancelled
@@ -2160,20 +2153,152 @@ function cancelBooking(bookingId) {
     }
 }
 
-// Join session function
+// Join session function (make sure this exists)
 function joinSession(sessionId) {
     alert(`Joining session ${sessionId}. This would typically open the video meeting.`);
     // In a real app, this would redirect to the video meeting or open it in a modal
 }
+  
+// Function for reschedule response
+function respondToReschedule(bookingId, response) {
+    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
+        return;
+    }
+
+    // First, get the reschedule request for this booking
+    db.collection('rescheduleRequests')
+        .where('sessionId', '==', bookingId)
+        .where('status', '==', 'pending')
+        .get()
+        .then((querySnapshot) => {
+            if (querySnapshot.empty) {
+                alert('No pending reschedule request found for this booking.');
+                return;
+            }
+
+            const rescheduleRequestDoc = querySnapshot.docs[0];
+            const rescheduleRequestId = rescheduleRequestDoc.id;
+            const rescheduleRequest = rescheduleRequestDoc.data();
+
+            if (response === 'accept') {
+                // Accept the reschedule - update both the booking and the reschedule request
+                const batch = db.batch();
+                
+                // Update the booking with the new date
+                const bookingRef = db.collection('bookedSessions').doc(bookingId);
+                batch.update(bookingRef, {
+                    date: rescheduleRequest.requestedDate,
+                    status: 'confirmed',
+                    rescheduleAcceptedAt: new Date()
+                });
+
+                // Update the reschedule request status
+                const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
+                batch.update(rescheduleRef, {
+                    status: 'accepted',
+                    respondedAt: new Date(),
+                    response: 'accepted'
+                });
+
+                // Commit the batch
+                return batch.commit();
+            } else {
+                // Decline the reschedule - update only the reschedule request
+                return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
+                    status: 'declined',
+                    respondedAt: new Date(),
+                    response: 'declined'
+                });
+            }
+        })
+        .then(() => {
+            alert(`Reschedule request ${response}ed successfully.`);
+            // Reload the bookings to reflect the changes
+            loadUserBookings();
+        })
+        .catch((error) => {
+            console.error('Error responding to reschedule request:', error);
+            alert('Failed to respond to reschedule request. Please try again.');
+        });
+}
+
+// Update the loadBookingsDisplay function to use the enhanced data:
+function loadBookingsDisplay(bookings) {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    if (bookings.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
+        return;
+    }
+    
+    let html = '';
+    bookings.forEach(booking => {
+        const date = booking.date.toDate();
+        const formattedDate = date.toLocaleDateString();
+        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Check if there's a pending reschedule with proposed new date
+        let rescheduleInfo = '';
+        if (booking.hasPendingReschedule && booking.rescheduleRequest) {
+            const newDate = booking.rescheduleRequest.requestedDate.toDate();
+            const newFormattedDate = newDate.toLocaleDateString();
+            const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            
+            rescheduleInfo = `
+                <div class="session-detail" style="color: var(--warning); font-weight: 500;">
+                    <i class="fas fa-exchange-alt"></i>
+                    <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-comment"></i>
+                    <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
+                </div>
+            `;
+        }
+        
+        html += `
+            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${booking.id}">
+                <div class="session-header">
+                    <div class="session-title">${booking.subject || 'No subject'}</div>
+                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
+                </div>
+                <div class="session-details">
+                    <div class="session-detail">
+                        <i class="fas fa-user-tie"></i>
+                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-clock"></i>
+                        <span>Duration: ${booking.duration || '1'} hours</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-video"></i>
+                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                    </div>
+                    <div class="session-detail">
+                        <i class="fas fa-hourglass-half"></i>
+                        <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
+                    </div>
+                    ${rescheduleInfo}
+                </div>
+                <div class="session-actions">
+                    ${booking.hasPendingReschedule ? 
+                        `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
+                         <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
+                        `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
+                    }
+                    ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${booking.id}')">Join Session</button>` : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}  
 
 //My Bookings Section ends here. All JS functionalities of the My Bookings section ends here
   
 </script>
 </body>
 </html>
-
-
-
-
-
-
