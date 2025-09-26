@@ -2893,9 +2893,9 @@ function getStatusClass(status) {
 
 // Global variables for bookings
 let allBookings = [];
-let currentBookingsFilter = 'upcoming';
+let bookingsFilter = 'upcoming';
 
-// Load bookings section
+// Load tutor's bookings
 async function loadMyBookings() {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2903,65 +2903,123 @@ async function loadMyBookings() {
     container.innerHTML = '<div class="spinner">Loading your bookings...</div>';
     
     try {
-        // Get all confirmed, upcoming, and recent bookings for this tutor
-        const bookingsSnapshot = await db.collection('bookedSessions')
+        // Get all sessions for this tutor (excluding rejected/cancelled)
+        const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('status', 'in', ['confirmed', 'rescheduled', 'completed'])
-            .orderBy('date', 'desc')
-            .limit(100)
+            .where('status', 'in', ['pending', 'confirmed', 'rescheduled', 'completed'])
+            .orderBy('date', 'asc')
             .get();
         
         allBookings = [];
         
-        if (bookingsSnapshot.empty) {
-            displayEmptyBookingsState();
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-bookmark"></i>
+                    <h3>No Bookings Yet</h3>
+                    <p>Your confirmed and upcoming sessions will appear here.</p>
+                </div>
+            `;
+            document.getElementById('upcomingSessionsCount').textContent = '0';
             return;
         }
         
-        // Process bookings and enrich with student data
-        for (const doc of bookingsSnapshot.docs) {
+        // Process each booking
+        sessionsSnapshot.forEach(doc => {
             const booking = doc.data();
             booking.id = doc.id;
-            
-            // Get student details
-            try {
-                const studentDoc = await db.collection('students').doc(booking.studentId).get();
-                if (studentDoc.exists) {
-                    booking.studentData = studentDoc.data();
-                }
-            } catch (error) {
-                console.error("Error loading student data:", error);
-            }
-            
             allBookings.push(booking);
-        }
+        });
         
-        // Apply initial filter and display
-        applyBookingsFilter();
+        // Display bookings with filters
+        displayBookingsWithFilters();
         
-        // Setup filter functionality
-        setupBookingsFilters();
-        
-        // Update dashboard stats
-        updateBookingsStats();
-        
-        bookingsLoaded = true;
+        // Update upcoming sessions count
+        updateUpcomingSessionsCount();
         
     } catch (error) {
         console.error("Error loading bookings:", error);
-        displayBookingsErrorState();
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Bookings</h3>
+                <p>Failed to load your bookings. Please try again.</p>
+            </div>
+        `;
     }
 }
 
-// Apply filters to bookings
-function applyBookingsFilter() {
+// Display bookings with filter options
+function displayBookingsWithFilters() {
     const container = document.getElementById('bookingsContainer');
-    const now = new Date();
+    
+    container.innerHTML = `
+        <div class="section-header">
+            <h3><i class="fas fa-filter"></i> Filter Bookings</h3>
+        </div>
+        
+        <div class="filter-section">
+            <div class="filter-group">
+                <label for="bookingFilter">Show:</label>
+                <select id="bookingFilter" class="form-control">
+                    <option value="upcoming">Upcoming Sessions</option>
+                    <option value="pending">Pending Confirmation</option>
+                    <option value="completed">Completed Sessions</option>
+                    <option value="all">All Bookings</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="bookingSort">Sort by:</label>
+                <select id="bookingSort" class="form-control">
+                    <option value="date-asc">Date (Earliest First)</option>
+                    <option value="date-desc">Date (Latest First)</option>
+                    <option value="student">Student Name</option>
+                    <option value="subject">Subject</option>
+                </select>
+            </div>
+        </div>
+        
+        <div id="bookingsList" class="bookings-list"></div>
+    `;
+    
+    // Set up filter event listeners
+    setupBookingFilters();
+    
+    // Apply initial filters
+    applyBookingFilters();
+}
+
+// Set up booking filter event listeners
+function setupBookingFilters() {
+    const filterSelect = document.getElementById('bookingFilter');
+    const sortSelect = document.getElementById('bookingSort');
+    
+    if (filterSelect) {
+        filterSelect.addEventListener('change', function() {
+            bookingsFilter = this.value;
+            applyBookingFilters();
+        });
+    }
+    
+    if (sortSelect) {
+        sortSelect.addEventListener('change', function() {
+            applyBookingFilters();
+        });
+    }
+}
+
+// Apply filters and display bookings
+function applyBookingFilters() {
+    const bookingsList = document.getElementById('bookingsList');
+    const sortSelect = document.getElementById('bookingSort');
+    
+    if (!bookingsList || allBookings.length === 0) return;
     
     let filteredBookings = [...allBookings];
+    const now = new Date();
     
-    // Filter based on current selection
-    switch(currentBookingsFilter) {
+    // Apply status filter
+    switch(bookingsFilter) {
         case 'upcoming':
             filteredBookings = filteredBookings.filter(booking => {
                 const bookingDate = booking.date.toDate();
@@ -2970,60 +3028,56 @@ function applyBookingsFilter() {
             });
             break;
             
+        case 'pending':
+            filteredBookings = filteredBookings.filter(booking => booking.status === 'pending');
+            break;
+            
         case 'completed':
-            filteredBookings = filteredBookings.filter(booking => 
-                booking.status === 'completed'
-            );
+            filteredBookings = filteredBookings.filter(booking => booking.status === 'completed');
             break;
             
         case 'all':
             // Show all bookings (no filter)
             break;
-            
-        case 'needs-action':
-            filteredBookings = filteredBookings.filter(booking => {
-                const bookingDate = booking.date.toDate();
-                const isUpcoming = bookingDate > now;
-                const hasRescheduleRequest = booking.rescheduleRequested === true;
-                return isUpcoming && (hasRescheduleRequest || booking.status === 'rescheduled');
-            });
-            break;
     }
     
-    // Sort by date (upcoming first for upcoming filter, recent first for others)
-    if (currentBookingsFilter === 'upcoming') {
-        filteredBookings.sort((a, b) => a.date.toDate() - b.date.toDate());
-    } else {
-        filteredBookings.sort((a, b) => b.date.toDate() - a.date.toDate());
-    }
+    // Apply sorting
+    const sortValue = sortSelect ? sortSelect.value : 'date-asc';
+    filteredBookings.sort((a, b) => {
+        switch(sortValue) {
+            case 'date-desc':
+                return b.date.toDate() - a.date.toDate();
+            case 'student':
+                return (a.studentName || '').localeCompare(b.studentName || '');
+            case 'subject':
+                return (a.subject || '').localeCompare(b.subject || '');
+            default: // date-asc
+                return a.date.toDate() - b.date.toDate();
+        }
+    });
     
-    displayBookings(filteredBookings, container);
+    // Display filtered bookings
+    displayBookingsList(filteredBookings, bookingsList);
 }
 
-// Display bookings in the container
-function displayBookings(bookings, container) {
+// Display the list of bookings
+function displayBookingsList(bookings, container) {
     if (bookings.length === 0) {
-        displayEmptyBookingsFilterState();
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-search"></i>
+                <h3>No Bookings Match Your Filters</h3>
+                <p>Try adjusting your filter criteria to see more bookings.</p>
+            </div>
+        `;
         return;
     }
     
-    let bookingsHTML = `
-        <div class="bookings-header" style="display: flex; justify-content: between; align-items: center; margin-bottom: 20px;">
-            <h4 style="margin: 0; color: var(--primary-dark);">
-                ${getBookingsFilterTitle()}
-            </h4>
-            <span class="badge" style="background: var(--primary-light); color: white; padding: 4px 8px; border-radius: 12px; font-size: 0.8em;">
-                ${bookings.length} ${bookings.length === 1 ? 'booking' : 'bookings'}
-            </span>
-        </div>
-        <div class="bookings-grid" id="bookingsGrid">
-    `;
+    let bookingsHTML = '';
     
-    bookings.forEach((booking, index) => {
-        bookingsHTML += createBookingCard(booking, index);
+    bookings.forEach(booking => {
+        bookingsHTML += createBookingCard(booking);
     });
-    
-    bookingsHTML += `</div>`;
     
     container.innerHTML = bookingsHTML;
     
@@ -3032,398 +3086,647 @@ function displayBookings(bookings, container) {
 }
 
 // Create booking card HTML
-function createBookingCard(booking, index) {
+function createBookingCard(booking) {
     const date = booking.date.toDate();
     const formattedDate = date.toLocaleDateString();
     const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    const now = new Date();
-    const isUpcoming = date > now;
-    const isCompleted = booking.status === 'completed';
-    const isRescheduled = booking.status === 'rescheduled';
-    const hasRescheduleRequest = booking.rescheduleRequested === true;
+    const isPast = date < new Date();
+    const isUpcoming = !isPast && (booking.status === 'confirmed' || booking.status === 'rescheduled');
     
-    // Calculate time until session
-    const timeUntilSession = getTimeUntilSession(date);
-    
-    // Get status badge
-    const statusBadge = getBookingStatusBadge(booking.status, hasRescheduleRequest);
+    const statusClass = getBookingStatusClass(booking.status);
+    const statusText = getBookingStatusText(booking.status);
     
     return `
-        <div class="session-card booking-card ${isRescheduled ? 'rescheduled' : ''} ${hasRescheduleRequest ? 'reschedule-pending' : ''}" 
-             data-booking-id="${booking.id}"
-             style="animation-delay: ${index * 0.1}s; opacity: 0; animation: fadeInUp 0.6s ease forwards;">
-            
+        <div class="session-card booking-card ${isPast ? 'past-booking' : ''} ${isUpcoming ? 'upcoming-booking' : ''}" data-booking-id="${booking.id}">
             <div class="session-header">
                 <div class="session-title">
-                    <i class="fas ${getSubjectIcon(booking.subject)}"></i>
-                    ${booking.subject} with ${booking.studentName}
-                    ${isRescheduled ? '<span class="rescheduled-badge">Rescheduled</span>' : ''}
+                    ${booking.subject || 'Tutoring Session'} with ${booking.studentName || 'Student'}
+                    ${booking.status === 'rescheduled' ? ' <span class="rescheduled-badge">Rescheduled</span>' : ''}
                 </div>
                 <div class="session-date">
                     ${formattedDate} at ${formattedTime}
-                    ${isUpcoming ? `<div class="time-until">${timeUntilSession}</div>` : ''}
+                    ${isUpcoming ? `<div class="time-remaining" data-session-date="${date.toISOString()}"></div>` : ''}
                 </div>
             </div>
             
             <div class="session-details">
                 <div class="session-detail">
-                    <i class="fas fa-user-graduate"></i>
-                    <strong>Student:</strong> ${booking.studentName}
+                    <i class="fas fa-user-graduate"></i> Student: ${booking.studentName || 'Unknown Student'}
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-book"></i>
-                    <strong>Subject:</strong> ${booking.subject}
+                    <i class="fas fa-book"></i> Subject: ${booking.subject || 'General Tutoring'}
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-clock"></i>
-                    <strong>Duration:</strong> ${booking.duration || '1.5'} hours
+                    <i class="fas fa-clock"></i> Duration: ${booking.duration || '1.5'} hours
                 </div>
                 <div class="session-detail">
-                    <i class="fas ${booking.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i>
-                    <strong>Type:</strong> ${booking.sessionType === 'online' ? 'Online' : 'In-Person'}
+                    <i class="fas ${booking.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    ${booking.sessionType === 'online' ? 'Online' : 'In-Person'}
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-dollar-sign"></i>
-                    <strong>Rate:</strong> $${booking.hourlyRate || '40'}/hour
+                    <i class="fas fa-dollar-sign"></i> Rate: $${booking.hourlyRate || '40'}/hour
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-calendar-check"></i>
-                    <strong>Status:</strong> ${statusBadge}
+                    <i class="fas fa-calendar-check"></i> Status: 
+                    <span class="status-badge status-${statusClass}">${statusText}</span>
                 </div>
             </div>
             
             ${booking.notes ? `
                 <div class="session-notes">
-                    <i class="fas fa-sticky-note"></i>
-                    <strong>Notes:</strong> ${booking.notes}
-                </div>
-            ` : ''}
-            
-            ${booking.meetingLink && isUpcoming ? `
-                <div class="meeting-info">
-                    <i class="fas fa-video"></i>
-                    <strong>Meeting Link:</strong> 
-                    <a href="${booking.meetingLink}" target="_blank" class="meeting-link">Join Session</a>
+                    <strong>Student Notes:</strong> ${booking.notes}
                 </div>
             ` : ''}
             
             <div class="session-actions">
-                ${getBookingActions(booking, isUpcoming, isCompleted, hasRescheduleRequest)}
+                ${createBookingActions(booking)}
             </div>
             
-            ${hasRescheduleRequest ? `
-                <div class="reschedule-alert">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <strong>Reschedule Requested:</strong> Student has requested to reschedule this session.
-                    <button class="btn-outline view-reschedule-btn" data-booking-id="${booking.id}" style="margin-left: 10px;">
-                        <i class="fas fa-eye"></i> View Request
-                    </button>
+            ${booking.meetingLink && isUpcoming ? `
+                <div class="meeting-info">
+                    <strong><i class="fas fa-video"></i> Meeting Link:</strong>
+                    <div class="meeting-link-container">
+                        <input type="text" value="${booking.meetingLink}" readonly class="meeting-link-input">
+                        <button class="btn-outline copy-link-btn" data-link="${booking.meetingLink}">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                        <button class="btn-primary join-meeting-btn" data-link="${booking.meetingLink}">
+                            <i class="fas fa-video"></i> Join Meeting
+                        </button>
+                    </div>
                 </div>
             ` : ''}
         </div>
     `;
 }
 
-// Get booking actions based on status
-function getBookingActions(booking, isUpcoming, isCompleted, hasRescheduleRequest) {
-    let actions = '';
+// Create appropriate action buttons based on booking status
+function createBookingActions(booking) {
+    const date = booking.date.toDate();
+    const isPast = date < new Date();
+    const actions = [];
     
-    if (isUpcoming) {
-        actions += `
-            <button class="btn-primary view-details-btn" data-booking-id="${booking.id}">
-                <i class="fas fa-eye"></i> Details
-            </button>
-            
-            ${booking.meetingLink ? `
-                <button class="btn-success join-session-btn" data-booking-id="${booking.id}" data-meeting-link="${booking.meetingLink}">
-                    <i class="fas fa-video"></i> Join Session
+    switch(booking.status) {
+        case 'pending':
+            actions.push(`
+                <button class="btn-success confirm-booking-btn" data-booking-id="${booking.id}">
+                    <i class="fas fa-check"></i> Confirm
                 </button>
-            ` : `
-                <button class="btn-warning generate-link-btn" data-booking-id="${booking.id}">
-                    <i class="fas fa-link"></i> Create Meeting
+                <button class="btn-danger reject-booking-btn" data-booking-id="${booking.id}">
+                    <i class="fas fa-times"></i> Reject
                 </button>
-            `}
+            `);
+            break;
             
-            <button class="btn-outline reschedule-btn" data-booking-id="${booking.id}">
-                <i class="fas fa-clock"></i> Reschedule
-            </button>
-            
-            <button class="btn-danger cancel-btn" data-booking-id="${booking.id}">
-                <i class="fas fa-times"></i> Cancel
-            </button>
-        `;
-    } else if (isCompleted) {
-        actions += `
-            <button class="btn-primary view-details-btn" data-booking-id="${booking.id}">
-                <i class="fas fa-eye"></i> Details
-            </button>
-            
-            ${!booking.invoiced ? `
-                <button class="btn-success invoice-btn" data-booking-id="${booking.id}">
-                    <i class="fas fa-file-invoice"></i> Create Invoice
-                </button>
-            ` : `
-                <span class="status-badge status-success">Invoiced</span>
-            `}
-        `;
-    }
-    
-    return actions;
-}
-
-// Get booking status badge
-function getBookingStatusBadge(status, hasRescheduleRequest) {
-    if (hasRescheduleRequest) {
-        return '<span class="status-badge status-warning">Reschedule Requested</span>';
-    }
-    
-    switch(status) {
         case 'confirmed':
-            return '<span class="status-badge status-primary">Confirmed</span>';
         case 'rescheduled':
-            return '<span class="status-badge status-info">Rescheduled</span>';
+            if (!isPast) {
+                actions.push(`
+                    <button class="btn-warning reschedule-booking-btn" data-booking-id="${booking.id}">
+                        <i class="fas fa-clock"></i> Reschedule
+                    </button>
+                    <button class="btn-danger cancel-booking-btn" data-booking-id="${booking.id}">
+                        <i class="fas fa-ban"></i> Cancel
+                    </button>
+                `);
+            } else {
+                actions.push(`
+                    <button class="btn-success complete-booking-btn" data-booking-id="${booking.id}">
+                        <i class="fas fa-check-circle"></i> Mark Complete
+                    </button>
+                `);
+            }
+            break;
+            
         case 'completed':
-            return '<span class="status-badge status-success">Completed</span>';
-        case 'cancelled':
-            return '<span class="status-badge status-error">Cancelled</span>';
-        default:
-            return '<span class="status-badge status-gray">Unknown</span>';
+            actions.push(`
+                <span class="status-badge status-success">Completed</span>
+                ${!booking.invoiced ? `
+                    <button class="btn-primary invoice-booking-btn" data-booking-id="${booking.id}">
+                        <i class="fas fa-file-invoice"></i> Create Invoice
+                    </button>
+                ` : '<span class="status-badge status-primary">Invoiced</span>'}
+            `);
+            break;
+    }
+    
+    // Always show details button
+    actions.push(`
+        <button class="btn-outline view-booking-details-btn" data-booking-id="${booking.id}">
+            <i class="fas fa-eye"></i> Details
+        </button>
+    `);
+    
+    return actions.join('');
+}
+
+// Get CSS class for booking status
+function getBookingStatusClass(status) {
+    switch(status) {
+        case 'confirmed': return 'primary';
+        case 'pending': return 'warning';
+        case 'completed': return 'success';
+        case 'rescheduled': return 'info';
+        case 'cancelled': return 'error';
+        default: return 'gray';
     }
 }
 
-// Get subject icon
-function getSubjectIcon(subject) {
-    const subjectIcons = {
-        'math': 'fa-calculator',
-        'algebra': 'fa-square-root-alt',
-        'calculus': 'fa-infinity',
-        'physics': 'fa-atom',
-        'chemistry': 'fa-flask',
-        'biology': 'fa-dna',
-        'english': 'fa-book',
-        'history': 'fa-monument',
-        'science': 'fa-microscope',
-        'computer': 'fa-laptop-code'
-    };
-    
-    const subjectLower = subject.toLowerCase();
-    for (const [key, icon] of Object.entries(subjectIcons)) {
-        if (subjectLower.includes(key)) {
-            return icon;
-        }
-    }
-    
-    return 'fa-book';
-}
-
-// Get time until session
-function getTimeUntilSession(sessionDate) {
-    const now = new Date();
-    const diffMs = sessionDate - now;
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    
-    if (diffDays > 0) {
-        return `in ${diffDays} day${diffDays > 1 ? 's' : ''}`;
-    } else if (diffHours > 0) {
-        return `in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
-    } else {
-        return 'soon';
+// Get display text for booking status
+function getBookingStatusText(status) {
+    switch(status) {
+        case 'confirmed': return 'Confirmed';
+        case 'pending': return 'Pending Confirmation';
+        case 'completed': return 'Completed';
+        case 'rescheduled': return 'Rescheduled';
+        case 'cancelled': return 'Cancelled';
+        default: return status;
     }
 }
 
-// Get bookings filter title
-function getBookingsFilterTitle() {
-    switch(currentBookingsFilter) {
-        case 'upcoming':
-            return 'Upcoming Sessions';
-        case 'completed':
-            return 'Completed Sessions';
-        case 'needs-action':
-            return 'Sessions Needing Action';
-        case 'all':
-            return 'All Bookings';
-        default:
-            return 'Your Bookings';
-    }
-}
-
-// Setup bookings filters
-function setupBookingsFilters() {
-    // Create filter buttons if they don't exist
-    let filterContainer = document.querySelector('.bookings-filter-container');
-    
-    if (!filterContainer) {
-        const sectionHeader = document.querySelector('#bookings .section-header');
-        filterContainer = document.createElement('div');
-        filterContainer.className = 'bookings-filter-container';
-        filterContainer.style.cssText = `
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        `;
-        
-        filterContainer.innerHTML = `
-            <button class="filter-btn ${currentBookingsFilter === 'upcoming' ? 'active' : ''}" data-filter="upcoming">
-                <i class="fas fa-clock"></i> Upcoming
-            </button>
-            <button class="filter-btn ${currentBookingsFilter === 'completed' ? 'active' : ''}" data-filter="completed">
-                <i class="fas fa-check-circle"></i> Completed
-            </button>
-            <button class="filter-btn ${currentBookingsFilter === 'needs-action' ? 'active' : ''}" data-filter="needs-action">
-                <i class="fas fa-exclamation-circle"></i> Needs Action
-            </button>
-            <button class="filter-btn ${currentBookingsFilter === 'all' ? 'active' : ''}" data-filter="all">
-                <i class="fas fa-list"></i> All Bookings
-            </button>
-        `;
-        
-        sectionHeader.parentNode.insertBefore(filterContainer, sectionHeader.nextSibling);
-        
-        // Add event listeners to filter buttons
-        document.querySelectorAll('.filter-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const filter = this.getAttribute('data-filter');
-                setBookingsFilter(filter);
-            });
-        });
-    }
-}
-
-// Set bookings filter
-function setBookingsFilter(filter) {
-    currentBookingsFilter = filter;
-    
-    // Update active filter button
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.getAttribute('data-filter') === filter) {
-            btn.classList.add('active');
-        }
-    });
-    
-    // Reapply filter
-    applyBookingsFilter();
-}
-
-// Add event listeners to booking cards
+// Add event listeners to booking card buttons
 function addBookingCardEventListeners() {
-    // View details buttons
-    document.querySelectorAll('.view-details-btn').forEach(btn => {
+    // Confirm booking
+    document.querySelectorAll('.confirm-booking-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const bookingId = this.getAttribute('data-booking-id');
-            showBookingDetails(bookingId);
+            confirmBooking(bookingId);
         });
     });
     
-    // Join session buttons
-    document.querySelectorAll('.join-session-btn').forEach(btn => {
+    // Reject booking
+    document.querySelectorAll('.reject-booking-btn').forEach(btn => {
         btn.addEventListener('click', function() {
-            const meetingLink = this.getAttribute('data-meeting-link');
             const bookingId = this.getAttribute('data-booking-id');
-            joinSession(meetingLink, bookingId);
+            rejectBooking(bookingId);
         });
     });
     
-    // Generate meeting link buttons
-    document.querySelectorAll('.generate-link-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const bookingId = this.getAttribute('data-booking-id');
-            generateMeetingLink(bookingId);
-        });
-    });
-    
-    // Reschedule buttons
-    document.querySelectorAll('.reschedule-btn').forEach(btn => {
+    // Reschedule booking
+    document.querySelectorAll('.reschedule-booking-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const bookingId = this.getAttribute('data-booking-id');
             showRescheduleModal(bookingId);
         });
     });
     
-    // Cancel buttons
-    document.querySelectorAll('.cancel-btn').forEach(btn => {
+    // Cancel booking
+    document.querySelectorAll('.cancel-booking-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const bookingId = this.getAttribute('data-booking-id');
             showCancelModal(bookingId);
         });
     });
     
-    // Invoice buttons
-    document.querySelectorAll('.invoice-btn').forEach(btn => {
+    // Complete booking
+    document.querySelectorAll('.complete-booking-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const bookingId = this.getAttribute('data-booking-id');
-            createInvoiceForBooking(bookingId);
+            completeBooking(bookingId);
         });
     });
     
-    // View reschedule request buttons
-    document.querySelectorAll('.view-reschedule-btn').forEach(btn => {
+    // View booking details
+    document.querySelectorAll('.view-booking-details-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const bookingId = this.getAttribute('data-booking-id');
-            viewRescheduleRequest(bookingId);
+            showBookingDetails(bookingId);
+        });
+    });
+    
+    // Copy meeting link
+    document.querySelectorAll('.copy-link-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const link = this.getAttribute('data-link');
+            copyToClipboard(link);
+            showToast('Meeting link copied to clipboard!', 'success');
+        });
+    });
+    
+    // Join meeting
+    document.querySelectorAll('.join-meeting-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const link = this.getAttribute('data-link');
+            joinJitsiMeeting(link);
+        });
+    });
+    
+    // Invoice booking
+    document.querySelectorAll('.invoice-booking-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const bookingId = this.getAttribute('data-booking-id');
+            navigateToInvoiceSection(bookingId);
+        });
+    });
+    
+    // Update countdown timers for upcoming sessions
+    updateBookingCountdowns();
+}
+
+// Update countdown timers for upcoming sessions
+function updateBookingCountdowns() {
+    const countdownElements = document.querySelectorAll('.time-remaining');
+    
+    countdownElements.forEach(element => {
+        const sessionDate = new Date(element.getAttribute('data-session-date'));
+        updateCountdown(element, sessionDate);
+    });
+    
+    // Update every minute
+    setInterval(() => {
+        countdownElements.forEach(element => {
+            const sessionDate = new Date(element.getAttribute('data-session-date'));
+            updateCountdown(element, sessionDate);
+        });
+    }, 60000);
+}
+
+// Update individual countdown display
+function updateCountdown(element, sessionDate) {
+    const now = new Date();
+    const diffMs = sessionDate - now;
+    
+    if (diffMs <= 0) {
+        element.innerHTML = '<span class="status-badge status-warning">Started</span>';
+        return;
+    }
+    
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    let countdownText = '';
+    if (diffDays > 0) {
+        countdownText = `${diffDays}d ${diffHours}h remaining`;
+    } else if (diffHours > 0) {
+        countdownText = `${diffHours}h ${diffMins}m remaining`;
+    } else {
+        countdownText = `${diffMins}m remaining`;
+    }
+    
+    element.textContent = countdownText;
+}
+
+// Confirm a booking request
+async function confirmBooking(bookingId) {
+    if (!confirm('Are you sure you want to confirm this session?')) return;
+    
+    try {
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        const booking = bookingDoc.data();
+        
+        if (!booking) {
+            throw new Error('Booking not found');
+        }
+        
+        // Generate Jitsi Meet link
+        const meetingLink = generateJitsiMeetLink(booking);
+        
+        // Update booking status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'confirmed',
+            confirmedAt: new Date(),
+            meetingLink: meetingLink,
+            meetingPlatform: 'jitsi',
+            meetingCreated: true,
+            confirmedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student
+        await createBookingNotification(
+            booking.studentId,
+            'session_confirmed',
+            `Your ${booking.subject} session with ${userData.fullName} has been confirmed!`,
+            bookingId,
+            {
+                meetingLink: meetingLink,
+                sessionDate: booking.date.toDate().toLocaleString(),
+                subject: booking.subject,
+                tutorName: userData.fullName
+            }
+        );
+        
+        // Show success message
+        showToast('Session confirmed! Meeting link generated and student notified.', 'success');
+        
+        // Reload bookings
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error confirming booking:", error);
+        showToast('Error confirming session. Please try again.', 'error');
+    }
+}
+
+// Generate Jitsi Meet link
+function generateJitsiMeetLink(booking) {
+    // Create a unique room name based on booking ID and timestamp
+    const roomName = `tklesson-${booking.id}-${Date.now()}`;
+    
+    // Jitsi Meet base URL (using their public servers)
+    const jitsiDomain = 'meet.jit.si';
+    
+    // Create the meeting link
+    const meetingLink = `https://${jitsiDomain}/${roomName}`;
+    
+    console.log('Generated Jitsi Meet link:', meetingLink);
+    return meetingLink;
+}
+
+// Reject a booking request
+async function rejectBooking(bookingId) {
+    const reason = prompt('Please provide a reason for rejecting this session:');
+    
+    if (reason === null) return; // User cancelled
+    if (!reason.trim()) {
+        alert('Please provide a reason for rejection.');
+        return;
+    }
+    
+    try {
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        const booking = bookingDoc.data();
+        
+        // Update booking status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'rejected',
+            rejectedAt: new Date(),
+            rejectionReason: reason.trim(),
+            rejectedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student
+        await createBookingNotification(
+            booking.studentId,
+            'session_rejected',
+            `Your ${booking.subject} session request was declined. Reason: ${reason}`,
+            bookingId
+        );
+        
+        showToast('Session request rejected. Student has been notified.', 'success');
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error rejecting booking:", error);
+        showToast('Error rejecting session. Please try again.', 'error');
+    }
+}
+
+// Show reschedule modal
+async function showRescheduleModal(bookingId) {
+    const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+    const booking = bookingDoc.data();
+    
+    const modalContent = `
+        <div class="reschedule-modal">
+            <h3>Reschedule Session</h3>
+            <p>Current session: ${booking.date.toDate().toLocaleString()} - ${booking.subject}</p>
+            
+            <form id="rescheduleForm">
+                <div class="form-group">
+                    <label for="newSessionDate">New Date *</label>
+                    <input type="date" id="newSessionDate" class="form-control" required 
+                           min="${new Date().toISOString().split('T')[0]}">
+                </div>
+                
+                <div class="form-group">
+                    <label for="newSessionTime">New Time *</label>
+                    <input type="time" id="newSessionTime" class="form-control" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="rescheduleReason">Reason for Reschedule *</label>
+                    <textarea id="rescheduleReason" class="form-control" rows="3" 
+                              placeholder="Please explain why you need to reschedule this session..." 
+                              required></textarea>
+                </div>
+            </form>
+            
+            <div class="modal-actions">
+                <button class="btn-outline" id="cancelRescheduleBtn">Cancel</button>
+                <button class="btn-primary" id="submitRescheduleBtn">Submit Request</button>
+            </div>
+        </div>
+    `;
+    
+    showCustomModal('Request Reschedule', modalContent, () => {
+        // Setup modal event listeners
+        document.getElementById('submitRescheduleBtn').addEventListener('click', () => {
+            submitRescheduleRequest(bookingId, booking);
+        });
+        
+        document.getElementById('cancelRescheduleBtn').addEventListener('click', () => {
+            closeCustomModal();
         });
     });
 }
 
-// Show booking details modal
+// Submit reschedule request
+async function submitRescheduleRequest(bookingId, booking) {
+    const newDate = document.getElementById('newSessionDate').value;
+    const newTime = document.getElementById('newSessionTime').value;
+    const reason = document.getElementById('rescheduleReason').value.trim();
+    
+    if (!newDate || !newTime || !reason) {
+        alert('Please fill in all required fields.');
+        return;
+    }
+    
+    const newDateTime = new Date(`${newDate}T${newTime}`);
+    
+    if (newDateTime <= new Date()) {
+        alert('Please select a future date and time.');
+        return;
+    }
+    
+    try {
+        // Create reschedule request
+        const rescheduleRequest = {
+            sessionId: bookingId,
+            tutorId: currentUser.uid,
+            studentId: booking.studentId,
+            originalDate: booking.date,
+            requestedDate: newDateTime,
+            reason: reason,
+            requestedBy: 'tutor',
+            status: 'pending',
+            createdAt: new Date(),
+            respondedAt: null,
+            response: null
+        };
+        
+        // Save to rescheduleRequests collection
+        await db.collection('rescheduleRequests').add(rescheduleRequest);
+        
+        // Update session status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'reschedule_requested',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student
+        await createBookingNotification(
+            booking.studentId,
+            'reschedule_request',
+            `Tutor has requested to reschedule your ${booking.subject} session`,
+            bookingId,
+            {
+                originalDate: booking.date.toDate().toLocaleString(),
+                requestedDate: newDateTime.toLocaleString(),
+                reason: reason
+            }
+        );
+        
+        showToast('Reschedule request sent to student.', 'success');
+        closeCustomModal();
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error submitting reschedule request:", error);
+        showToast('Error submitting reschedule request. Please try again.', 'error');
+    }
+}
+
+// Show cancel modal
+async function showCancelModal(bookingId) {
+    const modalContent = `
+        <div class="cancel-modal">
+            <h3>Cancel Session</h3>
+            <p>Are you sure you want to cancel this session? This action cannot be undone.</p>
+            
+            <form id="cancelForm">
+                <div class="form-group">
+                    <label for="cancelReason">Reason for Cancellation *</label>
+                    <textarea id="cancelReason" class="form-control" rows="3" 
+                              placeholder="Please explain why you need to cancel this session..." 
+                              required></textarea>
+                </div>
+            </form>
+            
+            <div class="modal-actions">
+                <button class="btn-outline" id="cancelCancelBtn">Go Back</button>
+                <button class="btn-danger" id="confirmCancelBtn">Confirm Cancellation</button>
+            </div>
+        </div>
+    `;
+    
+    showCustomModal('Cancel Session', modalContent, () => {
+        document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+            cancelBooking(bookingId);
+        });
+        
+        document.getElementById('cancelCancelBtn').addEventListener('click', () => {
+            closeCustomModal();
+        });
+    });
+}
+
+// Cancel booking
+async function cancelBooking(bookingId) {
+    const reason = document.getElementById('cancelReason').value.trim();
+    
+    if (!reason) {
+        alert('Please provide a reason for cancellation.');
+        return;
+    }
+    
+    try {
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        const booking = bookingDoc.data();
+        
+        // Update booking status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancellationReason: reason,
+            cancelledBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student
+        await createBookingNotification(
+            booking.studentId,
+            'session_cancelled',
+            `Your ${booking.subject} session has been cancelled. Reason: ${reason}`,
+            bookingId
+        );
+        
+        showToast('Session cancelled. Student has been notified.', 'success');
+        closeCustomModal();
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error cancelling booking:", error);
+        showToast('Error cancelling session. Please try again.', 'error');
+    }
+}
+
+// Complete booking (mark as completed)
+async function completeBooking(bookingId) {
+    if (!confirm('Mark this session as completed?')) return;
+    
+    try {
+        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
+        const booking = bookingDoc.data();
+        
+        // Update booking status
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'completed',
+            completedAt: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student (to leave review)
+        await createBookingNotification(
+            booking.studentId,
+            'session_completed',
+            `Your ${booking.subject} session has been marked as completed. Please leave a review!`,
+            bookingId
+        );
+        
+        showToast('Session marked as completed.', 'success');
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error completing booking:", error);
+        showToast('Error marking session as completed. Please try again.', 'error');
+    }
+}
+
+// Show booking details
 async function showBookingDetails(bookingId) {
     try {
         const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        
-        if (!bookingDoc.exists) {
-            alert('Booking details not found.');
-            return;
-        }
-        
         const booking = bookingDoc.data();
-        booking.id = bookingId;
         
-        // Get student data
-        let studentData = {};
-        try {
-            const studentDoc = await db.collection('students').doc(booking.studentId).get();
-            if (studentDoc.exists) {
-                studentData = studentDoc.data();
-            }
-        } catch (error) {
-            console.error("Error loading student data:", error);
-        }
+        const date = booking.date.toDate();
+        const modalContent = createBookingDetailsHTML(booking, date);
         
-        const modalContent = createBookingDetailsHTML(booking, studentData);
-        showBookingModal('Booking Details', modalContent);
+        showCustomModal('Session Details', modalContent);
         
     } catch (error) {
         console.error("Error loading booking details:", error);
-        alert('Error loading booking details.');
+        showToast('Error loading session details.', 'error');
     }
 }
 
 // Create booking details HTML
-function createBookingDetailsHTML(booking, studentData) {
-    const date = booking.date.toDate();
-    const isUpcoming = date > new Date();
-    
+function createBookingDetailsHTML(booking, date) {
     return `
         <div class="booking-details">
             <div class="detail-section">
-                <h4 style="color: var(--primary-dark); margin-bottom: 15px;">
-                    <i class="fas fa-calendar-alt"></i> Session Information
-                </h4>
-                
-                <div class="details-grid">
+                <h4>Session Information</h4>
+                <div class="detail-grid">
                     <div class="detail-item">
-                        <strong>Student:</strong> ${booking.studentName}
+                        <strong>Student:</strong> ${booking.studentName || 'Unknown'}
                     </div>
                     <div class="detail-item">
-                        <strong>Subject:</strong> ${booking.subject}
+                        <strong>Subject:</strong> ${booking.subject || 'General'}
                     </div>
                     <div class="detail-item">
-                        <strong>Date:</strong> ${date.toLocaleDateString()}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Time:</strong> ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        <strong>Date & Time:</strong> ${date.toLocaleString()}
                     </div>
                     <div class="detail-item">
                         <strong>Duration:</strong> ${booking.duration || '1.5'} hours
@@ -3434,802 +3737,286 @@ function createBookingDetailsHTML(booking, studentData) {
                     <div class="detail-item">
                         <strong>Hourly Rate:</strong> $${booking.hourlyRate || '40'}
                     </div>
-                    <div class="detail-item">
-                        <strong>Total:</strong> $${booking.totalPrice || (parseFloat(booking.duration || 1.5) * parseFloat(booking.hourlyRate || 40)).toFixed(2)}
-                    </div>
                 </div>
             </div>
             
             ${booking.notes ? `
                 <div class="detail-section">
-                    <h4 style="color: var(--primary-dark); margin-bottom: 10px;">
-                        <i class="fas fa-sticky-note"></i> Session Notes
-                    </h4>
-                    <p style="background: #f8f9fa; padding: 10px; border-radius: 5px;">${booking.notes}</p>
+                    <h4>Student Notes</h4>
+                    <p>${booking.notes}</p>
                 </div>
             ` : ''}
             
-            ${booking.meetingLink && isUpcoming ? `
+            ${booking.meetingLink ? `
                 <div class="detail-section">
-                    <h4 style="color: var(--primary-dark); margin-bottom: 10px;">
-                        <i class="fas fa-video"></i> Meeting Information
-                    </h4>
-                    <div class="meeting-link-container">
-                        <strong>Meeting Link:</strong>
-                        <a href="${booking.meetingLink}" target="_blank" class="meeting-link">${booking.meetingLink}</a>
-                        <button class="btn-outline copy-link-btn" data-link="${booking.meetingLink}" style="margin-left: 10px;">
-                            <i class="fas fa-copy"></i> Copy
-                        </button>
-                    </div>
-                    <div class="meeting-actions" style="margin-top: 10px;">
-                        <button class="btn-success join-meeting-btn" data-link="${booking.meetingLink}">
-                            <i class="fas fa-video"></i> Join Meeting Now
-                        </button>
-                        <button class="btn-outline test-meeting-btn" data-link="${booking.meetingLink}">
-                            <i class="fas fa-test"></i> Test Meeting
-                        </button>
-                    </div>
+                    <h4>Meeting Information</h4>
+                    <p><strong>Platform:</strong> Jitsi Meet</p>
+                    <p><strong>Link:</strong> 
+                        <a href="${booking.meetingLink}" target="_blank">${booking.meetingLink}</a>
+                    </p>
                 </div>
             ` : ''}
             
             <div class="detail-section">
-                <h4 style="color: var(--primary-dark); margin-bottom: 10px;">
-                    <i class="fas fa-user-graduate"></i> Student Information
-                </h4>
-                <div class="student-info">
-                    <p><strong>Name:</strong> ${studentData.fullName || booking.studentName}</p>
-                    <p><strong>Email:</strong> ${studentData.email || 'Not provided'}</p>
-                    <p><strong>Phone:</strong> ${studentData.phone || 'Not provided'}</p>
-                    <p><strong>Grade Level:</strong> ${studentData.gradeLevel || 'Not provided'}</p>
-                    ${studentData.learningGoals ? `
-                        <p><strong>Learning Goals:</strong> ${studentData.learningGoals}</p>
-                    ` : ''}
-                </div>
-            </div>
-            
-            <div class="booking-timeline">
-                <h4 style="color: var(--primary-dark); margin-bottom: 10px;">
-                    <i class="fas fa-history"></i> Session Timeline
-                </h4>
+                <h4>Session Timeline</h4>
                 <div class="timeline">
-                    <div class="timeline-event">
-                        <i class="fas fa-calendar-plus"></i>
-                        <span>Session booked on ${booking.bookedAt?.toDate().toLocaleString() || date.toLocaleString()}</span>
-                    </div>
-                    ${booking.confirmedAt ? `
-                        <div class="timeline-event">
-                            <i class="fas fa-check-circle"></i>
-                            <span>Confirmed on ${booking.confirmedAt.toDate().toLocaleString()}</span>
-                        </div>
-                    ` : ''}
-                    ${booking.meetingLink ? `
-                        <div class="timeline-event">
-                            <i class="fas fa-link"></i>
-                            <span>Meeting link generated</span>
-                        </div>
-                    ` : ''}
+                    ${createTimelineHTML(booking)}
                 </div>
             </div>
         </div>
     `;
 }
 
-// Show booking modal
-function showBookingModal(title, content) {
-    let modal = document.getElementById('bookingDetailsModal');
+// Create timeline HTML for booking details
+function createTimelineHTML(booking) {
+    const timeline = [];
     
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'bookingDetailsModal';
-        modal.className = 'modal';
-        modal.style.display = 'none';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
-                <div class="modal-header">
-                    <h3 id="bookingModalTitle">Booking Details</h3>
-                    <span class="close-modal">&times;</span>
-                </div>
-                <div class="modal-body" id="bookingModalBody"></div>
-                <div class="modal-actions">
-                    <button class="btn-outline" id="closeBookingModalBtn">Close</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        
-        // Add event listeners
-        const closeBtn = modal.querySelector('.close-modal');
-        const closeActionBtn = modal.querySelector('#closeBookingModalBtn');
-        
-        closeBtn.addEventListener('click', () => modal.style.display = 'none');
-        closeActionBtn.addEventListener('click', () => modal.style.display = 'none');
-        
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.style.display = 'none';
+    if (booking.bookedAt) {
+        timeline.push({
+            event: 'Session Booked',
+            time: booking.bookedAt.toDate(),
+            description: 'Student submitted booking request'
         });
     }
     
-    document.getElementById('bookingModalTitle').textContent = title;
-    document.getElementById('bookingModalBody').innerHTML = content;
+    if (booking.confirmedAt) {
+        timeline.push({
+            event: 'Session Confirmed',
+            time: booking.confirmedAt.toDate(),
+            description: `Tutor confirmed the session${booking.meetingLink ? ' (Meeting link generated)' : ''}`
+        });
+    }
     
-    // Add event listeners to dynamic buttons
-    setTimeout(() => {
-        // Copy link buttons
-        document.querySelectorAll('.copy-link-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const link = this.getAttribute('data-link');
-                copyToClipboard(link);
-            });
+    if (booking.cancelledAt) {
+        timeline.push({
+            event: 'Session Cancelled',
+            time: booking.cancelledAt.toDate(),
+            description: `Cancelled by ${booking.cancelledBy || 'unknown'}`
         });
-        
-        // Join meeting buttons
-        document.querySelectorAll('.join-meeting-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const link = this.getAttribute('data-link');
-                window.open(link, '_blank');
-            });
-        });
-        
-        // Test meeting buttons
-        document.querySelectorAll('.test-meeting-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const link = this.getAttribute('data-link');
-                window.open(link, '_blank');
-            });
-        });
-    }, 100);
+    }
     
-    modal.style.display = 'flex';
+    if (booking.completedAt) {
+        timeline.push({
+            event: 'Session Completed',
+            time: booking.completedAt.toDate(),
+            description: 'Session marked as completed'
+        });
+    }
+    
+    // Sort timeline by time
+    timeline.sort((a, b) => a.time - b.time);
+    
+    return timeline.map(item => `
+        <div class="timeline-item">
+            <div class="timeline-marker"></div>
+            <div class="timeline-content">
+                <strong>${item.event}</strong>
+                <div class="timeline-time">${item.time.toLocaleString()}</div>
+                <div class="timeline-desc">${item.description}</div>
+            </div>
+        </div>
+    `).join('');
 }
 
-// Join session function
-function joinSession(meetingLink, bookingId) {
-    if (!meetingLink) {
-        alert('No meeting link available. Please generate a meeting link first.');
-        return;
-    }
-    
+// Join Jitsi meeting
+function joinJitsiMeeting(meetingLink) {
     // Open meeting in new tab
     window.open(meetingLink, '_blank');
     
-    // Update session status to indicate tutor joined
-    updateSessionJoinStatus(bookingId);
+    // Optional: Show embedded modal with Jitsi
+    showJitsiModal(meetingLink);
 }
 
-// Update session join status
-async function updateSessionJoinStatus(bookingId) {
-    try {
-        await db.collection('bookedSessions').doc(bookingId).update({
-            tutorJoined: true,
-            tutorJoinedAt: new Date(),
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    } catch (error) {
-        console.error("Error updating join status:", error);
-    }
-}
-
-// Generate meeting link for booking
-async function generateMeetingLink(bookingId) {
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) {
-            alert('Booking not found.');
-            return;
-        }
-        
-        const booking = bookingDoc.data();
-        
-        // Generate Google Meet link
-        const meetingLink = generateGoogleMeetLink(booking);
-        
-        // Update booking with meeting link
-        await db.collection('bookedSessions').doc(bookingId).update({
-            meetingLink: meetingLink,
-            meetingCreated: true,
-            meetingPlatform: 'google_meet',
-            meetingId: `meet_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Send notification to student
-        await createMeetingLinkNotification(booking.studentId, bookingId, meetingLink);
-        
-        // Show success message
-        showMeetingLinkSuccess(meetingLink, booking.studentName);
-        
-        // Reload bookings to update UI
-        loadMyBookings();
-        
-    } catch (error) {
-        console.error("Error generating meeting link:", error);
-        alert('Error generating meeting link. Please try again.');
-    }
-}
-
-// Create notification for meeting link
-async function createMeetingLinkNotification(studentId, bookingId, meetingLink) {
-    try {
-        await db.collection('notifications').add({
-            userId: studentId,
-            type: 'meeting_link_generated',
-            title: 'Meeting Link Available',
-            message: `Your tutor has generated a meeting link for your upcoming session.`,
-            details: {
-                meetingLink: meetingLink,
-                generatedAt: new Date()
-            },
-            relatedSessionId: bookingId,
-            isRead: false,
-            priority: 'high',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    } catch (error) {
-        console.error("Error creating meeting link notification:", error);
-    }
-}
-
-// Show meeting link success
-function showMeetingLinkSuccess(meetingLink, studentName) {
+// Show Jitsi in modal (optional)
+function showJitsiModal(meetingLink) {
+    const roomName = meetingLink.split('/').pop();
+    
     const modalContent = `
-        <div style="text-align: center; padding: 20px;">
-            <div style="font-size: 48px; color: #4CAF50; margin-bottom: 15px;">✅</div>
-            <h3 style="color: #2E7D32; margin-bottom: 10px;">Meeting Link Created!</h3>
-            <p>Meeting link has been generated and sent to <strong>${studentName}</strong>.</p>
+        <div class="jitsi-modal">
+            <h3>Join Meeting</h3>
+            <p>You are about to join the meeting. Make sure your microphone and camera are ready.</p>
             
-            <div style="background: #F5F5F5; padding: 15px; border-radius: 8px; margin: 15px 0; word-break: break-all;">
-                <strong>Meeting Link:</strong><br>
-                <a href="${meetingLink}" target="_blank" style="color: #1976D2;">${meetingLink}</a>
+            <div class="meeting-actions">
+                <button class="btn-outline" onclick="closeCustomModal()">Cancel</button>
+                <button class="btn-success" onclick="window.open('${meetingLink}', '_blank'); closeCustomModal();">
+                    <i class="fas fa-external-link-alt"></i> Open in New Tab
+                </button>
             </div>
             
-            <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
-                <button onclick="copyToClipboard('${meetingLink}')" class="btn-primary">
-                    <i class="fas fa-copy"></i> Copy Link
-                </button>
-                <button onclick="window.open('${meetingLink}', '_blank')" class="btn-success">
-                    <i class="fas fa-video"></i> Test Meeting
-                </button>
+            <div class="meeting-embed" style="margin-top: 20px;">
+                <p><small>For best experience, we recommend opening the meeting in a new tab.</small></p>
             </div>
         </div>
     `;
     
-    showBookingModal('Meeting Link Generated', modalContent);
+    showCustomModal('Join Meeting', modalContent);
 }
 
-// Show reschedule modal
-async function showRescheduleModal(bookingId) {
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) {
-            alert('Booking not found.');
-            return;
+// Navigate to invoice section with pre-selected booking
+function navigateToInvoiceSection(bookingId) {
+    // Switch to invoice section
+    document.querySelectorAll('.menu-item a').forEach(item => {
+        item.classList.remove('active');
+        if (item.getAttribute('data-section') === 'invoice-session') {
+            item.classList.add('active');
         }
-        
-        const booking = bookingDoc.data();
-        const originalDate = booking.date.toDate();
-        
-        const modalContent = `
-            <form id="rescheduleForm">
-                <div class="form-group">
-                    <label for="rescheduleDate">New Date</label>
-                    <input type="date" id="rescheduleDate" class="form-control" 
-                           min="${new Date().toISOString().split('T')[0]}" required>
-                </div>
-                <div class="form-group">
-                    <label for="rescheduleTime">New Time</label>
-                    <input type="time" id="rescheduleTime" class="form-control" required>
-                </div>
-                <div class="form-group">
-                    <label for="rescheduleReason">Reason for Rescheduling</label>
-                    <textarea id="rescheduleReason" class="form-control" rows="3" 
-                              placeholder="Please provide a reason for rescheduling this session..." required></textarea>
-                </div>
-                <div class="original-session-info" style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin: 10px 0;">
-                    <strong>Original Session:</strong> ${originalDate.toLocaleDateString()} at ${originalDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                </div>
-            </form>
-        `;
-        
-        let modal = document.getElementById('rescheduleBookingModal');
-        
-        if (!modal) {
-            modal = document.createElement('div');
-            modal.id = 'rescheduleBookingModal';
-            modal.className = 'modal';
-            modal.style.display = 'none';
-            modal.innerHTML = `
-                <div class="modal-content" style="max-width: 500px;">
-                    <div class="modal-header">
-                        <h3>Reschedule Session</h3>
-                        <span class="close-modal">&times;</span>
-                    </div>
-                    <div class="modal-body" id="rescheduleBookingModalBody"></div>
-                    <div class="modal-actions">
-                        <button class="btn-outline" id="cancelRescheduleBookingBtn">Cancel</button>
-                        <button class="btn-primary" id="submitRescheduleBookingBtn">Submit Request</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-            
-            // Add event listeners
-            const closeBtn = modal.querySelector('.close-modal');
-            const cancelBtn = modal.querySelector('#cancelRescheduleBookingBtn');
-            const submitBtn = modal.querySelector('#submitRescheduleBookingBtn');
-            
-            closeBtn.addEventListener('click', () => modal.style.display = 'none');
-            cancelBtn.addEventListener('click', () => modal.style.display = 'none');
-            
-            submitBtn.addEventListener('click', async () => {
-                await submitRescheduleRequest(bookingId, modal);
-            });
-            
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) modal.style.display = 'none';
-            });
+    });
+    
+    document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
+        if (section.id === 'invoice-session') {
+            section.classList.add('active');
         }
-        
-        document.getElementById('rescheduleBookingModalBody').innerHTML = modalContent;
-        modal.style.display = 'flex';
-        
-    } catch (error) {
-        console.error("Error showing reschedule modal:", error);
-        alert('Error loading reschedule form.');
-    }
+    });
+    
+    // Pre-select the booking in invoice form
+    setTimeout(() => {
+        const sessionSelect = document.getElementById('completedSession');
+        if (sessionSelect) {
+            sessionSelect.value = bookingId;
+            sessionSelect.dispatchEvent(new Event('change'));
+        }
+    }, 100);
 }
 
-// Submit reschedule request
-async function submitRescheduleRequest(bookingId, modal) {
-    const date = document.getElementById('rescheduleDate').value;
-    const time = document.getElementById('rescheduleTime').value;
-    const reason = document.getElementById('rescheduleReason').value.trim();
-    
-    if (!date || !time || !reason) {
-        alert('Please fill in all fields.');
-        return;
-    }
-    
-    const newDateTime = new Date(`${date}T${time}`);
-    
-    if (newDateTime <= new Date()) {
-        alert('Please select a future date and time.');
-        return;
-    }
-    
+// Create booking notification
+async function createBookingNotification(userId, type, message, relatedSessionId, additionalData = {}) {
     try {
-        // Create reschedule request
-        await db.collection('rescheduleRequests').add({
-            sessionId: bookingId,
-            tutorId: currentUser.uid,
-            studentId: (await db.collection('bookedSessions').doc(bookingId).get()).data().studentId,
-            originalDate: (await db.collection('bookedSessions').doc(bookingId).get()).data().date,
-            requestedDate: newDateTime,
-            requestedBy: 'tutor',
-            reason: reason,
-            status: 'pending',
-            createdAt: new Date(),
-            respondedAt: null,
-            response: null
-        });
-        
-        // Update session status
-        await db.collection('bookedSessions').doc(bookingId).update({
-            rescheduleRequested: true,
-            rescheduleRequestedBy: 'tutor',
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Send notification to student
-        await createRescheduleNotification(bookingId, reason);
-        
-        modal.style.display = 'none';
-        alert('Reschedule request submitted successfully!');
-        loadMyBookings();
-        
-    } catch (error) {
-        console.error("Error submitting reschedule request:", error);
-        alert('Error submitting reschedule request. Please try again.');
-    }
-}
-
-// Show cancel modal
-async function showCancelModal(bookingId) {
-    if (!confirm('Are you sure you want to cancel this session?')) {
-        return;
-    }
-    
-    const reason = prompt('Please provide a reason for cancellation:');
-    if (!reason) {
-        alert('Cancellation reason is required.');
-        return;
-    }
-    
-    try {
-        await cancelBooking(bookingId, reason);
-    } catch (error) {
-        console.error("Error cancelling booking:", error);
-        alert('Error cancelling session. Please try again.');
-    }
-}
-
-// Cancel booking
-async function cancelBooking(bookingId, reason) {
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        const booking = bookingDoc.data();
-        
-        // Update booking status
-        await db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelledBy: 'tutor',
-            cancellationReason: reason,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Send notification to student
-        await createCancellationNotification(booking.studentId, bookingId, reason);
-        
-        alert('Session cancelled successfully.');
-        loadMyBookings();
-        
-    } catch (error) {
-        console.error("Error cancelling booking:", error);
-        throw error;
-    }
-}
-
-// Create cancellation notification
-async function createCancellationNotification(studentId, bookingId, reason) {
-    try {
-        await db.collection('notifications').add({
-            userId: studentId,
-            type: 'session_cancelled',
-            title: 'Session Cancelled',
-            message: `Your tutor has cancelled an upcoming session.`,
-            details: {
-                reason: reason,
-                cancelledAt: new Date()
-            },
-            relatedSessionId: bookingId,
+        const notification = {
+            userId: userId,
+            type: type,
+            title: getNotificationTitle(type),
+            message: message,
+            relatedSessionId: relatedSessionId,
             isRead: false,
-            priority: 'high',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    } catch (error) {
-        console.error("Error creating cancellation notification:", error);
-    }
-}
-
-// Create reschedule notification
-async function createRescheduleNotification(bookingId, reason) {
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        const booking = bookingDoc.data();
-        
-        await db.collection('notifications').add({
-            userId: booking.studentId,
-            type: 'reschedule_requested',
-            title: 'Reschedule Request',
-            message: `Your tutor has requested to reschedule your session.`,
-            details: {
-                reason: reason,
-                requestedAt: new Date()
-            },
-            relatedSessionId: bookingId,
-            isRead: false,
-            priority: 'medium',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    } catch (error) {
-        console.error("Error creating reschedule notification:", error);
-    }
-}
-
-// View reschedule request
-async function viewRescheduleRequest(bookingId) {
-    try {
-        const rescheduleDoc = await db.collection('rescheduleRequests')
-            .where('sessionId', '==', bookingId)
-            .where('status', '==', 'pending')
-            .limit(1)
-            .get();
-        
-        if (rescheduleDoc.empty) {
-            alert('No pending reschedule request found.');
-            return;
-        }
-        
-        const request = rescheduleDoc.docs[0].data();
-        request.id = rescheduleDoc.docs[0].id;
-        
-        const modalContent = createRescheduleRequestHTML(request);
-        showBookingModal('Reschedule Request', modalContent);
-        
-    } catch (error) {
-        console.error("Error loading reschedule request:", error);
-        alert('Error loading reschedule request.');
-    }
-}
-
-// Create reschedule request HTML
-function createRescheduleRequestHTML(request) {
-    const originalDate = request.originalDate.toDate();
-    const requestedDate = request.requestedDate.toDate();
-    
-    return `
-        <div class="reschedule-request">
-            <div class="request-details">
-                <div class="detail-section">
-                    <h4>Original Session</h4>
-                    <p>${originalDate.toLocaleDateString()} at ${originalDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                </div>
-                
-                <div class="detail-section">
-                    <h4>Requested New Time</h4>
-                    <p>${requestedDate.toLocaleDateString()} at ${requestedDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                </div>
-                
-                <div class="detail-section">
-                    <h4>Reason</h4>
-                    <p>${request.reason}</p>
-                </div>
-                
-                <div class="detail-section">
-                    <h4>Requested By</h4>
-                    <p>${request.requestedBy === 'tutor' ? 'You (Tutor)' : 'Student'}</p>
-                </div>
-            </div>
-            
-            ${request.requestedBy === 'student' ? `
-                <div class="request-actions" style="margin-top: 20px; display: flex; gap: 10px;">
-                    <button class="btn-success" onclick="approveRescheduleRequest('${request.id}', '${request.sessionId}')">
-                        <i class="fas fa-check"></i> Approve
-                    </button>
-                    <button class="btn-danger" onclick="declineRescheduleRequest('${request.id}', '${request.sessionId}')">
-                        <i class="fas fa-times"></i> Decline
-                    </button>
-                </div>
-            ` : ''}
-        </div>
-    `;
-}
-
-// Approve reschedule request
-async function approveRescheduleRequest(requestId, sessionId) {
-    try {
-        const requestDoc = await db.collection('rescheduleRequests').doc(requestId).get();
-        const request = requestDoc.data();
-        
-        // Update session with new date
-        await db.collection('bookedSessions').doc(sessionId).update({
-            date: request.requestedDate,
-            status: 'rescheduled',
-            rescheduleRequested: false,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Update reschedule request status
-        await db.collection('rescheduleRequests').doc(requestId).update({
-            status: 'approved',
-            respondedAt: new Date(),
-            response: 'approved'
-        });
-        
-        // Send notification to student
-        await createRescheduleResponseNotification(request.studentId, sessionId, true);
-        
-        alert('Reschedule request approved successfully!');
-        document.getElementById('bookingDetailsModal').style.display = 'none';
-        loadMyBookings();
-        
-    } catch (error) {
-        console.error("Error approving reschedule request:", error);
-        alert('Error approving reschedule request.');
-    }
-}
-
-// Decline reschedule request
-async function declineRescheduleRequest(requestId, sessionId) {
-    const reason = prompt('Please provide a reason for declining the reschedule request:');
-    if (!reason) return;
-    
-    try {
-        const requestDoc = await db.collection('rescheduleRequests').doc(requestId).get();
-        const request = requestDoc.data();
-        
-        // Update reschedule request status
-        await db.collection('rescheduleRequests').doc(requestId).update({
-            status: 'declined',
-            respondedAt: new Date(),
-            response: 'declined',
-            declineReason: reason
-        });
-        
-        // Update session status
-        await db.collection('bookedSessions').doc(sessionId).update({
-            rescheduleRequested: false,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Send notification to student
-        await createRescheduleResponseNotification(request.studentId, sessionId, false, reason);
-        
-        alert('Reschedule request declined.');
-        document.getElementById('bookingDetailsModal').style.display = 'none';
-        loadMyBookings();
-        
-    } catch (error) {
-        console.error("Error declining reschedule request:", error);
-        alert('Error declining reschedule request.');
-    }
-}
-
-// Create reschedule response notification
-async function createRescheduleResponseNotification(studentId, sessionId, approved, reason = '') {
-    try {
-        await db.collection('notifications').add({
-            userId: studentId,
-            type: approved ? 'reschedule_approved' : 'reschedule_declined',
-            title: approved ? 'Reschedule Approved' : 'Reschedule Declined',
-            message: approved ? 
-                'Your tutor has approved your reschedule request.' :
-                'Your tutor has declined your reschedule request.',
-            details: {
-                reason: reason,
-                respondedAt: new Date()
-            },
-            relatedSessionId: sessionId,
-            isRead: false,
-            priority: 'medium',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    } catch (error) {
-        console.error("Error creating reschedule response notification:", error);
-    }
-}
-
-// Create invoice for booking
-async function createInvoiceForBooking(bookingId) {
-    try {
-        const bookingDoc = await db.collection('bookedSessions').doc(bookingId).get();
-        if (!bookingDoc.exists) {
-            alert('Booking not found.');
-            return;
-        }
-        
-        const booking = bookingDoc.data();
-        
-        // Create invoice
-        const invoiceData = {
-            sessionId: bookingId,
-            tutorId: currentUser.uid,
-            studentId: booking.studentId,
-            studentName: booking.studentName,
-            subject: booking.subject,
-            date: booking.date,
-            duration: booking.duration || 1.5,
-            hourlyRate: booking.hourlyRate || 40,
-            totalAmount: booking.totalPrice || (parseFloat(booking.duration || 1.5) * parseFloat(booking.hourlyRate || 40)),
-            status: 'pending',
-            createdAt: new Date(),
-            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-            invoiceNumber: `INV-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`
+            priority: getNotificationPriority(type),
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            ...additionalData
         };
         
-        await db.collection('invoices').add(invoiceData);
-        
-        // Mark booking as invoiced
-        await db.collection('bookedSessions').doc(bookingId).update({
-            invoiced: true,
-            invoiceNumber: invoiceData.invoiceNumber,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        alert('Invoice created successfully!');
-        loadMyBookings();
+        await db.collection('notifications').add(notification);
         
     } catch (error) {
-        console.error("Error creating invoice:", error);
-        alert('Error creating invoice. Please try again.');
+        console.error("Error creating notification:", error);
     }
 }
 
-// Update bookings stats on dashboard
-function updateBookingsStats() {
-    const now = new Date();
+// Get notification title based on type
+function getNotificationTitle(type) {
+    const titles = {
+        'session_confirmed': 'Session Confirmed ✅',
+        'session_rejected': 'Session Declined ❌',
+        'session_cancelled': 'Session Cancelled 🚫',
+        'session_completed': 'Session Completed 🎓',
+        'reschedule_request': 'Reschedule Request 🔄'
+    };
     
-    const upcomingBookings = allBookings.filter(booking => {
+    return titles[type] || 'New Notification';
+}
+
+// Get notification priority based on type
+function getNotificationPriority(type) {
+    const priorities = {
+        'session_confirmed': 'high',
+        'session_rejected': 'medium',
+        'session_cancelled': 'high',
+        'session_completed': 'medium',
+        'reschedule_request': 'high'
+    };
+    
+    return priorities[type] || 'low';
+}
+
+// Update upcoming sessions count
+function updateUpcomingSessionsCount() {
+    const now = new Date();
+    const upcomingCount = allBookings.filter(booking => {
         const bookingDate = booking.date.toDate();
         return (booking.status === 'confirmed' || booking.status === 'rescheduled') && 
                bookingDate > now;
-    });
+    }).length;
     
-    const completedBookings = allBookings.filter(booking => 
-        booking.status === 'completed'
-    );
-    
-    const pendingActionBookings = allBookings.filter(booking => {
-        const bookingDate = booking.date.toDate();
-        const isUpcoming = bookingDate > now;
-        const hasRescheduleRequest = booking.rescheduleRequested === true;
-        return isUpcoming && (hasRescheduleRequest || booking.status === 'rescheduled');
-    });
-    
-    // Update stats cards if they exist
-    const upcomingCard = document.querySelector('.stat-card:nth-child(1) .stat-number');
-    const completedCard = document.querySelector('.stat-card:nth-child(2) .stat-number');
-    const pendingCard = document.querySelector('.stat-card:nth-child(3) .stat-number');
-    
-    if (upcomingCard) upcomingCard.textContent = upcomingBookings.length;
-    if (completedCard) completedCard.textContent = completedBookings.length;
-    if (pendingCard) pendingCard.textContent = pendingActionBookings.length;
+    document.getElementById('upcomingSessionsCount').textContent = upcomingCount;
 }
 
-// Generate Google Meet link
-function generateGoogleMeetLink(booking) {
-    // Simple Google Meet link generation
-    const meetingId = `tutor-${currentUser.uid.substr(0, 8)}-${Date.now()}`;
-    return `https://meet.google.com/${meetingId}`;
-}
-
-// Copy to clipboard utility
+// Utility function to copy to clipboard
 function copyToClipboard(text) {
     navigator.clipboard.writeText(text).then(() => {
-        // Show success message
-        const originalText = event.target.innerHTML;
-        event.target.innerHTML = '<i class="fas fa-check"></i> Copied!';
-        setTimeout(() => {
-            event.target.innerHTML = originalText;
-        }, 2000);
+        console.log('Copied to clipboard:', text);
     }).catch(err => {
-        console.error('Failed to copy: ', err);
-        alert('Failed to copy to clipboard');
+        console.error('Failed to copy:', err);
     });
 }
 
-// Display empty bookings state
-function displayEmptyBookingsState() {
-    const container = document.getElementById('bookingsContainer');
-    container.innerHTML = `
-        <div class="empty-state">
-            <div class="empty-icon">📚</div>
-            <h3>No Bookings Yet</h3>
-            <p>You don't have any upcoming or completed sessions.</p>
-            <p>Your confirmed bookings will appear here.</p>
+// Utility function to show toast messages
+function showToast(message, type = 'info') {
+    // Remove existing toasts
+    const existingToasts = document.querySelectorAll('.custom-toast');
+    existingToasts.forEach(toast => toast.remove());
+    
+    const toast = document.createElement('div');
+    toast.className = `custom-toast toast-${type}`;
+    toast.innerHTML = `
+        <div class="toast-content">
+            <i class="fas ${getToastIcon(type)}"></i>
+            <span>${message}</span>
         </div>
     `;
+    
+    // Add styles if not already added
+    if (!document.querySelector('#toast-styles')) {
+        const styles = document.createElement('style');
+        styles.id = 'toast-styles';
+        styles.textContent = `
+            .custom-toast {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 12px 20px;
+                border-radius: 8px;
+                color: white;
+                z-index: 10000;
+                max-width: 400px;
+                animation: slideInRight 0.3s ease;
+            }
+            .toast-success { background: #28a745; }
+            .toast-error { background: #dc3545; }
+            .toast-warning { background: #ffc107; color: #212529; }
+            .toast-info { background: #17a2b8; }
+            @keyframes slideInRight {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(styles);
+    }
+    
+    document.body.appendChild(toast);
+    
+    // Auto remove after 3 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.style.animation = 'slideOutRight 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }
+    }, 3000);
 }
 
-// Display empty filter state
-function displayEmptyBookingsFilterState() {
-    const container = document.getElementById('bookingsContainer');
-    container.innerHTML = `
-        <div class="empty-state">
-            <div class="empty-icon">🔍</div>
-            <h3>No Matching Bookings</h3>
-            <p>No bookings match your current filter.</p>
-            <button class="btn-primary" onclick="setBookingsFilter('all')">View All Bookings</button>
-        </div>
-    `;
-}
-
-// Display bookings error state
-function displayBookingsErrorState() {
-    const container = document.getElementById('bookingsContainer');
-    container.innerHTML = `
-        <div class="error-state">
-            <div class="error-icon">⚠️</div>
-            <h3>Error Loading Bookings</h3>
-            <p>There was a problem loading your bookings. Please try again.</p>
-            <button class="btn-primary" onclick="loadMyBookings()">Retry</button>
-        </div>
-    `;
+// Get icon for toast based on type
+function getToastIcon(type) {
+    const icons = {
+        'success': 'fa-check-circle',
+        'error': 'fa-exclamation-circle',
+        'warning': 'fa-exclamation-triangle',
+        'info': 'fa-info-circle'
+    };
+    return icons[type] || 'fa-info-circle';
 }
 
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
+
 
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
@@ -6355,6 +6142,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
