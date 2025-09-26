@@ -3354,10 +3354,17 @@ function createBookingCard(booking, studentName) {
 
 
 // =============================================
+// =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
 // =============================================
 
-// Load sessions history
+// Global variables for sessions history
+let allSessionsHistory = [];
+let displayedSessionsCount = 10;
+let currentHistoryFilter = 'all';
+let currentActionTypeFilter = 'all';
+
+// Load sessions history with comprehensive session data
 async function loadSessionsHistory() {
     const container = document.getElementById('sessionsContainer');
     if (!container) return;
@@ -3365,57 +3372,38 @@ async function loadSessionsHistory() {
     container.innerHTML = '<div class="spinner">Loading session history...</div>';
     
     try {
-        // Get all sessions for this tutor (past sessions)
+        // Get ALL sessions for this tutor (past and future, all statuses)
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('date', '<=', new Date())
             .orderBy('date', 'desc')
-            .limit(50)
+            .limit(200) // Increased limit to get comprehensive history
             .get();
+        
+        allSessionsHistory = [];
         
         if (sessionsSnapshot.empty) {
             container.innerHTML = `
                 <div class="empty-state">
                     <i class="fas fa-history"></i>
                     <h3>No Session History</h3>
-                    <p>Your completed sessions will appear here.</p>
+                    <p>Your session history will appear here once you start teaching.</p>
                 </div>
             `;
             return;
         }
         
-        let sessionsHTML = `
-            <div class="sessions-table-container">
-                <table class="sessions-table">
-                    <thead>
-                        <tr>
-                            <th>Date & Time</th>
-                            <th>Student</th>
-                            <th>Subject</th>
-                            <th>Duration</th>
-                            <th>Status</th>
-                            <th>Amount</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-        
+        // Process all sessions
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
-            sessionsHTML += createSessionHistoryRow(session, doc.id);
+            session.id = doc.id;
+            allSessionsHistory.push(session);
         });
         
-        sessionsHTML += `
-                    </tbody>
-                </table>
-            </div>
-        `;
+        // Apply initial filters and display
+        applySessionHistoryFilters();
         
-        container.innerHTML = sessionsHTML;
-        
-        // Add event listeners to action buttons
-        addSessionHistoryListeners();
+        // Setup filter event listeners
+        setupSessionHistoryFilters();
         
     } catch (error) {
         console.error("Error loading session history:", error);
@@ -3429,48 +3417,236 @@ async function loadSessionsHistory() {
     }
 }
 
-// Create session history table row
-function createSessionHistoryRow(session, sessionId) {
+// Apply filters to session history
+function applySessionHistoryFilters() {
+    const container = document.getElementById('sessionsContainer');
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    
+    let filteredSessions = [...allSessionsHistory];
+    
+    // Apply time period filter
+    const now = new Date();
+    filteredSessions = filteredSessions.filter(session => {
+        const sessionDate = session.date.toDate();
+        
+        switch(currentHistoryFilter) {
+            case 'month':
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                return sessionDate >= startOfMonth;
+            case '3months':
+                const threeMonthsAgo = new Date();
+                threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+                return sessionDate >= threeMonthsAgo;
+            case 'year':
+                const startOfYear = new Date(now.getFullYear(), 0, 1);
+                return sessionDate >= startOfYear;
+            default: // 'all'
+                return true;
+        }
+    });
+    
+    // Apply action type filter
+    if (currentActionTypeFilter !== 'all') {
+        filteredSessions = filteredSessions.filter(session => 
+            session.status === currentActionTypeFilter
+        );
+    }
+    
+    // Display sessions
+    displayFilteredSessions(filteredSessions, container, loadMoreBtn);
+}
+
+// Display filtered sessions
+function displayFilteredSessions(sessions, container, loadMoreBtn) {
+    if (sessions.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-filter"></i>
+                <h3>No Sessions Match Your Filters</h3>
+                <p>Try adjusting your filter criteria to see more sessions.</p>
+            </div>
+        `;
+        loadMoreBtn.style.display = 'none';
+        return;
+    }
+    
+    // Sort by date (most recent first)
+    sessions.sort((a, b) => b.date.toDate() - a.date.toDate());
+    
+    // Get sessions to display (with load more functionality)
+    const sessionsToDisplay = sessions.slice(0, displayedSessionsCount);
+    
+    let sessionsHTML = `
+        <div class="sessions-table-container">
+            <table class="sessions-table">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Student</th>
+                        <th>Subject</th>
+                        <th>Type</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>Tutor Action</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    sessionsToDisplay.forEach(session => {
+        sessionsHTML += createSessionHistoryRow(session);
+    });
+    
+    sessionsHTML += `
+                </tbody>
+            </table>
+        </div>
+        <div class="session-stats">
+            <div class="stat-item">
+                <span class="stat-number">${sessionsToDisplay.length}</span>
+                <span class="stat-label">Displayed</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${sessions.length}</span>
+                <span class="stat-label">Total Filtered</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${allSessionsHistory.length}</span>
+                <span class="stat-label">All Sessions</span>
+            </div>
+        </div>
+    `;
+    
+    container.innerHTML = sessionsHTML;
+    
+    // Show/hide load more button
+    if (sessions.length > displayedSessionsCount) {
+        loadMoreBtn.style.display = 'block';
+        loadMoreBtn.onclick = () => {
+            displayedSessionsCount += 10;
+            applySessionHistoryFilters();
+        };
+    } else {
+        loadMoreBtn.style.display = 'none';
+    }
+    
+    // Add event listeners
+    addSessionHistoryListeners();
+}
+
+// Create comprehensive session history table row
+function createSessionHistoryRow(session) {
     const date = session.date.toDate();
     const formattedDate = date.toLocaleDateString();
     const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const isFutureSession = date > new Date();
     
     const statusClass = getStatusClass(session.status);
-    const amount = session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2);
+    const sessionType = session.sessionType === 'online' ? 'Online' : 'In-Person';
+    
+    // Determine tutor action for this session
+    const tutorAction = getTutorActionForSession(session);
+    const actionClass = getActionClass(tutorAction);
     
     return `
-        <tr class="session-history-row">
+        <tr class="session-history-row ${isFutureSession ? 'future-session' : 'past-session'}">
             <td>
                 <div>${formattedDate}</div>
                 <div class="timestamp-cell">${formattedTime}</div>
+                ${isFutureSession ? '<div class="future-badge">Upcoming</div>' : ''}
             </td>
             <td>${session.studentName || 'Unknown Student'}</td>
             <td>${session.subject || 'General'}</td>
+            <td>${sessionType}</td>
             <td>${session.duration || '1.5'}h</td>
             <td>
                 <span class="status-badge status-${statusClass}">${session.status}</span>
             </td>
-            <td>$${amount}</td>
             <td>
-                <button class="btn-outline view-session-btn" data-session-id="${sessionId}">
-                    <i class="fas fa-eye"></i> View
+                <span class="action-badge action-${actionClass}">${tutorAction}</span>
+            </td>
+            <td>
+                <button class="btn-outline view-session-btn" data-session-id="${session.id}">
+                    <i class="fas fa-eye"></i> Details
                 </button>
+                ${session.status === 'completed' ? `
+                    <button class="btn-success invoice-session-btn" data-session-id="${session.id}" style="margin-top: 5px;">
+                        <i class="fas fa-file-invoice"></i> Invoice
+                    </button>
+                ` : ''}
             </td>
         </tr>
     `;
 }
 
-// Add event listeners to session history actions
-function addSessionHistoryListeners() {
-    document.querySelectorAll('.view-session-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            showSessionDetails(sessionId);
-        });
-    });
+// Get tutor action description for session
+function getTutorActionForSession(session) {
+    const now = new Date();
+    const sessionDate = session.date.toDate();
+    
+    switch(session.status) {
+        case 'completed':
+            return 'Session Completed';
+        case 'confirmed':
+            return sessionDate > now ? 'Session Confirmed' : 'Session Held';
+        case 'pending':
+            return 'Awaiting Response';
+        case 'cancelled':
+            return session.cancelledBy === 'tutor' ? 'You Cancelled' : 'Student Cancelled';
+        case 'rescheduled':
+            return 'Rescheduled';
+        case 'reschedule_requested':
+            return 'Reschedule Pending';
+        default:
+            return 'No Action';
+    }
 }
 
-// Show session details (similar to booking details but for historical sessions)
+// Get CSS class for action badge
+function getActionClass(action) {
+    switch(action) {
+        case 'Session Completed':
+        case 'Session Held':
+            return 'success';
+        case 'Session Confirmed':
+            return 'primary';
+        case 'Awaiting Response':
+        case 'Reschedule Pending':
+            return 'warning';
+        case 'You Cancelled':
+        case 'Student Cancelled':
+            return 'error';
+        case 'Rescheduled':
+            return 'info';
+        default:
+            return 'gray';
+    }
+}
+
+// Setup session history filter event listeners
+function setupSessionHistoryFilters() {
+    const historyFilter = document.getElementById('historyFilter');
+    const actionTypeFilter = document.getElementById('actionTypeFilter');
+    
+    if (historyFilter) {
+        historyFilter.addEventListener('change', function() {
+            currentHistoryFilter = this.value;
+            displayedSessionsCount = 10; // Reset to first page
+            applySessionHistoryFilters();
+        });
+    }
+    
+    if (actionTypeFilter) {
+        actionTypeFilter.addEventListener('change', function() {
+            currentActionTypeFilter = this.value;
+            displayedSessionsCount = 10; // Reset to first page
+            applySessionHistoryFilters();
+        });
+    }
+}
+
+// Enhanced session details view for history section
 async function showSessionDetails(sessionId) {
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -3481,54 +3657,97 @@ async function showSessionDetails(sessionId) {
         
         const session = sessionDoc.data();
         const date = session.date.toDate();
+        const isFutureSession = date > new Date();
+        
+        // Get additional session metadata
+        const sessionMetadata = await getSessionMetadata(sessionId);
         
         const modalContent = `
             <div class="session-details">
-                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">Session Details</h3>
+                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">
+                    <i class="fas fa-calendar-alt"></i> Session Details
+                </h3>
                 
-                <div class="details-grid" style="display: grid; gap: 15px; margin-bottom: 20px;">
+                <div class="session-header-info" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin: 0; color: var(--secondary);">${session.subject || 'General Tutoring'}</h4>
+                            <p style="margin: 5px 0 0 0; color: #666;">with ${session.studentName || 'Unknown Student'}</p>
+                        </div>
+                        <span class="status-badge status-${getStatusClass(session.status)}" style="font-size: 14px;">
+                            ${session.status.toUpperCase()}
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="details-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                     <div class="detail-item">
-                        <strong>Student:</strong> ${session.studentName || 'Unknown'}
+                        <strong><i class="fas fa-calendar"></i> Date:</strong>
+                        <span>${date.toLocaleDateString()}</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Subject:</strong> ${session.subject || 'General Tutoring'}
+                        <strong><i class="fas fa-clock"></i> Time:</strong>
+                        <span>${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Date & Time:</strong> ${date.toLocaleString()}
+                        <strong><i class="fas fa-user-graduate"></i> Student:</strong>
+                        <span>${session.studentName || 'Unknown'}</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Duration:</strong> ${session.duration || '1.5'} hours
+                        <strong><i class="fas fa-book"></i> Subject:</strong>
+                        <span>${session.subject || 'General Tutoring'}</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Session Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+                        <strong><i class="fas fa-clock"></i> Duration:</strong>
+                        <span>${session.duration || '1.5'} hours</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}
+                        <strong><i class="fas fa-video"></i> Type:</strong>
+                        <span>${session.sessionType === 'online' ? 'Online' : 'In-Person'}</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Total Amount:</strong> $${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}
+                        <strong><i class="fas fa-dollar-sign"></i> Rate:</strong>
+                        <span>$${session.hourlyRate || '40'}/hour</span>
                     </div>
                     <div class="detail-item">
-                        <strong>Status:</strong> <span class="status-badge status-${session.status}">${session.status}</span>
+                        <strong><i class="fas fa-calculator"></i> Total:</strong>
+                        <span>$${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}</span>
                     </div>
                 </div>
                 
                 ${session.notes ? `
-                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px;">
+                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <strong>Session Notes:</strong>
                         <p style="margin-top: 5px; font-style: italic;">${session.notes}</p>
                     </div>
                 ` : ''}
                 
-                ${session.confirmedAt ? `
-                    <div class="timestamp-info" style="font-size: 0.9em; color: #666; margin-top: 15px;">
-                        <strong>Confirmed:</strong> ${session.confirmedAt.toDate().toLocaleString()}
+                <div class="session-timeline" style="border-left: 3px solid var(--primary); padding-left: 15px; margin-left: 5px;">
+                    <h4 style="color: var(--primary); margin-bottom: 10px;">Session Timeline</h4>
+                    ${sessionMetadata.timeline.map(event => `
+                        <div style="margin-bottom: 8px; padding: 5px 0;">
+                            <div style="display: flex; align-items: center;">
+                                <div style="width: 8px; height: 8px; background: var(--primary); border-radius: 50%; margin-right: 10px;"></div>
+                                <span style="font-weight: 500;">${event.action}</span>
+                                <span style="margin-left: auto; font-size: 0.8em; color: #666;">
+                                    ${event.timestamp.toDate().toLocaleString()}
+                                </span>
+                            </div>
+                            ${event.details ? `<div style="font-size: 0.9em; color: #666; margin-left: 18px;">${event.details}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+                
+                ${!isFutureSession && session.status === 'completed' ? `
+                    <div style="margin-top: 20px; padding: 15px; background: #e8f5e8; border-radius: 8px;">
+                        <strong style="color: #2e7d32;">This session has been completed.</strong>
+                        <p style="margin: 5px 0 0 0; color: #666;">You can generate an invoice for this session from the Invoice section.</p>
                     </div>
                 ` : ''}
             </div>
         `;
         
-        showBookingDetailsModal(modalContent);
+        showSessionDetailsModal(modalContent);
         
     } catch (error) {
         console.error("Error loading session details:", error);
@@ -3536,20 +3755,160 @@ async function showSessionDetails(sessionId) {
     }
 }
 
-// Helper function to get status class (ensure this exists)
-function getStatusClass(status) {
-    switch(status) {
-        case 'completed': return 'success';
-        case 'confirmed': return 'primary';
-        case 'pending': return 'warning';
-        case 'cancelled': return 'error';
-        case 'rescheduled': return 'info';
-        case 'reschedule_requested': return 'warning';
-        default: return 'gray';
+// Get additional session metadata for timeline
+async function getSessionMetadata(sessionId) {
+    const metadata = {
+        timeline: []
+    };
+    
+    try {
+        // Get session document to check for timestamps
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        const sessionData = sessionDoc.data();
+        
+        // Add creation event
+        if (sessionData.createdAt) {
+            metadata.timeline.push({
+                action: 'Session Created',
+                timestamp: sessionData.createdAt,
+                details: 'Session was booked by student'
+            });
+        }
+        
+        // Add confirmation event
+        if (sessionData.confirmedAt) {
+            metadata.timeline.push({
+                action: 'Session Confirmed',
+                timestamp: sessionData.confirmedAt,
+                details: 'You confirmed this session'
+            });
+        }
+        
+        // Add completion event
+        if (sessionData.completedAt) {
+            metadata.timeline.push({
+                action: 'Session Completed',
+                timestamp: sessionData.completedAt,
+                details: 'Session was marked as completed'
+            });
+        }
+        
+        // Add cancellation event if applicable
+        if (sessionData.cancelledAt) {
+            metadata.timeline.push({
+                action: 'Session Cancelled',
+                timestamp: sessionData.cancelledAt,
+                details: `Cancelled by ${sessionData.cancelledBy || 'unknown'}`
+            });
+        }
+        
+        // Sort timeline by timestamp
+        metadata.timeline.sort((a, b) => a.timestamp.toDate() - b.timestamp.toDate());
+        
+    } catch (error) {
+        console.error("Error loading session metadata:", error);
     }
+    
+    return metadata;
 }
 
-       
+// Show session details modal
+function showSessionDetailsModal(content) {
+    let modal = document.getElementById('sessionDetailsModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionDetailsModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
+                <div class="modal-header">
+                    <h3>Session Details</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="sessionDetailsModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeSessionDetailsBtn">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const closeActionBtn = modal.querySelector('#closeSessionDetailsBtn');
+        
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        closeActionBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('sessionDetailsModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Add event listeners to session history actions
+function addSessionHistoryListeners() {
+    // View session buttons
+    document.querySelectorAll('.view-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            showSessionDetails(sessionId);
+        });
+    });
+    
+    // Invoice session buttons (for completed sessions)
+    document.querySelectorAll('.invoice-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            // Switch to invoice section and pre-select this session
+            switchToInvoiceSection(sessionId);
+        });
+    });
+}
+
+// Switch to invoice section and pre-select session
+function switchToInvoiceSection(sessionId) {
+    // Activate invoice section menu item
+    document.querySelectorAll('.menu-item a').forEach(item => {
+        item.classList.remove('active');
+        if (item.getAttribute('data-section') === 'invoice-session') {
+            item.classList.add('active');
+        }
+    });
+    
+    // Show invoice section
+    document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
+        if (section.id === 'invoice-session') {
+            section.classList.add('active');
+        }
+    });
+    
+    // Pre-select the session in invoice form
+    setTimeout(() => {
+        const sessionSelect = document.getElementById('completedSession');
+        if (sessionSelect) {
+            sessionSelect.value = sessionId;
+            // Trigger change event to update hours/rate if needed
+            sessionSelect.dispatchEvent(new Event('change'));
+        }
+    }, 100);
+}
+
+// =============================================
+// SESSIONS HISTORY SECTION ENDS HERE
 
 //My Invoice Section Starts here.
 
@@ -3582,6 +3941,7 @@ function calculateInvoiceTotal() {
 </script>    
 </body>
 </html>
+
 
 
 
