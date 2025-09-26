@@ -2683,10 +2683,20 @@ async function loadMyBookings() {
         let bookingsHTML = '';
         let upcomingCount = 0;
         
-        // Process each booking and fetch student details
+        // Process each booking and fetch student details + reschedule info
         for (const doc of querySnapshot.docs) {
             const booking = doc.data();
             booking.id = doc.id;
+            
+            // Check for pending reschedule requests in the separate collection
+            const rescheduleQuery = await db.collection('rescheduleRequests')
+                .where('sessionId', '==', booking.id)
+                .where('status', '==', 'pending')
+                .get();
+            
+            booking.hasPendingReschedule = !rescheduleQuery.empty;
+            booking.rescheduleRequest = rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data();
+            
             confirmedSessions.push(booking);
             
             // Fetch student name from student document
@@ -2727,7 +2737,7 @@ async function loadMyBookings() {
         `;
     }
 }
-
+       
 // Create booking card HTML for tutor dashboard
 function createBookingCard(booking, studentName) {
     const date = booking.date.toDate();
@@ -3166,16 +3176,25 @@ async function submitRescheduleRequest(sessionId) {
         
         const sessionData = sessionDoc.data();
         
-        console.log('Sending reschedule request to student...');
+        console.log('Creating reschedule request in separate collection...');
         
-        // Update session with reschedule request (pending student approval)
+        // CREATE RESCHEDULE REQUEST IN SEPARATE COLLECTION (to match student expectations)
+        await db.collection('rescheduleRequests').add({
+            sessionId: sessionId,
+            requestedBy: 'tutor',
+            requestedDate: newDateTime,
+            originalDate: sessionData.date,
+            reason: reason,
+            status: 'pending', // This is what the student dashboard looks for
+            studentId: sessionData.studentId,
+            tutorId: currentUser.uid,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // ALSO update the session status for tutor dashboard display
         await db.collection('bookedSessions').doc(sessionId).update({
             status: 'reschedule_requested',
             rescheduleRequestedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            rescheduleRequestedBy: 'tutor',
-            rescheduleReason: reason,
-            proposedNewDate: newDateTime,
-            originalDate: sessionData.date, // Store original date for reference
             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
         
@@ -3554,6 +3573,7 @@ function calculateInvoiceTotal() {
 </script>    
 </body>
 </html>
+
 
 
 
