@@ -2884,313 +2884,253 @@ function getStatusClass(status) {
 
 // =============================================
 // =============================================
-// MY BOOKINGS SECTION STARTS HERE
+// MY BOOKINGS SECTION
 // =============================================
 
-// Global variable to store sessions data
-let confirmedSessions = [];
-
-// Optimized: Load tutor's bookings with batched queries
-async function loadMyBookings() {
-    const container = document.getElementById('bookingsContainer');
-    if (!container) return;
+// Session management module
+const BookingsManager = {
+    confirmedSessions: [],
     
-    container.innerHTML = '<div class="spinner">Loading your bookings...</div>';
+    // Constants
+    MAX_BATCH_SIZE: 10,
+    JOIN_WINDOW: {
+        BEFORE_MINUTES: 30,
+        AFTER_HOURS: 4
+    },
     
-    try {
-        const userId = currentUser.uid;
+    // Initialize bookings system
+    init() {
+        this.loadMyBookings();
+    },
+    
+    // Main function to load tutor's bookings
+    async loadMyBookings() {
+        const container = document.getElementById('bookingsContainer');
+        if (!container) return;
         
-        // Query upcoming bookings (confirmed sessions)
-        const querySnapshot = await db.collection('bookedSessions')
-            .where('tutorId', '==', userId)
+        this.showLoadingState(container);
+        
+        try {
+            const querySnapshot = await this.fetchUpcomingBookings();
+            
+            if (querySnapshot.empty) {
+                this.showEmptyState(container);
+                return;
+            }
+            
+            const { sessions, rescheduleMap } = await this.processBookingsData(querySnapshot);
+            this.confirmedSessions = sessions;
+            
+            this.renderBookings(container, sessions, rescheduleMap);
+            this.updateDashboardStats(sessions.length);
+            
+        } catch (error) {
+            this.showErrorState(container, error);
+        }
+    },
+    
+    // Fetch upcoming bookings from Firestore
+    async fetchUpcomingBookings() {
+        return await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
             .where('status', 'in', ['confirmed', 'reschedule_requested'])
             .where('date', '>=', new Date())
             .orderBy('date', 'asc')
             .get();
-        
-        if (querySnapshot.empty) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-calendar-times"></i>
-                    <h3>No Upcoming Bookings</h3>
-                    <p>You have no upcoming sessions scheduled.</p>
-                </div>
-            `;
-            confirmedSessions = [];
-            updateBookingsCount(0);
-            return;
-        }
-        
-        // Extract session IDs for batched reschedule queries
+    },
+    
+    // Process bookings data with batched reschedule queries
+    async processBookingsData(querySnapshot) {
         const sessionIds = querySnapshot.docs.map(doc => doc.id);
+        const rescheduleMap = await this.fetchRescheduleRequests(sessionIds);
+        const sessions = [];
         
-        // SINGLE BATCHED QUERY: Get all relevant reschedule requests
-        const allReschedulesQuery = await db.collection('rescheduleRequests')
-            .where('sessionId', 'in', sessionIds.slice(0, 10)) // Firestore 'in' supports up to 10
-            .get();
-        
-        // Create a map for efficient lookup
-        const rescheduleMap = {};
-        allReschedulesQuery.forEach(doc => {
-            const data = doc.data();
-            if (!rescheduleMap[data.sessionId]) {
-                rescheduleMap[data.sessionId] = [];
-            }
-            rescheduleMap[data.sessionId].push({ id: doc.id, ...data });
-        });
-        
-        confirmedSessions = [];
-        let bookingsHTML = '';
-        let upcomingCount = 0;
-        
-        // Process each booking using the pre-fetched reschedule data
         for (const doc of querySnapshot.docs) {
-            const booking = doc.data();
-            booking.id = doc.id;
-            
-            // Convert Firestore Timestamp to Date if needed
-            if (booking.date && typeof booking.date.toDate === 'function') {
-                booking.date = booking.date.toDate();
-            }
-            
-            // Use the map to get reschedule info (NO MORE N+1 QUERIES)
-            const requests = rescheduleMap[booking.id] || [];
-            
-            booking.hasPendingReschedule = requests.some(r => r.status === 'pending');
-            booking.pendingReschedules = requests.filter(r => r.status === 'pending');
-            
-            booking.hasAcceptedReschedule = requests.some(r => r.status === 'accepted');
-            booking.acceptedReschedules = requests.filter(r => r.status === 'accepted');
-            
-            // Get the most relevant reschedule request for display
-            booking.rescheduleRequest = booking.pendingReschedules[0] || null;
-            booking.acceptedReschedule = booking.acceptedReschedules[0] || null;
-            
-            confirmedSessions.push(booking);
-            
-            // Use the student name from the booking data
-            let studentName = booking.studentName || 'Student';
-            
-            // Create the booking card HTML
-            bookingsHTML += createBookingCard(booking, studentName);
-            upcomingCount++;
+            const booking = this.normalizeBookingData(doc);
+            this.attachRescheduleInfo(booking, rescheduleMap);
+            sessions.push(booking);
         }
+        
+        return { sessions, rescheduleMap };
+    },
+    
+    // Fetch reschedule requests in batches
+    async fetchRescheduleRequests(sessionIds) {
+        if (sessionIds.length === 0) return {};
+        
+        const batches = [];
+        for (let i = 0; i < sessionIds.length; i += this.MAX_BATCH_SIZE) {
+            const batch = sessionIds.slice(i, i + this.MAX_BATCH_SIZE);
+            const batchResults = await db.collection('rescheduleRequests')
+                .where('sessionId', 'in', batch)
+                .get();
+            batches.push(...batchResults.docs);
+        }
+        
+        return this.createRescheduleMap(batches);
+    },
+    
+    // Create reschedule request map for efficient lookup
+    createRescheduleMap(rescheduleDocs) {
+        const map = {};
+        rescheduleDocs.forEach(doc => {
+            const data = doc.data();
+            if (!map[data.sessionId]) map[data.sessionId] = [];
+            map[data.sessionId].push({ id: doc.id, ...data });
+        });
+        return map;
+    },
+    
+    // Normalize booking data from Firestore
+    normalizeBookingData(doc) {
+        const booking = doc.data();
+        booking.id = doc.id;
+        
+        // Convert Firestore Timestamp to Date
+        if (booking.date && typeof booking.date.toDate === 'function') {
+            booking.date = booking.date.toDate();
+        }
+        
+        return booking;
+    },
+    
+    // Attach reschedule information to booking
+    attachRescheduleInfo(booking, rescheduleMap) {
+        const requests = rescheduleMap[booking.id] || [];
+        
+        booking.pendingReschedules = requests.filter(r => r.status === 'pending');
+        booking.acceptedReschedules = requests.filter(r => r.status === 'accepted');
+        
+        booking.hasPendingReschedule = booking.pendingReschedules.length > 0;
+        booking.hasAcceptedReschedule = booking.acceptedReschedules.length > 0;
+        
+        booking.rescheduleRequest = booking.pendingReschedules[0] || null;
+        booking.acceptedReschedule = booking.acceptedReschedules[0] || null;
+    },
+    
+    // Render bookings to the container
+    renderBookings(container, sessions, rescheduleMap) {
+        const bookingsHTML = sessions.map(booking => 
+            this.createBookingCard(booking)
+        ).join('');
         
         container.innerHTML = bookingsHTML;
-        
-        // Update dashboard stats
-        updateBookingsCount(upcomingCount);
-        
-        // Add event listeners to action buttons
-        addBookingActionListeners();
-        
-    } catch (error) {
-        console.error("Error loading bookings:", error);
-        container.innerHTML = `
-            <div class="error-state">
-                <i class="fas fa-exclamation-circle"></i>
-                <h3>Error Loading Bookings</h3>
-                <p>Failed to load your bookings. Please try again.</p>
-            </div>
-        `;
-    }
-}
-
-// IMPROVED: Optimized session joining using local data
-async function joinSession(sessionId) {
-    try {
-        // FIRST: Try to find session in locally loaded data (saves database read)
-        let session = confirmedSessions.find(s => s.id === sessionId);
-        
-        // Fallback: Query Firestore if not found locally
-        if (!session) {
-            const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-            if (!sessionDoc.exists) {
+        this.attachEventListeners();
+    },
+    
+    // Session joining functionality
+    async joinSession(sessionId) {
+        try {
+            const session = await this.getSession(sessionId);
+            if (!session) {
                 alert('Session not found.');
                 return;
             }
-            session = sessionDoc.data();
-            session.id = sessionId;
-        }
-        
-        console.log('Session data for joining:', session);
-        
-        // Validate meeting link availability
-        const meetingLink = session.meetingLink;
-        if (!meetingLink || !meetingLink.startsWith('http')) {
-            alert('Valid meeting link is not available for this session.');
-            return;
-        }
-        
-        // Enhanced time validation with specific user feedback
-        const validation = validateSessionForJoinWithDetails(session);
-        
-        if (!validation.canJoin) {
-            // Provide specific feedback based on time window
-            switch (validation.reason) {
-                case 'too_early':
-                    alert(`This session starts in more than 30 minutes. Please join starting 30 minutes before the session time.`);
-                    break;
-                case 'too_late':
-                    alert('This session ended more than 4 hours ago. Joining is no longer available.');
-                    break;
-                case 'outside_window':
-                    alert('You can only join sessions from 30 minutes before to 4 hours after the scheduled time.');
-                    break;
-                default:
-                    alert('This session cannot be joined at this time.');
-            }
-            return;
-        }
-        
-        // Confirm before joining
-        if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
-            window.open(meetingLink, '_blank', 'noopener,noreferrer');
             
-            // Optional: Log the join action for analytics
-            await logSessionJoin(sessionId);
+            const validation = this.validateSessionJoin(session);
+            if (!validation.isValid) {
+                alert(validation.message);
+                return;
+            }
+            
+            if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
+                window.open(session.meetingLink, '_blank', 'noopener,noreferrer');
+                await this.logSessionJoin(sessionId);
+            }
+            
+        } catch (error) {
+            console.error("Error joining session:", error);
+            alert('Error joining session. Please try again.');
+        }
+    },
+    
+    // Get session data with local cache fallback
+    async getSession(sessionId) {
+        const localSession = this.confirmedSessions.find(s => s.id === sessionId);
+        if (localSession) return localSession;
+        
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        return sessionDoc.exists ? this.normalizeBookingData(sessionDoc) : null;
+    },
+    
+    // Validate if session can be joined
+    validateSessionJoin(session) {
+        const now = new Date();
+        const sessionTime = this.getSessionTime(session);
+        const timeDiff = sessionTime.getTime() - now.getTime();
+        const hoursDiff = timeDiff / (1000 * 60 * 60);
+        
+        const { BEFORE_MINUTES, AFTER_HOURS } = this.JOIN_WINDOW;
+        const beforeThreshold = BEFORE_MINUTES / 60;
+        
+        if (hoursDiff > beforeThreshold) {
+            return {
+                isValid: false,
+                message: `This session starts in more than ${BEFORE_MINUTES} minutes. Please join starting ${BEFORE_MINUTES} minutes before the session time.`
+            };
         }
         
-    } catch (error) {
-        console.error("Error joining session:", error);
-        alert('Error joining session. Please try again.');
-    }
-}
-
-// ENHANCED: Better validation with detailed feedback
-function validateSessionForJoinWithDetails(session) {
-    const now = new Date();
-    let sessionTime;
-    
-    // Handle both Date objects and Firestore Timestamps
-    if (session.date && typeof session.date.toDate === 'function') {
-        sessionTime = session.date.toDate();
-    } else {
-        sessionTime = new Date(session.date);
-    }
-    
-    const timeDiff = sessionTime.getTime() - now.getTime();
-    const hoursDiff = timeDiff / (1000 * 60 * 60);
-    
-    // More flexible time window: 30 minutes before to 4 hours after session time
-    if (hoursDiff > 0.5) { // More than 30 minutes in future
-        return { canJoin: false, reason: 'too_early' };
-    } else if (hoursDiff < -4) { // More than 4 hours in past
-        return { canJoin: false, reason: 'too_late' };
-    } else if (hoursDiff >= -4 && hoursDiff <= 0.5) {
-        return { canJoin: true, reason: 'within_window' };
-    } else {
-        return { canJoin: false, reason: 'outside_window' };
-    }
-}
-
-// Keep original simple validation for UI display
-function validateSessionForJoin(session) {
-    const validation = validateSessionForJoinWithDetails(session);
-    return validation.canJoin;
-}
-
-// IMPROVED: Booking card creation with better meeting link handling
-function createBookingCard(booking, studentName) {
-    let sessionDate;
-    
-    // Handle date conversion from Firestore Timestamp if needed
-    if (booking.date && typeof booking.date.toDate === 'function') {
-        sessionDate = booking.date.toDate();
-    } else {
-        sessionDate = new Date(booking.date);
-    }
-    
-    const formattedDate = formatSessionDate(sessionDate);
-    const subject = booking.subject || 'General Tutoring';
-    const duration = booking.duration || '1.5';
-    const hourlyRate = booking.hourlyRate || '40';
-    const location = booking.sessionType || 'online';
-    const meetingLink = booking.meetingLink || '#';
-    
-    // Determine reschedule status
-    const isRescheduleRequested = booking.status === 'reschedule_requested';
-    const hasPendingReschedule = booking.hasPendingReschedule;
-    const hasAcceptedReschedule = booking.hasAcceptedReschedule;
-    
-    let statusBadge = '';
-    let rescheduleButton = '';
-    let rescheduleInfo = '';
-    
-    if (hasAcceptedReschedule && booking.acceptedReschedule) {
-        // Reschedule was accepted - show new time
-        statusBadge = '<span class="status-badge status-success">Reschedule Accepted</span>';
-        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
-        
-        let newDate;
-        if (booking.acceptedReschedule.requestedDate && typeof booking.acceptedReschedule.requestedDate.toDate === 'function') {
-            newDate = booking.acceptedReschedule.requestedDate.toDate();
-        } else {
-            newDate = new Date(booking.acceptedReschedule.requestedDate);
+        if (hoursDiff < -AFTER_HOURS) {
+            return {
+                isValid: false,
+                message: `This session ended more than ${AFTER_HOURS} hours ago. Joining is no longer available.`
+            };
         }
         
-        rescheduleInfo = `
-            <div class="reschedule-info accepted">
-                <strong><i class="fas fa-check-circle"></i> Reschedule Accepted:</strong> 
-                New time: ${newDate.toLocaleString()}
-                ${booking.acceptedReschedule.reason ? `<br><strong>Reason:</strong> ${booking.acceptedReschedule.reason}` : ''}
+        if (hoursDiff >= -AFTER_HOURS && hoursDiff <= beforeThreshold) {
+            return { isValid: true, message: 'Session can be joined' };
+        }
+        
+        return {
+            isValid: false,
+            message: 'You can only join sessions within the allowed time window.'
+        };
+    },
+    
+    // Get session time from various data formats
+    getSessionTime(session) {
+        if (session.date && typeof session.date.toDate === 'function') {
+            return session.date.toDate();
+        }
+        return new Date(session.date);
+    },
+    
+    // Create booking card HTML
+    createBookingCard(booking) {
+        const sessionDate = this.getSessionTime(booking);
+        const formattedDate = this.formatSessionDate(sessionDate);
+        const studentName = booking.studentName || 'Student';
+        
+        return `
+            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+                ${this.createSessionHeader(booking, studentName, formattedDate)}
+                ${this.createSessionDetails(booking, studentName)}
+                ${this.createRescheduleInfo(booking)}
+                ${this.createSessionActions(booking)}
             </div>
         `;
-    } else if (hasPendingReschedule && booking.rescheduleRequest) {
-        // Reschedule is pending student response
-        statusBadge = '<span class="status-badge status-warning">Reschedule Requested</span>';
-        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Awaiting Student</button>';
+    },
+    
+    // Create session header section
+    createSessionHeader(booking, studentName, formattedDate) {
+        const statusBadge = this.getStatusBadge(booking);
         
-        let proposedDate;
-        if (booking.rescheduleRequest.requestedDate && typeof booking.rescheduleRequest.requestedDate.toDate === 'function') {
-            proposedDate = booking.rescheduleRequest.requestedDate.toDate();
-        } else {
-            proposedDate = new Date(booking.rescheduleRequest.requestedDate);
-        }
-        
-        rescheduleInfo = `
-            <div class="reschedule-info pending">
-                <strong><i class="fas fa-clock"></i> Reschedule Proposed:</strong> 
-                ${proposedDate.toLocaleString()}
-                ${booking.rescheduleRequest.reason ? `<br><strong>Reason:</strong> ${booking.rescheduleRequest.reason}` : ''}
-            </div>
-        `;
-    } else {
-        // Normal confirmed session
-        statusBadge = '<span class="status-badge status-primary">Confirmed</span>';
-        rescheduleButton = `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
-            <i class="fas fa-calendar-alt"></i> Reschedule
-        </button>`;
-    }
-    
-    // Enhanced join button logic with better validation
-    const canJoinSession = location === 'online' && 
-                          meetingLink && 
-                          meetingLink.startsWith('http') && 
-                          validateSessionForJoin(booking);
-    
-    // Better meeting link display
-    const meetingLinkDisplay = location === 'online' && meetingLink ? 
-        `<div class="session-detail">
-            <i class="fas fa-link"></i> 
-            <span><strong>Meeting:</strong> 
-                <a href="${meetingLink}" target="_blank" class="meeting-link" onclick="event.stopPropagation();">
-                    <i class="fas fa-external-link-alt"></i> Join Session
-                </a>
-            </span>
-        </div>` : '';
-    
-    const joinButtonTitle = canJoinSession ? 
-        'Join the online session' : 
-        `Cannot join: ${location !== 'online' ? 'Not an online session' : !meetingLink ? 'No meeting link' : 'Outside join window'}`;
-
-    return `
-        <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+        return `
             <div class="session-header">
-                <div class="session-title">${subject} Session with ${studentName}</div>
+                <div class="session-title">${booking.subject || 'General Tutoring'} Session with ${studentName}</div>
                 <div class="session-date">${formattedDate}</div>
                 ${statusBadge}
             </div>
+        `;
+    },
+    
+    // Create session details section
+    createSessionDetails(booking, studentName) {
+        const duration = booking.duration || '1.5';
+        const hourlyRate = booking.hourlyRate || '40';
+        const total = (parseFloat(duration) * parseFloat(hourlyRate)).toFixed(2);
+        
+        return `
             <div class="session-details">
                 <div class="session-detail">
                     <i class="fas fa-user-graduate"></i> 
@@ -3198,38 +3138,89 @@ function createBookingCard(booking, studentName) {
                 </div>
                 <div class="session-detail">
                     <i class="fas fa-book"></i> 
-                    <span><strong>Subject:</strong> ${subject}</span>
+                    <span><strong>Subject:</strong> ${booking.subject || 'General Tutoring'}</span>
                 </div>
                 <div class="session-detail">
                     <i class="fas fa-clock"></i> 
                     <span><strong>Duration:</strong> ${duration} hours</span>
                 </div>
                 <div class="session-detail">
-                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
-                    <span><strong>Type:</strong> ${location === 'online' ? 'Online' : 'In-Person'}</span>
+                    <i class="fas ${booking.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    <span><strong>Type:</strong> ${booking.sessionType === 'online' ? 'Online' : 'In-Person'}</span>
                 </div>
-                ${meetingLinkDisplay}
+                ${this.createMeetingLinkDisplay(booking)}
                 <div class="session-detail">
                     <i class="fas fa-dollar-sign"></i> 
                     <span><strong>Rate:</strong> $${hourlyRate}/hour</span>
                 </div>
                 <div class="session-detail">
                     <i class="fas fa-calculator"></i> 
-                    <span><strong>Total:</strong> $${(parseFloat(duration) * parseFloat(hourlyRate)).toFixed(2)}</span>
+                    <span><strong>Total:</strong> $${total}</span>
                 </div>
             </div>
-            
-            ${rescheduleInfo}
-            
+        `;
+    },
+    
+    // Create meeting link display
+    createMeetingLinkDisplay(booking) {
+        if (booking.sessionType !== 'online' || !booking.meetingLink) return '';
+        
+        return `
+            <div class="session-detail">
+                <i class="fas fa-link"></i> 
+                <span><strong>Meeting:</strong> 
+                    <a href="${booking.meetingLink}" target="_blank" class="meeting-link">
+                        <i class="fas fa-external-link-alt"></i> Join Session
+                    </a>
+                </span>
+            </div>
+        `;
+    },
+    
+    // Create reschedule information section
+    createRescheduleInfo(booking) {
+        if (booking.hasAcceptedReschedule && booking.acceptedReschedule) {
+            const newDate = this.getRescheduleDate(booking.acceptedReschedule.requestedDate);
+            return `
+                <div class="reschedule-info accepted">
+                    <strong><i class="fas fa-check-circle"></i> Reschedule Accepted:</strong> 
+                    New time: ${newDate.toLocaleString()}
+                    ${booking.acceptedReschedule.reason ? `<br><strong>Reason:</strong> ${booking.acceptedReschedule.reason}` : ''}
+                </div>
+            `;
+        }
+        
+        if (booking.hasPendingReschedule && booking.rescheduleRequest) {
+            const proposedDate = this.getRescheduleDate(booking.rescheduleRequest.requestedDate);
+            return `
+                <div class="reschedule-info pending">
+                    <strong><i class="fas fa-clock"></i> Reschedule Proposed:</strong> 
+                    ${proposedDate.toLocaleString()}
+                    ${booking.rescheduleRequest.reason ? `<br><strong>Reason:</strong> ${booking.rescheduleRequest.reason}` : ''}
+                </div>
+            `;
+        }
+        
+        return '';
+    },
+    
+    // Get date from reschedule request
+    getRescheduleDate(dateField) {
+        if (dateField && typeof dateField.toDate === 'function') {
+            return dateField.toDate();
+        }
+        return new Date(dateField);
+    },
+    
+    // Create session action buttons
+    createSessionActions(booking) {
+        const canJoin = this.canJoinSession(booking);
+        const joinButton = this.createJoinButton(booking, canJoin);
+        const rescheduleButton = this.createRescheduleButton(booking);
+        
+        return `
             <div class="session-actions">
-                ${canJoinSession ? 
-                    `<button class="btn-primary join-session-btn" data-session-id="${booking.id}" title="${joinButtonTitle}">
-                        <i class="fas fa-video"></i> Join Session
-                    </button>` : 
-                    `<button class="btn-outline" disabled title="${joinButtonTitle}">
-                        <i class="fas fa-video"></i> Join Session
-                    </button>`
-                }
+                ${joinButton}
                 ${rescheduleButton}
                 <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
                     <i class="fas fa-times"></i> Cancel
@@ -3238,203 +3229,222 @@ function createBookingCard(booking, studentName) {
                     <i class="fas fa-info-circle"></i> Details
                 </button>
             </div>
-        </div>
-    `;
-}
-
-// NEW: Log session join for analytics
-async function logSessionJoin(sessionId) {
-    try {
-        await db.collection('sessionJoins').add({
-            sessionId: sessionId,
-            userId: currentUser.uid,
-            userType: 'tutor',
-            joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            userAgent: navigator.userAgent
+        `;
+    },
+    
+    // Check if session can be joined
+    canJoinSession(booking) {
+        return booking.sessionType === 'online' && 
+               booking.meetingLink && 
+               booking.meetingLink.startsWith('http') && 
+               this.validateSessionJoin(booking).isValid;
+    },
+    
+    // Create join button
+    createJoinButton(booking, canJoin) {
+        const title = canJoin ? 
+            'Join the online session' : 
+            this.getJoinButtonTooltip(booking);
+        
+        if (canJoin) {
+            return `
+                <button class="btn-primary join-session-btn" data-session-id="${booking.id}" title="${title}">
+                    <i class="fas fa-video"></i> Join Session
+                </button>
+            `;
+        }
+        
+        return `
+            <button class="btn-outline" disabled title="${title}">
+                <i class="fas fa-video"></i> Join Session
+            </button>
+        `;
+    },
+    
+    // Get join button tooltip
+    getJoinButtonTooltip(booking) {
+        if (booking.sessionType !== 'online') return 'Not an online session';
+        if (!booking.meetingLink) return 'No meeting link available';
+        return 'Outside allowed join window';
+    },
+    
+    // Create reschedule button
+    createRescheduleButton(booking) {
+        if (booking.hasAcceptedReschedule) {
+            return '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
+        }
+        
+        if (booking.hasPendingReschedule) {
+            return '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Awaiting Student</button>';
+        }
+        
+        return `
+            <button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
+                <i class="fas fa-calendar-alt"></i> Reschedule
+            </button>
+        `;
+    },
+    
+    // Get status badge HTML
+    getStatusBadge(booking) {
+        if (booking.hasAcceptedReschedule) {
+            return '<span class="status-badge status-success">Reschedule Accepted</span>';
+        }
+        
+        if (booking.hasPendingReschedule) {
+            return '<span class="status-badge status-warning">Reschedule Requested</span>';
+        }
+        
+        return '<span class="status-badge status-primary">Confirmed</span>';
+    },
+    
+    // Attach event listeners to booking cards
+    attachEventListeners() {
+        this.attachClickListener('.join-session-btn', (btn) => {
+            const sessionId = btn.getAttribute('data-session-id');
+            this.joinSession(sessionId);
         });
-    } catch (error) {
-        console.error('Error logging session join:', error);
-        // Non-critical, so don't show error to user
-    }
-}
-
-// NEW: Handle sessions with more than 10 bookings (pagination for batched queries)
-async function loadReschedulesForLargeBookings(sessionIds) {
-    if (sessionIds.length <= 10) {
-        return await db.collection('rescheduleRequests')
-            .where('sessionId', 'in', sessionIds)
-            .get();
-    }
-    
-    // For more than 10 sessions, batch the queries
-    const batches = [];
-    for (let i = 0; i < sessionIds.length; i += 10) {
-        const batch = sessionIds.slice(i, i + 10);
-        batches.push(batch);
-    }
-    
-    const allResults = [];
-    for (const batch of batches) {
-        const batchResults = await db.collection('rescheduleRequests')
-            .where('sessionId', 'in', batch)
-            .get();
-        allResults.push(...batchResults.docs);
-    }
-    
-    return { docs: allResults };
-}
-
-// Enhanced event listener setup
-function addBookingActionListeners() {
-    // Join session buttons - with better error handling
-    document.querySelectorAll('.join-session-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            console.log('Join button clicked for session:', sessionId);
-            joinSession(sessionId);
-        });
-    });
-    
-    // Reschedule buttons
-    document.querySelectorAll('.reschedule-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
+        
+        this.attachClickListener('.reschedule-btn', (btn) => {
+            const sessionId = btn.getAttribute('data-session-id');
             openRescheduleModal(sessionId);
         });
-    });
-    
-    // Cancel buttons
-    document.querySelectorAll('.cancel-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
+        
+        this.attachClickListener('.cancel-btn', (btn) => {
+            const sessionId = btn.getAttribute('data-session-id');
             cancelBooking(sessionId);
         });
-    });
-    
-    // Details buttons
-    document.querySelectorAll('.details-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
+        
+        this.attachClickListener('.details-btn', (btn) => {
+            const sessionId = btn.getAttribute('data-session-id');
             showBookingDetails(sessionId);
         });
-    });
-    
-    // Direct meeting link clicks
-    document.querySelectorAll('.meeting-link').forEach(link => {
-        link.addEventListener('click', function(e) {
-            e.preventDefault();
-            const href = this.getAttribute('href');
-            if (href && href.startsWith('http')) {
+        
+        this.attachClickListener('.meeting-link', (link) => {
+            link.preventDefault();
+            const href = link.getAttribute('href');
+            if (href?.startsWith('http')) {
                 window.open(href, '_blank', 'noopener,noreferrer');
             }
         });
-    });
-}
-
-// =============================================
-// CRITICAL FIX: MEETING LINK GENERATION FUNCTION
-// =============================================
-
-// NEW: Server-side meeting link generation (call this from your booking confirmation)
-async function generateMeetingLink(sessionId) {
-    try {
-        // This should be implemented as a Firebase Cloud Function
-        // for security and proper Google Calendar API integration
-        
-        const response = await fetch('/api/generate-meeting-link', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                sessionId: sessionId,
-                tutorId: currentUser.uid
-            })
+    },
+    
+    // Generic click event attachment
+    attachClickListener(selector, handler) {
+        document.querySelectorAll(selector).forEach(element => {
+            element.addEventListener('click', (e) => {
+                e.stopPropagation();
+                handler(element);
+            });
         });
-        
-        if (!response.ok) {
-            throw new Error('Failed to generate meeting link');
-        }
-        
-        const result = await response.json();
-        return result.meetingLink;
-        
-    } catch (error) {
-        console.error('Error generating meeting link:', error);
-        // Fallback: Create a basic Google Meet link
-        return `https://meet.google.com/new?authuser=${currentUser.email}`;
-    }
-}
+    },
+    
+    // Meeting link generation
+    async generateMeetingLink(sessionId) {
+        try {
+            const generateFn = firebase.functions().httpsCallable('generateFallbackMeetingLink');
+            const result = await generateFn({ sessionId });
+            const meetingLink = result.data.meetingLink;
 
-// NEW: Update session with meeting link (call after booking confirmation)
-async function updateSessionWithMeetingLink(sessionId, meetingLink) {
-    try {
+            await this.updateSessionWithMeetingLink(sessionId, meetingLink);
+            return meetingLink;
+            
+        } catch (error) {
+            console.error('Error generating meeting link:', error);
+            return `https://meet.google.com/new?authuser=${currentUser.email}`;
+        }
+    },
+    
+    async regenerateMeetingLink(sessionId) {
+        try {
+            const regenerateFn = firebase.functions().httpsCallable('createGoogleCalendarEvent');
+            const result = await regenerateFn({ sessionId });
+            const newMeetingLink = result.data.meetingLink;
+
+            await this.updateSessionWithMeetingLink(sessionId, newMeetingLink);
+            alert('A new meeting link has been generated for this session.');
+            return newMeetingLink;
+            
+        } catch (error) {
+            console.error('Error regenerating meeting link:', error);
+            alert('Failed to regenerate meeting link. Please try again.');
+            return null;
+        }
+    },
+    
+    async updateSessionWithMeetingLink(sessionId, meetingLink) {
         await db.collection('bookedSessions').doc(sessionId).update({
             meetingLink: meetingLink,
             meetingLinkGeneratedAt: firebase.firestore.FieldValue.serverTimestamp()
         });
-        
-        console.log('Meeting link updated for session:', sessionId);
-    } catch (error) {
-        console.error('Error updating meeting link:', error);
-        throw error;
+    },
+    
+    // Utility methods
+    showLoadingState(container) {
+        container.innerHTML = '<div class="spinner">Loading your bookings...</div>';
+    },
+    
+    showEmptyState(container) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-calendar-times"></i>
+                <h3>No Upcoming Bookings</h3>
+                <p>You have no upcoming sessions scheduled.</p>
+            </div>
+        `;
+        this.confirmedSessions = [];
+        this.updateBookingsCount(0);
+    },
+    
+    showErrorState(container, error) {
+        console.error("Error loading bookings:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Bookings</h3>
+                <p>Failed to load your bookings. Please try again.</p>
+            </div>
+        `;
+    },
+    
+    updateDashboardStats(count) {
+        this.updateBookingsCount(count);
+    },
+    
+    updateBookingsCount(count) {
+        // Implement your dashboard update logic here
+        const countElement = document.getElementById('upcomingBookingsCount');
+        if (countElement) countElement.textContent = count;
+    },
+    
+    async logSessionJoin(sessionId) {
+        try {
+            await db.collection('sessionJoins').add({
+                sessionId: sessionId,
+                userId: currentUser.uid,
+                userType: 'tutor',
+                joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                userAgent: navigator.userAgent
+            });
+        } catch (error) {
+            console.error('Error logging session join:', error);
+        }
+    },
+    
+    formatSessionDate(date) {
+        // Implement your date formatting logic
+        return date.toLocaleString();
     }
-}
+};
 
-// The rest of your existing functions remain the same (cancelBooking, showBookingDetails, etc.)
-// ... [keep all your existing modal functions, utility functions, etc.]
+// Initialize the bookings system when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    BookingsManager.init();
+});
 
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
-
-
-// Debug version of confirmSession in tutor dashboard
-async function confirmSession(sessionId) {
-    console.log('🔧 DEBUG: Starting session confirmation for:', sessionId);
-    
-    try {
-        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        
-        if (!sessionDoc.exists) {
-            console.error('❌ Session not found:', sessionId);
-            alert('Session not found!');
-            return;
-        }
-        
-        const session = sessionDoc.data();
-        console.log('🔧 DEBUG: Session data before confirmation:', session);
-        
-        // Generate meeting link
-        const meetingLink = generateGoogleMeetLink(session);
-        console.log('🔧 DEBUG: Generated meeting link:', meetingLink);
-        
-        // Update session
-        const updateData = {
-            status: 'confirmed',
-            confirmedAt: new Date(),
-            meetingLink: meetingLink,
-            meetingCreated: true,
-            meetingPlatform: 'google_meet',
-            confirmedBy: 'tutor',
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        
-        console.log('🔧 DEBUG: Update data to be saved:', updateData);
-        
-        await db.collection('bookedSessions').doc(sessionId).update(updateData);
-        
-        // Verify the update worked
-        const updatedDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        console.log('🔧 DEBUG: Session data after confirmation:', updatedDoc.data());
-        
-        alert('✅ Session confirmed! Meeting link created: ' + meetingLink);
-        
-    } catch (error) {
-        console.error('❌ Error confirming session:', error);
-        alert('Error confirming session: ' + error.message);
-    }
-}
 // =============================================
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
@@ -5509,6 +5519,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
