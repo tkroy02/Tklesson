@@ -2200,11 +2200,24 @@ function createSessionCard(session, studentData) {
 
 // Generate Google Meet links (they're free and reliable)
 function generateGoogleMeetLink(session) {
-    const meetingId = `tklesson-${session.id}-${Date.now()}`;
-    // Google Meet links can be any string after the last slash
-    return `https://meet.google.com/${meetingId}`;
+    try {
+        // Simple Google Meet link - no API needed
+        const baseUrl = 'https://meet.google.com/';
+        const randomId = Math.random().toString(36).substring(2, 15) + 
+                         Math.random().toString(36).substring(2, 15);
+        
+        const meetLink = baseUrl + randomId;
+        console.log('Generated Meet link:', meetLink); // Debug log
+        
+        return meetLink;
+        
+    } catch (error) {
+        console.error("Error generating Meet link:", error);
+        // Fallback to a predictable link format
+        return `https://meet.google.com/tklesson-${session.id}-${Date.now()}`;
+    }
 }
-
+       
 // Enhanced session confirmation with Google Meet
 async function confirmSessionWithGoogleMeet(sessionId) {
     try {
@@ -2241,25 +2254,24 @@ async function confirmSessionWithGoogleMeet(sessionId) {
 // Confirm a session
 // Enhanced session confirmation with automatic meeting link generation
 async function confirmSession(sessionId) {
-    if (!confirm('Confirm this session and generate a meeting link?')) return;
-    
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
         const session = sessionDoc.data();
         
         // Generate meeting link
-        const meetingData = await generateGoogleMeetLink(session);
+        const meetingLink = generateGoogleMeetLink(session);
         
-        // Update session with meeting details
+        // Update session with CORRECT field names that match student dashboard
         await db.collection('bookedSessions').doc(sessionId).update({
             status: 'confirmed',
             confirmedAt: new Date(),
-            meetLink: meetingData.meetLink || meetingData,
+            meetingLink: meetingLink,  // Changed from meetLink to meetingLink
+            meetingCreated: true,      // Add this missing field
             meetingPlatform: 'google_meet',
             confirmedBy: 'tutor',
             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
-        
+                
         // Create detailed notification for student
         await createDetailedSessionNotification(session, meetingData.meetLink || meetingData);
         
@@ -2271,7 +2283,6 @@ async function confirmSession(sessionId) {
         
     } catch (error) {
         console.error("Error confirming session:", error);
-        alert('Error confirming session. Please try again.');
     }
 }
 
@@ -3005,7 +3016,7 @@ function createBookingCard(booking, studentName) {
     const duration = booking.duration || '1.5';
     const hourlyRate = booking.hourlyRate || '40';
     const location = booking.sessionType || 'online';
-    const meetLink = booking.meetLink || '#';
+    const meetingLink = booking.meetingLink || '#';
     
     // Determine reschedule status
     const isRescheduleRequested = booking.status === 'reschedule_requested';
@@ -3063,7 +3074,7 @@ function createBookingCard(booking, studentName) {
     }
     
     // Determine if join button should be enabled
-    const canJoinSession = location === 'online' && meetLink && meetLink.startsWith('http') && validateSessionForJoin(booking);
+    const canJoinSession = location === 'online' && meetingLink && meetingLink.startsWith('http') && validateSessionForJoin(booking);
     
     return `
         <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
@@ -3137,16 +3148,16 @@ async function joinSession(sessionId) {
             return;
         }
         
-        const meetLink = session.meetLink;
+        const meetingLink = session.meetingLink;
         
-        if (!meetLink || !meetLink.startsWith('http')) {
+        if (!meetingLink || !meetingLink.startsWith('http')) {
             alert('Valid meeting link is not available for this session.');
             return;
         }
         
         // Confirm before joining
         if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
-            window.open(meetLink, '_blank', 'noopener,noreferrer');
+            window.open(meetingLink, '_blank', 'noopener,noreferrer');
         }
         
     } catch (error) {
@@ -3628,6 +3639,53 @@ function prepareFirestoreData(data) {
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
 
+
+// Debug version of confirmSession in tutor dashboard
+async function confirmSession(sessionId) {
+    console.log('🔧 DEBUG: Starting session confirmation for:', sessionId);
+    
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        
+        if (!sessionDoc.exists) {
+            console.error('❌ Session not found:', sessionId);
+            alert('Session not found!');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        console.log('🔧 DEBUG: Session data before confirmation:', session);
+        
+        // Generate meeting link
+        const meetingLink = generateGoogleMeetLink(session);
+        console.log('🔧 DEBUG: Generated meeting link:', meetingLink);
+        
+        // Update session
+        const updateData = {
+            status: 'confirmed',
+            confirmedAt: new Date(),
+            meetingLink: meetingLink,
+            meetingCreated: true,
+            meetingPlatform: 'google_meet',
+            confirmedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        
+        console.log('🔧 DEBUG: Update data to be saved:', updateData);
+        
+        await db.collection('bookedSessions').doc(sessionId).update(updateData);
+        
+        // Verify the update worked
+        const updatedDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        console.log('🔧 DEBUG: Session data after confirmation:', updatedDoc.data());
+        
+        alert('✅ Session confirmed! Meeting link created: ' + meetingLink);
+        
+    } catch (error) {
+        console.error('❌ Error confirming session:', error);
+        alert('Error confirming session: ' + error.message);
+    }
+}
 // =============================================
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
@@ -5702,6 +5760,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
