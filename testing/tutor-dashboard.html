@@ -3015,11 +3015,16 @@ async function joinSession(sessionId) {
         
         console.log('Session data for joining:', session);
         
-        // Validate meeting link availability
-        const meetingLink = session.meetingLink;
+        // Validate meeting link availability - FIXED LOGIC
+        let meetingLink = session.meetingLink;
+        
+        // If no meeting link or invalid, try to generate one
         if (!meetingLink || !meetingLink.startsWith('http')) {
-            alert('Valid meeting link is not available for this session.');
-            return;
+            console.log('Invalid or missing meeting link, generating new one...');
+            meetingLink = await generateMeetingLink(sessionId);
+            
+            // Update the session object with the new link
+            session.meetingLink = meetingLink;
         }
         
         // Enhanced time validation with specific user feedback
@@ -3043,6 +3048,12 @@ async function joinSession(sessionId) {
             return;
         }
         
+        // Final validation before joining
+        if (!meetingLink || !meetingLink.startsWith('http')) {
+            alert('Unable to generate a valid meeting link. Please try again or contact support.');
+            return;
+        }
+        
         // Confirm before joining
         if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
             window.open(meetingLink, '_blank', 'noopener,noreferrer');
@@ -3056,7 +3067,7 @@ async function joinSession(sessionId) {
         alert('Error joining session. Please try again.');
     }
 }
-
+       
 // ENHANCED: Better validation with detailed feedback
 function validateSessionForJoinWithDetails(session) {
     const now = new Date();
@@ -3164,10 +3175,7 @@ function createBookingCard(booking, studentName) {
     }
     
     // Enhanced join button logic with better validation
-    const canJoinSession = location === 'online' && 
-                          meetingLink && 
-                          meetingLink.startsWith('http') && 
-                          validateSessionForJoin(booking);
+    const canJoinSession = location === 'online' && validateSessionForJoin(booking);
     
     // Better meeting link display
     const meetingLinkDisplay = location === 'online' && meetingLink ? 
@@ -3338,34 +3346,42 @@ function addBookingActionListeners() {
 // NEW: Server-side meeting link generation (call this from your booking confirmation)
 async function generateMeetingLink(sessionId) {
     try {
-        // This should be implemented as a Firebase Cloud Function
-        // for security and proper Google Calendar API integration
-        
-        const response = await fetch('/api/generate-meeting-link', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                sessionId: sessionId,
-                tutorId: currentUser.uid
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error('Failed to generate meeting link');
-        }
-        
-        const result = await response.json();
-        return result.meetingLink;
-        
+        const generateFn = firebase.functions().httpsCallable('generateFallbackMeetingLink');
+        const result = await generateFn({ sessionId: sessionId });
+        const meetingLink = result.data.meetingLink;
+
+        // Save the generated link in Firestore
+        await updateSessionWithMeetingLink(sessionId, meetingLink);
+
+        return meetingLink;
     } catch (error) {
         console.error('Error generating meeting link:', error);
-        // Fallback: Create a basic Google Meet link
+        // Fallback to a basic Google Meet link
         return `https://meet.google.com/new?authuser=${currentUser.email}`;
     }
 }
 
+// Regenerates a meeting link if the original is invalid or needs refresh
+async function regenerateMeetingLink(sessionId) {
+    try {
+        const regenerateFn = firebase.functions().httpsCallable('createGoogleCalendarEvent'); // or the name you deployed
+        const result = await regenerateFn({ sessionId: sessionId });
+        const newMeetingLink = result.data.meetingLink;
+
+        // Update Firestore with the new link
+        await updateSessionWithMeetingLink(sessionId, newMeetingLink);
+
+        // Optional: Notify user about the new link
+        alert('A new meeting link has been generated for this session.');
+
+        return newMeetingLink;
+    } catch (error) {
+        console.error('Error regenerating meeting link:', error);
+        alert('Failed to regenerate meeting link. Please try again.');
+        return null;
+    }
+}
+       
 // NEW: Update session with meeting link (call after booking confirmation)
 async function updateSessionWithMeetingLink(sessionId, meetingLink) {
     try {
@@ -5509,3 +5525,4 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
