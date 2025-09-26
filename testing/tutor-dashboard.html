@@ -2989,6 +2989,16 @@ function validateSessionForJoin(session) {
     return hoursDiff >= -0.25 && hoursDiff <= 2;
 }
 
+// Function to generate unique Jitsi Meet room name
+function generateJitsiRoomId(sessionId) {
+    return `tutor-session-${sessionId}-${Math.random().toString(36).substring(2, 10)}`;
+}
+
+// Function to create Jitsi Meet link
+function generateJitsiLink(roomId) {
+    return `https://meet.jit.si/${roomId}`;
+}
+
 // Create booking card HTML for tutor dashboard
 function createBookingCard(booking, studentName) {
     let sessionDate;
@@ -3005,7 +3015,6 @@ function createBookingCard(booking, studentName) {
     const duration = booking.duration || '1.5';
     const hourlyRate = booking.hourlyRate || '40';
     const location = booking.sessionType || 'online';
-    const meetLink = booking.meetLink || '#';
     
     // Determine reschedule status
     const isRescheduleRequested = booking.status === 'reschedule_requested';
@@ -3063,7 +3072,7 @@ function createBookingCard(booking, studentName) {
     }
     
     // Determine if join button should be enabled
-    const canJoinSession = location === 'online' && meetLink && meetLink.startsWith('http') && validateSessionForJoin(booking);
+    const canJoinSession = location === 'online' && validateSessionForJoin(booking);
     
     return `
         <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
@@ -3106,7 +3115,7 @@ function createBookingCard(booking, studentName) {
                     `<button class="btn-primary join-session-btn" data-session-id="${booking.id}">
                         <i class="fas fa-video"></i> Join Session
                     </button>` : 
-                    '<button class="btn-outline" disabled title="Session link not available or outside join window"><i class="fas fa-video"></i> Join Session</button>'
+                    '<button class="btn-outline" disabled title="Session not available or outside join window"><i class="fas fa-video"></i> Join Session</button>'
                 }
                 ${rescheduleButton}
                 <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
@@ -3120,7 +3129,7 @@ function createBookingCard(booking, studentName) {
     `;
 }
 
-// Enhanced Join session function
+// Enhanced Join session function with Jitsi Meet
 async function joinSession(sessionId) {
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -3130,6 +3139,10 @@ async function joinSession(sessionId) {
         }
         
         const session = sessionDoc.data();
+        session.id = sessionId;
+        
+        // Store for review redirection
+        window.lastJoinedSession = session;
         
         // Validate session time
         if (!validateSessionForJoin(session)) {
@@ -3137,22 +3150,188 @@ async function joinSession(sessionId) {
             return;
         }
         
-        const meetLink = session.meetLink;
-        
-        if (!meetLink || !meetLink.startsWith('http')) {
-            alert('Valid meeting link is not available for this session.');
-            return;
-        }
-        
-        // Confirm before joining
-        if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
-            window.open(meetLink, '_blank', 'noopener,noreferrer');
-        }
+        // Show join options (embedded or external)
+        showJoinOptionsModal(session);
         
     } catch (error) {
         console.error("Error joining session:", error);
         alert('Error joining session. Please try again.');
     }
+}
+
+// Show join options modal
+function showJoinOptionsModal(session) {
+    const modalContent = `
+        <div class="join-options-modal">
+            <h3>Join Tutoring Session</h3>
+            <div class="join-options">
+                <div class="join-option">
+                    <h4><i class="fas fa-window-maximize"></i> Embedded Session</h4>
+                    <p>Join the session directly in this window</p>
+                    <button class="btn-primary" id="joinEmbeddedBtn">
+                        <i class="fas fa-play"></i> Join Embedded
+                    </button>
+                </div>
+                <div class="join-option">
+                    <h4><i class="fas fa-external-link-alt"></i> External Window</h4>
+                    <p>Open session in a new tab</p>
+                    <button class="btn-outline" id="joinExternalBtn">
+                        <i class="fas fa-external-link-alt"></i> Open in New Tab
+                    </button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-outline" id="cancelJoinBtn">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    showCustomModal('Join Session', modalContent, () => {
+        // Setup event listeners after modal is shown
+        document.getElementById('joinEmbeddedBtn').addEventListener('click', () => {
+            startEmbeddedJitsiSession(session);
+            closeModal();
+        });
+        
+        document.getElementById('joinExternalBtn').addEventListener('click', () => {
+            window.open(session.meetLink, '_blank', 'noopener,noreferrer');
+            closeModal();
+        });
+        
+        document.getElementById('cancelJoinBtn').addEventListener('click', closeModal);
+    });
+}
+
+// Start embedded Jitsi session
+function startEmbeddedJitsiSession(session) {
+    // Hide main content and show session container
+    document.getElementById('mainContent').style.display = 'none';
+    
+    const sessionContainer = document.getElementById('sessionContainer') || createSessionContainer(session);
+    sessionContainer.style.display = 'block';
+    
+    // Initialize Jitsi Meet embedded
+    initializeJitsiMeet(session);
+}
+
+// Create session container if it doesn't exist
+function createSessionContainer(session) {
+    const container = document.createElement('div');
+    container.id = 'sessionContainer';
+    container.innerHTML = `
+        <div class="session-header">
+            <button class="btn-outline" id="endSessionBtn">
+                <i class="fas fa-times"></i> End Session
+            </button>
+            <h3>Live Session: ${session.subject || 'Tutoring Session'}</h3>
+        </div>
+        <div id="jitsiMeetContainer"></div>
+        <div class="session-controls">
+            <button class="btn-primary" id="openExternalBtn">
+                <i class="fas fa-external-link-alt"></i> Open in New Tab
+            </button>
+        </div>
+    `;
+    document.body.appendChild(container);
+    
+    // Add event listeners
+    document.getElementById('endSessionBtn').addEventListener('click', endJitsiSession);
+    document.getElementById('openExternalBtn').addEventListener('click', () => {
+        window.open(session.meetLink, '_blank', 'noopener,noreferrer');
+    });
+    
+    return container;
+}
+
+// Initialize Jitsi Meet
+function initializeJitsiMeet(session) {
+    const domain = 'meet.jit.si';
+    const options = {
+        roomName: session.jitsiRoomId || generateJitsiRoomId(session.id),
+        width: '100%',
+        height: 600,
+        parentNode: document.getElementById('jitsiMeetContainer'),
+        configOverwrite: {
+            prejoinPageEnabled: false,
+            startWithAudioMuted: true,
+            startWithVideoMuted: true,
+            disableModeratorIndicator: false,
+            startScreenSharing: false,
+            enableEmailInStats: false,
+            enableWelcomePage: false,
+            enableClosePage: false
+        },
+        interfaceConfigOverwrite: {
+            TOOLBAR_BUTTONS: [
+                'microphone', 'camera', 'closedcaptions', 'desktop', 'fullscreen',
+                'fodeviceselection', 'hangup', 'profile', 'chat', 'recording',
+                'livestreaming', 'etherpad', 'sharedvideo', 'settings', 'raisehand',
+                'videoquality', 'filmstrip', 'invite', 'feedback', 'stats', 'shortcuts',
+                'tileview', 'videobackgroundblur', 'download', 'help', 'mute-everyone',
+                'mute-video-everyone', 'security'
+            ],
+            SETTINGS_SECTIONS: ['devices', 'language', 'moderator', 'profile', 'calendar'],
+            SHOW_JITSI_WATERMARK: false,
+            SHOW_WATERMARK_FOR_GUESTS: false,
+            DEFAULT_BACKGROUND: '#f0f2f5',
+            OPTIMAL_BANDWIDTH: 800000,
+            MAXIMUM_BANDWIDTH: 1000000,
+        },
+        userInfo: {
+            displayName: currentUser.displayName || 'Tutor',
+            email: currentUser.email
+        }
+    };
+    
+    const api = new JitsiMeetExternalAPI(domain, options);
+    
+    // Handle session end
+    api.addEventListener('videoConferenceLeft', () => {
+        endJitsiSession();
+    });
+    
+    // Store API instance for later use
+    window.jitsiApi = api;
+}
+
+// End Jitsi session
+function endJitsiSession() {
+    if (window.jitsiApi) {
+        window.jitsiApi.dispose();
+        window.jitsiApi = null;
+    }
+    
+    // Show main content again
+    document.getElementById('mainContent').style.display = 'block';
+    const sessionContainer = document.getElementById('sessionContainer');
+    if (sessionContainer) {
+        sessionContainer.style.display = 'none';
+    }
+    
+    // Redirect student to review page if applicable
+    if (currentUser.role === 'student') {
+        redirectToReviewPage();
+    }
+}
+
+// Redirect student to review page after session
+function redirectToReviewPage() {
+    // Check if we have a recent session to review
+    const recentSession = getRecentSession();
+    if (recentSession) {
+        // Store session ID for review page
+        sessionStorage.setItem('sessionToReview', recentSession.id);
+        
+        // Redirect to review page
+        window.location.href = 'review-session.html';
+    }
+}
+
+// Helper function to get recent session
+function getRecentSession() {
+    // This would typically query Firestore for recently ended sessions
+    // For now, return the last joined session
+    return window.lastJoinedSession;
 }
 
 // Add event listeners to booking action buttons
@@ -3583,10 +3762,17 @@ async function confirmSession(sessionId) {
         
         const sessionData = sessionDoc.data();
         
-        // Update session status
+        // Generate Jitsi Meet link
+        const jitsiRoomId = generateJitsiRoomId(sessionId);
+        const jitsiLink = generateJitsiLink(jitsiRoomId);
+        
+        // Update session with Jitsi Meet link
         await db.collection('bookedSessions').doc(sessionId).update({
             status: 'confirmed',
-            confirmedAt: firebase.firestore.FieldValue.serverTimestamp()
+            confirmedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            meetLink: jitsiLink,
+            jitsiRoomId: jitsiRoomId,
+            sessionType: 'online' // Ensure this is set
         });
         
         // Create notification safely
@@ -3627,7 +3813,6 @@ function prepareFirestoreData(data) {
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
-
 // =============================================
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
@@ -5702,4 +5887,5 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
