@@ -4796,18 +4796,18 @@ function displayEarningsErrorState() {
 // =============================================
 
 // =============================================
-// NOTIFICATION BELL FUNCTIONALITY STARTS HERE
+// NOTIFICATION BELL FUNCTIONALITY (REAL DATA VERSION)
 // =============================================
 
 // Global variables for notifications
 let notifications = [];
 let unreadCount = 0;
 
-// Initialize notification system
+// Initialize notification system with real data
 function initializeNotifications() {
     setupNotificationBell();
-    loadNotifications();
-    startNotificationListener();
+    loadRealNotifications();
+    startRealTimeNotificationListener();
 }
 
 // Setup notification bell click functionality
@@ -4865,7 +4865,7 @@ function createNotificationDropdown() {
         </div>
         <div class="notification-list" id="notificationList" style="padding: 10px;"></div>
         <div class="notification-footer" style="padding: 10px; border-top: 1px solid var(--gray-light); text-align: center;">
-            <span style="color: var(--gray); font-size: 12px;">You're all caught up!</span>
+            <span style="color: var(--gray); font-size: 12px;" id="notificationFooterText">You're all caught up!</span>
         </div>
     `;
     
@@ -4895,78 +4895,64 @@ function closeNotificationDropdown() {
     }
 }
 
-// Load notifications from Firestore (or create sample data)
-async function loadNotifications() {
+// Load real notifications from Firestore
+async function loadRealNotifications() {
     try {
-        // Try to load real notifications from Firestore
+        // Load notifications from the notifications collection
         const notificationsSnapshot = await db.collection('notifications')
             .where('userId', '==', currentUser.uid)
             .orderBy('createdAt', 'desc')
-            .limit(20)
+            .limit(50)
             .get();
         
+        notifications = [];
+        
         if (!notificationsSnapshot.empty) {
-            notifications = [];
-            notificationsSnapshot.forEach(doc => {
+            // Process each notification and enrich with session data
+            for (const doc of notificationsSnapshot.docs) {
                 const notification = doc.data();
                 notification.id = doc.id;
+                
+                // Enrich notification with session details if available
+                if (notification.relatedSessionId) {
+                    try {
+                        const sessionDoc = await db.collection('bookedSessions').doc(notification.relatedSessionId).get();
+                        if (sessionDoc.exists) {
+                            notification.sessionData = sessionDoc.data();
+                        }
+                    } catch (error) {
+                        console.error("Error loading session data:", error);
+                    }
+                }
+                
+                // Check for reschedule request status if it's a reschedule notification
+                if (notification.type === 'reschedule_request' && notification.relatedSessionId) {
+                    try {
+                        const rescheduleQuery = await db.collection('rescheduleRequests')
+                            .where('sessionId', '==', notification.relatedSessionId)
+                            .where('status', 'in', ['pending', 'accepted', 'declined'])
+                            .orderBy('requestedAt', 'desc')
+                            .limit(1)
+                            .get();
+                        
+                        if (!rescheduleQuery.empty) {
+                            notification.rescheduleData = rescheduleQuery.docs[0].data();
+                        }
+                    } catch (error) {
+                        console.error("Error loading reschedule data:", error);
+                    }
+                }
+                
                 notifications.push(notification);
-            });
-        } else {
-            // Create sample notifications if none exist
-            createSampleNotifications();
+            }
         }
         
         updateNotificationBadge();
         
     } catch (error) {
         console.error("Error loading notifications:", error);
-        // Fallback to sample notifications
-        createSampleNotifications();
-        updateNotificationBadge();
+        showNotificationError();
     }
-}
-
-// Create sample notifications for demonstration
-function createSampleNotifications() {
-    notifications = [
-        {
-            id: '1',
-            type: 'session_request',
-            title: 'New Session Request',
-            message: 'John Smith requested a Math tutoring session for tomorrow at 3:00 PM.',
-            isRead: false,
-            createdAt: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
-            relatedSessionId: 'session123'
-        },
-        {
-            id: '2',
-            type: 'session_confirmed',
-            title: 'Session Confirmed',
-            message: 'Your Chemistry session with Sarah Johnson has been confirmed for Friday.',
-            isRead: true,
-            createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-            relatedSessionId: 'session456'
-        },
-        {
-            id: '3',
-            type: 'payment_processed',
-            title: 'Payment Processed',
-            message: 'Your payment for last week\'s sessions has been processed. Amount: $120.00',
-            isRead: false,
-            createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
-            relatedSessionId: null
-        },
-        {
-            id: '4',
-            type: 'system',
-            title: 'System Maintenance',
-            message: 'There will be system maintenance this Sunday from 2:00 AM to 4:00 AM.',
-            isRead: true,
-            createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
-            relatedSessionId: null
-        }
-    ];
 }
 
 // Update notification badge count
@@ -4982,11 +4968,27 @@ function updateNotificationBadge() {
             badge.style.display = 'none';
         }
     }
+    
+    // Also update the pending sessions count in sidebar if it exists
+    const pendingCountBadge = document.getElementById('pendingCount');
+    if (pendingCountBadge) {
+        const pendingNotifications = notifications.filter(n => 
+            !n.isRead && (n.type === 'session_request' || n.type === 'reschedule_request')
+        ).length;
+        
+        if (pendingNotifications > 0) {
+            pendingCountBadge.textContent = pendingNotifications > 9 ? '9+' : pendingNotifications.toString();
+            pendingCountBadge.style.display = 'inline-block';
+        } else {
+            pendingCountBadge.style.display = 'none';
+        }
+    }
 }
 
-// Update notification dropdown content
+// Update notification dropdown content with real data
 function updateNotificationDropdownContent() {
     const notificationList = document.getElementById('notificationList');
+    const footerText = document.getElementById('notificationFooterText');
     
     if (notifications.length === 0) {
         notificationList.innerHTML = `
@@ -4995,18 +4997,25 @@ function updateNotificationDropdownContent() {
                 <p>No notifications yet</p>
             </div>
         `;
+        footerText.textContent = "You're all caught up!";
         return;
     }
     
     let notificationsHTML = '';
+    const unreadNotifications = notifications.filter(n => !n.isRead);
     
     notifications.forEach(notification => {
         const timeAgo = getTimeAgo(notification.createdAt);
         const isUnread = !notification.isRead;
         
+        // Generate appropriate message based on notification type and data
+        const notificationMessage = generateNotificationMessage(notification);
+        
         notificationsHTML += `
             <div class="notification-item ${isUnread ? 'unread' : ''}" 
                  data-notification-id="${notification.id}"
+                 data-notification-type="${notification.type}"
+                 data-session-id="${notification.relatedSessionId || ''}"
                  style="padding: 12px; border-bottom: 1px solid var(--gray-light); cursor: pointer; transition: background 0.2s;">
                 <div style="display: flex; align-items: flex-start;">
                     <div style="margin-right: 10px;">
@@ -5016,7 +5025,7 @@ function updateNotificationDropdownContent() {
                     </div>
                     <div style="flex: 1;">
                         <div style="font-weight: 600; color: var(--dark); margin-bottom: 4px;">${notification.title}</div>
-                        <div style="font-size: 0.9em; color: var(--gray); line-height: 1.4;">${notification.message}</div>
+                        <div style="font-size: 0.9em; color: var(--gray); line-height: 1.4;">${notificationMessage}</div>
                         <div style="font-size: 0.8em; color: var(--gray); margin-top: 5px;">${timeAgo}</div>
                     </div>
                     ${isUnread ? '<div class="unread-indicator" style="width: 8px; height: 8px; background: var(--accent); border-radius: 50%; margin-left: 10px;"></div>' : ''}
@@ -5026,18 +5035,65 @@ function updateNotificationDropdownContent() {
     });
     
     notificationList.innerHTML = notificationsHTML;
+    footerText.textContent = unreadNotifications.length > 0 ? 
+        `${unreadNotifications.length} unread notification${unreadNotifications.length !== 1 ? 's' : ''}` : 
+        "You're all caught up!";
     
     // Add click handlers to notification items
     document.querySelectorAll('.notification-item').forEach(item => {
         item.addEventListener('click', function() {
             const notificationId = this.getAttribute('data-notification-id');
-            handleNotificationClick(notificationId);
+            const notificationType = this.getAttribute('data-notification-type');
+            const sessionId = this.getAttribute('data-session-id');
+            handleNotificationClick(notificationId, notificationType, sessionId);
         });
     });
 }
 
+// Generate appropriate message based on notification type and data
+function generateNotificationMessage(notification) {
+    // Use the message from Firestore if available
+    if (notification.message) {
+        return notification.message;
+    }
+    
+    // Fallback messages based on type
+    switch(notification.type) {
+        case 'reschedule_request':
+            if (notification.rescheduleData) {
+                const status = notification.rescheduleData.status;
+                if (status === 'pending') {
+                    return 'A reschedule request is awaiting your response.';
+                } else if (status === 'accepted') {
+                    return 'Reschedule request has been accepted.';
+                } else if (status === 'declined') {
+                    return 'Reschedule request was declined.';
+                }
+            }
+            return 'There is a reschedule request for your session.';
+        
+        case 'session_request':
+            return 'You have a new session request waiting for confirmation.';
+        
+        case 'session_confirmed':
+            return 'Your session has been confirmed.';
+        
+        case 'session_cancelled':
+            return 'A session has been cancelled.';
+        
+        case 'payment_processed':
+            return 'Your payment has been processed successfully.';
+        
+        case 'invoice_submitted':
+            return 'Your invoice has been submitted for processing.';
+        
+        default:
+            return 'You have a new notification.';
+    }
+}
+
 // Handle notification click
-function handleNotificationClick(notificationId) {
+function handleNotificationClick(notificationId, notificationType, sessionId) {
     const notification = notifications.find(n => n.id === notificationId);
     
     if (notification) {
@@ -5047,21 +5103,27 @@ function handleNotificationClick(notificationId) {
         }
         
         // Handle notification based on type
-        switch(notification.type) {
+        switch(notificationType) {
             case 'session_request':
-                // Navigate to tutoring opportunities section
+            case 'reschedule_request':
                 navigateToSection('tutoring-opportunities');
                 break;
+            
             case 'session_confirmed':
-                // Navigate to bookings section
                 navigateToSection('bookings');
                 break;
+            
             case 'payment_processed':
-                // Navigate to earnings section
+            case 'invoice_submitted':
                 navigateToSection('your-earnings');
                 break;
+            
+            case 'session_cancelled':
+                navigateToSection('sessions');
+                break;
+            
             default:
-                // For system notifications, just close the dropdown
+                // For other notifications, just close the dropdown
                 break;
         }
         
@@ -5076,13 +5138,11 @@ async function markNotificationAsRead(notificationId) {
     
     if (notification && !notification.isRead) {
         try {
-            // Update in Firestore if it's a real notification
-            if (notification.id.length > 2) { // Simple check for real vs sample notifications
-                await db.collection('notifications').doc(notificationId).update({
-                    isRead: true,
-                    readAt: new Date()
-                });
-            }
+            // Update in Firestore
+            await db.collection('notifications').doc(notificationId).update({
+                isRead: true,
+                readAt: new Date()
+            });
             
             // Update local state
             notification.isRead = true;
@@ -5100,21 +5160,21 @@ async function markAllNotificationsAsRead() {
     try {
         const unreadNotifications = notifications.filter(n => !n.isRead);
         
+        if (unreadNotifications.length === 0) {
+            return;
+        }
+        
         // Update all in Firestore
         const batch = db.batch();
         unreadNotifications.forEach(notification => {
-            if (notification.id.length > 2) { // Real notifications
-                const notificationRef = db.collection('notifications').doc(notification.id);
-                batch.update(notificationRef, {
-                    isRead: true,
-                    readAt: new Date()
-                });
-            }
+            const notificationRef = db.collection('notifications').doc(notification.id);
+            batch.update(notificationRef, {
+                isRead: true,
+                readAt: new Date()
+            });
         });
         
-        if (unreadNotifications.length > 0) {
-            await batch.commit();
-        }
+        await batch.commit();
         
         // Update local state
         notifications.forEach(notification => {
@@ -5131,15 +5191,17 @@ async function markAllNotificationsAsRead() {
 
 // Clear all notifications
 async function clearAllNotifications() {
+    if (notifications.length === 0) {
+        return;
+    }
+    
     if (confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
         try {
             // Delete all from Firestore
             const batch = db.batch();
             notifications.forEach(notification => {
-                if (notification.id.length > 2) { // Real notifications
-                    const notificationRef = db.collection('notifications').doc(notification.id);
-                    batch.delete(notificationRef);
-                }
+                const notificationRef = db.collection('notifications').doc(notification.id);
+                batch.delete(notificationRef);
             });
             
             await batch.commit();
@@ -5162,6 +5224,105 @@ function navigateToSection(sectionId) {
     if (menuItem) {
         menuItem.click();
     }
+}
+
+// Listen for new notifications in real-time
+function startRealTimeNotificationListener() {
+    // Listen for new notifications in Firestore
+    db.collection('notifications')
+        .where('userId', '==', currentUser.uid)
+        .orderBy('createdAt', 'desc')
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    // New notification added
+                    const notification = change.doc.data();
+                    notification.id = change.doc.id;
+                    
+                    // Check if this notification already exists
+                    const existingIndex = notifications.findIndex(n => n.id === notification.id);
+                    if (existingIndex === -1) {
+                        // Add to beginning of notifications array
+                        notifications.unshift(notification);
+                        
+                        // Update UI
+                        updateNotificationBadge();
+                        
+                        // Show toast notification for new unread alerts
+                        if (!notification.isRead && notification.priority === 'high') {
+                            showToastNotification(notification);
+                        }
+                    }
+                } else if (change.type === 'modified') {
+                    // Notification updated (e.g., marked as read)
+                    const updatedNotification = change.doc.data();
+                    updatedNotification.id = change.doc.id;
+                    
+                    const existingIndex = notifications.findIndex(n => n.id === updatedNotification.id);
+                    if (existingIndex !== -1) {
+                        notifications[existingIndex] = updatedNotification;
+                        updateNotificationBadge();
+                    }
+                } else if (change.type === 'removed') {
+                    // Notification deleted
+                    const removedId = change.doc.id;
+                    notifications = notifications.filter(n => n.id !== removedId);
+                    updateNotificationBadge();
+                }
+            });
+        });
+}
+
+// Show toast notification for important alerts
+function showToastNotification(notification) {
+    // Remove existing toast if any
+    const existingToast = document.querySelector('.notification-toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = 'notification-toast';
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: white;
+        padding: 15px;
+        border-radius: var(--border-radius-sm);
+        box-shadow: var(--box-shadow-hover);
+        z-index: 3000;
+        max-width: 300px;
+        border-left: 4px solid ${getNotificationColor(notification.type)};
+        animation: slideInRight 0.3s ease;
+    `;
+    
+    toast.innerHTML = `
+        <div style="display: flex; align-items: flex-start;">
+            <div style="margin-right: 10px; color: ${getNotificationColor(notification.type)};">
+                <i class="${getNotificationIcon(notification.type)}"></i>
+            </div>
+            <div style="flex: 1;">
+                <div style="font-weight: 600; margin-bottom: 5px;">${notification.title}</div>
+                <div style="font-size: 0.9em; color: var(--gray);">${generateNotificationMessage(notification)}</div>
+            </div>
+            <button class="close-toast" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--gray); margin-left: 10px;">×</button>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // Add close button functionality
+    toast.querySelector('.close-toast').addEventListener('click', function() {
+        toast.remove();
+    });
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.remove();
+        }
+    }, 5000);
 }
 
 // Helper function to get time ago string
@@ -5188,6 +5349,7 @@ function getNotificationIcon(type) {
         case 'session_cancelled': return 'fas fa-calendar-times';
         case 'payment_processed': return 'fas fa-dollar-sign';
         case 'reschedule_request': return 'fas fa-clock';
+        case 'invoice_submitted': return 'fas fa-file-invoice';
         default: return 'fas fa-bell';
     }
 }
@@ -5200,83 +5362,23 @@ function getNotificationColor(type) {
         case 'session_cancelled': return 'var(--error)';
         case 'payment_processed': return 'var(--primary)';
         case 'reschedule_request': return 'var(--accent)';
+        case 'invoice_submitted': return 'var(--success-light)';
         default: return 'var(--gray)';
     }
 }
 
-// Listen for new notifications in real-time
-function startNotificationListener() {
-    // Listen for new notifications in Firestore
-    db.collection('notifications')
-        .where('userId', '==', currentUser.uid)
-        .where('isRead', '==', false)
-        .orderBy('createdAt', 'desc')
-        .onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    // New notification added
-                    const notification = change.doc.data();
-                    notification.id = change.doc.id;
-                    
-                    // Add to beginning of notifications array
-                    notifications.unshift(notification);
-                    
-                    // Update UI
-                    updateNotificationBadge();
-                    
-                    // Show toast notification for new alerts
-                    if (notification.priority === 'high') {
-                        showToastNotification(notification);
-                    }
-                }
-            });
-        });
-}
-
-// Show toast notification for important alerts
-function showToastNotification(notification) {
-    const toast = document.createElement('div');
-    toast.className = 'notification-toast';
-    toast.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: white;
-        padding: 15px;
-        border-radius: var(--border-radius-sm);
-        box-shadow: var(--box-shadow-hover);
-        z-index: 3000;
-        max-width: 300px;
-        border-left: 4px solid ${getNotificationColor(notification.type)};
-        animation: slideInRight 0.3s ease;
-    `;
-    
-    toast.innerHTML = `
-        <div style="display: flex; align-items: flex-start;">
-            <div style="margin-right: 10px; color: ${getNotificationColor(notification.type)};">
-                <i class="${getNotificationIcon(notification.type)}"></i>
+// Show error state
+function showNotificationError() {
+    const notificationList = document.getElementById('notificationList');
+    if (notificationList) {
+        notificationList.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--error);">
+                <i class="fas fa-exclamation-triangle" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>Error loading notifications</p>
+                <button onclick="loadRealNotifications()" class="btn-outline" style="margin-top: 10px;">Try Again</button>
             </div>
-            <div style="flex: 1;">
-                <div style="font-weight: 600; margin-bottom: 5px;">${notification.title}</div>
-                <div style="font-size: 0.9em; color: var(--gray);">${notification.message}</div>
-            </div>
-            <button class="close-toast" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--gray); margin-left: 10px;">×</button>
-        </div>
-    `;
-    
-    document.body.appendChild(toast);
-    
-    // Add close button functionality
-    toast.querySelector('.close-toast').addEventListener('click', function() {
-        toast.remove();
-    });
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.remove();
-        }
-    }, 5000);
+        `;
+    }
 }
 
 // Add CSS animation for toast
@@ -5326,6 +5428,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
