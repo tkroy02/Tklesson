@@ -2997,39 +2997,18 @@ function createBookingCard(booking, studentName) {
     const isRescheduleRequested = booking.status === 'reschedule_requested';
     const hasPendingReschedule = booking.hasPendingReschedule;
     
-    // Determine if session can be joined
-    const canJoinSession = location === 'online' && meetLink && 
-                          meetLink.startsWith('http') && 
-                          validateSessionForJoin(booking);
-    
-    // Reschedule status display
-    let statusBadge = '';
-    let rescheduleButton = '';
-    
-    if (isRescheduleRequested) {
-        if (booking.rescheduleAcceptedAt) {
-            statusBadge = '<span class="status-badge status-success">Reschedule Accepted</span>';
-            rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
-        } else if (booking.rescheduleDeclinedAt) {
-            statusBadge = '<span class="status-badge status-error">Reschedule Declined</span>';
-            rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-times"></i> Reschedule Declined</button>';
-        } else {
-            statusBadge = '<span class="status-badge status-warning">Reschedule Requested</span>';
-            rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Reschedule Pending</button>';
-        }
-    } else {
-        statusBadge = '<span class="status-badge status-primary">Confirmed</span>';
-        rescheduleButton = `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
-            <i class="fas fa-calendar-alt"></i> Reschedule
-        </button>`;
-    }
+    // Determine if join button should be enabled
+    const canJoinSession = location === 'online' && meetLink && meetLink.startsWith('http') && validateSessionForJoin(booking);
     
     return `
         <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
             <div class="session-header">
                 <div class="session-title">${subject} Session with ${studentName}</div>
                 <div class="session-date">${formattedDate}</div>
-                ${statusBadge}
+                ${isRescheduleRequested ? 
+                    `<span class="status-badge status-warning">Reschedule Requested</span>` : 
+                    '<span class="status-badge status-primary">Confirmed</span>'
+                }
             </div>
             <div class="session-details">
                 <div class="session-detail">
@@ -3071,11 +3050,18 @@ function createBookingCard(booking, studentName) {
                     `<button class="btn-primary join-session-btn" data-session-id="${booking.id}" data-meet-link="${meetLink}">
                         <i class="fas fa-video"></i> Join Session
                     </button>` : 
-                    `<button class="btn-outline" disabled title="${getJoinButtonTooltip(booking, location, meetLink)}">
+                    `<button class="btn-outline" disabled title="${getJoinButtonTooltip(booking, meetLink)}">
                         <i class="fas fa-video"></i> Join Session
                     </button>`
                 }
-                ${rescheduleButton}
+                ${!isRescheduleRequested ? 
+                    `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-calendar-alt"></i> Reschedule
+                    </button>` : 
+                    `<button class="btn-outline" disabled>
+                        <i class="fas fa-calendar-alt"></i> Reschedule Pending
+                    </button>`
+                }
                 <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
                     <i class="fas fa-times"></i> Cancel
                 </button>
@@ -3087,7 +3073,7 @@ function createBookingCard(booking, studentName) {
     `;
 }
 
-// Enhanced Join session function with better Google Meet support
+// Enhanced Join session function with better Google Meet handling
 async function joinSession(sessionId, meetLink) {
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -3099,51 +3085,72 @@ async function joinSession(sessionId, meetLink) {
         const session = sessionDoc.data();
         session.id = sessionId;
         
+        // Use provided meetLink or fallback to session data
+        const actualMeetLink = meetLink || session.meetLink;
+        
+        if (!actualMeetLink || !actualMeetLink.startsWith('http')) {
+            alert('Valid meeting link is not available for this session. Please contact the student.');
+            return;
+        }
+        
         // Validate session time
         if (!validateSessionForJoin(session)) {
             alert('You can only join sessions 15 minutes before the scheduled time and up to 2 hours after.');
             return;
         }
         
-        // Use provided meetLink or fallback to session's meetLink
-        const finalMeetLink = meetLink || session.meetLink;
-        
-        if (!finalMeetLink || !finalMeetLink.startsWith('http')) {
-            alert('Valid meeting link is not available for this session. Please contact the student.');
-            return;
+        // Test the link first
+        try {
+            const response = await fetch(actualMeetLink, { method: 'HEAD', mode: 'no-cors' });
+            // If we get here, the link is likely valid (no-cors requests don't throw on network errors)
+        } catch (error) {
+            console.warn('Link test failed, but proceeding anyway:', error);
         }
-        
-        // Clean up the meet link (remove any extra spaces or invalid characters)
-        const cleanMeetLink = finalMeetLink.trim();
         
         // Confirm before joining
         if (confirm('Join the tutoring session now? This will open the Google Meet in a new tab.')) {
-            
-            // Log the join action for analytics
-            await db.collection('bookedSessions').doc(sessionId).update({
-                lastJoinedAt: new Date(),
-                joinCount: firebase.firestore.FieldValue.increment(1),
-                lastJoinedBy: 'tutor'
-            });
-            
             // Add a small delay to ensure the popup isn't blocked
             setTimeout(() => {
-                // Open in new tab with proper attributes
-                const newWindow = window.open(cleanMeetLink, '_blank', 'noopener,noreferrer,width=1200,height=800');
+                const newWindow = window.open(actualMeetLink, '_blank', 'noopener,noreferrer,width=1200,height=800');
                 
                 if (!newWindow || newWindow.closed || typeof newWindow.closed == 'undefined') {
                     // Popup blocked, fallback to same tab
                     alert('Popup was blocked. Redirecting to meeting in this tab...');
-                    window.location.href = cleanMeetLink;
+                    window.location.href = actualMeetLink;
                 }
-            }, 500);
+            }, 100);
             
+            // Log the join action
+            try {
+                await db.collection('bookedSessions').doc(sessionId).update({
+                    lastJoinedAt: new Date(),
+                    joinCount: firebase.firestore.FieldValue.increment(1)
+                });
+                
+                // Also create a session join record for analytics
+                await db.collection('sessionJoins').add({
+                    sessionId: sessionId,
+                    joinedBy: 'tutor',
+                    joinedAt: new Date(),
+                    meetLink: actualMeetLink
+                });
+            } catch (logError) {
+                console.error("Error logging join action:", logError);
+            }
         }
         
     } catch (error) {
         console.error("Error joining session:", error);
-        alert('Error joining session. Please check the meeting link and try again.');
+        alert('Error joining session. Please try again or check the meeting link.');
     }
+}
+
+// Helper function to get join button tooltip
+function getJoinButtonTooltip(booking, meetLink) {
+    if (booking.sessionType !== 'online') return 'Only available for online sessions';
+    if (!meetLink || !meetLink.startsWith('http')) return 'Meeting link not available';
+    if (!validateSessionForJoin(booking)) return 'Available 15 minutes before session time';
+    return 'Join the session';
 }
 
 // Add event listeners to booking action buttons
@@ -3197,22 +3204,6 @@ function validateSessionForJoin(session) {
     return hoursDiff >= -0.25 && hoursDiff <= 2;
 }
 
-// Helper function to get tooltip for join button
-function getJoinButtonTooltip(booking, location, meetLink) {
-    if (location !== 'online') return 'Only available for online sessions';
-    if (!meetLink || !meetLink.startsWith('http')) return 'Meeting link not available';
-    
-    const now = new Date();
-    const sessionTime = booking.date.toDate();
-    const timeDiff = sessionTime.getTime() - now.getTime();
-    const hoursDiff = timeDiff / (1000 * 60 * 60);
-    
-    if (hoursDiff < -0.25) return 'Session join window has expired (2 hours after session)';
-    if (hoursDiff > 2) return 'Join available 15 minutes before session';
-    
-    return 'Join session';
-}
-
 // Cancel a booking as tutor
 async function cancelBooking(sessionId) {
     if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
@@ -3250,18 +3241,7 @@ async function showBookingDetails(sessionId) {
         
         const session = sessionDoc.data();
         const date = session.date.toDate();
-        
-        // Check for meet link availability
-        const meetLinkInfo = session.meetLink && session.meetLink.startsWith('http') ? 
-            `<div class="detail-item">
-                <strong>Meeting Link:</strong> 
-                <a href="${session.meetLink}" target="_blank" rel="noopener noreferrer" style="color: var(--primary); text-decoration: underline;">
-                    Click to open Google Meet
-                </a>
-            </div>` : 
-            `<div class="detail-item">
-                <strong>Meeting Link:</strong> <span style="color: #999;">Not available</span>
-            </div>`;
+        const meetLink = session.meetLink || 'Not available';
         
         const modalContent = `
             <div class="booking-details">
@@ -3283,7 +3263,13 @@ async function showBookingDetails(sessionId) {
                     <div class="detail-item">
                         <strong>Session Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
                     </div>
-                    ${meetLinkInfo}
+                    <div class="detail-item">
+                        <strong>Meeting Link:</strong> 
+                        ${meetLink.startsWith('http') ? 
+                            `<a href="${meetLink}" target="_blank" rel="noopener">${meetLink}</a>` : 
+                            meetLink
+                        }
+                    </div>
                     <div class="detail-item">
                         <strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}
                     </div>
@@ -3345,16 +3331,30 @@ function updateBookingsCount(count) {
 
 // Helper function to show notifications
 function showNotification(message, type = 'info') {
-    // You can implement a toast notification system here
-    // For now, using alert as fallback
-    alert(`${type.toUpperCase()}: ${message}`);
+    // Simple notification implementation - you can enhance this with a proper toast system
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.innerHTML = `
+        <div class="notification-content">
+            <i class="fas fa-${type === 'success' ? 'check' : type === 'error' ? 'exclamation-triangle' : 'info'}"></i>
+            <span>${message}</span>
+        </div>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 5000);
 }
 
 // Initialize booking section
 function initBookingsSection() {
     console.log("Bookings section initialized");
-    // Ensure event listeners are set up
-    addBookingActionListeners();
+    // Add any additional initialization code here
 }
 
 // Show booking details modal
@@ -3550,14 +3550,14 @@ async function submitRescheduleRequest(sessionId) {
         
         console.log('Creating reschedule request in separate collection...');
         
-        // CREATE RESCHEDULE REQUEST IN SEPARATE COLLECTION (to match student expectations)
+        // CREATE RESCHEDULE REQUEST IN SEPARATE COLLECTION
         await db.collection('rescheduleRequests').add({
             sessionId: sessionId,
             requestedBy: 'tutor',
             requestedDate: newDateTime,
             originalDate: sessionData.date,
             reason: reason,
-            status: 'pending', // This is what the student dashboard looks for
+            status: 'pending',
             studentId: sessionData.studentId,
             tutorId: currentUser.uid,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -3626,7 +3626,6 @@ function closeRescheduleModal() {
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
-
 // =============================================
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
@@ -5701,6 +5700,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
