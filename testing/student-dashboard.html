@@ -3545,10 +3545,254 @@ document.addEventListener('DOMContentLoaded', function() {
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY ENDS HERE
 // =============================================
+// =============================================
+// NOTIFICATION-RELATED BOOKING FUNCTIONS
+// =============================================
+
+// Real-time listener for reschedule requests in bookings
+function setupBookingRescheduleListener() {
+    if (!currentUser) return;
+    
+    // Listen for reschedule requests related to user's bookings
+    db.collection('rescheduleRequests')
+        .where('studentId', '==', currentUser.uid)
+        .where('status', '==', 'pending')
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    // New reschedule request added
+                    const rescheduleRequest = change.doc.data();
+                    rescheduleRequest.id = change.doc.id;
+                    
+                    // Create notification for the reschedule request
+                    createRescheduleNotification(rescheduleRequest);
+                }
+            });
+        });
+}
+
+// Create notification for reschedule request
+async function createRescheduleNotification(rescheduleRequest) {
+    try {
+        // Get session details for the notification
+        const sessionDoc = await db.collection('bookedSessions').doc(rescheduleRequest.sessionId).get();
+        if (!sessionDoc.exists) return;
+        
+        const session = sessionDoc.data();
+        const newDate = rescheduleRequest.requestedDate.toDate();
+        const formattedDate = newDate.toLocaleDateString();
+        const formattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Create notification in Firestore
+        await db.collection('notifications').add({
+            userId: currentUser.uid,
+            title: 'Reschedule Request',
+            message: `Tutor has requested to reschedule your ${session.subject} session to ${formattedDate} at ${formattedTime}`,
+            type: 'reschedule_request',
+            relatedSessionId: rescheduleRequest.sessionId,
+            priority: 'high',
+            isRead: false,
+            createdAt: new Date()
+        });
+        
+    } catch (error) {
+        console.error('Error creating reschedule notification:', error);
+    }
+}
+
+// Update booking display to show reschedule requests
+function updateBookingWithRescheduleInfo(booking, container) {
+    const date = booking.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Check for pending reschedule requests
+    let rescheduleInfo = '';
+    if (booking.hasPendingReschedule && booking.rescheduleRequest) {
+        const newDate = booking.rescheduleRequest.requestedDate.toDate();
+        const newFormattedDate = newDate.toLocaleDateString();
+        const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        rescheduleInfo = `
+            <div class="session-detail" style="color: var(--warning); font-weight: 500;">
+                <i class="fas fa-exchange-alt"></i>
+                <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
+            </div>
+            <div class="session-detail">
+                <i class="fas fa-comment"></i>
+                <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
+            </div>
+        `;
+    }
+    
+    const bookingCard = `
+        <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${booking.id}">
+            <div class="session-header">
+                <div class="session-title">${booking.subject || 'No subject'}</div>
+                <div class="session-date">${formattedDate} at ${formattedTime}</div>
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-tie"></i>
+                    <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i>
+                    <span>Duration: ${booking.duration || '1'} hours</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-video"></i>
+                    <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-hourglass-half"></i>
+                    <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
+                </div>
+                ${rescheduleInfo}
+            </div>
+            <div class="session-actions">
+                ${booking.hasPendingReschedule ? 
+                    `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
+                     <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
+                    `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
+                }
+                ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${booking.id}')">Join Session</button>` : ''}
+            </div>
+        </div>
+    `;
+    
+    container.innerHTML += bookingCard;
+}
+  
+// =============================================
+// NOTIFICATION INTEGRATION WITH DASHBOARD
+// =============================================
+
+// Update dashboard initialization to include notifications
+function initDashboardWithNotifications() {
+    initDashboard(); // Original dashboard initialization
+    
+    // Initialize notification system
+    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
+        initializeNotifications();
+        setupBookingRescheduleListener();
+    }
+}
+
+// Update the existing DOMContentLoaded event listener
+document.addEventListener('DOMContentLoaded', function() {
+    // Replace the original initDashboard call with the enhanced version
+    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
+        initDashboardWithNotifications();
+    } else {
+        // If Firebase isn't ready yet, wait for it
+        const checkFirebase = setInterval(() => {
+            if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
+                clearInterval(checkFirebase);
+                initDashboardWithNotifications();
+            }
+        }, 100);
+    }
+});
+
+// Update the booking response function to create notifications
+async function respondToReschedule(bookingId, response) {
+    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
+        return;
+    }
+
+    try {
+        // First, get the reschedule request for this booking
+        const rescheduleQuery = await db.collection('rescheduleRequests')
+            .where('sessionId', '==', bookingId)
+            .where('status', '==', 'pending')
+            .get();
+
+        if (rescheduleQuery.empty) {
+            alert('No pending reschedule request found for this booking.');
+            return;
+        }
+
+        const rescheduleRequestDoc = rescheduleQuery.docs[0];
+        const rescheduleRequestId = rescheduleRequestDoc.id;
+        const rescheduleRequest = rescheduleRequestDoc.data();
+
+        if (response === 'accept') {
+            // Accept the reschedule
+            const batch = db.batch();
+            
+            const bookingRef = db.collection('bookedSessions').doc(bookingId);
+            batch.update(bookingRef, {
+                date: rescheduleRequest.requestedDate,
+                status: 'confirmed',
+                rescheduleAcceptedAt: new Date()
+            });
+
+            const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
+            batch.update(rescheduleRef, {
+                status: 'accepted',
+                respondedAt: new Date(),
+                response: 'accepted'
+            });
+
+            await batch.commit();
+            
+            // Create success notification
+            await createNotification(
+                'Reschedule Accepted',
+                'You have accepted the reschedule request.',
+                'reschedule_request',
+                bookingId
+            );
+            
+        } else {
+            // Decline the reschedule
+            await db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
+                status: 'declined',
+                respondedAt: new Date(),
+                response: 'declined'
+            });
+            
+            // Create notification for decline
+            await createNotification(
+                'Reschedule Declined',
+                'You have declined the reschedule request.',
+                'reschedule_request',
+                bookingId
+            );
+        }
+
+        alert(`Reschedule request ${response}ed successfully.`);
+        loadUserBookings();
+        
+    } catch (error) {
+        console.error('Error responding to reschedule request:', error);
+        alert('Failed to respond to reschedule request. Please try again.');
+    }
+}
+
+// Helper function to create notifications
+async function createNotification(title, message, type, relatedSessionId) {
+    try {
+        await db.collection('notifications').add({
+            userId: currentUser.uid,
+            title: title,
+            message: message,
+            type: type,
+            relatedSessionId: relatedSessionId,
+            priority: 'medium',
+            isRead: false,
+            createdAt: new Date()
+        });
+    } catch (error) {
+        console.error('Error creating notification:', error);
+    }
+}
   
 </script>
 </body>
 </html>
+
 
 
 
