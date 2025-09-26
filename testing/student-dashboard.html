@@ -2920,879 +2920,1066 @@ document.addEventListener('DOMContentLoaded', function() {
 // NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
 // =============================================
 
-// Global variables for notifications
-let notifications = [];
-let unreadCount = 0;
+// =============================================
+// PRODUCTION-READY NOTIFICATION SYSTEM
+// =============================================
 
-// Initialize notification system with real data
-function initializeNotifications() {
-    setupNotificationBell();
-    loadRealNotifications();
-    startRealTimeNotificationListener();
-}
-
-// Setup notification bell click functionality
-function setupNotificationBell() {
-    const notificationBtn = document.querySelector('.notification-btn');
-    const notificationBadge = document.getElementById('notificationCount');
-    
-    if (notificationBtn) {
-        // Create notification dropdown
-        createNotificationDropdown();
+class NotificationSystem {
+    constructor() {
+        this.notifications = [];
+        this.unreadCount = 0;
+        this.realtimeListener = null;
+        this.isInitialized = false;
         
-        notificationBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            toggleNotificationDropdown();
-        });
-        
-        // Close dropdown when clicking elsewhere
-        document.addEventListener('click', function() {
-            closeNotificationDropdown();
-        });
+        // Debounce variables
+        this.updateTimeout = null;
+        this.clickHandlers = new Map();
     }
-}
 
-// Create notification dropdown HTML
-function createNotificationDropdown() {
-    const existingDropdown = document.getElementById('notificationDropdown');
-    if (existingDropdown) {
-        existingDropdown.remove();
+    // Initialize notification system with proper error handling
+    async initialize() {
+        if (this.isInitialized) {
+            console.warn('Notification system already initialized');
+            return;
+        }
+
+        try {
+            await this.validateDependencies();
+            this.setupDOMElements();
+            await this.loadNotifications();
+            this.startRealtimeListener();
+            this.setupEventListeners();
+            this.isInitialized = true;
+            
+            console.log('Notification system initialized successfully');
+        } catch (error) {
+            this.handleInitializationError(error);
+            throw error;
+        }
     }
-    
-    const dropdown = document.createElement('div');
-    dropdown.id = 'notificationDropdown';
-    dropdown.className = 'notification-dropdown';
-    dropdown.style.cssText = `
-        position: absolute;
-        top: 50px;
-        right: 0;
-        width: 350px;
-        background: white;
-        border-radius: var(--border-radius);
-        box-shadow: var(--box-shadow-hover);
-        z-index: 2000;
-        display: none;
-        max-height: 400px;
-        overflow-y: auto;
-    `;
-    
-    dropdown.innerHTML = `
-        <div class="notification-header" style="padding: 15px; border-bottom: 1px solid var(--gray-light); display: flex; justify-content: space-between; align-items: center;">
-            <h4 style="margin: 0; color: var(--primary-dark);">Notifications</h4>
-            <div>
-                <button id="markAllReadBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px; margin-right: 5px;">Mark All Read</button>
-                <button id="clearNotificationsBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px;">Clear All</button>
+
+    // Validate required dependencies
+    async validateDependencies() {
+        const errors = [];
+        
+        if (typeof db === 'undefined') {
+            errors.push('Firestore database not available');
+        }
+        
+        if (typeof currentUser === 'undefined' || !currentUser?.uid) {
+            errors.push('User not authenticated');
+        }
+        
+        if (!window.Notification) {
+            console.warn('Browser notifications not supported');
+        }
+        
+        if (errors.length > 0) {
+            throw new Error(`Dependency validation failed: ${errors.join(', ')}`);
+        }
+    }
+
+    // Setup DOM elements with proper error handling
+    setupDOMElements() {
+        try {
+            this.createNotificationDropdown();
+            this.injectStyles();
+        } catch (error) {
+            throw new Error(`DOM setup failed: ${error.message}`);
+        }
+    }
+
+    // Create notification dropdown with accessible markup
+    createNotificationDropdown() {
+        const existingDropdown = document.getElementById('notificationDropdown');
+        if (existingDropdown) {
+            existingDropdown.remove();
+        }
+
+        const dropdown = document.createElement('div');
+        dropdown.id = 'notificationDropdown';
+        dropdown.className = 'notification-dropdown hidden';
+        dropdown.setAttribute('role', 'dialog');
+        dropdown.setAttribute('aria-label', 'Notifications');
+        dropdown.setAttribute('aria-modal', 'true');
+        
+        dropdown.innerHTML = `
+            <div class="notification-header">
+                <h4 class="notification-title">Notifications</h4>
+                <div class="notification-actions">
+                    <button id="markAllReadBtn" class="btn-outline btn-small" 
+                            aria-label="Mark all notifications as read">
+                        Mark All Read
+                    </button>
+                    <button id="clearNotificationsBtn" class="btn-outline btn-small" 
+                            aria-label="Clear all notifications">
+                        Clear All
+                    </button>
+                </div>
             </div>
-        </div>
-        <div class="notification-list" id="notificationList" style="padding: 10px;"></div>
-        <div class="notification-footer" style="padding: 10px; border-top: 1px solid var(--gray-light); text-align: center;">
-            <span style="color: var(--gray); font-size: 12px;" id="notificationFooterText">You're all caught up!</span>
-        </div>
-    `;
-    
-    document.body.appendChild(dropdown);
-    
-    // Add event listeners to dropdown buttons
-    document.getElementById('markAllReadBtn').addEventListener('click', markAllNotificationsAsRead);
-    document.getElementById('clearNotificationsBtn').addEventListener('click', clearAllNotifications);
-}
-
-// Toggle notification dropdown visibility
-function toggleNotificationDropdown() {
-    const dropdown = document.getElementById('notificationDropdown');
-    if (dropdown.style.display === 'block') {
-        dropdown.style.display = 'none';
-    } else {
-        dropdown.style.display = 'block';
-        updateNotificationDropdownContent();
-    }
-}
-
-// Close notification dropdown
-function closeNotificationDropdown() {
-    const dropdown = document.getElementById('notificationDropdown');
-    if (dropdown) {
-        dropdown.style.display = 'none';
-    }
-}
-
-// Load real notifications from Firestore
-async function loadRealNotifications() {
-    try {
-        // Load notifications from the notifications collection
-        const notificationsSnapshot = await db.collection('notifications')
-            .where('userId', '==', currentUser.uid)
-            .orderBy('createdAt', 'desc')
-            .limit(50)
-            .get();
-        
-        notifications = [];
-        
-        if (!notificationsSnapshot.empty) {
-            // Process each notification and enrich with session data
-            for (const doc of notificationsSnapshot.docs) {
-                const notification = doc.data();
-                notification.id = doc.id;
-                
-                // Enrich notification with session details if available
-                if (notification.relatedSessionId) {
-                    try {
-                        const sessionDoc = await db.collection('bookedSessions').doc(notification.relatedSessionId).get();
-                        if (sessionDoc.exists) {
-                            notification.sessionData = sessionDoc.data();
-                        }
-                    } catch (error) {
-                        console.error("Error loading session data:", error);
-                    }
-                }
-                
-                // Check for reschedule request status if it's a reschedule notification
-                if (notification.type === 'reschedule_request' && notification.relatedSessionId) {
-                    try {
-                        const rescheduleQuery = await db.collection('rescheduleRequests')
-                            .where('sessionId', '==', notification.relatedSessionId)
-                            .where('status', 'in', ['pending', 'accepted', 'declined'])
-                            .orderBy('requestedAt', 'desc')
-                            .limit(1)
-                            .get();
-                        
-                        if (!rescheduleQuery.empty) {
-                            notification.rescheduleData = rescheduleQuery.docs[0].data();
-                        }
-                    } catch (error) {
-                        console.error("Error loading reschedule data:", error);
-                    }
-                }
-                
-                notifications.push(notification);
-            }
-        }
-        
-        updateNotificationBadge();
-        
-    } catch (error) {
-        console.error("Error loading notifications:", error);
-        showNotificationError();
-    }
-}
-
-// Update notification badge count
-function updateNotificationBadge() {
-    const badge = document.getElementById('notificationCount');
-    unreadCount = notifications.filter(n => !n.isRead).length;
-    
-    if (badge) {
-        if (unreadCount > 0) {
-            badge.textContent = unreadCount > 9 ? '9+' : unreadCount.toString();
-            badge.style.display = 'inline-block';
-        } else {
-            badge.style.display = 'none';
-        }
-    }
-    
-    // Also update the pending sessions count in sidebar if it exists
-    const pendingCountBadge = document.getElementById('pendingCount');
-    if (pendingCountBadge) {
-        const pendingNotifications = notifications.filter(n => 
-            !n.isRead && (n.type === 'session_request' || n.type === 'reschedule_request')
-        ).length;
-        
-        if (pendingNotifications > 0) {
-            pendingCountBadge.textContent = pendingNotifications > 9 ? '9+' : pendingNotifications.toString();
-            pendingCountBadge.style.display = 'inline-block';
-        } else {
-            pendingCountBadge.style.display = 'none';
-        }
-    }
-}
-
-// Update notification dropdown content with real data
-function updateNotificationDropdownContent() {
-    const notificationList = document.getElementById('notificationList');
-    const footerText = document.getElementById('notificationFooterText');
-    
-    if (notifications.length === 0) {
-        notificationList.innerHTML = `
-            <div style="text-align: center; padding: 30px; color: var(--gray);">
-                <i class="fas fa-bell-slash" style="font-size: 48px; margin-bottom: 15px;"></i>
-                <p>No notifications yet</p>
+            <div class="notification-list" id="notificationList" role="list">
+                <div class="notification-loading">
+                    <div class="loading-spinner" aria-label="Loading notifications"></div>
+                    <span>Loading notifications...</span>
+                </div>
+            </div>
+            <div class="notification-footer">
+                <span id="notificationFooterText" aria-live="polite">Loading...</span>
             </div>
         `;
-        footerText.textContent = "You're all caught up!";
-        return;
+
+        document.body.appendChild(dropdown);
     }
-    
-    let notificationsHTML = '';
-    const unreadNotifications = notifications.filter(n => !n.isRead);
-    
-    notifications.forEach(notification => {
-        const timeAgo = getTimeAgo(notification.createdAt);
+
+    // Inject CSS styles for maintainability
+    injectStyles() {
+        const styleId = 'notification-system-styles';
+        if (document.getElementById(styleId)) return;
+
+        const styles = `
+            .notification-dropdown {
+                position: absolute;
+                top: 60px;
+                right: 10px;
+                width: min(400px, 90vw);
+                max-height: 500px;
+                background: var(--background-primary);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                z-index: 1000;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .notification-dropdown.hidden {
+                display: none;
+            }
+            
+            .notification-dropdown.visible {
+                display: flex;
+            }
+            
+            .notification-header {
+                padding: 1rem;
+                border-bottom: 1px solid var(--border-color);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                background: var(--background-secondary);
+            }
+            
+            .notification-title {
+                margin: 0;
+                color: var(--text-primary);
+                font-size: 1.1rem;
+                font-weight: 600;
+            }
+            
+            .notification-actions {
+                display: flex;
+                gap: 0.5rem;
+            }
+            
+            .notification-list {
+                flex: 1;
+                overflow-y: auto;
+                max-height: 300px;
+            }
+            
+            .notification-loading {
+                padding: 2rem;
+                text-align: center;
+                color: var(--text-secondary);
+            }
+            
+            .loading-spinner {
+                width: 24px;
+                height: 24px;
+                border: 2px solid var(--border-color);
+                border-top: 2px solid var(--primary-color);
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 0.5rem;
+            }
+            
+            .notification-item {
+                padding: 0.75rem 1rem;
+                border-bottom: 1px solid var(--border-light);
+                cursor: pointer;
+                transition: background-color 0.2s ease;
+                display: flex;
+                align-items: flex-start;
+                gap: 0.75rem;
+            }
+            
+            .notification-item:hover {
+                background-color: var(--background-hover);
+            }
+            
+            .notification-item.unread {
+                background-color: var(--background-accent);
+            }
+            
+            .notification-item:focus {
+                outline: 2px solid var(--primary-color);
+                outline-offset: -2px;
+            }
+            
+            .notification-icon {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                flex-shrink: 0;
+            }
+            
+            .notification-content {
+                flex: 1;
+                min-width: 0;
+            }
+            
+            .notification-title-text {
+                font-weight: 600;
+                color: var(--text-primary);
+                margin-bottom: 0.25rem;
+                word-wrap: break-word;
+            }
+            
+            .notification-message {
+                font-size: 0.9rem;
+                color: var(--text-secondary);
+                line-height: 1.4;
+                margin-bottom: 0.25rem;
+            }
+            
+            .notification-time {
+                font-size: 0.8rem;
+                color: var(--text-tertiary);
+            }
+            
+            .unread-indicator {
+                width: 8px;
+                height: 8px;
+                background: var(--accent-color);
+                border-radius: 50%;
+                margin-left: 0.5rem;
+                flex-shrink: 0;
+                margin-top: 0.5rem;
+            }
+            
+            .notification-footer {
+                padding: 0.75rem 1rem;
+                border-top: 1px solid var(--border-light);
+                text-align: center;
+                background: var(--background-secondary);
+            }
+            
+            .notification-empty {
+                padding: 2rem;
+                text-align: center;
+                color: var(--text-secondary);
+            }
+            
+            .notification-error {
+                padding: 1rem;
+                text-align: center;
+                color: var(--error-color);
+            }
+            
+            .notification-toast {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: var(--background-primary);
+                padding: 1rem;
+                border-radius: 6px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                z-index: 2000;
+                max-width: 350px;
+                border-left: 4px solid;
+                animation: slideInRight 0.3s ease;
+            }
+            
+            .btn-retry {
+                margin-top: 0.5rem;
+            }
+            
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            
+            @keyframes slideInRight {
+                from {
+                    transform: translateX(100%);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateX(0);
+                    opacity: 1;
+                }
+            }
+            
+            @media (max-width: 480px) {
+                .notification-dropdown {
+                    right: 5px;
+                    left: 5px;
+                    width: auto;
+                }
+            }
+        `;
+
+        const styleElement = document.createElement('style');
+        styleElement.id = styleId;
+        styleElement.textContent = styles;
+        document.head.appendChild(styleElement);
+    }
+
+    // Load notifications with efficient batch operations
+    async loadNotifications() {
+        this.showLoadingState();
+        
+        try {
+            const [notificationsSnapshot, sessionsMap] = await Promise.all([
+                this.fetchNotifications(),
+                this.preloadSessionData()
+            ]);
+
+            this.processNotifications(notificationsSnapshot, sessionsMap);
+            this.updateUI();
+            
+        } catch (error) {
+            this.handleLoadError(error);
+        }
+    }
+
+    // Fetch notifications with pagination and security
+    async fetchNotifications() {
+        try {
+            const snapshot = await db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .where('isActive', '==', true) // Soft delete support
+                .orderBy('createdAt', 'desc')
+                .limit(30) // Reasonable limit for performance
+                .get();
+
+            if (snapshot.empty) {
+                return { empty: true, docs: [] };
+            }
+
+            return snapshot;
+        } catch (error) {
+            if (error.code === 'permission-denied') {
+                throw new Error('Access to notifications denied');
+            }
+            throw error;
+        }
+    }
+
+    // Preload session data efficiently
+    async preloadSessionData() {
+        const sessionIds = new Set();
+        
+        // First pass: collect all session IDs
+        if (!this.notificationsSnapshot?.empty) {
+            this.notificationsSnapshot.docs.forEach(doc => {
+                const notification = doc.data();
+                if (notification.relatedSessionId) {
+                    sessionIds.add(notification.relatedSessionId);
+                }
+            });
+        }
+
+        if (sessionIds.size === 0) return new Map();
+
+        try {
+            const sessionsSnapshot = await db.collection('bookedSessions')
+                .where('__name__', 'in', Array.from(sessionIds))
+                .get();
+
+            const sessionsMap = new Map();
+            sessionsSnapshot.docs.forEach(doc => {
+                sessionsMap.set(doc.id, doc.data());
+            });
+
+            return sessionsMap;
+        } catch (error) {
+            console.warn('Failed to load session data:', error);
+            return new Map();
+        }
+    }
+
+    // Process notifications with enriched data
+    processNotifications(snapshot, sessionsMap) {
+        this.notifications = [];
+
+        if (snapshot.empty) {
+            return;
+        }
+
+        snapshot.docs.forEach(doc => {
+            const notification = this.enrichNotificationData(doc, sessionsMap);
+            this.notifications.push(notification);
+        });
+
+        this.unreadCount = this.notifications.filter(n => !n.isRead).length;
+    }
+
+    // Enrich notification with related data
+    enrichNotificationData(doc, sessionsMap) {
+        const notification = { 
+            id: doc.id, 
+            ...doc.data(),
+            sessionData: null,
+            rescheduleData: null
+        };
+
+        // Add session data if available
+        if (notification.relatedSessionId && sessionsMap.has(notification.relatedSessionId)) {
+            notification.sessionData = sessionsMap.get(notification.relatedSessionId);
+        }
+
+        return notification;
+    }
+
+    // Update UI components
+    updateUI() {
+        this.updateBadge();
+        this.updateDropdownContent();
+        this.updateFooter();
+    }
+
+    // Update notification badge
+    updateBadge() {
+        const badge = document.getElementById('notificationCount');
+        if (!badge) return;
+
+        if (this.unreadCount > 0) {
+            badge.textContent = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
+            badge.classList.remove('hidden');
+            badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
+        } else {
+            badge.classList.add('hidden');
+            badge.setAttribute('aria-label', 'No unread notifications');
+        }
+    }
+
+    // Update dropdown content
+    updateDropdownContent() {
+        const list = document.getElementById('notificationList');
+        if (!list) return;
+
+        if (this.notifications.length === 0) {
+            list.innerHTML = this.getEmptyStateHTML();
+            return;
+        }
+
+        list.innerHTML = this.notifications.map(notification => 
+            this.getNotificationHTML(notification)
+        ).join('');
+
+        this.attachNotificationHandlers();
+    }
+
+    // Get notification HTML template
+    getNotificationHTML(notification) {
+        const timeAgo = this.getTimeAgo(notification.createdAt);
         const isUnread = !notification.isRead;
-        
-        // Generate appropriate message based on notification type and data
-        const notificationMessage = generateNotificationMessage(notification);
-        
-        notificationsHTML += `
+        const message = this.generateNotificationMessage(notification);
+
+        return `
             <div class="notification-item ${isUnread ? 'unread' : ''}" 
                  data-notification-id="${notification.id}"
                  data-notification-type="${notification.type}"
                  data-session-id="${notification.relatedSessionId || ''}"
-                 style="padding: 12px; border-bottom: 1px solid var(--gray-light); cursor: pointer; transition: background 0.2s;">
-                <div style="display: flex; align-items: flex-start;">
-                    <div style="margin-right: 10px;">
-                        <div class="notification-icon" style="width: 32px; height: 32px; border-radius: 50%; background: ${getNotificationColor(notification.type)}; display: flex; align-items: center; justify-content: center; color: white;">
-                            <i class="${getNotificationIcon(notification.type)}"></i>
-                        </div>
-                    </div>
-                    <div style="flex: 1;">
-                        <div style="font-weight: 600; color: var(--dark); margin-bottom: 4px;">${notification.title}</div>
-                        <div style="font-size: 0.9em; color: var(--gray); line-height: 1.4;">${notificationMessage}</div>
-                        <div style="font-size: 0.8em; color: var(--gray); margin-top: 5px;">${timeAgo}</div>
-                    </div>
-                    ${isUnread ? '<div class="unread-indicator" style="width: 8px; height: 8px; background: var(--accent); border-radius: 50%; margin-left: 10px;"></div>' : ''}
+                 role="listitem"
+                 tabindex="0">
+                <div class="notification-icon" style="background: ${this.getNotificationColor(notification.type)}">
+                    <i class="${this.getNotificationIcon(notification.type)}" aria-hidden="true"></i>
                 </div>
+                <div class="notification-content">
+                    <div class="notification-title-text">${this.escapeHtml(notification.title)}</div>
+                    <div class="notification-message">${this.escapeHtml(message)}</div>
+                    <div class="notification-time">${timeAgo}</div>
+                </div>
+                ${isUnread ? '<div class="unread-indicator" aria-label="Unread"></div>' : ''}
             </div>
         `;
-    });
-    
-    notificationList.innerHTML = notificationsHTML;
-    footerText.textContent = unreadNotifications.length > 0 ? 
-        `${unreadNotifications.length} unread notification${unreadNotifications.length !== 1 ? 's' : ''}` : 
-        "You're all caught up!";
-    
-    // Add click handlers to notification items
-    document.querySelectorAll('.notification-item').forEach(item => {
-        item.addEventListener('click', function() {
-            const notificationId = this.getAttribute('data-notification-id');
-            const notificationType = this.getAttribute('data-notification-type');
-            const sessionId = this.getAttribute('data-session-id');
-            handleNotificationClick(notificationId, notificationType, sessionId);
-        });
-    });
-}
-
-// Generate appropriate message based on notification type and data
-function generateNotificationMessage(notification) {
-    // Use the message from Firestore if available
-    if (notification.message) {
-        return notification.message;
     }
-    
-    // Fallback messages based on type
-    switch(notification.type) {
-        case 'reschedule_request':
-            if (notification.rescheduleData) {
-                const status = notification.rescheduleData.status;
-                if (status === 'pending') {
-                    return 'A reschedule request is awaiting your response.';
-                } else if (status === 'accepted') {
-                    return 'Reschedule request has been accepted.';
-                } else if (status === 'declined') {
-                    return 'Reschedule request was declined.';
+
+    // Attach event handlers to notifications
+    attachNotificationHandlers() {
+        const items = document.querySelectorAll('.notification-item');
+        
+        items.forEach(item => {
+            const handler = (e) => {
+                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.handleNotificationClick(item);
                 }
+            };
+            
+            // Remove existing handler if any
+            const existingHandler = this.clickHandlers.get(item);
+            if (existingHandler) {
+                item.removeEventListener('click', existingHandler);
+                item.removeEventListener('keydown', existingHandler);
             }
-            return 'There is a reschedule request for your session.';
-        
-        case 'session_request':
-            return 'You have a new session request waiting for confirmation.';
-        
-        case 'session_confirmed':
-            return 'Your session has been confirmed.';
-        
-        case 'session_cancelled':
-            return 'A session has been cancelled.';
-        
-        case 'payment_processed':
-            return 'Your payment has been processed successfully.';
-        
-        case 'invoice_submitted':
-            return 'Your invoice has been submitted for processing.';
-        
-        default:
-            return 'You have a new notification.';
+            
+            // Add new handlers
+            item.addEventListener('click', handler);
+            item.addEventListener('keydown', handler);
+            this.clickHandlers.set(item, handler);
+        });
     }
-}
 
-// Handle notification click
-function handleNotificationClick(notificationId, notificationType, sessionId) {
-    const notification = notifications.find(n => n.id === notificationId);
-    
-    if (notification) {
-        // Mark as read
-        if (!notification.isRead) {
-            markNotificationAsRead(notificationId);
-        }
-        
-        // Handle notification based on type
-        switch(notificationType) {
-            case 'session_request':
-            case 'reschedule_request':
-                navigateToSection('tutoring-opportunities');
-                break;
-            
-            case 'session_confirmed':
-                navigateToSection('bookings');
-                break;
-            
-            case 'payment_processed':
-            case 'invoice_submitted':
-                navigateToSection('your-earnings');
-                break;
-            
-            case 'session_cancelled':
-                navigateToSection('sessions');
-                break;
-            
-            default:
-                // For other notifications, just close the dropdown
-                break;
-        }
-        
-        // Close dropdown after click
-        closeNotificationDropdown();
-    }
-}
+    // Handle notification click
+    async handleNotificationClick(item) {
+        const notificationId = item.dataset.notificationId;
+        const notificationType = item.dataset.notificationType;
+        const sessionId = item.dataset.sessionId;
 
-// Mark a notification as read
-async function markNotificationAsRead(notificationId) {
-    const notification = notifications.find(n => n.id === notificationId);
-    
-    if (notification && !notification.isRead) {
         try {
-            // Update in Firestore
+            await this.markAsRead(notificationId);
+            this.navigateToRelevantSection(notificationType, sessionId);
+            this.hideDropdown();
+        } catch (error) {
+            console.error('Error handling notification click:', error);
+        }
+    }
+
+    // Mark notification as read
+    async markAsRead(notificationId) {
+        const notification = this.notifications.find(n => n.id === notificationId);
+        if (!notification || notification.isRead) return;
+
+        try {
             await db.collection('notifications').doc(notificationId).update({
                 isRead: true,
-                readAt: new Date()
+                readAt: new Date(),
+                updatedAt: new Date()
             });
-            
-            // Update local state
+
             notification.isRead = true;
-            updateNotificationBadge();
-            updateNotificationDropdownContent();
-            
+            this.unreadCount = Math.max(0, this.unreadCount - 1);
+            this.updateUI();
+
         } catch (error) {
-            console.error("Error marking notification as read:", error);
+            throw new Error(`Failed to mark notification as read: ${error.message}`);
         }
     }
-}
 
-// Mark all notifications as read
-async function markAllNotificationsAsRead() {
-    try {
-        const unreadNotifications = notifications.filter(n => !n.isRead);
-        
-        if (unreadNotifications.length === 0) {
+    // Mark all notifications as read
+    async markAllAsRead() {
+        const unreadNotifications = this.notifications.filter(n => !n.isRead);
+        if (unreadNotifications.length === 0) return;
+
+        try {
+            const batch = db.batch();
+            const updateTime = new Date();
+
+            unreadNotifications.forEach(notification => {
+                const ref = db.collection('notifications').doc(notification.id);
+                batch.update(ref, {
+                    isRead: true,
+                    readAt: updateTime,
+                    updatedAt: updateTime
+                });
+            });
+
+            await batch.commit();
+
+            // Update local state
+            this.notifications.forEach(n => { n.isRead = true; });
+            this.unreadCount = 0;
+            this.updateUI();
+
+        } catch (error) {
+            throw new Error(`Failed to mark all as read: ${error.message}`);
+        }
+    }
+
+    // Clear all notifications (soft delete)
+    async clearAll() {
+        if (this.notifications.length === 0) return;
+
+        // Confirm action
+        if (!confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
             return;
         }
-        
-        // Update all in Firestore
-        const batch = db.batch();
-        unreadNotifications.forEach(notification => {
-            const notificationRef = db.collection('notifications').doc(notification.id);
-            batch.update(notificationRef, {
-                isRead: true,
-                readAt: new Date()
-            });
-        });
-        
-        await batch.commit();
-        
-        // Update local state
-        notifications.forEach(notification => {
-            notification.isRead = true;
-        });
-        
-        updateNotificationBadge();
-        updateNotificationDropdownContent();
-        
-    } catch (error) {
-        console.error("Error marking all notifications as read:", error);
-    }
-}
 
-// Clear all notifications
-async function clearAllNotifications() {
-    if (notifications.length === 0) {
-        return;
-    }
-    
-    if (confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
         try {
-            // Delete all from Firestore
             const batch = db.batch();
-            notifications.forEach(notification => {
-                const notificationRef = db.collection('notifications').doc(notification.id);
-                batch.delete(notificationRef);
+            const updateTime = new Date();
+
+            this.notifications.forEach(notification => {
+                const ref = db.collection('notifications').doc(notification.id);
+                batch.update(ref, {
+                    isActive: false,
+                    updatedAt: updateTime
+                });
             });
-            
+
             await batch.commit();
-            
+
             // Clear local state
-            notifications = [];
-            updateNotificationBadge();
-            updateNotificationDropdownContent();
-            
+            this.notifications = [];
+            this.unreadCount = 0;
+            this.updateUI();
+
         } catch (error) {
-            console.error("Error clearing notifications:", error);
+            throw new Error(`Failed to clear notifications: ${error.message}`);
         }
     }
-}
 
-// Navigate to a specific section
-function navigateToSection(sectionId) {
-    // Find and click the corresponding menu item
-    const menuItem = document.querySelector(`.menu-item a[data-section="${sectionId}"]`);
-    if (menuItem) {
-        menuItem.click();
+    // Setup event listeners with proper cleanup
+    setupEventListeners() {
+        this.removeEventListeners(); // Cleanup existing listeners
+
+        // Notification bell click
+        this.notificationBtn = document.querySelector('.notification-btn');
+        if (this.notificationBtn) {
+            this.notificationBtn.addEventListener('click', this.handleBellClick.bind(this));
+        }
+
+        // Dropdown buttons
+        const markAllReadBtn = document.getElementById('markAllReadBtn');
+        const clearNotificationsBtn = document.getElementById('clearNotificationsBtn');
+
+        if (markAllReadBtn) {
+            markAllReadBtn.addEventListener('click', this.handleMarkAllRead.bind(this));
+        }
+        if (clearNotificationsBtn) {
+            clearNotificationsBtn.addEventListener('click', this.handleClearAll.bind(this));
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', this.handleOutsideClick.bind(this));
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', this.handleKeydown.bind(this));
     }
-}
 
-// Listen for new notifications in real-time
-function startRealTimeNotificationListener() {
-    // Listen for new notifications in Firestore
-    db.collection('notifications')
-        .where('userId', '==', currentUser.uid)
-        .orderBy('createdAt', 'desc')
-        .onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    // New notification added
-                    const notification = change.doc.data();
-                    notification.id = change.doc.id;
-                    
-                    // Check if this notification already exists
-                    const existingIndex = notifications.findIndex(n => n.id === notification.id);
-                    if (existingIndex === -1) {
-                        // Add to beginning of notifications array
-                        notifications.unshift(notification);
-                        
-                        // Update UI
-                        updateNotificationBadge();
-                        
-                        // Show toast notification for new unread alerts
-                        if (!notification.isRead && notification.priority === 'high') {
-                            showToastNotification(notification);
-                        }
-                    }
-                } else if (change.type === 'modified') {
-                    // Notification updated (e.g., marked as read)
-                    const updatedNotification = change.doc.data();
-                    updatedNotification.id = change.doc.id;
-                    
-                    const existingIndex = notifications.findIndex(n => n.id === updatedNotification.id);
-                    if (existingIndex !== -1) {
-                        notifications[existingIndex] = updatedNotification;
-                        updateNotificationBadge();
-                    }
-                } else if (change.type === 'removed') {
-                    // Notification deleted
-                    const removedId = change.doc.id;
-                    notifications = notifications.filter(n => n.id !== removedId);
-                    updateNotificationBadge();
-                }
-            });
+    // Handle notification bell click
+    handleBellClick(e) {
+        e.stopPropagation();
+        this.toggleDropdown();
+    }
+
+    // Toggle dropdown visibility
+    toggleDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (!dropdown) return;
+
+        if (dropdown.classList.contains('visible')) {
+            this.hideDropdown();
+        } else {
+            this.showDropdown();
+        }
+    }
+
+    // Show dropdown
+    showDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) {
+            dropdown.classList.remove('hidden');
+            dropdown.classList.add('visible');
+            dropdown.setAttribute('aria-hidden', 'false');
+            
+            // Focus management for accessibility
+            setTimeout(() => {
+                const firstItem = dropdown.querySelector('.notification-item');
+                if (firstItem) firstItem.focus();
+            }, 100);
+        }
+    }
+
+    // Hide dropdown
+    hideDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) {
+            dropdown.classList.remove('visible');
+            dropdown.classList.add('hidden');
+            dropdown.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    // Handle outside clicks
+    handleOutsideClick(e) {
+        const dropdown = document.getElementById('notificationDropdown');
+        const bell = document.querySelector('.notification-btn');
+        
+        if (dropdown && bell && !dropdown.contains(e.target) && !bell.contains(e.target)) {
+            this.hideDropdown();
+        }
+    }
+
+    // Handle keyboard navigation
+    handleKeydown(e) {
+        if (e.key === 'Escape') {
+            this.hideDropdown();
+        }
+    }
+
+    // Start realtime listener with cleanup
+    startRealtimeListener() {
+        this.cleanupRealtimeListener();
+
+        this.realtimeListener = db.collection('notifications')
+            .where('userId', '==', currentUser.uid)
+            .where('isActive', '==', true)
+            .orderBy('createdAt', 'desc')
+            .onSnapshot(this.handleRealtimeUpdate.bind(this), 
+                error => console.error('Realtime listener error:', error)
+            );
+    }
+
+    // Handle realtime updates
+    handleRealtimeUpdate(snapshot) {
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') {
+                this.handleNewNotification(change.doc);
+            } else if (change.type === 'modified') {
+                this.handleUpdatedNotification(change.doc);
+            } else if (change.type === 'removed') {
+                this.handleRemovedNotification(change.doc.id);
+            }
         });
-}
-
-// Show toast notification for important alerts
-function showToastNotification(notification) {
-    // Remove existing toast if any
-    const existingToast = document.querySelector('.notification-toast');
-    if (existingToast) {
-        existingToast.remove();
     }
-    
-    const toast = document.createElement('div');
-    toast.className = 'notification-toast';
-    toast.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: white;
-        padding: 15px;
-        border-radius: var(--border-radius-sm);
-        box-shadow: var(--box-shadow-hover);
-        z-index: 3000;
-        max-width: 300px;
-        border-left: 4px solid ${getNotificationColor(notification.type)};
-        animation: slideInRight 0.3s ease;
-    `;
-    
-    toast.innerHTML = `
-        <div style="display: flex; align-items: flex-start;">
-            <div style="margin-right: 10px; color: ${getNotificationColor(notification.type)};">
-                <i class="${getNotificationIcon(notification.type)}"></i>
-            </div>
-            <div style="flex: 1;">
-                <div style="font-weight: 600; margin-bottom: 5px;">${notification.title}</div>
-                <div style="font-size: 0.9em; color: var(--gray);">${generateNotificationMessage(notification)}</div>
-            </div>
-            <button class="close-toast" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--gray); margin-left: 10px;">×</button>
-        </div>
-    `;
-    
-    document.body.appendChild(toast);
-    
-    // Add close button functionality
-    toast.querySelector('.close-toast').addEventListener('click', function() {
-        toast.remove();
-    });
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.remove();
+
+    // Handle new notification
+    handleNewNotification(doc) {
+        const newNotification = { id: doc.id, ...doc.data() };
+        
+        // Check for duplicates
+        if (this.notifications.find(n => n.id === newNotification.id)) return;
+
+        this.notifications.unshift(newNotification);
+        
+        if (!newNotification.isRead) {
+            this.unreadCount++;
+            this.showToastNotification(newNotification);
         }
-    }, 5000);
-}
 
-// Helper function to get time ago string
-function getTimeAgo(date) {
-    const now = new Date();
-    const diffMs = now - new Date(date);
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-    
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} min ago`;
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-    
-    return new Date(date).toLocaleDateString();
-}
-
-// Helper function to get notification icon
-function getNotificationIcon(type) {
-    switch(type) {
-        case 'session_request': return 'fas fa-calendar-plus';
-        case 'session_confirmed': return 'fas fa-calendar-check';
-        case 'session_cancelled': return 'fas fa-calendar-times';
-        case 'payment_processed': return 'fas fa-dollar-sign';
-        case 'reschedule_request': return 'fas fa-clock';
-        case 'invoice_submitted': return 'fas fa-file-invoice';
-        default: return 'fas fa-bell';
+        this.debouncedUpdate();
     }
-}
 
-// Helper function to get notification color
-function getNotificationColor(type) {
-    switch(type) {
-        case 'session_request': return 'var(--warning)';
-        case 'session_confirmed': return 'var(--success)';
-        case 'session_cancelled': return 'var(--error)';
-        case 'payment_processed': return 'var(--primary)';
-        case 'reschedule_request': return 'var(--accent)';
-        case 'invoice_submitted': return 'var(--success-light)';
-        default: return 'var(--gray)';
+    // Handle updated notification
+    handleUpdatedNotification(doc) {
+        const updatedNotification = { id: doc.id, ...doc.data() };
+        const index = this.notifications.findIndex(n => n.id === updatedNotification.id);
+        
+        if (index !== -1) {
+            const wasUnread = !this.notifications[index].isRead;
+            const isUnread = !updatedNotification.isRead;
+            
+            this.notifications[index] = updatedNotification;
+            
+            if (wasUnread && !isUnread) {
+                this.unreadCount = Math.max(0, this.unreadCount - 1);
+            } else if (!wasUnread && isUnread) {
+                this.unreadCount++;
+            }
+            
+            this.debouncedUpdate();
+        }
     }
-}
 
-// Show error state
-function showNotificationError() {
-    const notificationList = document.getElementById('notificationList');
-    if (notificationList) {
-        notificationList.innerHTML = `
-            <div style="text-align: center; padding: 30px; color: var(--error);">
-                <i class="fas fa-exclamation-triangle" style="font-size: 48px; margin-bottom: 15px;"></i>
-                <p>Error loading notifications</p>
-                <button onclick="loadRealNotifications()" class="btn-outline" style="margin-top: 10px;">Try Again</button>
+    // Handle removed notification
+    handleRemovedNotification(notificationId) {
+        const notification = this.notifications.find(n => n.id === notificationId);
+        if (notification && !notification.isRead) {
+            this.unreadCount = Math.max(0, this.unreadCount - 1);
+        }
+        
+        this.notifications = this.notifications.filter(n => n.id !== notificationId);
+        this.debouncedUpdate();
+    }
+
+    // Debounced UI update
+    debouncedUpdate() {
+        if (this.updateTimeout) {
+            clearTimeout(this.updateTimeout);
+        }
+        this.updateTimeout = setTimeout(() => this.updateUI(), 100);
+    }
+
+    // Show toast notification
+    showToastNotification(notification) {
+        if (Notification.permission === 'granted') {
+            this.showBrowserNotification(notification);
+        } else {
+            this.showCustomToast(notification);
+        }
+    }
+
+    // Show browser notification
+    showBrowserNotification(notification) {
+        const message = this.generateNotificationMessage(notification);
+        
+        new Notification(notification.title, {
+            body: message,
+            icon: '/favicon.ico',
+            tag: notification.id
+        });
+    }
+
+    // Show custom toast notification
+    showCustomToast(notification) {
+        const toast = document.createElement('div');
+        toast.className = 'notification-toast';
+        toast.style.borderLeftColor = this.getNotificationColor(notification.type);
+        
+        const message = this.generateNotificationMessage(notification);
+        
+        toast.innerHTML = `
+            <div style="display: flex; align-items: flex-start;">
+                <div style="margin-right: 10px; color: ${this.getNotificationColor(notification.type)};">
+                    <i class="${this.getNotificationIcon(notification.type)}" aria-hidden="true"></i>
+                </div>
+                <div style="flex: 1;">
+                    <div style="font-weight: 600; margin-bottom: 5px;">${this.escapeHtml(notification.title)}</div>
+                    <div style="font-size: 0.9em; color: var(--text-secondary);">${this.escapeHtml(message)}</div>
+                </div>
+                <button class="close-toast" aria-label="Close notification" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--text-secondary); margin-left: 10px;">×</button>
+            </div>
+        `;
+
+        document.body.appendChild(toast);
+
+        // Auto-remove after 5 seconds
+        setTimeout(() => toast.remove(), 5000);
+
+        // Close button
+        toast.querySelector('.close-toast').addEventListener('click', () => toast.remove());
+    }
+
+    // Utility methods
+    generateNotificationMessage(notification) {
+        if (notification.message) return notification.message;
+        
+        const messages = {
+            session_request: 'You have a new session request waiting for confirmation.',
+            session_confirmed: 'Your session has been confirmed.',
+            session_cancelled: 'A session has been cancelled.',
+            payment_processed: 'Your payment has been processed successfully.',
+            reschedule_request: 'There is a reschedule request for your session.',
+            invoice_submitted: 'Your invoice has been submitted for processing.'
+        };
+        
+        return messages[notification.type] || 'You have a new notification.';
+    }
+
+    getTimeAgo(timestamp) {
+        const now = new Date();
+        const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} min ago`;
+        if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+        if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+        
+        return date.toLocaleDateString();
+    }
+
+    getNotificationIcon(type) {
+        const icons = {
+            session_request: 'fas fa-calendar-plus',
+            session_confirmed: 'fas fa-calendar-check',
+            session_cancelled: 'fas fa-calendar-times',
+            payment_processed: 'fas fa-dollar-sign',
+            reschedule_request: 'fas fa-clock',
+            invoice_submitted: 'fas fa-file-invoice'
+        };
+        return icons[type] || 'fas fa-bell';
+    }
+
+    getNotificationColor(type) {
+        const colors = {
+            session_request: 'var(--warning-color, #ffc107)',
+            session_confirmed: 'var(--success-color, #28a745)',
+            session_cancelled: 'var(--error-color, #dc3545)',
+            payment_processed: 'var(--primary-color, #007bff)',
+            reschedule_request: 'var(--accent-color, #6f42c1)',
+            invoice_submitted: 'var(--info-color, #17a2b8)'
+        };
+        return colors[type] || 'var(--gray-color, #6c757d)';
+    }
+
+    escapeHtml(unsafe) {
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Error handling methods
+    handleInitializationError(error) {
+        console.error('Notification system initialization failed:', error);
+        this.showErrorState('Failed to initialize notifications');
+    }
+
+    handleLoadError(error) {
+        console.error('Failed to load notifications:', error);
+        this.showErrorState('Failed to load notifications. Please try again.');
+    }
+
+    showErrorState(message) {
+        const list = document.getElementById('notificationList');
+        if (list) {
+            list.innerHTML = `
+                <div class="notification-error">
+                    <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                    <p>${message}</p>
+                    <button onclick="notificationSystem.loadNotifications()" class="btn-outline btn-retry">
+                        Try Again
+                    </button>
+                </div>
+            `;
+        }
+    }
+
+    showLoadingState() {
+        const list = document.getElementById('notificationList');
+        if (list) {
+            list.innerHTML = `
+                <div class="notification-loading">
+                    <div class="loading-spinner" aria-label="Loading notifications"></div>
+                    <span>Loading notifications...</span>
+                </div>
+            `;
+        }
+    }
+
+    getEmptyStateHTML() {
+        return `
+            <div class="notification-empty">
+                <i class="fas fa-bell-slash" aria-hidden="true"></i>
+                <p>No notifications yet</p>
             </div>
         `;
     }
+
+    updateFooter() {
+        const footer = document.getElementById('notificationFooterText');
+        if (!footer) return;
+
+        const unreadCount = this.notifications.filter(n => !n.isRead).length;
+        if (unreadCount > 0) {
+            footer.textContent = `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`;
+        } else {
+            footer.textContent = "You're all caught up!";
+        }
+    }
+
+    navigateToRelevantSection(type, sessionId) {
+        const sectionMap = {
+            session_request: 'tutoring-opportunities',
+            reschedule_request: 'tutoring-opportunities',
+            session_confirmed: 'bookings',
+            session_cancelled: 'sessions',
+            payment_processed: 'your-earnings',
+            invoice_submitted: 'your-earnings'
+        };
+
+        const sectionId = sectionMap[type];
+        if (sectionId) {
+            const menuItem = document.querySelector(`[data-section="${sectionId}"]`);
+            if (menuItem) menuItem.click();
+        }
+    }
+
+    // Cleanup methods
+    removeEventListeners() {
+        if (this.notificationBtn) {
+            this.notificationBtn.replaceWith(this.notificationBtn.cloneNode(true));
+        }
+        
+        this.clickHandlers.forEach((handler, element) => {
+            element.removeEventListener('click', handler);
+            element.removeEventListener('keydown', handler);
+        });
+        this.clickHandlers.clear();
+    }
+
+    cleanupRealtimeListener() {
+        if (this.realtimeListener) {
+            this.realtimeListener();
+            this.realtimeListener = null;
+        }
+    }
+
+    async destroy() {
+        this.cleanupRealtimeListener();
+        this.removeEventListeners();
+        
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) dropdown.remove();
+        
+        const styles = document.getElementById('notification-system-styles');
+        if (styles) styles.remove();
+        
+        this.isInitialized = false;
+        this.notifications = [];
+        this.unreadCount = 0;
+    }
 }
 
-// Add CSS animation for toast
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideInRight {
-        from {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
-    }
-    
-    .notification-item:hover {
-        background: var(--gray-light);
-    }
-    
-    .notification-item.unread {
-        background: rgba(67, 97, 238, 0.05);
-    }
-`;
-document.head.appendChild(style);
-
-// Initialize notification system when DOM is ready
+// Initialize notification system when ready
 document.addEventListener('DOMContentLoaded', function() {
-    // Wait for Firebase to be initialized
-    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
-        initializeNotifications();
-    } else {
-        // If Firebase isn't ready yet, wait for it
-        const checkFirebase = setInterval(() => {
-            if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
-                clearInterval(checkFirebase);
-                initializeNotifications();
+    // Create global instance
+    window.notificationSystem = new NotificationSystem();
+
+    // Wait for Firebase and user to be ready
+    const initNotificationSystem = async () => {
+        try {
+            if (typeof db !== 'undefined' && currentUser?.uid) {
+                await window.notificationSystem.initialize();
             }
-        }, 100);
-    }
+        } catch (error) {
+            console.error('Failed to initialize notification system:', error);
+        }
+    };
+
+    // Try immediately
+    initNotificationSystem();
+
+    // Fallback: check every 500ms for up to 10 seconds
+    let attempts = 0;
+    const maxAttempts = 20;
+    
+    const intervalId = setInterval(() => {
+        if (typeof db !== 'undefined' && currentUser?.uid) {
+            clearInterval(intervalId);
+            initNotificationSystem();
+        } else if (attempts++ >= maxAttempts) {
+            clearInterval(intervalId);
+            console.warn('Notification system: Firebase or user not available after timeout');
+        }
+    }, 500);
 });
+
+// =============================================
+// PRODUCTION-READY NOTIFICATION SYSTEM END
+// =============================================
 
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY ENDS HERE
 // =============================================
-// =============================================
-// NOTIFICATION-RELATED BOOKING FUNCTIONS
-// =============================================
-
-// Real-time listener for reschedule requests in bookings
-function setupBookingRescheduleListener() {
-    if (!currentUser) return;
-    
-    // Listen for reschedule requests related to user's bookings
-    db.collection('rescheduleRequests')
-        .where('studentId', '==', currentUser.uid)
-        .where('status', '==', 'pending')
-        .onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    // New reschedule request added
-                    const rescheduleRequest = change.doc.data();
-                    rescheduleRequest.id = change.doc.id;
-                    
-                    // Create notification for the reschedule request
-                    createRescheduleNotification(rescheduleRequest);
-                }
-            });
-        });
-}
-
-// Create notification for reschedule request
-async function createRescheduleNotification(rescheduleRequest) {
-    try {
-        // Get session details for the notification
-        const sessionDoc = await db.collection('bookedSessions').doc(rescheduleRequest.sessionId).get();
-        if (!sessionDoc.exists) return;
-        
-        const session = sessionDoc.data();
-        const newDate = rescheduleRequest.requestedDate.toDate();
-        const formattedDate = newDate.toLocaleDateString();
-        const formattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        // Create notification in Firestore
-        await db.collection('notifications').add({
-            userId: currentUser.uid,
-            title: 'Reschedule Request',
-            message: `Tutor has requested to reschedule your ${session.subject} session to ${formattedDate} at ${formattedTime}`,
-            type: 'reschedule_request',
-            relatedSessionId: rescheduleRequest.sessionId,
-            priority: 'high',
-            isRead: false,
-            createdAt: new Date()
-        });
-        
-    } catch (error) {
-        console.error('Error creating reschedule notification:', error);
-    }
-}
-
-// Update booking display to show reschedule requests
-function updateBookingWithRescheduleInfo(booking, container) {
-    const date = booking.date.toDate();
-    const formattedDate = date.toLocaleDateString();
-    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    // Check for pending reschedule requests
-    let rescheduleInfo = '';
-    if (booking.hasPendingReschedule && booking.rescheduleRequest) {
-        const newDate = booking.rescheduleRequest.requestedDate.toDate();
-        const newFormattedDate = newDate.toLocaleDateString();
-        const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        rescheduleInfo = `
-            <div class="session-detail" style="color: var(--warning); font-weight: 500;">
-                <i class="fas fa-exchange-alt"></i>
-                <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
-            </div>
-            <div class="session-detail">
-                <i class="fas fa-comment"></i>
-                <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
-            </div>
-        `;
-    }
-    
-    const bookingCard = `
-        <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${booking.id}">
-            <div class="session-header">
-                <div class="session-title">${booking.subject || 'No subject'}</div>
-                <div class="session-date">${formattedDate} at ${formattedTime}</div>
-            </div>
-            <div class="session-details">
-                <div class="session-detail">
-                    <i class="fas fa-user-tie"></i>
-                    <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-clock"></i>
-                    <span>Duration: ${booking.duration || '1'} hours</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-video"></i>
-                    <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-hourglass-half"></i>
-                    <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
-                </div>
-                ${rescheduleInfo}
-            </div>
-            <div class="session-actions">
-                ${booking.hasPendingReschedule ? 
-                    `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
-                     <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
-                    `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
-                }
-                ${date > new Date() ? `<button class="btn-primary" onclick="joinSession('${booking.id}')">Join Session</button>` : ''}
-            </div>
-        </div>
-    `;
-    
-    container.innerHTML += bookingCard;
-}
-  
-// =============================================
-// NOTIFICATION INTEGRATION WITH DASHBOARD
-// =============================================
-
-// Update dashboard initialization to include notifications
-function initDashboardWithNotifications() {
-    initDashboard(); // Original dashboard initialization
-    
-    // Initialize notification system
-    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
-        initializeNotifications();
-        setupBookingRescheduleListener();
-    }
-}
-
-// Update the existing DOMContentLoaded event listener
-document.addEventListener('DOMContentLoaded', function() {
-    // Replace the original initDashboard call with the enhanced version
-    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
-        initDashboardWithNotifications();
-    } else {
-        // If Firebase isn't ready yet, wait for it
-        const checkFirebase = setInterval(() => {
-            if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
-                clearInterval(checkFirebase);
-                initDashboardWithNotifications();
-            }
-        }, 100);
-    }
-});
-
-// Update the booking response function to create notifications
-async function respondToReschedule(bookingId, response) {
-    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
-        return;
-    }
-
-    try {
-        // First, get the reschedule request for this booking
-        const rescheduleQuery = await db.collection('rescheduleRequests')
-            .where('sessionId', '==', bookingId)
-            .where('status', '==', 'pending')
-            .get();
-
-        if (rescheduleQuery.empty) {
-            alert('No pending reschedule request found for this booking.');
-            return;
-        }
-
-        const rescheduleRequestDoc = rescheduleQuery.docs[0];
-        const rescheduleRequestId = rescheduleRequestDoc.id;
-        const rescheduleRequest = rescheduleRequestDoc.data();
-
-        if (response === 'accept') {
-            // Accept the reschedule
-            const batch = db.batch();
-            
-            const bookingRef = db.collection('bookedSessions').doc(bookingId);
-            batch.update(bookingRef, {
-                date: rescheduleRequest.requestedDate,
-                status: 'confirmed',
-                rescheduleAcceptedAt: new Date()
-            });
-
-            const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
-            batch.update(rescheduleRef, {
-                status: 'accepted',
-                respondedAt: new Date(),
-                response: 'accepted'
-            });
-
-            await batch.commit();
-            
-            // Create success notification
-            await createNotification(
-                'Reschedule Accepted',
-                'You have accepted the reschedule request.',
-                'reschedule_request',
-                bookingId
-            );
-            
-        } else {
-            // Decline the reschedule
-            await db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
-                status: 'declined',
-                respondedAt: new Date(),
-                response: 'declined'
-            });
-            
-            // Create notification for decline
-            await createNotification(
-                'Reschedule Declined',
-                'You have declined the reschedule request.',
-                'reschedule_request',
-                bookingId
-            );
-        }
-
-        alert(`Reschedule request ${response}ed successfully.`);
-        loadUserBookings();
-        
-    } catch (error) {
-        console.error('Error responding to reschedule request:', error);
-        alert('Failed to respond to reschedule request. Please try again.');
-    }
-}
-
-// Helper function to create notifications
-async function createNotification(title, message, type, relatedSessionId) {
-    try {
-        await db.collection('notifications').add({
-            userId: currentUser.uid,
-            title: title,
-            message: message,
-            type: type,
-            relatedSessionId: relatedSessionId,
-            priority: 'medium',
-            isRead: false,
-            createdAt: new Date()
-        });
-    } catch (error) {
-        console.error('Error creating notification:', error);
-    }
-}
   
 </script>
 </body>
 </html>
-
-
 
 
