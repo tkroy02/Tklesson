@@ -2996,9 +2996,10 @@ function validateSessionForJoin(session) {
     const timeDiff = sessionTime.getTime() - now.getTime();
     const hoursDiff = timeDiff / (1000 * 60 * 60);
     
-    // Allow joining 15 minutes before and 2 hours after session time
-    return hoursDiff >= -0.25 && hoursDiff <= 2;
+    // More flexible time window: 30 minutes before to 4 hours after session time
+    return hoursDiff >= -0.5 && hoursDiff <= 4;
 }
+
 
 // Create booking card HTML for tutor dashboard
 function createBookingCard(booking, studentName) {
@@ -3074,7 +3075,10 @@ function createBookingCard(booking, studentName) {
     }
     
     // Determine if join button should be enabled
-    const canJoinSession = location === 'online' && meetingLink && meetingLink.startsWith('http') && validateSessionForJoin(booking);
+    const canJoinSession = location === 'online' && 
+                          meetingLink && 
+                          meetingLink.startsWith('http') && 
+                          validateSessionForJoin(booking);
     
     return `
         <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
@@ -3132,6 +3136,7 @@ function createBookingCard(booking, studentName) {
 }
 
 // Enhanced Join session function
+// Fixed Join session function with proper validation
 async function joinSession(sessionId) {
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -3141,17 +3146,44 @@ async function joinSession(sessionId) {
         }
         
         const session = sessionDoc.data();
+        console.log('Session data for joining:', session); // Debug log
         
-        // Validate session time
-        if (!validateSessionForJoin(session)) {
-            alert('You can only join sessions 15 minutes before the scheduled time and up to 2 hours after.');
-            return;
-        }
-        
+        // Validate session has a meeting link
         const meetingLink = session.meetingLink;
         
         if (!meetingLink || !meetingLink.startsWith('http')) {
             alert('Valid meeting link is not available for this session.');
+            return;
+        }
+        
+        // Enhanced time validation - more flexible approach
+        if (!validateSessionForJoin(session)) {
+            // Show specific time information
+            let sessionTime;
+            if (session.date && typeof session.date.toDate === 'function') {
+                sessionTime = session.date.toDate();
+            } else {
+                sessionTime = new Date(session.date);
+            }
+            
+            const now = new Date();
+            const timeDiff = sessionTime.getTime() - now.getTime();
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
+            
+            if (hoursDiff < -2) {
+                alert('This session ended more than 2 hours ago. Joining is no longer available.');
+            } else if (hoursDiff < -0.25) {
+                alert('This session started more than 15 minutes ago. Joining may not be available.');
+                // Allow joining anyway with warning
+                if (confirm('This session started a while ago. Try joining anyway?')) {
+                    window.open(meetingLink, '_blank', 'noopener,noreferrer');
+                }
+            } else if (hoursDiff > 2) {
+                alert('You can only join sessions starting within the next 2 hours.');
+            } else {
+                // Within valid time window - proceed to join
+                window.open(meetingLink, '_blank', 'noopener,noreferrer');
+            }
             return;
         }
         
@@ -3166,6 +3198,152 @@ async function joinSession(sessionId) {
     }
 }
 
+// Improved validation function with better time handling
+function validateSessionForJoin(session) {
+    const now = new Date();
+    let sessionTime;
+    
+    // Handle both Date objects and Firestore Timestamps
+    if (session.date && typeof session.date.toDate === 'function') {
+        sessionTime = session.date.toDate();
+    } else {
+        sessionTime = new Date(session.date);
+    }
+    
+    const timeDiff = sessionTime.getTime() - now.getTime();
+    const hoursDiff = timeDiff / (1000 * 60 * 60);
+    
+    // More flexible time window: 30 minutes before to 4 hours after session time
+    return hoursDiff >= -0.5 && hoursDiff <= 4;
+}
+
+// Enhanced booking card creation with better join button logic
+function createBookingCard(booking, studentName) {
+    let sessionDate;
+    
+    // Handle date conversion from Firestore Timestamp if needed
+    if (booking.date && typeof booking.date.toDate === 'function') {
+        sessionDate = booking.date.toDate();
+    } else {
+        sessionDate = new Date(booking.date);
+    }
+    
+    const formattedDate = formatSessionDate(sessionDate);
+    const subject = booking.subject || 'General Tutoring';
+    const duration = booking.duration || '1.5';
+    const hourlyRate = booking.hourlyRate || '40';
+    const location = booking.sessionType || 'online';
+    const meetingLink = booking.meetingLink || '#';
+    
+    // Enhanced join button logic
+    const canJoinSession = location === 'online' && 
+                          meetingLink && 
+                          meetingLink.startsWith('http') && 
+                          validateSessionForJoin(booking);
+    
+    // Debug information for join button
+    const joinButtonTitle = canJoinSession ? 
+        'Join the online session' : 
+        `Cannot join: ${location !== 'online' ? 'Not an online session' : !meetingLink ? 'No meeting link' : 'Outside join window'}`;
+    
+    return `
+        <div class="session-card ${booking.status === 'reschedule_requested' ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+            <div class="session-header">
+                <div class="session-title">${subject} Session with ${studentName}</div>
+                <div class="session-date">${formattedDate}</div>
+                <span class="status-badge status-${booking.status}">${booking.status}</span>
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-graduate"></i> 
+                    <span><strong>Student:</strong> ${studentName}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-book"></i> 
+                    <span><strong>Subject:</strong> ${subject}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i> 
+                    <span><strong>Duration:</strong> ${duration} hours</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    <span><strong>Type:</strong> ${location === 'online' ? 'Online' : 'In-Person'}</span>
+                </div>
+                ${location === 'online' && meetingLink ? `
+                <div class="session-detail">
+                    <i class="fas fa-link"></i> 
+                    <span><strong>Meeting:</strong> <a href="${meetingLink}" target="_blank" style="color: var(--primary);">Join Link</a></span>
+                </div>
+                ` : ''}
+            </div>
+            
+            <div class="session-actions">
+                ${canJoinSession ? 
+                    `<button class="btn-primary join-session-btn" data-session-id="${booking.id}" title="${joinButtonTitle}">
+                        <i class="fas fa-video"></i> Join Session
+                    </button>` : 
+                    `<button class="btn-outline" disabled title="${joinButtonTitle}">
+                        <i class="fas fa-video"></i> Join Session
+                    </button>`
+                }
+                <button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
+                    <i class="fas fa-calendar-alt"></i> Reschedule
+                </button>
+                <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+            </div>
+        </div>
+    `;
+}
+       
+// Enhanced event listener setup
+function addBookingActionListeners() {
+    // Join session buttons - with better error handling
+    document.querySelectorAll('.join-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            console.log('Join button clicked for session:', sessionId); // Debug log
+            joinSession(sessionId);
+        });
+    });
+    
+    // Other button listeners remain the same...
+    document.querySelectorAll('.reschedule-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            openRescheduleModal(sessionId);
+        });
+    });
+    
+    document.querySelectorAll('.cancel-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            cancelBooking(sessionId);
+        });
+    });
+}
+
+// Debug function to check session data
+async function debugSession(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (sessionDoc.exists) {
+            const session = sessionDoc.data();
+            console.log('Session debug info:', {
+                id: sessionId,
+                meetingLink: session.meetingLink,
+                sessionType: session.sessionType,
+                date: session.date,
+                status: session.status
+            });
+        }
+    } catch (error) {
+        console.error('Debug error:', error);
+    }
+}
+       
 // Add event listeners to booking action buttons
 function addBookingActionListeners() {
     // Join session buttons
@@ -5760,6 +5938,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
