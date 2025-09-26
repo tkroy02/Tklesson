@@ -2921,7 +2921,8 @@ document.addEventListener('DOMContentLoaded', function() {
 // =============================================
 
 // =============================================
-// PRODUCTION-READY NOTIFICATION SYSTEM
+// =============================================
+// PRODUCTION-READY NOTIFICATION SYSTEM (FIXED)
 // =============================================
 
 class NotificationSystem {
@@ -2930,10 +2931,19 @@ class NotificationSystem {
         this.unreadCount = 0;
         this.realtimeListener = null;
         this.isInitialized = false;
+        this.notificationsSnapshot = null;
         
         // Debounce variables
         this.updateTimeout = null;
         this.clickHandlers = new Map();
+        
+        // Bind methods to maintain context
+        this.handleBellClick = this.handleBellClick.bind(this);
+        this.handleOutsideClick = this.handleOutsideClick.bind(this);
+        this.handleKeydown = this.handleKeydown.bind(this);
+        this.handleMarkAllRead = this.handleMarkAllRead.bind(this);
+        this.handleClearAll = this.handleClearAll.bind(this);
+        this.handleRealtimeUpdate = this.handleRealtimeUpdate.bind(this);
     }
 
     // Initialize notification system with proper error handling
@@ -2968,10 +2978,6 @@ class NotificationSystem {
         
         if (typeof currentUser === 'undefined' || !currentUser?.uid) {
             errors.push('User not authenticated');
-        }
-        
-        if (!window.Notification) {
-            console.warn('Browser notifications not supported');
         }
         
         if (errors.length > 0) {
@@ -3232,6 +3238,10 @@ class NotificationSystem {
                     width: auto;
                 }
             }
+            
+            .hidden {
+                display: none !important;
+            }
         `;
 
         const styleElement = document.createElement('style');
@@ -3245,12 +3255,16 @@ class NotificationSystem {
         this.showLoadingState();
         
         try {
-            const [notificationsSnapshot, sessionsMap] = await Promise.all([
-                this.fetchNotifications(),
-                this.preloadSessionData()
-            ]);
-
-            this.processNotifications(notificationsSnapshot, sessionsMap);
+            const notificationsSnapshot = await this.fetchNotifications();
+            
+            if (notificationsSnapshot && !notificationsSnapshot.empty) {
+                const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
+                this.processNotifications(notificationsSnapshot, sessionsMap);
+            } else {
+                this.notifications = [];
+                this.unreadCount = 0;
+            }
+            
             this.updateUI();
             
         } catch (error) {
@@ -3263,49 +3277,86 @@ class NotificationSystem {
         try {
             const snapshot = await db.collection('notifications')
                 .where('userId', '==', currentUser.uid)
-                .where('isActive', '==', true) // Soft delete support
                 .orderBy('createdAt', 'desc')
-                .limit(30) // Reasonable limit for performance
+                .limit(30)
                 .get();
-
-            if (snapshot.empty) {
-                return { empty: true, docs: [] };
-            }
 
             return snapshot;
         } catch (error) {
             if (error.code === 'permission-denied') {
                 throw new Error('Access to notifications denied');
+            } else if (error.code === 'failed-precondition') {
+                // Index missing error - fallback to simpler query
+                console.warn('Firestore index missing, using fallback query');
+                return await this.fetchNotificationsFallback();
             }
             throw error;
         }
     }
 
-    // Preload session data efficiently
-    async preloadSessionData() {
-        const sessionIds = new Set();
-        
-        // First pass: collect all session IDs
-        if (!this.notificationsSnapshot?.empty) {
-            this.notificationsSnapshot.docs.forEach(doc => {
-                const notification = doc.data();
-                if (notification.relatedSessionId) {
-                    sessionIds.add(notification.relatedSessionId);
-                }
-            });
+    // Fallback query without complex where clauses
+    async fetchNotificationsFallback() {
+        try {
+            const snapshot = await db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .get();
+
+            return snapshot;
+        } catch (error) {
+            // Last resort - get all and filter client-side
+            console.warn('Using client-side filtering fallback');
+            const snapshot = await db.collection('notifications')
+                .orderBy('createdAt', 'desc')
+                .limit(50)
+                .get();
+
+            const userNotifications = snapshot.docs.filter(doc => 
+                doc.data().userId === currentUser.uid
+            );
+
+            return {
+                empty: userNotifications.length === 0,
+                docs: userNotifications
+            };
         }
+    }
+
+    // Preload session data efficiently
+    async preloadSessionData(notificationsSnapshot) {
+        if (!notificationsSnapshot || notificationsSnapshot.empty) {
+            return new Map();
+        }
+
+        const sessionIds = new Set();
+        const docs = notificationsSnapshot.docs || [];
+
+        // Collect all session IDs from notifications
+        docs.forEach(doc => {
+            const notification = doc.data();
+            if (notification.relatedSessionId) {
+                sessionIds.add(notification.relatedSessionId);
+            }
+        });
 
         if (sessionIds.size === 0) return new Map();
 
         try {
-            const sessionsSnapshot = await db.collection('bookedSessions')
-                .where('__name__', 'in', Array.from(sessionIds))
-                .get();
-
+            // Use array chunking for large sets (Firestore limit: 10 per query)
+            const sessionIdsArray = Array.from(sessionIds);
+            const chunks = this.chunkArray(sessionIdsArray, 10);
             const sessionsMap = new Map();
-            sessionsSnapshot.docs.forEach(doc => {
-                sessionsMap.set(doc.id, doc.data());
-            });
+
+            for (const chunk of chunks) {
+                const sessionsSnapshot = await db.collection('bookedSessions')
+                    .where('__name__', 'in', chunk)
+                    .get();
+
+                sessionsSnapshot.docs.forEach(doc => {
+                    sessionsMap.set(doc.id, doc.data());
+                });
+            }
 
             return sessionsMap;
         } catch (error) {
@@ -3314,15 +3365,25 @@ class NotificationSystem {
         }
     }
 
+    // Helper to chunk array for Firestore limitations
+    chunkArray(array, size) {
+        const chunks = [];
+        for (let i = 0; i < array.length; i += size) {
+            chunks.push(array.slice(i, i + size));
+        }
+        return chunks;
+    }
+
     // Process notifications with enriched data
     processNotifications(snapshot, sessionsMap) {
         this.notifications = [];
 
-        if (snapshot.empty) {
+        if (!snapshot || snapshot.empty) {
             return;
         }
 
-        snapshot.docs.forEach(doc => {
+        const docs = snapshot.docs || [];
+        docs.forEach(doc => {
             const notification = this.enrichNotificationData(doc, sessionsMap);
             this.notifications.push(notification);
         });
@@ -3335,12 +3396,11 @@ class NotificationSystem {
         const notification = { 
             id: doc.id, 
             ...doc.data(),
-            sessionData: null,
-            rescheduleData: null
+            sessionData: null
         };
 
         // Add session data if available
-        if (notification.relatedSessionId && sessionsMap.has(notification.relatedSessionId)) {
+        if (notification.relatedSessionId && sessionsMap) {
             notification.sessionData = sessionsMap.get(notification.relatedSessionId);
         }
 
@@ -3474,6 +3534,16 @@ class NotificationSystem {
         }
     }
 
+    // Handle mark all as read
+    async handleMarkAllRead() {
+        try {
+            await this.markAllAsRead();
+        } catch (error) {
+            console.error('Error marking all as read:', error);
+            alert('Failed to mark all notifications as read. Please try again.');
+        }
+    }
+
     // Mark all notifications as read
     async markAllAsRead() {
         const unreadNotifications = this.notifications.filter(n => !n.isRead);
@@ -3501,6 +3571,16 @@ class NotificationSystem {
 
         } catch (error) {
             throw new Error(`Failed to mark all as read: ${error.message}`);
+        }
+    }
+
+    // Handle clear all
+    async handleClearAll() {
+        try {
+            await this.clearAll();
+        } catch (error) {
+            console.error('Error clearing all notifications:', error);
+            alert('Failed to clear notifications. Please try again.');
         }
     }
 
@@ -3544,7 +3624,7 @@ class NotificationSystem {
         // Notification bell click
         this.notificationBtn = document.querySelector('.notification-btn');
         if (this.notificationBtn) {
-            this.notificationBtn.addEventListener('click', this.handleBellClick.bind(this));
+            this.notificationBtn.addEventListener('click', this.handleBellClick);
         }
 
         // Dropdown buttons
@@ -3552,17 +3632,17 @@ class NotificationSystem {
         const clearNotificationsBtn = document.getElementById('clearNotificationsBtn');
 
         if (markAllReadBtn) {
-            markAllReadBtn.addEventListener('click', this.handleMarkAllRead.bind(this));
+            markAllReadBtn.addEventListener('click', this.handleMarkAllRead);
         }
         if (clearNotificationsBtn) {
-            clearNotificationsBtn.addEventListener('click', this.handleClearAll.bind(this));
+            clearNotificationsBtn.addEventListener('click', this.handleClearAll);
         }
 
         // Close dropdown when clicking outside
-        document.addEventListener('click', this.handleOutsideClick.bind(this));
+        document.addEventListener('click', this.handleOutsideClick);
         
         // Keyboard navigation
-        document.addEventListener('keydown', this.handleKeydown.bind(this));
+        document.addEventListener('keydown', this.handleKeydown);
     }
 
     // Handle notification bell click
@@ -3630,13 +3710,20 @@ class NotificationSystem {
     startRealtimeListener() {
         this.cleanupRealtimeListener();
 
-        this.realtimeListener = db.collection('notifications')
-            .where('userId', '==', currentUser.uid)
-            .where('isActive', '==', true)
-            .orderBy('createdAt', 'desc')
-            .onSnapshot(this.handleRealtimeUpdate.bind(this), 
-                error => console.error('Realtime listener error:', error)
-            );
+        try {
+            this.realtimeListener = db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .orderBy('createdAt', 'desc')
+                .onSnapshot(this.handleRealtimeUpdate, 
+                    error => {
+                        console.error('Realtime listener error:', error);
+                        // Don't throw, just log - system can work without realtime updates
+                    }
+                );
+        } catch (error) {
+            console.warn('Realtime listener failed to start:', error);
+            // System will still work with manual refreshes
+        }
     }
 
     // Handle realtime updates
@@ -3711,6 +3798,11 @@ class NotificationSystem {
 
     // Show toast notification
     showToastNotification(notification) {
+        // Request browser notification permission if not already done
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
         if (Notification.permission === 'granted') {
             this.showBrowserNotification(notification);
         } else {
@@ -3753,10 +3845,16 @@ class NotificationSystem {
         document.body.appendChild(toast);
 
         // Auto-remove after 5 seconds
-        setTimeout(() => toast.remove(), 5000);
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.remove();
+            }
+        }, 5000);
 
         // Close button
-        toast.querySelector('.close-toast').addEventListener('click', () => toast.remove());
+        toast.querySelector('.close-toast').addEventListener('click', () => {
+            toast.remove();
+        });
     }
 
     // Utility methods
@@ -3776,8 +3874,12 @@ class NotificationSystem {
     }
 
     getTimeAgo(timestamp) {
+        if (!timestamp) return 'Recently';
+        
         const now = new Date();
         const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
+        if (isNaN(date.getTime())) return 'Recently';
+        
         const diffMs = now - date;
         const diffMins = Math.floor(diffMs / 60000);
         const diffHours = Math.floor(diffMs / 3600000);
@@ -3805,17 +3907,18 @@ class NotificationSystem {
 
     getNotificationColor(type) {
         const colors = {
-            session_request: 'var(--warning-color, #ffc107)',
-            session_confirmed: 'var(--success-color, #28a745)',
-            session_cancelled: 'var(--error-color, #dc3545)',
-            payment_processed: 'var(--primary-color, #007bff)',
-            reschedule_request: 'var(--accent-color, #6f42c1)',
-            invoice_submitted: 'var(--info-color, #17a2b8)'
+            session_request: '#ffc107',
+            session_confirmed: '#28a745',
+            session_cancelled: '#dc3545',
+            payment_processed: '#007bff',
+            reschedule_request: '#6f42c1',
+            invoice_submitted: '#17a2b8'
         };
-        return colors[type] || 'var(--gray-color, #6c757d)';
+        return colors[type] || '#6c757d';
     }
 
     escapeHtml(unsafe) {
+        if (!unsafe) return '';
         return unsafe
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
@@ -3842,7 +3945,7 @@ class NotificationSystem {
                 <div class="notification-error">
                     <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
                     <p>${message}</p>
-                    <button onclick="notificationSystem.loadNotifications()" class="btn-outline btn-retry">
+                    <button onclick="window.notificationSystem.loadNotifications()" class="btn-outline btn-retry">
                         Try Again
                     </button>
                 </div>
@@ -3903,8 +4006,11 @@ class NotificationSystem {
     // Cleanup methods
     removeEventListeners() {
         if (this.notificationBtn) {
-            this.notificationBtn.replaceWith(this.notificationBtn.cloneNode(true));
+            this.notificationBtn.removeEventListener('click', this.handleBellClick);
         }
+        
+        document.removeEventListener('click', this.handleOutsideClick);
+        document.removeEventListener('keydown', this.handleKeydown);
         
         this.clickHandlers.forEach((handler, element) => {
             element.removeEventListener('click', handler);
@@ -3972,14 +4078,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // =============================================
 // PRODUCTION-READY NOTIFICATION SYSTEM END
-// =============================================
-
-// =============================================
-// NOTIFICATION BELL FUNCTIONALITY ENDS HERE
-// =============================================
+// =============================================S
   
 </script>
 </body>
 </html>
+
 
 
