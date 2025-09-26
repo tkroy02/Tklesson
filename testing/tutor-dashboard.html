@@ -2275,6 +2275,19 @@ async function confirmSession(sessionId) {
     }
 }
 
+// Helper function to validate session for joining
+function validateSessionForJoin(session) {
+    if (!session || !session.date) return false;
+    
+    const now = new Date();
+    const sessionTime = session.date.toDate();
+    const timeDiff = sessionTime.getTime() - now.getTime();
+    const hoursDiff = timeDiff / (1000 * 60 * 60);
+    
+    // Allow joining 15 minutes before and 2 hours after session time
+    return hoursDiff >= -0.25 && hoursDiff <= 2;
+}
+       
 // Create detailed notification for student
 async function createDetailedSessionNotification(session, meetLink) {
     const sessionDate = session.date.toDate();
@@ -3065,6 +3078,7 @@ async function joinSession(sessionId) {
         }
         
         const session = sessionDoc.data();
+        session.id = sessionId;
         
         // Validate session time
         if (!validateSessionForJoin(session)) {
@@ -3081,7 +3095,16 @@ async function joinSession(sessionId) {
         
         // Confirm before joining
         if (confirm('Join the tutoring session now? This will open the meeting in a new tab.')) {
-            window.open(meetLink, '_blank', 'noopener,noreferrer');
+            // Add a small delay to ensure the popup isn't blocked
+            setTimeout(() => {
+                window.open(meetLink, '_blank', 'noopener,noreferrer');
+            }, 100);
+            
+            // Optional: Log the join action
+            await db.collection('bookedSessions').doc(sessionId).update({
+                lastJoinedAt: new Date(),
+                joinCount: firebase.firestore.FieldValue.increment(1)
+            });
         }
         
     } catch (error) {
@@ -3092,14 +3115,40 @@ async function joinSession(sessionId) {
        
 // Add event listeners to booking action buttons
 function addBookingActionListeners() {
-    // Join session buttons
-    document.querySelectorAll('.join-session-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-        const sessionId = this.getAttribute('data-session-id');
-        joinSession(sessionId);
+    // Use event delegation for better reliability
+    document.addEventListener('click', function(e) {
+        // Join session buttons
+        if (e.target.closest('.join-session-btn')) {
+            const btn = e.target.closest('.join-session-btn');
+            const sessionId = btn.getAttribute('data-session-id');
+            if (sessionId) {
+                joinSession(sessionId);
+            }
+        }
+        
+        // Reschedule buttons
+        if (e.target.closest('.reschedule-btn')) {
+            const btn = e.target.closest('.reschedule-btn');
+            const sessionId = btn.getAttribute('data-session-id');
+            openRescheduleModal(sessionId);
+        }
+        
+        // Cancel buttons
+        if (e.target.closest('.cancel-btn')) {
+            const btn = e.target.closest('.cancel-btn');
+            const sessionId = btn.getAttribute('data-session-id');
+            cancelBooking(sessionId);
+        }
+        
+        // Details buttons
+        if (e.target.closest('.details-btn')) {
+            const btn = e.target.closest('.details-btn');
+            const sessionId = btn.getAttribute('data-session-id');
+            showBookingDetails(sessionId);
+        }
     });
-});
-
+}
+       
 // Helper function to validate session for joining
 function validateSessionForJoin(session) {
     const now = new Date();
@@ -3110,32 +3159,13 @@ function validateSessionForJoin(session) {
     // Allow joining 15 minutes before and 2 hours after session time
     return hoursDiff >= -0.25 && hoursDiff <= 2;
 }
-    
-    // Reschedule buttons
-    document.querySelectorAll('.reschedule-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            openRescheduleModal(sessionId);
-        });
-    });
-    
-    // Cancel buttons
-    document.querySelectorAll('.cancel-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            cancelBooking(sessionId);
-        });
-    });
-    
-    // Details buttons
-    document.querySelectorAll('.details-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            showBookingDetails(sessionId);
-        });
-    });
-}
 
+// Add this to your joinSession function for debugging
+console.log('Join session clicked for:', sessionId);
+console.log('Session data:', session);
+console.log('Meet link:', session.meetLink);
+console.log('Validation result:', validateSessionForJoin(session));
+       
 // Cancel a booking as tutor
 async function cancelBooking(sessionId) {
     if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
@@ -5700,6 +5730,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
