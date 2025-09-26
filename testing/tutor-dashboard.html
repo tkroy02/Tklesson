@@ -4794,11 +4794,539 @@ function displayEarningsErrorState() {
 // =============================================
 // YOUR EARNINGS SECTION ENDS HERE
 // =============================================
-       
+
+// =============================================
+// NOTIFICATION BELL FUNCTIONALITY STARTS HERE
+// =============================================
+
+// Global variables for notifications
+let notifications = [];
+let unreadCount = 0;
+
+// Initialize notification system
+function initializeNotifications() {
+    setupNotificationBell();
+    loadNotifications();
+    startNotificationListener();
+}
+
+// Setup notification bell click functionality
+function setupNotificationBell() {
+    const notificationBtn = document.querySelector('.notification-btn');
+    const notificationBadge = document.getElementById('notificationCount');
+    
+    if (notificationBtn) {
+        // Create notification dropdown
+        createNotificationDropdown();
+        
+        notificationBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            toggleNotificationDropdown();
+        });
+        
+        // Close dropdown when clicking elsewhere
+        document.addEventListener('click', function() {
+            closeNotificationDropdown();
+        });
+    }
+}
+
+// Create notification dropdown HTML
+function createNotificationDropdown() {
+    const existingDropdown = document.getElementById('notificationDropdown');
+    if (existingDropdown) {
+        existingDropdown.remove();
+    }
+    
+    const dropdown = document.createElement('div');
+    dropdown.id = 'notificationDropdown';
+    dropdown.className = 'notification-dropdown';
+    dropdown.style.cssText = `
+        position: absolute;
+        top: 50px;
+        right: 0;
+        width: 350px;
+        background: white;
+        border-radius: var(--border-radius);
+        box-shadow: var(--box-shadow-hover);
+        z-index: 2000;
+        display: none;
+        max-height: 400px;
+        overflow-y: auto;
+    `;
+    
+    dropdown.innerHTML = `
+        <div class="notification-header" style="padding: 15px; border-bottom: 1px solid var(--gray-light); display: flex; justify-content: space-between; align-items: center;">
+            <h4 style="margin: 0; color: var(--primary-dark);">Notifications</h4>
+            <div>
+                <button id="markAllReadBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px; margin-right: 5px;">Mark All Read</button>
+                <button id="clearNotificationsBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px;">Clear All</button>
+            </div>
+        </div>
+        <div class="notification-list" id="notificationList" style="padding: 10px;"></div>
+        <div class="notification-footer" style="padding: 10px; border-top: 1px solid var(--gray-light); text-align: center;">
+            <span style="color: var(--gray); font-size: 12px;">You're all caught up!</span>
+        </div>
+    `;
+    
+    document.body.appendChild(dropdown);
+    
+    // Add event listeners to dropdown buttons
+    document.getElementById('markAllReadBtn').addEventListener('click', markAllNotificationsAsRead);
+    document.getElementById('clearNotificationsBtn').addEventListener('click', clearAllNotifications);
+}
+
+// Toggle notification dropdown visibility
+function toggleNotificationDropdown() {
+    const dropdown = document.getElementById('notificationDropdown');
+    if (dropdown.style.display === 'block') {
+        dropdown.style.display = 'none';
+    } else {
+        dropdown.style.display = 'block';
+        updateNotificationDropdownContent();
+    }
+}
+
+// Close notification dropdown
+function closeNotificationDropdown() {
+    const dropdown = document.getElementById('notificationDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+}
+
+// Load notifications from Firestore (or create sample data)
+async function loadNotifications() {
+    try {
+        // Try to load real notifications from Firestore
+        const notificationsSnapshot = await db.collection('notifications')
+            .where('userId', '==', currentUser.uid)
+            .orderBy('createdAt', 'desc')
+            .limit(20)
+            .get();
+        
+        if (!notificationsSnapshot.empty) {
+            notifications = [];
+            notificationsSnapshot.forEach(doc => {
+                const notification = doc.data();
+                notification.id = doc.id;
+                notifications.push(notification);
+            });
+        } else {
+            // Create sample notifications if none exist
+            createSampleNotifications();
+        }
+        
+        updateNotificationBadge();
+        
+    } catch (error) {
+        console.error("Error loading notifications:", error);
+        // Fallback to sample notifications
+        createSampleNotifications();
+        updateNotificationBadge();
+    }
+}
+
+// Create sample notifications for demonstration
+function createSampleNotifications() {
+    notifications = [
+        {
+            id: '1',
+            type: 'session_request',
+            title: 'New Session Request',
+            message: 'John Smith requested a Math tutoring session for tomorrow at 3:00 PM.',
+            isRead: false,
+            createdAt: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
+            relatedSessionId: 'session123'
+        },
+        {
+            id: '2',
+            type: 'session_confirmed',
+            title: 'Session Confirmed',
+            message: 'Your Chemistry session with Sarah Johnson has been confirmed for Friday.',
+            isRead: true,
+            createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
+            relatedSessionId: 'session456'
+        },
+        {
+            id: '3',
+            type: 'payment_processed',
+            title: 'Payment Processed',
+            message: 'Your payment for last week\'s sessions has been processed. Amount: $120.00',
+            isRead: false,
+            createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
+            relatedSessionId: null
+        },
+        {
+            id: '4',
+            type: 'system',
+            title: 'System Maintenance',
+            message: 'There will be system maintenance this Sunday from 2:00 AM to 4:00 AM.',
+            isRead: true,
+            createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
+            relatedSessionId: null
+        }
+    ];
+}
+
+// Update notification badge count
+function updateNotificationBadge() {
+    const badge = document.getElementById('notificationCount');
+    unreadCount = notifications.filter(n => !n.isRead).length;
+    
+    if (badge) {
+        if (unreadCount > 0) {
+            badge.textContent = unreadCount > 9 ? '9+' : unreadCount.toString();
+            badge.style.display = 'inline-block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+// Update notification dropdown content
+function updateNotificationDropdownContent() {
+    const notificationList = document.getElementById('notificationList');
+    
+    if (notifications.length === 0) {
+        notificationList.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--gray);">
+                <i class="fas fa-bell-slash" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>No notifications yet</p>
+            </div>
+        `;
+        return;
+    }
+    
+    let notificationsHTML = '';
+    
+    notifications.forEach(notification => {
+        const timeAgo = getTimeAgo(notification.createdAt);
+        const isUnread = !notification.isRead;
+        
+        notificationsHTML += `
+            <div class="notification-item ${isUnread ? 'unread' : ''}" 
+                 data-notification-id="${notification.id}"
+                 style="padding: 12px; border-bottom: 1px solid var(--gray-light); cursor: pointer; transition: background 0.2s;">
+                <div style="display: flex; align-items: flex-start;">
+                    <div style="margin-right: 10px;">
+                        <div class="notification-icon" style="width: 32px; height: 32px; border-radius: 50%; background: ${getNotificationColor(notification.type)}; display: flex; align-items: center; justify-content: center; color: white;">
+                            <i class="${getNotificationIcon(notification.type)}"></i>
+                        </div>
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; color: var(--dark); margin-bottom: 4px;">${notification.title}</div>
+                        <div style="font-size: 0.9em; color: var(--gray); line-height: 1.4;">${notification.message}</div>
+                        <div style="font-size: 0.8em; color: var(--gray); margin-top: 5px;">${timeAgo}</div>
+                    </div>
+                    ${isUnread ? '<div class="unread-indicator" style="width: 8px; height: 8px; background: var(--accent); border-radius: 50%; margin-left: 10px;"></div>' : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    notificationList.innerHTML = notificationsHTML;
+    
+    // Add click handlers to notification items
+    document.querySelectorAll('.notification-item').forEach(item => {
+        item.addEventListener('click', function() {
+            const notificationId = this.getAttribute('data-notification-id');
+            handleNotificationClick(notificationId);
+        });
+    });
+}
+
+// Handle notification click
+function handleNotificationClick(notificationId) {
+    const notification = notifications.find(n => n.id === notificationId);
+    
+    if (notification) {
+        // Mark as read
+        if (!notification.isRead) {
+            markNotificationAsRead(notificationId);
+        }
+        
+        // Handle notification based on type
+        switch(notification.type) {
+            case 'session_request':
+                // Navigate to tutoring opportunities section
+                navigateToSection('tutoring-opportunities');
+                break;
+            case 'session_confirmed':
+                // Navigate to bookings section
+                navigateToSection('bookings');
+                break;
+            case 'payment_processed':
+                // Navigate to earnings section
+                navigateToSection('your-earnings');
+                break;
+            default:
+                // For system notifications, just close the dropdown
+                break;
+        }
+        
+        // Close dropdown after click
+        closeNotificationDropdown();
+    }
+}
+
+// Mark a notification as read
+async function markNotificationAsRead(notificationId) {
+    const notification = notifications.find(n => n.id === notificationId);
+    
+    if (notification && !notification.isRead) {
+        try {
+            // Update in Firestore if it's a real notification
+            if (notification.id.length > 2) { // Simple check for real vs sample notifications
+                await db.collection('notifications').doc(notificationId).update({
+                    isRead: true,
+                    readAt: new Date()
+                });
+            }
+            
+            // Update local state
+            notification.isRead = true;
+            updateNotificationBadge();
+            updateNotificationDropdownContent();
+            
+        } catch (error) {
+            console.error("Error marking notification as read:", error);
+        }
+    }
+}
+
+// Mark all notifications as read
+async function markAllNotificationsAsRead() {
+    try {
+        const unreadNotifications = notifications.filter(n => !n.isRead);
+        
+        // Update all in Firestore
+        const batch = db.batch();
+        unreadNotifications.forEach(notification => {
+            if (notification.id.length > 2) { // Real notifications
+                const notificationRef = db.collection('notifications').doc(notification.id);
+                batch.update(notificationRef, {
+                    isRead: true,
+                    readAt: new Date()
+                });
+            }
+        });
+        
+        if (unreadNotifications.length > 0) {
+            await batch.commit();
+        }
+        
+        // Update local state
+        notifications.forEach(notification => {
+            notification.isRead = true;
+        });
+        
+        updateNotificationBadge();
+        updateNotificationDropdownContent();
+        
+    } catch (error) {
+        console.error("Error marking all notifications as read:", error);
+    }
+}
+
+// Clear all notifications
+async function clearAllNotifications() {
+    if (confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
+        try {
+            // Delete all from Firestore
+            const batch = db.batch();
+            notifications.forEach(notification => {
+                if (notification.id.length > 2) { // Real notifications
+                    const notificationRef = db.collection('notifications').doc(notification.id);
+                    batch.delete(notificationRef);
+                }
+            });
+            
+            await batch.commit();
+            
+            // Clear local state
+            notifications = [];
+            updateNotificationBadge();
+            updateNotificationDropdownContent();
+            
+        } catch (error) {
+            console.error("Error clearing notifications:", error);
+        }
+    }
+}
+
+// Navigate to a specific section
+function navigateToSection(sectionId) {
+    // Find and click the corresponding menu item
+    const menuItem = document.querySelector(`.menu-item a[data-section="${sectionId}"]`);
+    if (menuItem) {
+        menuItem.click();
+    }
+}
+
+// Helper function to get time ago string
+function getTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - new Date(date);
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} min ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    
+    return new Date(date).toLocaleDateString();
+}
+
+// Helper function to get notification icon
+function getNotificationIcon(type) {
+    switch(type) {
+        case 'session_request': return 'fas fa-calendar-plus';
+        case 'session_confirmed': return 'fas fa-calendar-check';
+        case 'session_cancelled': return 'fas fa-calendar-times';
+        case 'payment_processed': return 'fas fa-dollar-sign';
+        case 'reschedule_request': return 'fas fa-clock';
+        default: return 'fas fa-bell';
+    }
+}
+
+// Helper function to get notification color
+function getNotificationColor(type) {
+    switch(type) {
+        case 'session_request': return 'var(--warning)';
+        case 'session_confirmed': return 'var(--success)';
+        case 'session_cancelled': return 'var(--error)';
+        case 'payment_processed': return 'var(--primary)';
+        case 'reschedule_request': return 'var(--accent)';
+        default: return 'var(--gray)';
+    }
+}
+
+// Listen for new notifications in real-time
+function startNotificationListener() {
+    // Listen for new notifications in Firestore
+    db.collection('notifications')
+        .where('userId', '==', currentUser.uid)
+        .where('isRead', '==', false)
+        .orderBy('createdAt', 'desc')
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    // New notification added
+                    const notification = change.doc.data();
+                    notification.id = change.doc.id;
+                    
+                    // Add to beginning of notifications array
+                    notifications.unshift(notification);
+                    
+                    // Update UI
+                    updateNotificationBadge();
+                    
+                    // Show toast notification for new alerts
+                    if (notification.priority === 'high') {
+                        showToastNotification(notification);
+                    }
+                }
+            });
+        });
+}
+
+// Show toast notification for important alerts
+function showToastNotification(notification) {
+    const toast = document.createElement('div');
+    toast.className = 'notification-toast';
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: white;
+        padding: 15px;
+        border-radius: var(--border-radius-sm);
+        box-shadow: var(--box-shadow-hover);
+        z-index: 3000;
+        max-width: 300px;
+        border-left: 4px solid ${getNotificationColor(notification.type)};
+        animation: slideInRight 0.3s ease;
+    `;
+    
+    toast.innerHTML = `
+        <div style="display: flex; align-items: flex-start;">
+            <div style="margin-right: 10px; color: ${getNotificationColor(notification.type)};">
+                <i class="${getNotificationIcon(notification.type)}"></i>
+            </div>
+            <div style="flex: 1;">
+                <div style="font-weight: 600; margin-bottom: 5px;">${notification.title}</div>
+                <div style="font-size: 0.9em; color: var(--gray);">${notification.message}</div>
+            </div>
+            <button class="close-toast" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--gray); margin-left: 10px;">×</button>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // Add close button functionality
+    toast.querySelector('.close-toast').addEventListener('click', function() {
+        toast.remove();
+    });
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.remove();
+        }
+    }, 5000);
+}
+
+// Add CSS animation for toast
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideInRight {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .notification-item:hover {
+        background: var(--gray-light);
+    }
+    
+    .notification-item.unread {
+        background: rgba(67, 97, 238, 0.05);
+    }
+`;
+document.head.appendChild(style);
+
+// Initialize notification system when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Wait for Firebase to be initialized
+    if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
+        initializeNotifications();
+    } else {
+        // If Firebase isn't ready yet, wait for it
+        const checkFirebase = setInterval(() => {
+            if (typeof db !== 'undefined' && typeof currentUser !== 'undefined') {
+                clearInterval(checkFirebase);
+                initializeNotifications();
+            }
+        }, 100);
+    }
+});
+
+// =============================================
+// NOTIFICATION BELL FUNCTIONALITY ENDS HERE
+// =============================================
        
 </script>    
 </body>
 </html>
+
 
 
 
