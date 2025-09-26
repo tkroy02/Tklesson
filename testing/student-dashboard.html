@@ -2921,8 +2921,7 @@ document.addEventListener('DOMContentLoaded', function() {
 // =============================================
 
 // =============================================
-// =============================================
-// PRODUCTION-READY NOTIFICATION SYSTEM (FIXED)
+// PRODUCTION-READY NOTIFICATION SYSTEM (OPTIMIZED)
 // =============================================
 
 class NotificationSystem {
@@ -2931,7 +2930,7 @@ class NotificationSystem {
         this.unreadCount = 0;
         this.realtimeListener = null;
         this.isInitialized = false;
-        this.notificationsSnapshot = null;
+        this.isLoading = false;
         
         // Debounce variables
         this.updateTimeout = null;
@@ -2944,6 +2943,7 @@ class NotificationSystem {
         this.handleMarkAllRead = this.handleMarkAllRead.bind(this);
         this.handleClearAll = this.handleClearAll.bind(this);
         this.handleRealtimeUpdate = this.handleRealtimeUpdate.bind(this);
+        this.handleRealtimeError = this.handleRealtimeError.bind(this);
     }
 
     // Initialize notification system with proper error handling
@@ -2953,6 +2953,13 @@ class NotificationSystem {
             return;
         }
 
+        if (this.isLoading) {
+            console.warn('Notification system is already loading');
+            return;
+        }
+
+        this.isLoading = true;
+
         try {
             await this.validateDependencies();
             this.setupDOMElements();
@@ -2960,28 +2967,24 @@ class NotificationSystem {
             this.startRealtimeListener();
             this.setupEventListeners();
             this.isInitialized = true;
+            this.isLoading = false;
             
             console.log('Notification system initialized successfully');
         } catch (error) {
+            this.isLoading = false;
             this.handleInitializationError(error);
-            throw error;
+            // Don't throw - allow system to work in degraded mode
         }
     }
 
     // Validate required dependencies
     async validateDependencies() {
-        const errors = [];
-        
         if (typeof db === 'undefined') {
-            errors.push('Firestore database not available');
+            throw new Error('Firestore database not available');
         }
         
         if (typeof currentUser === 'undefined' || !currentUser?.uid) {
-            errors.push('User not authenticated');
-        }
-        
-        if (errors.length > 0) {
-            throw new Error(`Dependency validation failed: ${errors.join(', ')}`);
+            throw new Error('User not authenticated');
         }
     }
 
@@ -3049,8 +3052,8 @@ class NotificationSystem {
                 right: 10px;
                 width: min(400px, 90vw);
                 max-height: 500px;
-                background: var(--background-primary);
-                border: 1px solid var(--border-color);
+                background: var(--background-primary, #ffffff);
+                border: 1px solid var(--border-color, #e0e0e0);
                 border-radius: 8px;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
                 z-index: 1000;
@@ -3069,16 +3072,16 @@ class NotificationSystem {
             
             .notification-header {
                 padding: 1rem;
-                border-bottom: 1px solid var(--border-color);
+                border-bottom: 1px solid var(--border-color, #e0e0e0);
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                background: var(--background-secondary);
+                background: var(--background-secondary, #f8f9fa);
             }
             
             .notification-title {
                 margin: 0;
-                color: var(--text-primary);
+                color: var(--text-primary, #333333);
                 font-size: 1.1rem;
                 font-weight: 600;
             }
@@ -3097,14 +3100,14 @@ class NotificationSystem {
             .notification-loading {
                 padding: 2rem;
                 text-align: center;
-                color: var(--text-secondary);
+                color: var(--text-secondary, #666666);
             }
             
             .loading-spinner {
                 width: 24px;
                 height: 24px;
-                border: 2px solid var(--border-color);
-                border-top: 2px solid var(--primary-color);
+                border: 2px solid var(--border-color, #e0e0e0);
+                border-top: 2px solid var(--primary-color, #007bff);
                 border-radius: 50%;
                 animation: spin 1s linear infinite;
                 margin: 0 auto 0.5rem;
@@ -3112,7 +3115,7 @@ class NotificationSystem {
             
             .notification-item {
                 padding: 0.75rem 1rem;
-                border-bottom: 1px solid var(--border-light);
+                border-bottom: 1px solid var(--border-light, #f0f0f0);
                 cursor: pointer;
                 transition: background-color 0.2s ease;
                 display: flex;
@@ -3121,15 +3124,15 @@ class NotificationSystem {
             }
             
             .notification-item:hover {
-                background-color: var(--background-hover);
+                background-color: var(--background-hover, #f5f5f5);
             }
             
             .notification-item.unread {
-                background-color: var(--background-accent);
+                background-color: var(--background-accent, #f0f7ff);
             }
             
             .notification-item:focus {
-                outline: 2px solid var(--primary-color);
+                outline: 2px solid var(--primary-color, #007bff);
                 outline-offset: -2px;
             }
             
@@ -3151,27 +3154,27 @@ class NotificationSystem {
             
             .notification-title-text {
                 font-weight: 600;
-                color: var(--text-primary);
+                color: var(--text-primary, #333333);
                 margin-bottom: 0.25rem;
                 word-wrap: break-word;
             }
             
             .notification-message {
                 font-size: 0.9rem;
-                color: var(--text-secondary);
+                color: var(--text-secondary, #666666);
                 line-height: 1.4;
                 margin-bottom: 0.25rem;
             }
             
             .notification-time {
                 font-size: 0.8rem;
-                color: var(--text-tertiary);
+                color: var(--text-tertiary, #999999);
             }
             
             .unread-indicator {
                 width: 8px;
                 height: 8px;
-                background: var(--accent-color);
+                background: var(--accent-color, #4361ee);
                 border-radius: 50%;
                 margin-left: 0.5rem;
                 flex-shrink: 0;
@@ -3180,55 +3183,44 @@ class NotificationSystem {
             
             .notification-footer {
                 padding: 0.75rem 1rem;
-                border-top: 1px solid var(--border-light);
+                border-top: 1px solid var(--border-light, #f0f0f0);
                 text-align: center;
-                background: var(--background-secondary);
+                background: var(--background-secondary, #f8f9fa);
             }
             
             .notification-empty {
                 padding: 2rem;
                 text-align: center;
-                color: var(--text-secondary);
+                color: var(--text-secondary, #666666);
             }
             
             .notification-error {
                 padding: 1rem;
                 text-align: center;
-                color: var(--error-color);
-            }
-            
-            .notification-toast {
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                background: var(--background-primary);
-                padding: 1rem;
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-                z-index: 2000;
-                max-width: 350px;
-                border-left: 4px solid;
-                animation: slideInRight 0.3s ease;
+                color: var(--error-color, #dc3545);
             }
             
             .btn-retry {
                 margin-top: 0.5rem;
+                padding: 0.5rem 1rem;
+                background: var(--primary-color, #007bff);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            
+            .btn-retry:hover {
+                background: var(--primary-dark, #0056b3);
+            }
+            
+            .hidden {
+                display: none !important;
             }
             
             @keyframes spin {
                 0% { transform: rotate(0deg); }
                 100% { transform: rotate(360deg); }
-            }
-            
-            @keyframes slideInRight {
-                from {
-                    transform: translateX(100%);
-                    opacity: 0;
-                }
-                to {
-                    transform: translateX(0);
-                    opacity: 1;
-                }
             }
             
             @media (max-width: 480px) {
@@ -3237,10 +3229,6 @@ class NotificationSystem {
                     left: 5px;
                     width: auto;
                 }
-            }
-            
-            .hidden {
-                display: none !important;
             }
         `;
 
@@ -3252,6 +3240,9 @@ class NotificationSystem {
 
     // Load notifications with efficient batch operations
     async loadNotifications() {
+        if (this.isLoading) return;
+        
+        this.isLoading = true;
         this.showLoadingState();
         
         try {
@@ -3269,6 +3260,8 @@ class NotificationSystem {
             
         } catch (error) {
             this.handleLoadError(error);
+        } finally {
+            this.isLoading = false;
         }
     }
 
@@ -3278,7 +3271,7 @@ class NotificationSystem {
             const snapshot = await db.collection('notifications')
                 .where('userId', '==', currentUser.uid)
                 .orderBy('createdAt', 'desc')
-                .limit(30)
+                .limit(20)
                 .get();
 
             return snapshot;
@@ -3289,6 +3282,8 @@ class NotificationSystem {
                 // Index missing error - fallback to simpler query
                 console.warn('Firestore index missing, using fallback query');
                 return await this.fetchNotificationsFallback();
+            } else if (error.code === 'resource-exhausted') {
+                throw new Error('Service temporarily unavailable');
             }
             throw error;
         }
@@ -3297,24 +3292,37 @@ class NotificationSystem {
     // Fallback query without complex where clauses
     async fetchNotificationsFallback() {
         try {
+            // Try without ordering first
             const snapshot = await db.collection('notifications')
                 .where('userId', '==', currentUser.uid)
-                .orderBy('createdAt', 'desc')
                 .limit(20)
                 .get();
 
-            return snapshot;
+            // Sort client-side
+            const sortedDocs = snapshot.docs.sort((a, b) => {
+                const aTime = a.data().createdAt?.toDate() || new Date(0);
+                const bTime = b.data().createdAt?.toDate() || new Date(0);
+                return bTime - aTime;
+            });
+
+            return {
+                empty: sortedDocs.length === 0,
+                docs: sortedDocs
+            };
         } catch (error) {
             // Last resort - get all and filter client-side
             console.warn('Using client-side filtering fallback');
             const snapshot = await db.collection('notifications')
-                .orderBy('createdAt', 'desc')
                 .limit(50)
                 .get();
 
-            const userNotifications = snapshot.docs.filter(doc => 
-                doc.data().userId === currentUser.uid
-            );
+            const userNotifications = snapshot.docs
+                .filter(doc => doc.data().userId === currentUser.uid)
+                .sort((a, b) => {
+                    const aTime = a.data().createdAt?.toDate() || new Date(0);
+                    const bTime = b.data().createdAt?.toDate() || new Date(0);
+                    return bTime - aTime;
+                });
 
             return {
                 empty: userNotifications.length === 0,
@@ -3343,12 +3351,12 @@ class NotificationSystem {
         if (sessionIds.size === 0) return new Map();
 
         try {
-            // Use array chunking for large sets (Firestore limit: 10 per query)
             const sessionIdsArray = Array.from(sessionIds);
-            const chunks = this.chunkArray(sessionIdsArray, 10);
             const sessionsMap = new Map();
 
-            for (const chunk of chunks) {
+            // Load sessions in batches of 10 (Firestore limit)
+            for (let i = 0; i < sessionIdsArray.length; i += 10) {
+                const chunk = sessionIdsArray.slice(i, i + 10);
                 const sessionsSnapshot = await db.collection('bookedSessions')
                     .where('__name__', 'in', chunk)
                     .get();
@@ -3363,15 +3371,6 @@ class NotificationSystem {
             console.warn('Failed to load session data:', error);
             return new Map();
         }
-    }
-
-    // Helper to chunk array for Firestore limitations
-    chunkArray(array, size) {
-        const chunks = [];
-        for (let i = 0; i < array.length; i += size) {
-            chunks.push(array.slice(i, i + size));
-        }
-        return chunks;
     }
 
     // Process notifications with enriched data
@@ -3393,9 +3392,10 @@ class NotificationSystem {
 
     // Enrich notification with related data
     enrichNotificationData(doc, sessionsMap) {
+        const data = doc.data();
         const notification = { 
             id: doc.id, 
-            ...doc.data(),
+            ...data,
             sessionData: null
         };
 
@@ -3530,7 +3530,7 @@ class NotificationSystem {
             this.updateUI();
 
         } catch (error) {
-            throw new Error(`Failed to mark notification as read: ${error.message}`);
+            console.error('Failed to mark notification as read:', error);
         }
     }
 
@@ -3540,7 +3540,7 @@ class NotificationSystem {
             await this.markAllAsRead();
         } catch (error) {
             console.error('Error marking all as read:', error);
-            alert('Failed to mark all notifications as read. Please try again.');
+            this.showToast('Failed to mark all notifications as read. Please try again.', 'error');
         }
     }
 
@@ -3569,6 +3569,8 @@ class NotificationSystem {
             this.unreadCount = 0;
             this.updateUI();
 
+            this.showToast('All notifications marked as read', 'success');
+
         } catch (error) {
             throw new Error(`Failed to mark all as read: ${error.message}`);
         }
@@ -3580,11 +3582,11 @@ class NotificationSystem {
             await this.clearAll();
         } catch (error) {
             console.error('Error clearing all notifications:', error);
-            alert('Failed to clear notifications. Please try again.');
+            this.showToast('Failed to clear notifications. Please try again.', 'error');
         }
     }
 
-    // Clear all notifications (soft delete)
+    // Clear all notifications
     async clearAll() {
         if (this.notifications.length === 0) return;
 
@@ -3595,14 +3597,10 @@ class NotificationSystem {
 
         try {
             const batch = db.batch();
-            const updateTime = new Date();
 
             this.notifications.forEach(notification => {
                 const ref = db.collection('notifications').doc(notification.id);
-                batch.update(ref, {
-                    isActive: false,
-                    updatedAt: updateTime
-                });
+                batch.delete(ref);
             });
 
             await batch.commit();
@@ -3612,6 +3610,8 @@ class NotificationSystem {
             this.unreadCount = 0;
             this.updateUI();
 
+            this.showToast('All notifications cleared', 'success');
+
         } catch (error) {
             throw new Error(`Failed to clear notifications: ${error.message}`);
         }
@@ -3619,7 +3619,7 @@ class NotificationSystem {
 
     // Setup event listeners with proper cleanup
     setupEventListeners() {
-        this.removeEventListeners(); // Cleanup existing listeners
+        this.removeEventListeners();
 
         // Notification bell click
         this.notificationBtn = document.querySelector('.notification-btn');
@@ -3714,15 +3714,9 @@ class NotificationSystem {
             this.realtimeListener = db.collection('notifications')
                 .where('userId', '==', currentUser.uid)
                 .orderBy('createdAt', 'desc')
-                .onSnapshot(this.handleRealtimeUpdate, 
-                    error => {
-                        console.error('Realtime listener error:', error);
-                        // Don't throw, just log - system can work without realtime updates
-                    }
-                );
+                .onSnapshot(this.handleRealtimeUpdate, this.handleRealtimeError);
         } catch (error) {
             console.warn('Realtime listener failed to start:', error);
-            // System will still work with manual refreshes
         }
     }
 
@@ -3737,6 +3731,12 @@ class NotificationSystem {
                 this.handleRemovedNotification(change.doc.id);
             }
         });
+    }
+
+    // Handle realtime errors gracefully
+    handleRealtimeError(error) {
+        console.warn('Realtime listener error (non-critical):', error);
+        // Don't show error to user - system can work without realtime updates
     }
 
     // Handle new notification
@@ -3798,63 +3798,14 @@ class NotificationSystem {
 
     // Show toast notification
     showToastNotification(notification) {
-        // Request browser notification permission if not already done
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission();
-        }
-
-        if (Notification.permission === 'granted') {
-            this.showBrowserNotification(notification);
-        } else {
-            this.showCustomToast(notification);
-        }
+        const message = this.generateNotificationMessage(notification);
+        this.showToast(message, 'info');
     }
 
-    // Show browser notification
-    showBrowserNotification(notification) {
-        const message = this.generateNotificationMessage(notification);
-        
-        new Notification(notification.title, {
-            body: message,
-            icon: '/favicon.ico',
-            tag: notification.id
-        });
-    }
-
-    // Show custom toast notification
-    showCustomToast(notification) {
-        const toast = document.createElement('div');
-        toast.className = 'notification-toast';
-        toast.style.borderLeftColor = this.getNotificationColor(notification.type);
-        
-        const message = this.generateNotificationMessage(notification);
-        
-        toast.innerHTML = `
-            <div style="display: flex; align-items: flex-start;">
-                <div style="margin-right: 10px; color: ${this.getNotificationColor(notification.type)};">
-                    <i class="${this.getNotificationIcon(notification.type)}" aria-hidden="true"></i>
-                </div>
-                <div style="flex: 1;">
-                    <div style="font-weight: 600; margin-bottom: 5px;">${this.escapeHtml(notification.title)}</div>
-                    <div style="font-size: 0.9em; color: var(--text-secondary);">${this.escapeHtml(message)}</div>
-                </div>
-                <button class="close-toast" aria-label="Close notification" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--text-secondary); margin-left: 10px;">×</button>
-            </div>
-        `;
-
-        document.body.appendChild(toast);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-            if (toast.parentNode) {
-                toast.remove();
-            }
-        }, 5000);
-
-        // Close button
-        toast.querySelector('.close-toast').addEventListener('click', () => {
-            toast.remove();
-        });
+    // Show generic toast
+    showToast(message, type = 'info') {
+        // Simple console log for now - can be enhanced with proper toast UI
+        console.log(`[${type.toUpperCase()}] ${message}`);
     }
 
     // Utility methods
@@ -3930,7 +3881,7 @@ class NotificationSystem {
     // Error handling methods
     handleInitializationError(error) {
         console.error('Notification system initialization failed:', error);
-        this.showErrorState('Failed to initialize notifications');
+        this.showErrorState('Failed to initialize notifications. Some features may be unavailable.');
     }
 
     handleLoadError(error) {
@@ -3945,7 +3896,7 @@ class NotificationSystem {
                 <div class="notification-error">
                     <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
                     <p>${message}</p>
-                    <button onclick="window.notificationSystem.loadNotifications()" class="btn-outline btn-retry">
+                    <button class="btn-retry" onclick="window.notificationSystem.loadNotifications()">
                         Try Again
                     </button>
                 </div>
@@ -4078,11 +4029,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // =============================================
 // PRODUCTION-READY NOTIFICATION SYSTEM END
-// =============================================S
+// =============================================
   
 </script>
 </body>
 </html>
+
 
 
 
