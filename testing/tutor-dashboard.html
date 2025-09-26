@@ -2873,6 +2873,7 @@ function getStatusClass(status) {
 
 // =============================================
 // =============================================
+// =============================================
 // MY BOOKINGS SECTION STARTS HERE
 // =============================================
 
@@ -3466,39 +3467,10 @@ function handleRescheduleSubmit() {
 
 // Submit reschedule request (tutor sends request to student)
 async function submitRescheduleRequest(sessionId) {
-    const date = document.getElementById('rescheduleDate').value;
-    const time = document.getElementById('rescheduleTime').value;
-    const reason = document.getElementById('rescheduleReason').value.trim();
-    
-    // Validation
-    if (!date || !time || !reason) {
-        alert('Please fill in all required fields.');
-        return;
-    }
-    
-    if (reason.length < 10) {
-        alert('Please provide a more detailed reason (at least 10 characters) so the student understands why you need to reschedule.');
-        return;
-    }
+    // ... your existing validation code ...
     
     try {
-        const newDateTime = new Date(`${date}T${time}`);
-        const now = new Date();
-        
-        // Validate future date
-        if (newDateTime <= now) {
-            alert('Please select a future date and time for the proposed reschedule.');
-            return;
-        }
-        
-        // Get session data first to include student info
-        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        if (!sessionDoc.exists) {
-            alert('Error: Session not found. It may have been cancelled.');
-            return;
-        }
-        
-        const sessionData = sessionDoc.data();
+        // ... your existing session data retrieval code ...
         
         // CREATE RESCHEDULE REQUEST IN SEPARATE COLLECTION
         await db.collection('rescheduleRequests').add({
@@ -3519,13 +3491,17 @@ async function submitRescheduleRequest(sessionId) {
             rescheduleRequestedAt: firebase.firestore.FieldValue.serverTimestamp()
         });
         
-        // Create a notification for the student
-        await createStudentNotification(
+        // Create a notification for the student WITH VALIDATION
+        const notificationSent = await createStudentNotification(
             sessionData.studentId,
             'reschedule_request',
             `Tutor has requested to reschedule your ${sessionData.subject} session`,
-            sessionId
+            sessionId // This should now be validated
         );
+        
+        if (!notificationSent) {
+            console.warn("Notification failed to send, but reschedule request was created.");
+        }
         
         // Close modal
         closeRescheduleModal();
@@ -3547,20 +3523,36 @@ async function submitRescheduleRequest(sessionId) {
 // Create notification for student
 async function createStudentNotification(studentId, type, message, sessionId) {
     try {
-        await db.collection('notifications').add({
+        // Validate that sessionId is not undefined
+        if (!sessionId) {
+            console.error("Error: sessionId is undefined when creating notification");
+            return; // Exit early if sessionId is invalid
+        }
+        
+        const notificationData = {
             userId: studentId,
             type: type,
             title: 'Reschedule Request',
             message: message,
-            relatedSessionId: sessionId,
+            relatedSessionId: sessionId, // This was causing the error when undefined
             isRead: false,
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
             priority: 'high'
+        };
+        
+        // Remove undefined fields to avoid Firestore errors
+        Object.keys(notificationData).forEach(key => {
+            if (notificationData[key] === undefined) {
+                delete notificationData[key];
+            }
         });
+        
+        await db.collection('notifications').add(notificationData);
     } catch (error) {
         console.error("Error creating student notification:", error);
     }
 }
+
 
 // Close reschedule modal
 function closeRescheduleModal() {
@@ -3576,10 +3568,65 @@ function initBookingsSection() {
     console.log("Bookings section initialized");
 }
 
+// Safe session confirmation function
+async function confirmSession(sessionId) {
+    try {
+        // Validate sessionId first
+        if (!sessionId) {
+            throw new Error("Session ID is undefined - cannot confirm session");
+        }
+        
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            throw new Error("Session not found");
+        }
+        
+        const sessionData = sessionDoc.data();
+        
+        // Update session status
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'confirmed',
+            confirmedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification safely
+        await createStudentNotification(
+            sessionData.studentId,
+            'session_confirmed', 
+            `Your ${sessionData.subject} session has been confirmed`, 
+            sessionId
+        );
+        
+        showNotification('Session confirmed successfully!', 'success');
+        
+    } catch (error) {
+        console.error("Error confirming session:", error);
+        showNotification('Error confirming session: ' + error.message, 'error');
+    }
+}
+
+// Utility function to safely prepare data for Firestore
+function prepareFirestoreData(data) {
+    const safeData = { ...data };
+    
+    // Remove undefined and null values
+    Object.keys(safeData).forEach(key => {
+        if (safeData[key] === undefined || safeData[key] === null) {
+            delete safeData[key];
+        }
+        
+        // Convert Date objects to Firestore Timestamp if needed
+        if (safeData[key] instanceof Date) {
+            safeData[key] = firebase.firestore.Timestamp.fromDate(safeData[key]);
+        }
+    });
+    
+    return safeData;
+}
+
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
-
 
 // =============================================
 // =============================================
@@ -5655,6 +5702,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
