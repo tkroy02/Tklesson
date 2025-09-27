@@ -59,6 +59,125 @@ body {
   min-height: 100vh;
 }
 
+// Add CSS styles for the sessions history section
+const sessionsHistoryStyles = `
+.session-history-card {
+  background: white;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  padding: 20px;
+  margin-bottom: 20px;
+  transition: var(--transition);
+}
+
+.session-history-card:hover {
+  box-shadow: var(--box-shadow-hover);
+}
+
+.session-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--gray-light);
+}
+
+.session-history-title h4 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--primary-dark);
+  margin-bottom: 4px;
+}
+
+.session-history-date {
+  color: var(--gray);
+  font-size: 14px;
+}
+
+.session-history-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.session-history-actions {
+  margin-top: 20px;
+}
+
+.session-history-actions h5 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--dark);
+}
+
+.actions-timeline {
+  border-left: 2px solid var(--primary-light);
+  padding-left: 15px;
+  margin-left: 5px;
+}
+
+.session-action {
+  margin-bottom: 15px;
+  position: relative;
+}
+
+.session-action:before {
+  content: '';
+  position: absolute;
+  left: -20px;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.action-time {
+  font-size: 12px;
+  color: var(--gray);
+  margin-bottom: 4px;
+}
+
+.action-type {
+  font-weight: 500;
+  color: var(--dark);
+}
+
+.action-details-text {
+  color: var(--gray);
+  font-size: 14px;
+  margin-top: 2px;
+  display: block;
+}
+
+.no-actions {
+  color: var(--gray);
+  font-style: italic;
+  text-align: center;
+  padding: 10px;
+}
+
+.session-history-feedback {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--gray-light);
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .session-history-header {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .session-history-details {
+    grid-template-columns: 1fr;
+  }
+}
+ 
 /* Sidebar Styles */
 .sidebar {
   width: 280px;
@@ -2597,7 +2716,391 @@ const testBookingHtml = booking.status === 'confirmed' ?
 // Sessions History Section starts here. All JS functionalities of the Sessions History section starts here
 //...............................................................................................
 
+<script>
+// Sessions History Section - Compatible with Bookings Section
 
+// Global variables for sessions history
+let sessionsHistoryData = [];
+let sessionsLastVisible = null;
+let sessionsHasMore = false;
+const SESSIONS_PAGE_SIZE = 10;
+
+// Load user session history
+function loadUserSessionHistory(reset = true, filter = {}) {
+  const container = document.getElementById('sessionsContainer');
+  const spinner = document.getElementById('sessionsSpinner');
+  const loadMoreBtn = document.getElementById('loadMoreBtn');
+  
+  if (reset) {
+    container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
+    sessionsHistoryData = [];
+    sessionsLastVisible = null;
+    sessionsHasMore = false;
+    loadMoreBtn.style.display = 'none';
+  }
+  
+  const userId = auth.currentUser.uid;
+  let query = db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .orderBy('date', 'desc');
+  
+  // Apply time filter
+  const timeFilter = document.getElementById('historyFilter').value;
+  let startDate = null;
+  
+  switch(timeFilter) {
+    case 'month':
+      startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 1);
+      break;
+    case '3months':
+      startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 3);
+      break;
+    case 'year':
+      startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 1);
+      break;
+    default:
+      // 'all' - no date filter
+      break;
+  }
+  
+  if (startDate) {
+    query = query.where('date', '>=', startDate);
+  }
+  
+  // Apply status filter
+  const statusFilter = document.getElementById('statusFilter').value;
+  if (statusFilter !== 'all') {
+    query = query.where('status', '==', statusFilter);
+  }
+  
+  // Apply pagination
+  if (sessionsLastVisible && !reset) {
+    query = query.startAfter(sessionsLastVisible);
+  }
+  
+  query = query.limit(SESSIONS_PAGE_SIZE);
+  
+  query.get()
+    .then((querySnapshot) => {
+      spinner.style.display = 'none';
+      
+      if (querySnapshot.empty && reset) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet. Book your first session to get started!</p></div>';
+        return;
+      }
+      
+      // Process sessions and get action logs
+      const sessionPromises = querySnapshot.docs.map(async (doc) => {
+        const session = doc.data();
+        const sessionId = doc.id;
+        
+        // Get action logs for this session
+        const actions = await getSessionActions(sessionId);
+        
+        return {
+          id: sessionId,
+          ...session,
+          actions: actions
+        };
+      });
+      
+      return Promise.all(sessionPromises);
+    })
+    .then((sessionsWithActions) => {
+      if (!sessionsWithActions || sessionsWithActions.length === 0) {
+        if (reset) {
+          container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet. Book your first session to get started!</p></div>';
+        } else {
+          sessionsHasMore = false;
+          loadMoreBtn.style.display = 'none';
+        }
+        return;
+      }
+      
+      // Update pagination info
+      sessionsLastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
+      sessionsHasMore = querySnapshot.docs.length === SESSIONS_PAGE_SIZE;
+      
+      // Add to our data array
+      sessionsHistoryData = reset ? sessionsWithActions : [...sessionsHistoryData, ...sessionsWithActions];
+      
+      // Apply action type filter
+      const actionTypeFilter = document.getElementById('actionTypeFilter').value;
+      let filteredSessions = sessionsHistoryData;
+      
+      if (actionTypeFilter !== 'all') {
+        filteredSessions = sessionsHistoryData.filter(session => {
+          return session.actions.some(action => action.type === actionTypeFilter);
+        });
+        
+        if (filteredSessions.length === 0 && reset) {
+          container.innerHTML = '<div class="empty-state"><i class="fas fa-filter"></i><h3>No Matching Sessions</h3><p>No sessions match your current filter criteria.</p></div>';
+          loadMoreBtn.style.display = 'none';
+          return;
+        }
+      }
+      
+      // Display the sessions
+      displaySessionsHistory(filteredSessions, reset);
+      
+      // Show/hide load more button
+      if (sessionsHasMore && filteredSessions.length > 0) {
+        loadMoreBtn.style.display = 'block';
+      } else {
+        loadMoreBtn.style.display = 'none';
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading session history:', error);
+      container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load your session history. Please try again later.</p></div>';
+    });
+}
+
+// Get session actions from sessionLogs collection
+async function getSessionActions(sessionId) {
+  try {
+    const querySnapshot = await db.collection('sessionLogs')
+      .where('sessionId', '==', sessionId)
+      .orderBy('timestamp', 'asc')
+      .get();
+    
+    const actions = [];
+    querySnapshot.forEach((doc) => {
+      actions.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    return actions;
+  } catch (error) {
+    console.error('Error getting session actions:', error);
+    return [];
+  }
+}
+
+// Display sessions history
+function displaySessionsHistory(sessions, reset = true) {
+  const container = document.getElementById('sessionsContainer');
+  
+  if (sessions.length === 0) {
+    if (reset) {
+      container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet. Book your first session to get started!</p></div>';
+    }
+    return;
+  }
+  
+  let html = reset ? '' : container.innerHTML;
+  
+  sessions.forEach(session => {
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Sanitize all user inputs to prevent XSS (consistent with bookings section)
+    const subject = session.subject || 'No subject';
+    const sanitizedSubject = subject.replace(/[<>"'&]/g, '');
+    const tutorName = (session.tutorName || 'Unknown').replace(/[<>"'&]/g, '');
+    const duration = (session.duration || '1').replace(/[<>"'&]/g, '');
+    const sessionType = (session.sessionType === 'in-person' ? 'In-Person' : 'Online').replace(/[<>"'&]/g, '');
+    const status = (session.status || 'unknown').replace(/[<>"'&]/g, '');
+    const sanitizedId = session.id.replace(/[^a-zA-Z0-9_-]/g, '');
+    
+    // Calculate total price if not available
+    const totalPrice = session.totalPrice || (parseFloat(session.hourlyRate || 30) * parseFloat(duration));
+    
+    // Format actions timeline
+    let actionsHtml = '';
+    if (session.actions && session.actions.length > 0) {
+      session.actions.forEach(action => {
+        const actionTime = action.timestamp.toDate();
+        const formattedActionTime = actionTime.toLocaleString();
+        
+        actionsHtml += `
+          <div class="session-action">
+            <div class="action-time">${formattedActionTime}</div>
+            <div class="action-details">
+              <span class="action-type">${action.type || 'Unknown Action'}</span>
+              ${action.details ? `<span class="action-details-text">${action.details.replace(/[<>"'&]/g, '')}</span>` : ''}
+            </div>
+          </div>
+        `;
+      });
+    } else {
+      actionsHtml = '<div class="no-actions">No activity recorded for this session.</div>';
+    }
+    
+    html += `
+      <div class="session-history-card" id="session-${sanitizedId}">
+        <div class="session-history-header">
+          <div class="session-history-title">
+            <h4>${sanitizedSubject}</h4>
+            <span class="session-history-date">${formattedDate} at ${formattedTime}</span>
+          </div>
+          <div class="session-history-status">
+            <span class="status-badge ${getStatusClass(session.status)}">${status}</span>
+          </div>
+        </div>
+        
+        <div class="session-history-details">
+          <div class="session-detail">
+            <i class="fas fa-user-tie"></i>
+            <span>Tutor: ${tutorName}</span>
+          </div>
+          <div class="session-detail">
+            <i class="fas fa-clock"></i>
+            <span>Duration: ${duration} hours</span>
+          </div>
+          <div class="session-detail">
+            <i class="fas fa-video"></i>
+            <span>Type: ${sessionType}</span>
+          </div>
+          <div class="session-detail">
+            <i class="fas fa-dollar-sign"></i>
+            <span>Total: $${totalPrice.toFixed(2)}</span>
+          </div>
+        </div>
+        
+        <div class="session-history-actions">
+          <h5>Session Activity Timeline</h5>
+          <div class="actions-timeline">
+            ${actionsHtml}
+          </div>
+        </div>
+        
+        ${session.status === 'completed' ? `
+          <div class="session-history-feedback">
+            <button class="btn-outline" onclick="provideFeedback('${sanitizedId}')">
+              <i class="fas fa-star"></i> Provide Feedback
+            </button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  });
+  
+  container.innerHTML = html;
+}
+
+// Provide feedback for completed sessions
+function provideFeedback(sessionId) {
+  // Validate session ID format (consistent with bookings section)
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+    alert('Invalid session ID.');
+    return;
+  }
+  
+  // Get session details
+  db.collection('bookedSessions').doc(sessionId).get()
+    .then((doc) => {
+      if (!doc.exists) {
+        alert('Session not found.');
+        return;
+      }
+      
+      const session = doc.data();
+      
+      // Show feedback modal or redirect to feedback page
+      const rating = prompt('Please rate your session (1-5 stars):');
+      if (rating && rating >= 1 && rating <= 5) {
+        const comments = prompt('Any additional comments (optional):');
+        
+        // Save feedback to Firestore
+        db.collection('sessionFeedback').add({
+          sessionId: sessionId,
+          studentId: auth.currentUser.uid,
+          tutorId: session.tutorId,
+          rating: parseInt(rating),
+          comments: comments || '',
+          createdAt: new Date()
+        })
+        .then(() => {
+          alert('Thank you for your feedback!');
+        })
+        .catch((error) => {
+          console.error('Error saving feedback:', error);
+          alert('Failed to save feedback. Please try again.');
+        });
+      }
+    })
+    .catch((error) => {
+      console.error('Error getting session details:', error);
+      alert('Failed to load session details. Please try again.');
+    });
+}
+
+// Set up event listeners for sessions history section
+function setupSessionsHistoryListeners() {
+  // Filter change events
+  document.getElementById('historyFilter').addEventListener('change', function() {
+    loadUserSessionHistory(true);
+  });
+  
+  document.getElementById('actionTypeFilter').addEventListener('change', function() {
+    // Re-filter existing data without reloading from Firestore
+    const actionTypeFilter = this.value;
+    
+    if (actionTypeFilter === 'all') {
+      displaySessionsHistory(sessionsHistoryData, true);
+    } else {
+      const filteredSessions = sessionsHistoryData.filter(session => {
+        return session.actions.some(action => action.type === actionTypeFilter);
+      });
+      
+      displaySessionsHistory(filteredSessions, true);
+    }
+    
+    // Update load more button visibility
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    if (filteredSessions.length === 0 || !sessionsHasMore) {
+      loadMoreBtn.style.display = 'none';
+    } else {
+      loadMoreBtn.style.display = 'block';
+    }
+  });
+  
+  document.getElementById('statusFilter').addEventListener('change', function() {
+    loadUserSessionHistory(true);
+  });
+  
+  // Load more button
+  document.getElementById('loadMoreBtn').addEventListener('click', function() {
+    loadUserSessionHistory(false);
+  });
+}
+
+// Update the navigation to load sessions history when the section is activated
+document.addEventListener('DOMContentLoaded', function() {
+  // Add this to your existing navigation setup
+  document.querySelectorAll('.menu-item a').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.preventDefault();
+      
+      // Your existing navigation code...
+      
+      // Add sessions history loading
+      const sectionId = this.getAttribute('data-section');
+      if (sectionId === 'sessions') {
+        // Only load sessions history on first visit to the tab
+        if (!sessionsLoaded) {
+          setupSessionsHistoryListeners();
+          loadUserSessionHistory(true);
+          sessionsLoaded = true;
+        }
+      }
+    });
+  });
+});
+
+// Add the styles to the document
+const styleSheet = document.createElement('style');
+styleSheet.textContent = sessionsHistoryStyles;
+document.head.appendChild(styleSheet);
+</script>
+  
 //...........................................................................................................
 //Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
 //............................................................................................................
@@ -2605,5 +3108,6 @@ const testBookingHtml = booking.status === 'confirmed' ?
 </script>    
 </body>
 </html>
+
 
 
