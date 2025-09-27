@@ -3016,6 +3016,9 @@ function createBookingCard(booking, studentName) {
     const hourlyRate = booking.hourlyRate || '40';
     const location = booking.sessionType || 'online';
     
+    // Get the meetLink from THIS specific session
+    const meetLink = booking.meetLink || ''; // This will be different for each session
+    
     // Determine reschedule status
     const isRescheduleRequested = booking.status === 'reschedule_requested';
     const hasPendingReschedule = booking.hasPendingReschedule;
@@ -3026,7 +3029,6 @@ function createBookingCard(booking, studentName) {
     let rescheduleInfo = '';
     
     if (hasAcceptedReschedule && booking.acceptedReschedule) {
-        // Reschedule was accepted - show new time
         statusBadge = '<span class="status-badge status-success">Reschedule Accepted</span>';
         rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
         
@@ -3041,11 +3043,9 @@ function createBookingCard(booking, studentName) {
             <div class="reschedule-info accepted" style="margin-top: 15px; padding: 10px; background: #d4edda; border-radius: 5px; font-size: 0.9em;">
                 <strong><i class="fas fa-check-circle"></i> Reschedule Accepted:</strong> 
                 New time: ${newDate.toLocaleString()}
-                ${booking.acceptedReschedule.reason ? `<br><strong>Reason:</strong> ${booking.acceptedReschedule.reason}` : ''}
             </div>
         `;
     } else if (hasPendingReschedule && booking.rescheduleRequest) {
-        // Reschedule is pending student response
         statusBadge = '<span class="status-badge status-warning">Reschedule Requested</span>';
         rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Awaiting Student</button>';
         
@@ -3060,11 +3060,9 @@ function createBookingCard(booking, studentName) {
             <div class="reschedule-info pending" style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px; font-size: 0.9em;">
                 <strong><i class="fas fa-clock"></i> Reschedule Proposed:</strong> 
                 ${proposedDate.toLocaleString()}
-                ${booking.rescheduleRequest.reason ? `<br><strong>Reason:</strong> ${booking.rescheduleRequest.reason}` : ''}
             </div>
         `;
     } else {
-        // Normal confirmed session
         statusBadge = '<span class="status-badge status-primary">Confirmed</span>';
         rescheduleButton = `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
             <i class="fas fa-calendar-alt"></i> Reschedule
@@ -3073,6 +3071,24 @@ function createBookingCard(booking, studentName) {
     
     // Determine if join button should be enabled
     const canJoinSession = location === 'online' && validateSessionForJoin(booking);
+    
+    // Create the appropriate join button based on whether meetLink exists
+    let joinButton = '';
+    if (canJoinSession) {
+        if (meetLink) {
+            // Session has a meetLink - create direct link button
+            joinButton = `<a href="${meetLink}" target="_blank" class="btn-primary join-session-link" data-session-id="${booking.id}">
+                <i class="fas fa-video"></i> Join Session
+            </a>`;
+        } else {
+            // Session doesn't have a meetLink yet - create generate button
+            joinButton = `<button class="btn-primary join-session-btn" data-session-id="${booking.id}">
+                <i class="fas fa-video"></i> Generate & Join Session
+            </button>`;
+        }
+    } else {
+        joinButton = '<button class="btn-outline" disabled title="Session not available or outside join window"><i class="fas fa-video"></i> Join Session</button>';
+    }
     
     return `
         <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
@@ -3102,21 +3118,12 @@ function createBookingCard(booking, studentName) {
                     <i class="fas fa-dollar-sign"></i> 
                     <span><strong>Rate:</strong> $${hourlyRate}/hour</span>
                 </div>
-                <div class="session-detail">
-                    <i class="fas fa-calculator"></i> 
-                    <span><strong>Total:</strong> $${(parseFloat(duration) * parseFloat(hourlyRate)).toFixed(2)}</span>
-                </div>
             </div>
             
             ${rescheduleInfo}
             
             <div class="session-actions">
-                ${canJoinSession ? 
-                    `<button class="btn-primary join-session-btn" data-session-id="${booking.id}">
-                        <i class="fas fa-video"></i> Join Session
-                    </button>` : 
-                    '<button class="btn-outline" disabled title="Session not available or outside join window"><i class="fas fa-video"></i> Join Session</button>'
-                }
+                ${joinButton}
                 ${rescheduleButton}
                 <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
                     <i class="fas fa-times"></i> Cancel
@@ -3128,7 +3135,7 @@ function createBookingCard(booking, studentName) {
         </div>
     `;
 }
-
+       
 // Enhanced Join session function with Jitsi Meet
 async function joinSession(sessionId) {
     try {
@@ -3336,13 +3343,59 @@ function getRecentSession() {
 
 // Add event listeners to booking action buttons
 function addBookingActionListeners() {
-    // Join session buttons
+    // Join session buttons (for sessions without meet links - need to generate first)
     document.querySelectorAll('.join-session-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const sessionId = this.getAttribute('data-session-id');
-            joinSession(sessionId);
+            generateAndJoinSession(sessionId);
         });
     });
+    
+    // Join session links (for sessions with existing meet links - direct join)
+    document.querySelectorAll('.join-session-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            const sessionId = this.getAttribute('data-session-id');
+            console.log('Direct join via existing meet link for session:', sessionId);
+            // The link will naturally redirect to the meet URL
+            // You can add tracking here if needed
+        });
+    });
+
+async function generateAndJoinSession(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        
+        // Generate a new meet link
+        const jitsiRoomId = generateJitsiRoomId(sessionId);
+        const meetLink = generateJitsiLink(jitsiRoomId);
+        
+        // Update the session with the new meet link
+        await db.collection('bookedSessions').doc(sessionId).update({
+            meetLink: meetLink,
+            jitsiRoomId: jitsiRoomId,
+            meetPlatform: 'jitsi_meet',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Open the meet link in a new tab
+        window.open(meetLink, '_blank');
+        
+        // Refresh the bookings to show the new meet link
+        setTimeout(() => {
+            loadMyBookings();
+        }, 1000);
+        
+    } catch (error) {
+        console.error("Error generating meet link:", error);
+        alert('Error generating meeting link. Please try again.');
+    }
+}
     
     // Reschedule buttons
     document.querySelectorAll('.reschedule-btn').forEach(btn => {
@@ -3368,7 +3421,7 @@ function addBookingActionListeners() {
         });
     });
 }
-
+       
 // Cancel a booking as tutor
 async function cancelBooking(sessionId) {
     if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
@@ -5887,6 +5940,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
