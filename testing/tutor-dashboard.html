@@ -2083,7 +2083,7 @@ async function loadTutoringOpportunities(tutorId) {
             .orderBy('date', 'asc')
             .get();
         
-        pendingSessions = [];
+        const pendingSessions = [];
         let pendingCount = 0;
         
         container.innerHTML = '';
@@ -2101,7 +2101,6 @@ async function loadTutoringOpportunities(tutorId) {
             return;
         }
 
-        
         // Process each session
         for (const doc of querySnapshot.docs) {
             const session = doc.data();
@@ -2202,92 +2201,81 @@ function createSessionCard(session, studentData) {
 function generateJitsiMeetLink(session) {
     const roomId = `tklesson-${session.id}-${Date.now()}`;
     return `https://meet.jit.si/${roomId}`;
-}        
-
-// Wrap the await code in an async function
-async function confirmSession(sessionId) {
-    const meetLink = generateJitsiMeetLink({ id: sessionId });
-    
-    await db.collection('bookedSessions').doc(sessionId).update({
-        status: 'confirmed',
-        confirmedAt: new Date(),
-        meetLink: meetLink,
-        meetPlatform: 'jitsi_meet',
-        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-    });
 }
 
-// Then call the function somewhere
-// confirmSession(someSessionId);        
+// Generate Google Meet link (for compatibility)
+async function generateGoogleMeetLink(session) {
+    // This would be replaced with actual Google Meet API call
+    const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let meetingCode = '';
+    for (let i = 0; i < 10; i++) {
+        meetingCode += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    return `https://meet.google.com/${meetingCode}`;
+}
+
+// Main confirm session function
+async function confirmSession(sessionId) {
+    if (!confirm('Confirm this session and generate a meet link?')) return;
+    
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found!');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        session.id = sessionId;
+        
+        // Generate Jitsi meet link
+        const meetLink = generateJitsiMeetLink(session);
+        
+        // Update session with meet details
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'confirmed',
+            confirmedAt: new Date(),
+            meetLink: meetLink,
+            meetPlatform: 'jitsi_meet',
+            confirmedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
         // Send notification to student with joining instructions
-        await createSessionNotification(
-            session.studentId,
-            'session_confirmed',
-            `🎯 Session Confirmed!\n\nSubject: ${session.subject}\nDate: ${session.date.toDate().toLocaleString()}\nDuration: ${session.duration} hours\n\nJoin via: ${meetLink}\n\nNo account needed - just click the link!`,
-            sessionId
-        );
+        await createSessionNotification(session, meetLink);
         
         showNotification('✅ Session confirmed! Meet link generated and sent to student.', 'success');
+        
+        // Show success message with link
+        showSessionConfirmationSuccess(session, meetLink);
+        
+        // Refresh the UI
+        if (typeof loadTutoringOpportunities === 'function' && typeof currentUser !== 'undefined') {
+            loadTutoringOpportunities(currentUser.uid);
+        }
         
     } catch (error) {
         console.error("Error confirming session:", error);
         showNotification('❌ Error confirming session. Please try again.', 'error');
     }
 }
-       
-// Confirm a session
-// Enhanced session confirmation with automatic meet link generation
-async function confirmSession(sessionId) {
-    if (!confirm('Confirm this session and generate a meet link?')) return;
-    
-    try {
-        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        const session = sessionDoc.data();
-        
-        // Generate meet link
-        const meetData = await generateGoogleMeetLink(session);
-        
-        // Update session with meet details
-        await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'confirmed',
-            confirmedAt: new Date(),
-            meetLink: meetData.meetLink || meetData,
-            meetPlatform: 'google_meet',
-            confirmedBy: 'tutor',
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Create detailed notification for student
-        await createDetailedSessionNotification(session, meetData.meetLink || meetData);
-        
-        // Show success message with link
-        showSessionConfirmationSuccess(session, meetData.meetLink || meetData);
-        
-        // Refresh the UI
-        loadTutoringOpportunities(currentUser.uid);
-        
-    } catch (error) {
-        console.error("Error confirming session:", error);
-        alert('Error confirming session. Please try again.');
-    }
-}
 
-// Create detailed notification for student
-async function createDetailedSessionNotification(session, meetLink) {
+// Create session notification for student
+async function createSessionNotification(session, meetLink) {
     const sessionDate = session.date.toDate();
     
     await db.collection('notifications').add({
         userId: session.studentId,
         type: 'session_confirmed',
         title: 'Session Confirmed! 🎯',
-        message: `Your ${session.subject} session with ${userData.fullName} has been confirmed.`,
+        message: `Your ${session.subject} session has been confirmed.`,
         details: {
             subject: session.subject,
             date: sessionDate.toLocaleDateString(),
             time: sessionDate.toLocaleTimeString(),
             duration: session.duration,
             meetLink: meetLink,
-            tutorName: userData.fullName
+            tutorName: session.tutorName || 'Your Tutor'
         },
         relatedSessionId: session.id,
         isRead: false,
@@ -2325,7 +2313,39 @@ function copyToClipboard(text) {
         alert('Meet link copied to clipboard!');
     });
 }
-       
+
+// Show notification function (if not defined elsewhere)
+function showNotification(message, type = 'info') {
+    // Create or use existing notification system
+    alert(message); // Fallback to alert for now
+}
+
+// Show custom modal function (if not defined elsewhere)
+function showCustomModal(title, content) {
+    // Create or use existing modal system
+    const modal = document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+    modal.style.display = 'flex';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    modal.style.zIndex = '1000';
+    
+    modal.innerHTML = `
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 500px; width: 90%;">
+            <h2>${title}</h2>
+            ${content}
+            <button onclick="this.closest('div').remove()" style="margin-top: 15px; padding: 8px 16px; background: #ccc; border: none; border-radius: 5px;">Close</button>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
 // Reject a session
 async function rejectSession(sessionId) {
     if (!confirm('Are you sure you want to reject this session?')) return;
@@ -2334,7 +2354,8 @@ async function rejectSession(sessionId) {
         // Update session status to rejected
         await db.collection('bookedSessions').doc(sessionId).update({
             status: 'rejected',
-            rejectedAt: new Date()
+            rejectedAt: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
         
         // Update UI
@@ -2389,8 +2410,7 @@ function updatePendingCount(count) {
     }
 }
 
-// Tutoring Opportunities Section ends here. All JS functionalities of the Tutoring Opportunities section ends here
-       
+// Tutoring Opportunities Section ends here. All JS functionalities of the Tutoring Opportunities section ends here       
 // =============================================
 // MY STUDENTS SECTION STARTS HERE
 // =============================================
@@ -5937,6 +5957,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
