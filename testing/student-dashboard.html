@@ -2598,16 +2598,79 @@ const testBookingHtml = booking.status === 'confirmed' ?
 //...............................................................................................
 
 
-  //...............................................................................................
+//...............................................................................................
 // Sessions History Section starts here. All JS functionalities of the Sessions History section starts here
 //...............................................................................................
 
-// Global variables for sessions history
+// Global variables for sessions history - MOVE THESE TO THE TOP OF YOUR SCRIPT SECTION
 let sessionsHistory = [];
 let sessionsLastVisible = null;
 let sessionsLoading = false;
 let sessionsHasMore = true;
 const SESSIONS_PAGE_SIZE = 10;
+
+// Setup profile editing functionality - ADD THIS FUNCTION
+function setupProfileEditing() {
+    const editProfileBtn = document.getElementById('editProfileBtn');
+    const profileForm = document.getElementById('profileForm');
+    const saveProfileBtn = document.getElementById('saveProfileBtn');
+    
+    if (editProfileBtn && profileForm && saveProfileBtn) {
+        editProfileBtn.addEventListener('click', function() {
+            if (profileForm.style.display === 'none' || !profileForm.style.display) {
+                profileForm.style.display = 'block';
+                this.textContent = 'Cancel Editing';
+            } else {
+                profileForm.style.display = 'none';
+                this.textContent = 'Edit Profile';
+            }
+        });
+        
+        saveProfileBtn.addEventListener('click', saveProfile);
+    }
+}
+
+// Initialize session history functionality
+function initSessionHistory() {
+    setupSessionHistoryFilters();
+    setupLoadMoreButton();
+}
+
+// Set up filter event listeners
+function setupSessionHistoryFilters() {
+    const historyFilter = document.getElementById('historyFilter');
+    const actionTypeFilter = document.getElementById('actionTypeFilter');
+    
+    if (historyFilter) {
+        historyFilter.addEventListener('change', () => {
+            sessionsLoaded = false;
+            loadUserSessionHistory();
+        });
+    }
+    
+    if (actionTypeFilter) {
+        actionTypeFilter.addEventListener('change', () => {
+            const actionFilter = actionTypeFilter.value;
+            let filteredSessions = sessionsHistory;
+            
+            if (actionFilter !== 'all') {
+                filteredSessions = sessionsHistory.filter(session => 
+                    session.history && session.history.some(entry => entry.action === actionFilter)
+                );
+            }
+            
+            displaySessionsHistory(filteredSessions);
+        });
+    }
+}
+
+// Set up load more button
+function setupLoadMoreButton() {
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    if (loadMoreBtn) {
+        loadMoreBtn.addEventListener('click', loadSessionsBatch);
+    }
+}
 
 // Load user session history
 function loadUserSessionHistory() {
@@ -2622,7 +2685,7 @@ function loadUserSessionHistory() {
     sessionsHasMore = true;
     
     container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-    loadMoreBtn.style.display = 'none';
+    if (loadMoreBtn) loadMoreBtn.style.display = 'none';
     
     loadSessionsBatch();
 }
@@ -2640,7 +2703,7 @@ function loadSessionsBatch() {
     // Show loading state
     if (sessionsHistory.length === 0) {
         container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-    } else {
+    } else if (loadMoreBtn) {
         loadMoreBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
         loadMoreBtn.disabled = true;
     }
@@ -2666,7 +2729,7 @@ function loadSessionsBatch() {
             break;
         case 'all':
         default:
-            startDate = new Date(0); // Beginning of time
+            startDate = new Date(0);
             break;
     }
     
@@ -2688,14 +2751,14 @@ function loadSessionsBatch() {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t completed any sessions yet.</p></div>';
                 }
                 sessionsHasMore = false;
-                loadMoreBtn.style.display = 'none';
+                if (loadMoreBtn) loadMoreBtn.style.display = 'none';
                 return;
             }
             
             // Store the last document for pagination
             sessionsLastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
             
-            // Process sessions and get additional data
+            // Process sessions
             const sessionPromises = querySnapshot.docs.map(async (doc) => {
                 const session = doc.data();
                 const sessionId = doc.id;
@@ -2706,7 +2769,7 @@ function loadSessionsBatch() {
                 return {
                     id: sessionId,
                     ...session,
-                    history: history
+                    history: history || []
                 };
             });
             
@@ -2723,20 +2786,21 @@ function loadSessionsBatch() {
             
             if (actionFilter !== 'all') {
                 filteredSessions = sessionsHistory.filter(session => 
-                    session.history.some(entry => entry.action === actionFilter)
+                    session.history && session.history.some(entry => entry.action === actionFilter)
                 );
             }
             
             displaySessionsHistory(filteredSessions);
             
             // Show/hide load more button
-            const loadMoreBtn = document.getElementById('loadMoreBtn');
-            if (sessionsHasMore) {
-                loadMoreBtn.style.display = 'block';
-                loadMoreBtn.innerHTML = '<i class="fas fa-chevron-down"></i> Load More Sessions';
-                loadMoreBtn.disabled = false;
-            } else {
-                loadMoreBtn.style.display = 'none';
+            if (loadMoreBtn) {
+                if (sessionsHasMore) {
+                    loadMoreBtn.style.display = 'block';
+                    loadMoreBtn.innerHTML = '<i class="fas fa-chevron-down"></i> Load More Sessions';
+                    loadMoreBtn.disabled = false;
+                } else {
+                    loadMoreBtn.style.display = 'none';
+                }
             }
         })
         .catch((error) => {
@@ -2759,8 +2823,7 @@ async function getSessionHistory(sessionId) {
             .get();
             
         if (historySnapshot.empty) {
-            // If no history subcollection, create basic history from session data
-            return createBasicHistory(sessionId);
+            return [];
         }
         
         return historySnapshot.docs.map(doc => ({
@@ -2770,15 +2833,8 @@ async function getSessionHistory(sessionId) {
         }));
     } catch (error) {
         console.error('Error getting session history:', error);
-        return createBasicHistory(sessionId);
+        return [];
     }
-}
-
-// Create basic history from session data when no history subcollection exists
-function createBasicHistory(sessionId) {
-    // This would need access to the session data - you might need to modify this
-    // based on how you want to handle sessions without explicit history tracking
-    return [];
 }
 
 // Display sessions history in a table
@@ -2790,7 +2846,7 @@ function displaySessionsHistory(sessions) {
     
     if (sessions.length === 0) {
         container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Sessions Found</h3><p>No sessions match your current filters.</p></div>';
-        loadMoreBtn.style.display = 'none';
+        if (loadMoreBtn) loadMoreBtn.style.display = 'none';
         return;
     }
     
@@ -2827,8 +2883,7 @@ function displaySessionsHistory(sessions) {
             
         const actionText = formatActionText(latestAction.action);
         const actionTime = latestAction.timestamp?.toLocaleDateString() || 
-                          session.bookedAt?.toDate()?.toLocaleDateString() || 
-                          'Unknown';
+                          (session.bookedAt?.toDate ? session.bookedAt.toDate().toLocaleDateString() : 'Unknown');
         
         // Sanitize all user inputs
         const tutorName = (session.tutorName || 'Unknown').replace(/[<>"'&]/g, '');
@@ -2886,7 +2941,6 @@ function displaySessionsHistory(sessions) {
         
         if (!sessionId || !action) return;
         
-        // Validate session ID format
         if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
             alert('Invalid session ID.');
             return;
@@ -2933,7 +2987,10 @@ function updateHoursLearned(sessions) {
         return total + parseFloat(session.duration || 0);
     }, 0);
     
-    document.getElementById('hoursLearned').textContent = totalHours.toFixed(1);
+    const hoursLearnedElement = document.getElementById('hoursLearned');
+    if (hoursLearnedElement) {
+        hoursLearnedElement.textContent = totalHours.toFixed(1);
+    }
 }
 
 // View session details
@@ -3033,75 +3090,12 @@ function showSessionDetailsModal(session) {
 
 // Open review modal
 function openReviewModal(sessionId, tutorId) {
-    // Implementation for review modal would go here
     alert('Review functionality would open here for session: ' + sessionId);
-    // You would typically show a modal with a form to submit a review
 }
 
-// Set up filter event listeners
-function setupSessionHistoryFilters() {
-    const historyFilter = document.getElementById('historyFilter');
-    const actionTypeFilter = document.getElementById('actionTypeFilter');
-    
-    if (historyFilter) {
-        historyFilter.addEventListener('change', () => {
-            sessionsLoaded = false; // Force reload with new filter
-            loadUserSessionHistory();
-        });
-    }
-    
-    if (actionTypeFilter) {
-        actionTypeFilter.addEventListener('change', () => {
-            // Just re-filter the currently loaded sessions
-            const actionFilter = actionTypeFilter.value;
-            let filteredSessions = sessionsHistory;
-            
-            if (actionFilter !== 'all') {
-                filteredSessions = sessionsHistory.filter(session => 
-                    session.history.some(entry => entry.action === actionFilter)
-                );
-            }
-            
-            displaySessionsHistory(filteredSessions);
-        });
-    }
-}
-
-// Set up load more button
-function setupLoadMoreButton() {
-    const loadMoreBtn = document.getElementById('loadMoreBtn');
-    if (loadMoreBtn) {
-        loadMoreBtn.addEventListener('click', loadSessionsBatch);
-    }
-}
-
-// Initialize session history functionality
-function initSessionHistory() {
-    setupSessionHistoryFilters();
-    setupLoadMoreButton();
-}
-
-// Call this when the sessions section is loaded
-document.addEventListener('DOMContentLoaded', function() {
-    // Add this to your existing initialization
-    initSessionHistory();
-});
-
-// Update the navigation click handler to include session history initialization
-document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-        e.preventDefault();
-        
-        // ... existing navigation code ...
-        
-        if (sectionId === 'sessions') {
-            if (!sessionsLoaded) {
-                loadUserSessionHistory();
-                sessionsLoaded = true;
-            }
-        }
-    });
-});
+//...............................................................................................
+// Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
+//...............................................................................................
   
 //---------------------------------------------------------------------------------------------------------  
 // Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
@@ -3110,6 +3104,7 @@ document.querySelectorAll('.menu-item a').forEach(item => {
 </script>    
 </body>
 </html>
+
 
 
 
