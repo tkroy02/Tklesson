@@ -5599,54 +5599,57 @@ class TutorNotificationSystem {
 
     // Load notifications with efficient batch operations
     async loadNotifications() {
-        if (this.isLoading) return;
-        
-        this.isLoading = true;
-        this.showLoadingState();
-        
-        try {
-            const notificationsSnapshot = await this.fetchNotifications();
-            
-            if (notificationsSnapshot && !notificationsSnapshot.empty) {
-                const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
-                this.processNotifications(notificationsSnapshot, sessionsMap);
-            } else {
-                this.notifications = [];
-                this.unreadCount = 0;
-            }
-            
-            this.updateUI();
-            
-        } catch (error) {
-            this.handleLoadError(error);
-        } finally {
+    if (this.isLoading) return;
+    
+    this.isLoading = true;
+    this.showLoadingState();
+    
+    // Add timeout protection
+    const loadTimeout = setTimeout(() => {
+        if (this.isLoading) {
+            console.warn('Notification load timeout');
             this.isLoading = false;
+            this.handleLoadError(new Error('Load timeout after 10 seconds'));
         }
-    }
+    }, 10000);
 
+    try {
+        const notificationsSnapshot = await this.fetchNotifications();
+        clearTimeout(loadTimeout);
+        
+        // ... rest of method
+    } catch (error) {
+        clearTimeout(loadTimeout);
+        this.handleLoadError(error);
+    } finally {
+        this.isLoading = false;
+        clearTimeout(loadTimeout);
+    }
+}
+    
     // Fetch notifications with pagination and security
     async fetchNotifications() {
-        try {
-            const snapshot = await db.collection('notifications')
-                .where('userId', '==', currentUser.uid)
-                .orderBy('createdAt', 'desc')
-                .limit(20)
-                .get();
+    try {
+        console.log('Current user UID:', currentUser.uid);
+        console.log('Querying notifications for tutor...');
+        
+        const snapshot = await db.collection('notifications')
+            .where('userId', '==', currentUser.uid)
+            .orderBy('createdAt', 'desc')
+            .limit(20)
+            .get();
 
-            return snapshot;
-        } catch (error) {
-            if (error.code === 'permission-denied') {
-                throw new Error('Access to notifications denied');
-            } else if (error.code === 'failed-precondition') {
-                // Index missing error - fallback to simpler query
-                console.warn('Firestore index missing, using fallback query');
-                return await this.fetchNotificationsFallback();
-            } else if (error.code === 'resource-exhausted') {
-                throw new Error('Service temporarily unavailable');
-            }
-            throw error;
-        }
+        console.log('Query result:', snapshot.size, 'notifications found');
+        snapshot.forEach(doc => {
+            console.log('Notification data:', doc.data());
+        });
+        
+        return snapshot;
+    } catch (error) {
+        console.error('Notification query error:', error);
+        // ... rest of error handling
     }
+}
 
     // Fallback query without complex where clauses
     async fetchNotificationsFallback() {
@@ -6188,25 +6191,30 @@ class TutorNotificationSystem {
     }
 
     getTimeAgo(timestamp) {
-        if (!timestamp) return 'Recently';
+    if (!timestamp) return 'Recently';
+    
+    let date;
+    try {
+        if (timestamp?.toDate && typeof timestamp.toDate === 'function') {
+            date = timestamp.toDate();
+        } else if (timestamp instanceof Date) {
+            date = timestamp;
+        } else if (typeof timestamp === 'string') {
+            date = new Date(timestamp);
+        } else if (timestamp?.seconds) {
+            date = new Date(timestamp.seconds * 1000);
+        } else {
+            return 'Recently';
+        }
         
-        const now = new Date();
-        const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
         if (isNaN(date.getTime())) return 'Recently';
         
-        const diffMs = now - date;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMs / 3600000);
-        const diffDays = Math.floor(diffMs / 86400000);
-        
-        if (diffMins < 1) return 'Just now';
-        if (diffMins < 60) return `${diffMins} min ago`;
-        if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-        if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-        
-        return date.toLocaleDateString();
+        // ... rest of calculation
+    } catch (error) {
+        console.warn('Error parsing timestamp:', error);
+        return 'Recently';
     }
-
+}
     getNotificationIcon(type) {
         const icons = {
             session_request: 'fas fa-calendar-plus',
@@ -6243,6 +6251,32 @@ class TutorNotificationSystem {
             .replace(/'/g, "&#039;");
     }
 
+// Add this method to TutorNotificationSystem class
+async debugNotificationSystem() {
+    console.group('Tutor Notification System Debug');
+    console.log('System initialized:', this.isInitialized);
+    console.log('Loading state:', this.isLoading);
+    console.log('Current user:', currentUser?.uid);
+    console.log('DB available:', typeof db !== 'undefined');
+    console.log('Notifications count:', this.notifications.length);
+    console.log('Unread count:', this.unreadCount);
+    console.log('Realtime listener:', this.realtimeListener ? 'Active' : 'Inactive');
+    
+    // Test Firestore connection
+    try {
+        const testQuery = await db.collection('notifications')
+            .where('userId', '==', currentUser.uid)
+            .limit(1)
+            .get();
+        console.log('Firestore test query successful, found:', testQuery.size, 'notifications');
+    } catch (error) {
+        console.error('Firestore test failed:', error);
+    }
+    
+    console.groupEnd();
+}
+
+    
     // Error handling methods
     handleInitializationError(error) {
         console.error('Tutor notification system initialization failed:', error);
@@ -6406,6 +6440,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
