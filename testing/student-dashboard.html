@@ -3034,10 +3034,1126 @@ document.addEventListener('DOMContentLoaded', function() {
 //...........................................................................................................
 //Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
 //............................................................................................................
+
+// =============================================
+// NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
+// =============================================
+
+// =============================================
+// PRODUCTION-READY NOTIFICATION SYSTEM (OPTIMIZED)
+// =============================================
+
+class NotificationSystem {
+    constructor() {
+        this.notifications = [];
+        this.unreadCount = 0;
+        this.realtimeListener = null;
+        this.isInitialized = false;
+        this.isLoading = false;
+        
+        // Debounce variables
+        this.updateTimeout = null;
+        this.clickHandlers = new Map();
+        
+        // Bind methods to maintain context
+        this.handleBellClick = this.handleBellClick.bind(this);
+        this.handleOutsideClick = this.handleOutsideClick.bind(this);
+        this.handleKeydown = this.handleKeydown.bind(this);
+        this.handleMarkAllRead = this.handleMarkAllRead.bind(this);
+        this.handleClearAll = this.handleClearAll.bind(this);
+        this.handleRealtimeUpdate = this.handleRealtimeUpdate.bind(this);
+        this.handleRealtimeError = this.handleRealtimeError.bind(this);
+    }
+
+    // Initialize notification system with proper error handling
+    async initialize() {
+        if (this.isInitialized) {
+            console.warn('Notification system already initialized');
+            return;
+        }
+
+        if (this.isLoading) {
+            console.warn('Notification system is already loading');
+            return;
+        }
+
+        this.isLoading = true;
+
+        try {
+            await this.validateDependencies();
+            this.setupDOMElements();
+            await this.loadNotifications();
+            this.startRealtimeListener();
+            this.setupEventListeners();
+            this.isInitialized = true;
+            this.isLoading = false;
+            
+            console.log('Notification system initialized successfully');
+        } catch (error) {
+            this.isLoading = false;
+            this.handleInitializationError(error);
+            // Don't throw - allow system to work in degraded mode
+        }
+    }
+
+    // Validate required dependencies
+    async validateDependencies() {
+        if (typeof db === 'undefined') {
+            throw new Error('Firestore database not available');
+        }
+        
+        if (typeof currentUser === 'undefined' || !currentUser?.uid) {
+            throw new Error('User not authenticated');
+        }
+    }
+
+    // Setup DOM elements with proper error handling
+    setupDOMElements() {
+        try {
+            this.createNotificationDropdown();
+            this.injectStyles();
+        } catch (error) {
+            throw new Error(`DOM setup failed: ${error.message}`);
+        }
+    }
+
+    // Create notification dropdown with accessible markup
+    createNotificationDropdown() {
+        const existingDropdown = document.getElementById('notificationDropdown');
+        if (existingDropdown) {
+            existingDropdown.remove();
+        }
+
+        const dropdown = document.createElement('div');
+        dropdown.id = 'notificationDropdown';
+        dropdown.className = 'notification-dropdown hidden';
+        dropdown.setAttribute('role', 'dialog');
+        dropdown.setAttribute('aria-label', 'Notifications');
+        dropdown.setAttribute('aria-modal', 'true');
+        
+        dropdown.innerHTML = `
+            <div class="notification-header">
+                <h4 class="notification-title">Notifications</h4>
+                <div class="notification-actions">
+                    <button id="markAllReadBtn" class="btn-outline btn-small" 
+                            aria-label="Mark all notifications as read">
+                        Mark All Read
+                    </button>
+                    <button id="clearNotificationsBtn" class="btn-outline btn-small" 
+                            aria-label="Clear all notifications">
+                        Clear All
+                    </button>
+                </div>
+            </div>
+            <div class="notification-list" id="notificationList" role="list">
+                <div class="notification-loading">
+                    <div class="loading-spinner" aria-label="Loading notifications"></div>
+                    <span>Loading notifications...</span>
+                </div>
+            </div>
+            <div class="notification-footer">
+                <span id="notificationFooterText" aria-live="polite">Loading...</span>
+            </div>
+        `;
+
+        document.body.appendChild(dropdown);
+    }
+
+    // Inject CSS styles for maintainability
+    injectStyles() {
+        const styleId = 'notification-system-styles';
+        if (document.getElementById(styleId)) return;
+
+        const styles = `
+            .notification-dropdown {
+                position: absolute;
+                top: 60px;
+                right: 10px;
+                width: min(400px, 90vw);
+                max-height: 500px;
+                background: var(--background-primary, #ffffff);
+                border: 1px solid var(--border-color, #e0e0e0);
+                border-radius: 8px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                z-index: 1000;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .notification-dropdown.hidden {
+                display: none;
+            }
+            
+            .notification-dropdown.visible {
+                display: flex;
+            }
+            
+            .notification-header {
+                padding: 1rem;
+                border-bottom: 1px solid var(--border-color, #e0e0e0);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                background: var(--background-secondary, #f8f9fa);
+            }
+            
+            .notification-title {
+                margin: 0;
+                color: var(--text-primary, #333333);
+                font-size: 1.1rem;
+                font-weight: 600;
+            }
+            
+            .notification-actions {
+                display: flex;
+                gap: 0.5rem;
+            }
+            
+            .notification-list {
+                flex: 1;
+                overflow-y: auto;
+                max-height: 300px;
+            }
+            
+            .notification-loading {
+                padding: 2rem;
+                text-align: center;
+                color: var(--text-secondary, #666666);
+            }
+            
+            .loading-spinner {
+                width: 24px;
+                height: 24px;
+                border: 2px solid var(--border-color, #e0e0e0);
+                border-top: 2px solid var(--primary-color, #007bff);
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 0.5rem;
+            }
+            
+            .notification-item {
+                padding: 0.75rem 1rem;
+                border-bottom: 1px solid var(--border-light, #f0f0f0);
+                cursor: pointer;
+                transition: background-color 0.2s ease;
+                display: flex;
+                align-items: flex-start;
+                gap: 0.75rem;
+            }
+            
+            .notification-item:hover {
+                background-color: var(--background-hover, #f5f5f5);
+            }
+            
+            .notification-item.unread {
+                background-color: var(--background-accent, #f0f7ff);
+            }
+            
+            .notification-item:focus {
+                outline: 2px solid var(--primary-color, #007bff);
+                outline-offset: -2px;
+            }
+            
+            .notification-icon {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                flex-shrink: 0;
+            }
+            
+            .notification-content {
+                flex: 1;
+                min-width: 0;
+            }
+            
+            .notification-title-text {
+                font-weight: 600;
+                color: var(--text-primary, #333333);
+                margin-bottom: 0.25rem;
+                word-wrap: break-word;
+            }
+            
+            .notification-message {
+                font-size: 0.9rem;
+                color: var(--text-secondary, #666666);
+                line-height: 1.4;
+                margin-bottom: 0.25rem;
+            }
+            
+            .notification-time {
+                font-size: 0.8rem;
+                color: var(--text-tertiary, #999999);
+            }
+            
+            .unread-indicator {
+                width: 8px;
+                height: 8px;
+                background: var(--accent-color, #4361ee);
+                border-radius: 50%;
+                margin-left: 0.5rem;
+                flex-shrink: 0;
+                margin-top: 0.5rem;
+            }
+            
+            .notification-footer {
+                padding: 0.75rem 1rem;
+                border-top: 1px solid var(--border-light, #f0f0f0);
+                text-align: center;
+                background: var(--background-secondary, #f8f9fa);
+            }
+            
+            .notification-empty {
+                padding: 2rem;
+                text-align: center;
+                color: var(--text-secondary, #666666);
+            }
+            
+            .notification-error {
+                padding: 1rem;
+                text-align: center;
+                color: var(--error-color, #dc3545);
+            }
+            
+            .btn-retry {
+                margin-top: 0.5rem;
+                padding: 0.5rem 1rem;
+                background: var(--primary-color, #007bff);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            
+            .btn-retry:hover {
+                background: var(--primary-dark, #0056b3);
+            }
+            
+            .hidden {
+                display: none !important;
+            }
+            
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            
+            @media (max-width: 480px) {
+                .notification-dropdown {
+                    right: 5px;
+                    left: 5px;
+                    width: auto;
+                }
+            }
+        `;
+
+        const styleElement = document.createElement('style');
+        styleElement.id = styleId;
+        styleElement.textContent = styles;
+        document.head.appendChild(styleElement);
+    }
+
+    // Load notifications with efficient batch operations
+    async loadNotifications() {
+        if (this.isLoading) return;
+        
+        this.isLoading = true;
+        this.showLoadingState();
+        
+        try {
+            const notificationsSnapshot = await this.fetchNotifications();
+            
+            if (notificationsSnapshot && !notificationsSnapshot.empty) {
+                const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
+                this.processNotifications(notificationsSnapshot, sessionsMap);
+            } else {
+                this.notifications = [];
+                this.unreadCount = 0;
+            }
+            
+            this.updateUI();
+            
+        } catch (error) {
+            this.handleLoadError(error);
+        } finally {
+            this.isLoading = false;
+        }
+    }
+
+    // Fetch notifications with pagination and security
+    async fetchNotifications() {
+        try {
+            const snapshot = await db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .get();
+
+            return snapshot;
+        } catch (error) {
+            if (error.code === 'permission-denied') {
+                throw new Error('Access to notifications denied');
+            } else if (error.code === 'failed-precondition') {
+                // Index missing error - fallback to simpler query
+                console.warn('Firestore index missing, using fallback query');
+                return await this.fetchNotificationsFallback();
+            } else if (error.code === 'resource-exhausted') {
+                throw new Error('Service temporarily unavailable');
+            }
+            throw error;
+        }
+    }
+
+    // Fallback query without complex where clauses
+    async fetchNotificationsFallback() {
+        try {
+            // Try without ordering first
+            const snapshot = await db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .limit(20)
+                .get();
+
+            // Sort client-side
+            const sortedDocs = snapshot.docs.sort((a, b) => {
+                const aTime = a.data().createdAt?.toDate() || new Date(0);
+                const bTime = b.data().createdAt?.toDate() || new Date(0);
+                return bTime - aTime;
+            });
+
+            return {
+                empty: sortedDocs.length === 0,
+                docs: sortedDocs
+            };
+        } catch (error) {
+            // Last resort - get all and filter client-side
+            console.warn('Using client-side filtering fallback');
+            const snapshot = await db.collection('notifications')
+                .limit(50)
+                .get();
+
+            const userNotifications = snapshot.docs
+                .filter(doc => doc.data().userId === currentUser.uid)
+                .sort((a, b) => {
+                    const aTime = a.data().createdAt?.toDate() || new Date(0);
+                    const bTime = b.data().createdAt?.toDate() || new Date(0);
+                    return bTime - aTime;
+                });
+
+            return {
+                empty: userNotifications.length === 0,
+                docs: userNotifications
+            };
+        }
+    }
+
+    // Preload session data efficiently
+    async preloadSessionData(notificationsSnapshot) {
+        if (!notificationsSnapshot || notificationsSnapshot.empty) {
+            return new Map();
+        }
+
+        const sessionIds = new Set();
+        const docs = notificationsSnapshot.docs || [];
+
+        // Collect all session IDs from notifications
+        docs.forEach(doc => {
+            const notification = doc.data();
+            if (notification.relatedSessionId) {
+                sessionIds.add(notification.relatedSessionId);
+            }
+        });
+
+        if (sessionIds.size === 0) return new Map();
+
+        try {
+            const sessionIdsArray = Array.from(sessionIds);
+            const sessionsMap = new Map();
+
+            // Load sessions in batches of 10 (Firestore limit)
+            for (let i = 0; i < sessionIdsArray.length; i += 10) {
+                const chunk = sessionIdsArray.slice(i, i + 10);
+                const sessionsSnapshot = await db.collection('bookedSessions')
+                    .where('__name__', 'in', chunk)
+                    .get();
+
+                sessionsSnapshot.docs.forEach(doc => {
+                    sessionsMap.set(doc.id, doc.data());
+                });
+            }
+
+            return sessionsMap;
+        } catch (error) {
+            console.warn('Failed to load session data:', error);
+            return new Map();
+        }
+    }
+
+    // Process notifications with enriched data
+    processNotifications(snapshot, sessionsMap) {
+        this.notifications = [];
+
+        if (!snapshot || snapshot.empty) {
+            return;
+        }
+
+        const docs = snapshot.docs || [];
+        docs.forEach(doc => {
+            const notification = this.enrichNotificationData(doc, sessionsMap);
+            this.notifications.push(notification);
+        });
+
+        this.unreadCount = this.notifications.filter(n => !n.isRead).length;
+    }
+
+    // Enrich notification with related data
+    enrichNotificationData(doc, sessionsMap) {
+        const data = doc.data();
+        const notification = { 
+            id: doc.id, 
+            ...data,
+            sessionData: null
+        };
+
+        // Add session data if available
+        if (notification.relatedSessionId && sessionsMap) {
+            notification.sessionData = sessionsMap.get(notification.relatedSessionId);
+        }
+
+        return notification;
+    }
+
+    // Update UI components
+    updateUI() {
+        this.updateBadge();
+        this.updateDropdownContent();
+        this.updateFooter();
+    }
+
+    // Update notification badge
+    updateBadge() {
+        const badge = document.getElementById('notificationCount');
+        if (!badge) return;
+
+        if (this.unreadCount > 0) {
+            badge.textContent = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
+            badge.classList.remove('hidden');
+            badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
+        } else {
+            badge.classList.add('hidden');
+            badge.setAttribute('aria-label', 'No unread notifications');
+        }
+    }
+
+    // Update dropdown content
+    updateDropdownContent() {
+        const list = document.getElementById('notificationList');
+        if (!list) return;
+
+        if (this.notifications.length === 0) {
+            list.innerHTML = this.getEmptyStateHTML();
+            return;
+        }
+
+        list.innerHTML = this.notifications.map(notification => 
+            this.getNotificationHTML(notification)
+        ).join('');
+
+        this.attachNotificationHandlers();
+    }
+
+    // Get notification HTML template
+    getNotificationHTML(notification) {
+        const timeAgo = this.getTimeAgo(notification.createdAt);
+        const isUnread = !notification.isRead;
+        const message = this.generateNotificationMessage(notification);
+
+        return `
+            <div class="notification-item ${isUnread ? 'unread' : ''}" 
+                 data-notification-id="${notification.id}"
+                 data-notification-type="${notification.type}"
+                 data-session-id="${notification.relatedSessionId || ''}"
+                 role="listitem"
+                 tabindex="0">
+                <div class="notification-icon" style="background: ${this.getNotificationColor(notification.type)}">
+                    <i class="${this.getNotificationIcon(notification.type)}" aria-hidden="true"></i>
+                </div>
+                <div class="notification-content">
+                    <div class="notification-title-text">${this.escapeHtml(notification.title)}</div>
+                    <div class="notification-message">${this.escapeHtml(message)}</div>
+                    <div class="notification-time">${timeAgo}</div>
+                </div>
+                ${isUnread ? '<div class="unread-indicator" aria-label="Unread"></div>' : ''}
+            </div>
+        `;
+    }
+
+    // Attach event handlers to notifications
+    attachNotificationHandlers() {
+        const items = document.querySelectorAll('.notification-item');
+        
+        items.forEach(item => {
+            const handler = (e) => {
+                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.handleNotificationClick(item);
+                }
+            };
+            
+            // Remove existing handler if any
+            const existingHandler = this.clickHandlers.get(item);
+            if (existingHandler) {
+                item.removeEventListener('click', existingHandler);
+                item.removeEventListener('keydown', existingHandler);
+            }
+            
+            // Add new handlers
+            item.addEventListener('click', handler);
+            item.addEventListener('keydown', handler);
+            this.clickHandlers.set(item, handler);
+        });
+    }
+
+    // Handle notification click
+    async handleNotificationClick(item) {
+        const notificationId = item.dataset.notificationId;
+        const notificationType = item.dataset.notificationType;
+        const sessionId = item.dataset.sessionId;
+
+        try {
+            await this.markAsRead(notificationId);
+            this.navigateToRelevantSection(notificationType, sessionId);
+            this.hideDropdown();
+        } catch (error) {
+            console.error('Error handling notification click:', error);
+        }
+    }
+
+    // Mark notification as read
+    async markAsRead(notificationId) {
+        const notification = this.notifications.find(n => n.id === notificationId);
+        if (!notification || notification.isRead) return;
+
+        try {
+            await db.collection('notifications').doc(notificationId).update({
+                isRead: true,
+                readAt: new Date(),
+                updatedAt: new Date()
+            });
+
+            notification.isRead = true;
+            this.unreadCount = Math.max(0, this.unreadCount - 1);
+            this.updateUI();
+
+        } catch (error) {
+            console.error('Failed to mark notification as read:', error);
+        }
+    }
+
+    // Handle mark all as read
+    async handleMarkAllRead() {
+        try {
+            await this.markAllAsRead();
+        } catch (error) {
+            console.error('Error marking all as read:', error);
+            this.showToast('Failed to mark all notifications as read. Please try again.', 'error');
+        }
+    }
+
+    // Mark all notifications as read
+    async markAllAsRead() {
+        const unreadNotifications = this.notifications.filter(n => !n.isRead);
+        if (unreadNotifications.length === 0) return;
+
+        try {
+            const batch = db.batch();
+            const updateTime = new Date();
+
+            unreadNotifications.forEach(notification => {
+                const ref = db.collection('notifications').doc(notification.id);
+                batch.update(ref, {
+                    isRead: true,
+                    readAt: updateTime,
+                    updatedAt: updateTime
+                });
+            });
+
+            await batch.commit();
+
+            // Update local state
+            this.notifications.forEach(n => { n.isRead = true; });
+            this.unreadCount = 0;
+            this.updateUI();
+
+            this.showToast('All notifications marked as read', 'success');
+
+        } catch (error) {
+            throw new Error(`Failed to mark all as read: ${error.message}`);
+        }
+    }
+
+    // Handle clear all
+    async handleClearAll() {
+        try {
+            await this.clearAll();
+        } catch (error) {
+            console.error('Error clearing all notifications:', error);
+            this.showToast('Failed to clear notifications. Please try again.', 'error');
+        }
+    }
+
+    // Clear all notifications
+    async clearAll() {
+        if (this.notifications.length === 0) return;
+
+        // Confirm action
+        if (!confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
+            return;
+        }
+
+        try {
+            const batch = db.batch();
+
+            this.notifications.forEach(notification => {
+                const ref = db.collection('notifications').doc(notification.id);
+                batch.delete(ref);
+            });
+
+            await batch.commit();
+
+            // Clear local state
+            this.notifications = [];
+            this.unreadCount = 0;
+            this.updateUI();
+
+            this.showToast('All notifications cleared', 'success');
+
+        } catch (error) {
+            throw new Error(`Failed to clear notifications: ${error.message}`);
+        }
+    }
+
+    // Setup event listeners with proper cleanup
+    setupEventListeners() {
+        this.removeEventListeners();
+
+        // Notification bell click
+        this.notificationBtn = document.querySelector('.notification-btn');
+        if (this.notificationBtn) {
+            this.notificationBtn.addEventListener('click', this.handleBellClick);
+        }
+
+        // Dropdown buttons
+        const markAllReadBtn = document.getElementById('markAllReadBtn');
+        const clearNotificationsBtn = document.getElementById('clearNotificationsBtn');
+
+        if (markAllReadBtn) {
+            markAllReadBtn.addEventListener('click', this.handleMarkAllRead);
+        }
+        if (clearNotificationsBtn) {
+            clearNotificationsBtn.addEventListener('click', this.handleClearAll);
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', this.handleOutsideClick);
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', this.handleKeydown);
+    }
+
+    // Handle notification bell click
+    handleBellClick(e) {
+        e.stopPropagation();
+        this.toggleDropdown();
+    }
+
+    // Toggle dropdown visibility
+    toggleDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (!dropdown) return;
+
+        if (dropdown.classList.contains('visible')) {
+            this.hideDropdown();
+        } else {
+            this.showDropdown();
+        }
+    }
+
+    // Show dropdown
+    showDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) {
+            dropdown.classList.remove('hidden');
+            dropdown.classList.add('visible');
+            dropdown.setAttribute('aria-hidden', 'false');
+            
+            // Focus management for accessibility
+            setTimeout(() => {
+                const firstItem = dropdown.querySelector('.notification-item');
+                if (firstItem) firstItem.focus();
+            }, 100);
+        }
+    }
+
+    // Hide dropdown
+    hideDropdown() {
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) {
+            dropdown.classList.remove('visible');
+            dropdown.classList.add('hidden');
+            dropdown.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    // Handle outside clicks
+    handleOutsideClick(e) {
+        const dropdown = document.getElementById('notificationDropdown');
+        const bell = document.querySelector('.notification-btn');
+        
+        if (dropdown && bell && !dropdown.contains(e.target) && !bell.contains(e.target)) {
+            this.hideDropdown();
+        }
+    }
+
+    // Handle keyboard navigation
+    handleKeydown(e) {
+        if (e.key === 'Escape') {
+            this.hideDropdown();
+        }
+    }
+
+    // Start realtime listener with cleanup
+    startRealtimeListener() {
+        this.cleanupRealtimeListener();
+
+        try {
+            this.realtimeListener = db.collection('notifications')
+                .where('userId', '==', currentUser.uid)
+                .orderBy('createdAt', 'desc')
+                .onSnapshot(this.handleRealtimeUpdate, this.handleRealtimeError);
+        } catch (error) {
+            console.warn('Realtime listener failed to start:', error);
+        }
+    }
+
+    // Handle realtime updates
+    handleRealtimeUpdate(snapshot) {
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') {
+                this.handleNewNotification(change.doc);
+            } else if (change.type === 'modified') {
+                this.handleUpdatedNotification(change.doc);
+            } else if (change.type === 'removed') {
+                this.handleRemovedNotification(change.doc.id);
+            }
+        });
+    }
+
+    // Handle realtime errors gracefully
+    handleRealtimeError(error) {
+        console.warn('Realtime listener error (non-critical):', error);
+        // Don't show error to user - system can work without realtime updates
+    }
+
+    // Handle new notification
+    handleNewNotification(doc) {
+        const newNotification = { id: doc.id, ...doc.data() };
+        
+        // Check for duplicates
+        if (this.notifications.find(n => n.id === newNotification.id)) return;
+
+        this.notifications.unshift(newNotification);
+        
+        if (!newNotification.isRead) {
+            this.unreadCount++;
+            this.showToastNotification(newNotification);
+        }
+
+        this.debouncedUpdate();
+    }
+
+    // Handle updated notification
+    handleUpdatedNotification(doc) {
+        const updatedNotification = { id: doc.id, ...doc.data() };
+        const index = this.notifications.findIndex(n => n.id === updatedNotification.id);
+        
+        if (index !== -1) {
+            const wasUnread = !this.notifications[index].isRead;
+            const isUnread = !updatedNotification.isRead;
+            
+            this.notifications[index] = updatedNotification;
+            
+            if (wasUnread && !isUnread) {
+                this.unreadCount = Math.max(0, this.unreadCount - 1);
+            } else if (!wasUnread && isUnread) {
+                this.unreadCount++;
+            }
+            
+            this.debouncedUpdate();
+        }
+    }
+
+    // Handle removed notification
+    handleRemovedNotification(notificationId) {
+        const notification = this.notifications.find(n => n.id === notificationId);
+        if (notification && !notification.isRead) {
+            this.unreadCount = Math.max(0, this.unreadCount - 1);
+        }
+        
+        this.notifications = this.notifications.filter(n => n.id !== notificationId);
+        this.debouncedUpdate();
+    }
+
+    // Debounced UI update
+    debouncedUpdate() {
+        if (this.updateTimeout) {
+            clearTimeout(this.updateTimeout);
+        }
+        this.updateTimeout = setTimeout(() => this.updateUI(), 100);
+    }
+
+    // Show toast notification
+    showToastNotification(notification) {
+        const message = this.generateNotificationMessage(notification);
+        this.showToast(message, 'info');
+    }
+
+    // Show generic toast
+    showToast(message, type = 'info') {
+        // Simple console log for now - can be enhanced with proper toast UI
+        console.log(`[${type.toUpperCase()}] ${message}`);
+    }
+
+    // Utility methods
+    generateNotificationMessage(notification) {
+        if (notification.message) return notification.message;
+        
+        const messages = {
+            session_request: 'You have a new session request waiting for confirmation.',
+            session_confirmed: 'Your session has been confirmed.',
+            session_cancelled: 'A session has been cancelled.',
+            payment_processed: 'Your payment has been processed successfully.',
+            reschedule_request: 'There is a reschedule request for your session.',
+            invoice_submitted: 'Your invoice has been submitted for processing.'
+        };
+        
+        return messages[notification.type] || 'You have a new notification.';
+    }
+
+    getTimeAgo(timestamp) {
+        if (!timestamp) return 'Recently';
+        
+        const now = new Date();
+        const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
+        if (isNaN(date.getTime())) return 'Recently';
+        
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} min ago`;
+        if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+        if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+        
+        return date.toLocaleDateString();
+    }
+
+    getNotificationIcon(type) {
+        const icons = {
+            session_request: 'fas fa-calendar-plus',
+            session_confirmed: 'fas fa-calendar-check',
+            session_cancelled: 'fas fa-calendar-times',
+            payment_processed: 'fas fa-dollar-sign',
+            reschedule_request: 'fas fa-clock',
+            invoice_submitted: 'fas fa-file-invoice'
+        };
+        return icons[type] || 'fas fa-bell';
+    }
+
+    getNotificationColor(type) {
+        const colors = {
+            session_request: '#ffc107',
+            session_confirmed: '#28a745',
+            session_cancelled: '#dc3545',
+            payment_processed: '#007bff',
+            reschedule_request: '#6f42c1',
+            invoice_submitted: '#17a2b8'
+        };
+        return colors[type] || '#6c757d';
+    }
+
+    escapeHtml(unsafe) {
+        if (!unsafe) return '';
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Error handling methods
+    handleInitializationError(error) {
+        console.error('Notification system initialization failed:', error);
+        this.showErrorState('Failed to initialize notifications. Some features may be unavailable.');
+    }
+
+    handleLoadError(error) {
+        console.error('Failed to load notifications:', error);
+        this.showErrorState('Failed to load notifications. Please try again.');
+    }
+
+    showErrorState(message) {
+        const list = document.getElementById('notificationList');
+        if (list) {
+            list.innerHTML = `
+                <div class="notification-error">
+                    <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                    <p>${message}</p>
+                    <button class="btn-retry" onclick="window.notificationSystem.loadNotifications()">
+                        Try Again
+                    </button>
+                </div>
+            `;
+        }
+    }
+
+    showLoadingState() {
+        const list = document.getElementById('notificationList');
+        if (list) {
+            list.innerHTML = `
+                <div class="notification-loading">
+                    <div class="loading-spinner" aria-label="Loading notifications"></div>
+                    <span>Loading notifications...</span>
+                </div>
+            `;
+        }
+    }
+
+    getEmptyStateHTML() {
+        return `
+            <div class="notification-empty">
+                <i class="fas fa-bell-slash" aria-hidden="true"></i>
+                <p>No notifications yet</p>
+            </div>
+        `;
+    }
+
+    updateFooter() {
+        const footer = document.getElementById('notificationFooterText');
+        if (!footer) return;
+
+        const unreadCount = this.notifications.filter(n => !n.isRead).length;
+        if (unreadCount > 0) {
+            footer.textContent = `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`;
+        } else {
+            footer.textContent = "You're all caught up!";
+        }
+    }
+
+    navigateToRelevantSection(type, sessionId) {
+        const sectionMap = {
+            session_request: 'tutoring-opportunities',
+            reschedule_request: 'tutoring-opportunities',
+            session_confirmed: 'bookings',
+            session_cancelled: 'sessions',
+            payment_processed: 'your-earnings',
+            invoice_submitted: 'your-earnings'
+        };
+
+        const sectionId = sectionMap[type];
+        if (sectionId) {
+            const menuItem = document.querySelector(`[data-section="${sectionId}"]`);
+            if (menuItem) menuItem.click();
+        }
+    }
+
+    // Cleanup methods
+    removeEventListeners() {
+        if (this.notificationBtn) {
+            this.notificationBtn.removeEventListener('click', this.handleBellClick);
+        }
+        
+        document.removeEventListener('click', this.handleOutsideClick);
+        document.removeEventListener('keydown', this.handleKeydown);
+        
+        this.clickHandlers.forEach((handler, element) => {
+            element.removeEventListener('click', handler);
+            element.removeEventListener('keydown', handler);
+        });
+        this.clickHandlers.clear();
+    }
+
+    cleanupRealtimeListener() {
+        if (this.realtimeListener) {
+            this.realtimeListener();
+            this.realtimeListener = null;
+        }
+    }
+
+    async destroy() {
+        this.cleanupRealtimeListener();
+        this.removeEventListeners();
+        
+        const dropdown = document.getElementById('notificationDropdown');
+        if (dropdown) dropdown.remove();
+        
+        const styles = document.getElementById('notification-system-styles');
+        if (styles) styles.remove();
+        
+        this.isInitialized = false;
+        this.notifications = [];
+        this.unreadCount = 0;
+    }
+}
+
+// Initialize notification system when ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Create global instance
+    window.notificationSystem = new NotificationSystem();
+
+    // Wait for Firebase and user to be ready
+    const initNotificationSystem = async () => {
+        try {
+            if (typeof db !== 'undefined' && currentUser?.uid) {
+                await window.notificationSystem.initialize();
+            }
+        } catch (error) {
+            console.error('Failed to initialize notification system:', error);
+        }
+    };
+
+    // Try immediately
+    initNotificationSystem();
+
+    // Fallback: check every 500ms for up to 10 seconds
+    let attempts = 0;
+    const maxAttempts = 20;
+    
+    const intervalId = setInterval(() => {
+        if (typeof db !== 'undefined' && currentUser?.uid) {
+            clearInterval(intervalId);
+            initNotificationSystem();
+        } else if (attempts++ >= maxAttempts) {
+            clearInterval(intervalId);
+            console.warn('Notification system: Firebase or user not available after timeout');
+        }
+    }, 500);
+});
+
+// =======================================================================================================================================
+// Notification System Ends Here. This is Production ready, and this is the end of the project. Awesome!
+// =======================================================================================================================================
   
 </script>    
 </body>
 </html>
+
 
 
 
