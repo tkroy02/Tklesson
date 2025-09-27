@@ -1558,9 +1558,7 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
-//------------------------------------------------------------------------------------------------------------
 //Basic Functionality starts here. This includes log out, inactivity timer, sidebar navigation, among others. 
-//-------------------------------------------------------------------------------------------------------------
        
 // Global variables
 let currentUser = null;
@@ -1822,10 +1820,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize invoice form calculations
     setupInvoiceCalculations();
 });
-
-// ------------------------------------------------------------------------------------------------      
-// PROFILE SECTION STARTS HERE. ALL JS FUNCTIONALITIES OF THE PROFILE SECTION STARTS HERE
-// ------------------------------------------------------------------------------------------------
+       
+// PROFILE SECTION STARTS HERE
+// =============================================
 
 async function loadDashboardData() {
     if (!currentUser || !currentUser.uid) {
@@ -2020,22 +2017,3944 @@ function showErrorMessage(message) {
     alert(message);
 }
 
-// ----------------------------------------------------------------------------------------------
-// PROFILE SECTION ENDS HERE. ALL JS FUNCTIONALITIES ASSOCIATED WITH PROFILE SECTION STARTS HERE
-// ----------------------------------------------------------------------------------------------
+function setupAvailabilityToggle() {
+    const toggle = document.getElementById('availabilityToggle');
+    const label = document.getElementById('availabilityLabel');
+    
+    // Load current availability from Firestore
+    if (userData) {
+        const isAvailable = userData.available !== false; // Default to true if not set
+        toggle.checked = isAvailable;
+        updateAvailabilityLabel(label, isAvailable);
+    }
+    
+    // Handle toggle changes
+    toggle.addEventListener('change', async function() {
+        const isAvailable = this.checked;
+        
+        try {
+            // Update Firestore
+            await db.collection('tutors').doc(currentUser.uid).update({
+                available: isAvailable,
+                isAvailable: isAvailable, // Update both fields for consistency
+                lastAvailabilityUpdate: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
+            // Update local userData
+            userData.available = isAvailable;
+            userData.isAvailable = isAvailable;
+            
+            // Update UI
+            updateAvailabilityLabel(label, isAvailable);
+            
+            console.log('Availability updated to:', isAvailable);
+            
+        } catch (error) {
+            console.error("Error updating availability:", error);
+            // Revert toggle on error
+            this.checked = !isAvailable;
+            alert('Error updating availability. Please try again.');
+        }
+    });
+}
+
+function updateAvailabilityLabel(label, isAvailable) {
+    label.textContent = isAvailable ? 'Available' : 'Unavailable';
+    label.style.color = isAvailable ? 'var(--success)' : 'var(--error)';
+}
 
 
+// =============================================
+// PROFILE SECTION ENDS HERE
+// =============================================
 
+// Tutoring Opportunities Section starts here. All JS functionalities of the Tutoring Opportunities section starts here
+
+// Load tutoring opportunities (pending sessions)
+async function loadTutoringOpportunities(tutorId) {
+    const container = document.getElementById('opportunitiesContainer');
+    container.innerHTML = '<div class="spinner" id="opportunitiesSpinner"></div>';
+    
+    try {
+        // Query sessions where this tutor is assigned and status is pending
+        const querySnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', tutorId)
+            .where('status', '==', 'pending')
+            .orderBy('date', 'asc')
+            .get();
+        
+        const pendingSessions = [];
+        let pendingCount = 0;
+        
+        container.innerHTML = '';
+        
+        if (querySnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h3>No Pending Sessions</h3>
+                    <p>You don't have any pending session requests at the moment.</p>
+                </div>
+            `;
+            document.getElementById('pendingSessionsCount').textContent = '0';
+            document.getElementById('pendingCount').textContent = '0';
+            return;
+        }
+
+        // Process each session
+        for (const doc of querySnapshot.docs) {
+            const session = doc.data();
+            session.id = doc.id;
+            pendingSessions.push(session);
+            
+            // Get student details
+            let studentData = {};
+            try {
+                const studentDoc = await db.collection('students').doc(session.studentId).get();
+                if (studentDoc.exists) {
+                    studentData = studentDoc.data();
+                }
+            } catch (error) {
+                console.error("Error loading student data:", error);
+            }
+            
+            // Create session card
+            const sessionCard = createSessionCard(session, studentData);
+            container.appendChild(sessionCard);
+            pendingCount++;
+        }
+        
+        // Update counts
+        updatePendingCount(pendingCount);
+        
+    } catch (error) {
+        console.error("Error loading tutoring opportunities:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Opportunities</h3>
+                <p>Failed to load tutoring opportunities. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Create session card HTML
+function createSessionCard(session, studentData) {
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const card = document.createElement('div');
+    card.className = 'session-card';
+    card.id = `session-${session.id}`;
+    
+    card.innerHTML = `
+        <div class="session-header">
+            <div class="session-title">${session.subject} Session Request</div>
+            <div class="session-date">${formattedDate}, ${formattedTime}</div>
+        </div>
+        <div class="session-details">
+            <div class="session-detail">
+                <i class="fas fa-user-graduate"></i> Student: ${studentData.fullName || 'Unknown Student'}
+            </div>
+            <div class="session-detail">
+                <i class="fas fa-book"></i> Subject: ${session.subject || 'No subject'}
+            </div>
+            <div class="session-detail">
+                <i class="fas fa-clock"></i> Duration: ${session.duration || '1.5'} hours
+            </div>
+            <div class="session-detail">
+                <i class="fas ${session.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+            </div>
+            <div class="session-detail">
+                <i class="fas fa-dollar-sign"></i> Rate: $${session.hourlyRate || '40'}/hour
+            </div>
+            <div class="session-detail">
+                <i class="fas fa-sticky-note"></i> Notes: ${session.notes || 'No notes provided'}
+            </div>
+        </div>
+        <div class="session-actions">
+            <button class="btn-success confirm-btn" data-session-id="${session.id}">
+                <i class="fas fa-check"></i> Confirm
+            </button>
+            <button class="btn-danger reject-btn" data-session-id="${session.id}">
+                <i class="fas fa-times"></i> Reject
+            </button>
+        </div>
+    `;
+    
+    // Add event listeners to buttons
+    setTimeout(() => {
+        const confirmBtn = card.querySelector('.confirm-btn');
+        const rejectBtn = card.querySelector('.reject-btn');
+        
+        confirmBtn.addEventListener('click', () => confirmSession(session.id));
+        rejectBtn.addEventListener('click', () => rejectSession(session.id));
+    }, 100);
+    
+    return card;
+}
+
+// Change the generation to Jitsi:
+function generateJitsiMeetLink(session) {
+    const roomId = `tklesson-${session.id}-${Date.now()}`;
+    return `https://meet.jit.si/${roomId}`;
+}
+
+// Generate Google Meet link (for compatibility)
+async function generateGoogleMeetLink(session) {
+    // This would be replaced with actual Google Meet API call
+    const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let meetingCode = '';
+    for (let i = 0; i < 10; i++) {
+        meetingCode += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    return `https://meet.google.com/${meetingCode}`;
+}
+
+// Main confirm session function
+async function confirmSession(sessionId) {
+    if (!confirm('Confirm this session and generate a meet link?')) return;
+    
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found!');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        session.id = sessionId;
+        
+        // Generate Jitsi meet link
+        const meetLink = generateJitsiMeetLink(session);
+        
+        // Update session with meet details
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'confirmed',
+            confirmedAt: new Date(),
+            meetLink: meetLink,
+            meetPlatform: 'jitsi_meet',
+            confirmedBy: 'tutor',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Send notification to student with joining instructions
+        await createSessionNotification(session, meetLink);
+        
+        showNotification('✅ Session confirmed! Meet link generated and sent to student.', 'success');
+        
+        // Show success message with link
+        showSessionConfirmationSuccess(session, meetLink);
+        
+        // Refresh the UI
+        if (typeof loadTutoringOpportunities === 'function' && typeof currentUser !== 'undefined') {
+            loadTutoringOpportunities(currentUser.uid);
+        }
+        
+    } catch (error) {
+        console.error("Error confirming session:", error);
+        showNotification('❌ Error confirming session. Please try again.', 'error');
+    }
+}
+
+// Create session notification for student
+async function createSessionNotification(session, meetLink) {
+    const sessionDate = session.date.toDate();
+    
+    await db.collection('notifications').add({
+        userId: session.studentId,
+        type: 'session_confirmed',
+        title: 'Session Confirmed! 🎯',
+        message: `Your ${session.subject} session has been confirmed.`,
+        details: {
+            subject: session.subject,
+            date: sessionDate.toLocaleDateString(),
+            time: sessionDate.toLocaleTimeString(),
+            duration: session.duration,
+            meetLink: meetLink,
+            tutorName: session.tutorName || 'Your Tutor'
+        },
+        relatedSessionId: session.id,
+        isRead: false,
+        priority: 'high',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+}
+
+// Show confirmation success with meet link
+function showSessionConfirmationSuccess(session, meetLink) {
+    const modalContent = `
+        <div style="text-align: center; padding: 20px;">
+            <div style="font-size: 48px; color: #4CAF50; margin-bottom: 15px;">✅</div>
+            <h3 style="color: #2E7D32; margin-bottom: 10px;">Session Confirmed!</h3>
+            <p><strong>Meet Link Generated:</strong></p>
+            <div style="background: #F5F5F5; padding: 10px; border-radius: 5px; margin: 15px 0; word-break: break-all;">
+                <a href="${meetLink}" target="_blank" style="color: #1976D2; text-decoration: none;">${meetLink}</a>
+            </div>
+            <p><strong>Student has been notified with the meet details.</strong></p>
+            <button onclick="copyToClipboard('${meetLink}')" class="btn-primary" style="margin: 10px;">
+                <i class="fas fa-copy"></i> Copy Link
+            </button>
+            <button onclick="window.open('${meetLink}', '_blank')" class="btn-success" style="margin: 10px;">
+                <i class="fas fa-video"></i> Test Meet
+            </button>
+        </div>
+    `;
+    
+    showCustomModal('Session Confirmed', modalContent);
+}
+
+// Utility function to copy link to clipboard
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        alert('Meet link copied to clipboard!');
+    });
+}
+
+// Show notification function (if not defined elsewhere)
+function showNotification(message, type = 'info') {
+    // Create or use existing notification system
+    alert(message); // Fallback to alert for now
+}
+
+// Show custom modal function (if not defined elsewhere)
+function showCustomModal(title, content) {
+    // Create or use existing modal system
+    const modal = document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+    modal.style.display = 'flex';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    modal.style.zIndex = '1000';
+    
+    modal.innerHTML = `
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 500px; width: 90%;">
+            <h2>${title}</h2>
+            ${content}
+            <button onclick="this.closest('div').remove()" style="margin-top: 15px; padding: 8px 16px; background: #ccc; border: none; border-radius: 5px;">Close</button>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
+// Reject a session
+async function rejectSession(sessionId) {
+    if (!confirm('Are you sure you want to reject this session?')) return;
+    
+    try {
+        // Update session status to rejected
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'rejected',
+            rejectedAt: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Update UI
+        const sessionCard = document.getElementById(`session-${sessionId}`);
+        if (sessionCard) {
+            sessionCard.classList.add('rejected');
+            sessionCard.querySelector('.session-actions').innerHTML = `
+                <span class="status-badge status-rejected">Rejected</span>
+            `;
+        }
+        
+        // Update counts
+        const pendingCount = parseInt(document.getElementById('pendingCount').textContent) - 1;
+        updatePendingCount(pendingCount);
+        
+        alert('Session rejected successfully!');
+        
+    } catch (error) {
+        console.error("Error rejecting session:", error);
+        alert('Error rejecting session. Please try again.');
+    }
+}
+
+// Update pending count in sidebar, top bar, and stats card
+function updatePendingCount(count) {
+    const pendingCountElement = document.getElementById('pendingCount');
+    const notificationCountElement = document.getElementById('notificationCount');
+    const pendingSessionsCountElement = document.getElementById('pendingSessionsCount');
+    
+    // Update notification badges (sidebar and top bar)
+    if (count > 0) {
+        if (pendingCountElement) {
+            pendingCountElement.textContent = count;
+            pendingCountElement.style.display = 'inline-block';
+        }
+        if (notificationCountElement) {
+            notificationCountElement.textContent = count;
+            notificationCountElement.style.display = 'inline-block';
+        }
+    } else {
+        if (pendingCountElement) {
+            pendingCountElement.style.display = 'none';
+        }
+        if (notificationCountElement) {
+            notificationCountElement.style.display = 'none';
+        }
+    }
+    
+    // Update stats card (always visible, even when count is 0)
+    if (pendingSessionsCountElement) {
+        pendingSessionsCountElement.textContent = count;
+    }
+}
+
+// Tutoring Opportunities Section ends here. All JS functionalities of the Tutoring Opportunities section ends here       
+// =============================================
+// MY STUDENTS SECTION STARTS HERE
+// =============================================
+
+// Load students who have booked sessions with this tutor
+async function loadMyStudents() {
+    const container = document.getElementById('studentsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading students...</div>';
+    
+    try {
+        // Get all sessions for this tutor (excluding cancelled ones)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', 'in', ['pending', 'confirmed', 'completed', 'rescheduled'])
+            .orderBy('date', 'desc')
+            .get();
+        
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-users"></i>
+                    <h3>No Students Yet</h3>
+                    <p>Students will appear here once they book sessions with you.</p>
+                </div>
+            `;
+            document.getElementById('activeStudentsCount').textContent = '0';
+            return;
+        }
+        
+        // Organize students with their session data
+        const studentsMap = new Map();
+        const currentTime = new Date();
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            
+            if (session.studentId && session.studentName) {
+                if (!studentsMap.has(session.studentId)) {
+                    studentsMap.set(session.studentId, {
+                        studentId: session.studentId,
+                        studentName: session.studentName,
+                        sessions: [],
+                        totalSessions: 0,
+                        completedSessions: 0,
+                        upcomingSessions: 0,
+                        lastSessionDate: null,
+                        favoriteSubject: null,
+                        subjectCount: new Map()
+                    });
+                }
+                
+                const studentData = studentsMap.get(session.studentId);
+                studentData.sessions.push(session);
+                studentData.totalSessions++;
+                
+                // Track subject frequency
+                if (session.subject) {
+                    const currentCount = studentData.subjectCount.get(session.subject) || 0;
+                    studentData.subjectCount.set(session.subject, currentCount + 1);
+                }
+                
+                // Track session status
+                if (session.status === 'completed') {
+                    studentData.completedSessions++;
+                } else if (session.status === 'confirmed' || session.status === 'rescheduled') {
+                    const sessionDate = session.date.toDate();
+                    if (sessionDate > currentTime) {
+                        studentData.upcomingSessions++;
+                    }
+                }
+                
+                // Track last session date
+                const sessionDate = session.date.toDate();
+                if (!studentData.lastSessionDate || sessionDate > studentData.lastSessionDate) {
+                    studentData.lastSessionDate = sessionDate;
+                }
+            }
+        });
+        
+        // Determine favorite subject for each student
+        studentsMap.forEach(studentData => {
+            let maxCount = 0;
+            let favoriteSubject = null;
+            
+            studentData.subjectCount.forEach((count, subject) => {
+                if (count > maxCount) {
+                    maxCount = count;
+                    favoriteSubject = subject;
+                }
+            });
+            
+            studentData.favoriteSubject = favoriteSubject;
+        });
+        
+        // Convert map to array and sort by last session date (most recent first)
+        const studentsArray = Array.from(studentsMap.values()).sort((a, b) => 
+            b.lastSessionDate - a.lastSessionDate
+        );
+        
+        displayStudentsWithRealData(studentsArray, container);
+        
+    } catch (error) {
+        console.error("Error loading students:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Students</h3>
+                <p>Failed to load student information. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Display students with real data
+function displayStudentsWithRealData(studentsArray, container) {
+    container.innerHTML = `
+        <div class="section-header">
+            <h3><i class="fas fa-chart-bar"></i> Student Overview</h3>
+        </div>
+        <div class="stats-container" style="margin-bottom: 30px;">
+            <div class="stat-card">
+                <div class="stat-icon blue">
+                    <i class="fas fa-users"></i>
+                </div>
+                <div class="stat-value">${studentsArray.length}</div>
+                <div class="stat-label">Total Students</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green">
+                    <i class="fas fa-calendar-check"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.upcomingSessions, 0)}</div>
+                <div class="stat-label">Upcoming Sessions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon pink">
+                    <i class="fas fa-graduation-cap"></i>
+                </div>
+                <div class="stat-value">${studentsArray.reduce((sum, student) => sum + student.completedSessions, 0)}</div>
+                <div class="stat-label">Completed Sessions</div>
+            </div>
+        </div>
+        <div class="section-header">
+            <h3><i class="fas fa-list"></i> Student Directory</h3>
+        </div>
+        <div class="tutors-container" id="studentsDirectory"></div>
+    `;
+    
+    const studentsDirectory = document.getElementById('studentsDirectory');
+    
+    studentsArray.forEach((studentData, index) => {
+        const studentCard = createStudentCardWithRealData(studentData, index);
+        studentsDirectory.appendChild(studentCard);
+    });
+    
+    // Update active students count in dashboard stats
+    document.getElementById('activeStudentsCount').textContent = studentsArray.length;
+}
+
+// Enhanced function to load student profile data
+async function loadStudentProfileData(studentId) {
+    try {
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        if (studentDoc.exists) {
+            return studentDoc.data();
+        }
+        return null;
+    } catch (error) {
+        console.error("Error loading student profile:", error);
+        return null;
+    }
+}
+
+// Enhanced view student profile function
+async function viewStudentProfile(studentData) {
+    // Load complete student profile data
+    const studentProfile = await loadStudentProfileData(studentData.studentId);
+    
+    // Create modal content with all available student information
+    const modalContent = `
+        <div class="profile-modal-content">
+            <div class="student-profile-header">
+                <div class="student-avatar" style="width: 80px; height: 80px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 32px;">
+                    <i class="fas fa-user-graduate"></i>
+                </div>
+                <h3 style="text-align: center; margin-bottom: 10px; color: var(--primary-dark);">${studentData.studentName}</h3>
+                <p style="text-align: center; color: var(--gray); margin-bottom: 20px;">Student Profile</p>
+            </div>
+            
+            <div class="profile-details-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                <div class="detail-item">
+                    <strong><i class="fas fa-envelope"></i> Email:</strong>
+                    <span>${studentProfile?.email || 'Not provided'}</span>
+                </div>
+                <div class="detail-item">
+                    <strong><i class="fas fa-phone"></i> Phone:</strong>
+                    <span>${studentProfile?.phone || 'Not provided'}</span>
+                </div>
+                <div class="detail-item">
+                    <strong><i class="fas fa-birthday-cake"></i> Age:</strong>
+                    <span>${studentProfile?.age || 'Not provided'}</span>
+                </div>
+                <div class="detail-item">
+                    <strong><i class="fas fa-graduation-cap"></i> Grade Level:</strong>
+                    <span>${studentProfile?.gradeLevel || 'Not provided'}</span>
+                </div>
+                <div class="detail-item">
+                    <strong><i class="fas fa-school"></i> Specific Grade:</strong>
+                    <span>${studentProfile?.specificgradeLevel || 'Not provided'}</span>
+                </div>
+                <div class="detail-item">
+                    <strong><i class="fas fa-university"></i> School:</strong>
+                    <span>${studentProfile?.schoolName || 'Not provided'}</span>
+                </div>
+            </div>
+            
+            <div class="learning-section" style="margin-bottom: 20px;">
+                <h4 style="color: var(--primary); margin-bottom: 10px;"><i class="fas fa-bullseye"></i> Learning Goals</h4>
+                <p style="background: var(--gray-light); padding: 10px; border-radius: 8px; font-style: italic;">
+                    ${studentProfile?.learningGoals || 'No learning goals specified'}
+                </p>
+            </div>
+            
+            <div class="parent-section" style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
+                <h4 style="color: var(--secondary); margin-bottom: 10px;"><i class="fas fa-users"></i> Parent/Guardian Information</h4>
+                <div class="parent-details">
+                    <p><strong>Parent Name:</strong> ${studentProfile?.parentName || 'Not provided'}</p>
+                    <p><strong>Parent Email:</strong> ${studentProfile?.parentEmail || 'Not provided'}</p>
+                </div>
+            </div>
+            
+            <div class="session-stats" style="display: flex; justify-content: space-around; margin: 20px 0; padding: 15px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 8px;">
+                <div class="stat-item" style="text-align: center;">
+                    <div class="stat-number" style="font-size: 1.5em; font-weight: bold;">${studentData.totalSessions}</div>
+                    <div class="stat-label" style="font-size: 0.8em;">Total Sessions</div>
+                </div>
+                <div class="stat-item" style="text-align: center;">
+                    <div class="stat-number" style="font-size: 1.5em; font-weight: bold;">${studentData.completedSessions}</div>
+                    <div class="stat-label" style="font-size: 0.8em;">Completed</div>
+                </div>
+                <div class="stat-item" style="text-align: center;">
+                    <div class="stat-number" style="font-size: 1.5em; font-weight: bold;">${studentData.upcomingSessions}</div>
+                    <div class="stat-label" style="font-size: 0.8em;">Upcoming</div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Show in modal (replace the alert with actual modal display)
+    showStudentProfileModal(studentData.studentName, modalContent);
+}
+
+// Function to display student profile in a modal
+function showStudentProfileModal(studentName, content) {
+    // Create or update modal
+    let modal = document.getElementById('studentProfileModal');
+    
+    if (!modal) {
+        // Create modal if it doesn't exist
+        modal = document.createElement('div');
+        modal.id = 'studentProfileModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3>Student Profile</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="studentProfileModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeStudentProfileBtn">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners for the new modal
+        const closeBtn = modal.querySelector('.close-modal');
+        const closeActionBtn = modal.querySelector('#closeStudentProfileBtn');
+        
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        closeActionBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    // Update modal content
+    document.getElementById('studentProfileModalBody').innerHTML = content;
+    
+    // Show modal
+    modal.style.display = 'flex';
+}
+
+// Enhanced student card creation with better profile button
+function createStudentCardWithRealData(studentData, index) {
+    const card = document.createElement('div');
+    card.className = 'tutor-card';
+    card.style.animationDelay = `${index * 0.1}s`;
+    card.style.opacity = '0';
+    card.style.animation = 'fadeInUp 0.6s ease forwards';
+    
+    const lastSessionDate = studentData.lastSessionDate ? 
+        studentData.lastSessionDate.toLocaleDateString() : 'No sessions yet';
+    
+    const favoriteSubject = studentData.favoriteSubject || 'Various subjects';
+    
+    card.innerHTML = `
+        <div class="tutor-header">
+            <div class="tutor-avatar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <i class="fas fa-user-graduate"></i>
+            </div>
+            <div class="tutor-name">${studentData.studentName}</div>
+            <div class="tutor-subject">${favoriteSubject}</div>
+        </div>
+        <div class="tutor-details">
+            <div class="session-stats">
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.totalSessions}</span>
+                    <span class="stat-label">Total Sessions</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.completedSessions}</span>
+                    <span class="stat-label">Completed</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number">${studentData.upcomingSessions}</span>
+                    <span class="stat-label">Upcoming</span>
+                </div>
+            </div>
+            <p><i class="fas fa-book"></i> <strong>Favorite Subject:</strong> ${favoriteSubject}</p>
+            <p><i class="fas fa-calendar"></i> <strong>Last Session:</strong> ${lastSessionDate}</p>
+            <p><i class="fas fa-star"></i> <strong>Status:</strong> Active Student</p>
+        </div>
+        <div class="session-actions" style="padding: 0 20px 20px; justify-content: center; gap: 10px;">
+            <button class="btn-primary view-sessions-btn" data-student-id="${studentData.studentId}">
+                <i class="fas fa-history"></i> View Sessions
+            </button>
+            <button class="btn-success view-profile-btn" data-student-id="${studentData.studentId}">
+                <i class="fas fa-id-card"></i> Full Profile
+            </button>
+        </div>
+    `;
+    
+    // Add event listeners
+    setTimeout(() => {
+        const viewSessionsBtn = card.querySelector('.view-sessions-btn');
+        const viewProfileBtn = card.querySelector('.view-profile-btn');
+        
+        if (viewSessionsBtn) {
+            viewSessionsBtn.addEventListener('click', () => viewStudentSessions(studentData));
+        }
+        if (viewProfileBtn) {
+            viewProfileBtn.addEventListener('click', () => viewStudentProfile(studentData));
+        }
+    }, 100);
+    
+    return card;
+}
+
+// Enhanced view student sessions function
+function viewStudentSessions(studentData) {
+    const sortedSessions = studentData.sessions.sort((a, b) => b.date.toDate() - a.date.toDate());
+    
+    let sessionsHTML = `
+        <h4 style="color: var(--primary-dark); margin-bottom: 15px;">Sessions with ${studentData.studentName}</h4>
+        <div style="max-height: 400px; overflow-y: auto;">
+    `;
+    
+    sortedSessions.forEach((session, index) => {
+        const sessionDate = session.date.toDate();
+        const statusClass = getStatusClass(session.status);
+        const isUpcoming = session.status === 'confirmed' && sessionDate > new Date();
+        
+        sessionsHTML += `
+            <div class="session-item" style="border-left: 4px solid var(--${statusClass}); padding: 12px; margin: 10px 0; background: #f8f9fa; border-radius: 8px; transition: all 0.3s ease;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <strong style="color: var(--dark);">${session.subject || 'No subject'}</strong>
+                    <span class="status-badge" style="background: var(--${statusClass}-light); color: var(--${statusClass}); padding: 4px 8px; border-radius: 12px; font-size: 0.8em; font-weight: 500;">
+                        ${session.status.charAt(0).toUpperCase() + session.status.slice(1)}
+                    </span>
+                </div>
+                <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">
+                    <i class="fas fa-calendar"></i> ${sessionDate.toLocaleDateString()} 
+                    <i class="fas fa-clock" style="margin-left: 10px;"></i> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </div>
+                <div style="font-size: 0.9em; display: flex; justify-content: space-between;">
+                    <span>Duration: ${session.duration || '1.5'} hours</span>
+                    <span>Rate: $${session.hourlyRate || '40'}/hour</span>
+                </div>
+                ${session.notes ? `
+                    <div style="font-size: 0.85em; color: #888; margin-top: 8px; font-style: italic;">
+                        <i class="fas fa-sticky-note"></i> ${session.notes}
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    });
+    
+    sessionsHTML += `</div>`;
+    
+    // Show sessions in modal
+    showStudentSessionsModal(studentData.studentName, sessionsHTML);
+}
+
+// Function to display student sessions in a modal
+function showStudentSessionsModal(studentName, content) {
+    let modal = document.getElementById('studentSessionsModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'studentSessionsModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h3>Session History - ${studentName}</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="studentSessionsModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeStudentSessionsBtn">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const closeActionBtn = modal.querySelector('#closeStudentSessionsBtn');
+        
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        closeActionBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('studentSessionsModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Helper function to get status class for styling
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'success';
+        case 'confirmed': return 'primary';
+        case 'pending': return 'warning';
+        case 'cancelled': return 'error';
+        case 'rescheduled': return 'info';
+        default: return 'gray';
+    }
+}
+
+//My Students Section Ends here.
+
+// =============================================
+// =============================================
+// =============================================
+// MY BOOKINGS SECTION STARTS HERE
+// =============================================
+
+// Load tutor's bookings (confirmed and upcoming sessions)
+async function loadMyBookings() {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading your bookings...</div>';
+    
+    try {
+        const userId = currentUser.uid;
+        
+        // Query upcoming bookings (confirmed sessions)
+        const querySnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', userId)
+            .where('status', 'in', ['confirmed', 'reschedule_requested'])
+            .where('date', '>=', new Date())
+            .orderBy('date', 'asc')
+            .get();
+        
+        if (querySnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h3>No Upcoming Bookings</h3>
+                    <p>You have no upcoming sessions scheduled.</p>
+                </div>
+            `;
+            confirmedSessions = [];
+            updateBookingsCount(0);
+            return;
+        }
+        
+        confirmedSessions = [];
+        let bookingsHTML = '';
+        let upcomingCount = 0;
+        
+        // Process each booking and fetch student details + reschedule info
+        for (const doc of querySnapshot.docs) {
+            const booking = doc.data();
+            booking.id = doc.id;
+            
+            // Convert Firestore Timestamp to Date if needed
+            if (booking.date && typeof booking.date.toDate === 'function') {
+                booking.date = booking.date.toDate();
+            }
+            
+            // Check for pending reschedule requests in the separate collection
+            const rescheduleQuery = await db.collection('rescheduleRequests')
+                .where('sessionId', '==', booking.id)
+                .where('status', '==', 'pending')
+                .get();
+            
+            booking.hasPendingReschedule = !rescheduleQuery.empty;
+            booking.rescheduleRequest = rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data();
+            
+            // Check if reschedule was accepted
+            const acceptedRescheduleQuery = await db.collection('rescheduleRequests')
+                .where('sessionId', '==', booking.id)
+                .where('status', '==', 'accepted')
+                .get();
+            
+            booking.hasAcceptedReschedule = !acceptedRescheduleQuery.empty;
+            booking.acceptedReschedule = acceptedRescheduleQuery.empty ? null : acceptedRescheduleQuery.docs[0].data();
+            
+            confirmedSessions.push(booking);
+            
+            // Use the student name from the booking data
+            let studentName = booking.studentName || 'Student';
+            
+            // Create the booking card HTML
+            bookingsHTML += createBookingCard(booking, studentName);
+            upcomingCount++;
+        }
+        
+        container.innerHTML = bookingsHTML;
+        
+        // Update dashboard stats
+        updateBookingsCount(upcomingCount);
+        
+        // Add event listeners to action buttons
+        addBookingActionListeners();
+        
+    } catch (error) {
+        console.error("Error loading bookings:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Bookings</h3>
+                <p>Failed to load your bookings. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Helper function to validate session for joining
+function validateSessionForJoin(session) {
+    const now = new Date();
+    let sessionTime;
+    
+    // Handle both Date objects and Firestore Timestamps
+    if (session.date && typeof session.date.toDate === 'function') {
+        sessionTime = session.date.toDate();
+    } else {
+        sessionTime = new Date(session.date);
+    }
+    
+    const timeDiff = sessionTime.getTime() - now.getTime();
+    const hoursDiff = timeDiff / (1000 * 60 * 60);
+    
+    // Allow joining 15 minutes before and 2 hours after session time
+    return hoursDiff >= -0.25 && hoursDiff <= 2;
+}
+
+// Function to generate unique Jitsi Meet room name
+function generateJitsiRoomId(sessionId) {
+    return `tutor-session-${sessionId}-${Math.random().toString(36).substring(2, 10)}`;
+}
+
+// Function to create Jitsi Meet link
+function generateJitsiLink(roomId) {
+    return `https://meet.jit.si/${roomId}`;
+}
+
+// Create booking card HTML for tutor dashboard
+function createBookingCard(booking, studentName) {
+    let sessionDate;
+    
+    // Handle date conversion from Firestore Timestamp if needed
+    if (booking.date && typeof booking.date.toDate === 'function') {
+        sessionDate = booking.date.toDate();
+    } else {
+        sessionDate = new Date(booking.date);
+    }
+    
+    const formattedDate = formatSessionDate(sessionDate);
+    const subject = booking.subject || 'General Tutoring';
+    const duration = booking.duration || '1.5';
+    const hourlyRate = booking.hourlyRate || '40';
+    const location = booking.sessionType || 'online';
+    
+    // Get the meetLink from THIS specific session
+    const meetLink = booking.meetLink || ''; // This will be different for each session
+    
+    // Determine reschedule status
+    const isRescheduleRequested = booking.status === 'reschedule_requested';
+    const hasPendingReschedule = booking.hasPendingReschedule;
+    const hasAcceptedReschedule = booking.hasAcceptedReschedule;
+    
+    let statusBadge = '';
+    let rescheduleButton = '';
+    let rescheduleInfo = '';
+    
+    if (hasAcceptedReschedule && booking.acceptedReschedule) {
+        statusBadge = '<span class="status-badge status-success">Reschedule Accepted</span>';
+        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
+        
+        let newDate;
+        if (booking.acceptedReschedule.requestedDate && typeof booking.acceptedReschedule.requestedDate.toDate === 'function') {
+            newDate = booking.acceptedReschedule.requestedDate.toDate();
+        } else {
+            newDate = new Date(booking.acceptedReschedule.requestedDate);
+        }
+        
+        rescheduleInfo = `
+            <div class="reschedule-info accepted" style="margin-top: 15px; padding: 10px; background: #d4edda; border-radius: 5px; font-size: 0.9em;">
+                <strong><i class="fas fa-check-circle"></i> Reschedule Accepted:</strong> 
+                New time: ${newDate.toLocaleString()}
+            </div>
+        `;
+    } else if (hasPendingReschedule && booking.rescheduleRequest) {
+        statusBadge = '<span class="status-badge status-warning">Reschedule Requested</span>';
+        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Awaiting Student</button>';
+        
+        let proposedDate;
+        if (booking.rescheduleRequest.requestedDate && typeof booking.rescheduleRequest.requestedDate.toDate === 'function') {
+            proposedDate = booking.rescheduleRequest.requestedDate.toDate();
+        } else {
+            proposedDate = new Date(booking.rescheduleRequest.requestedDate);
+        }
+        
+        rescheduleInfo = `
+            <div class="reschedule-info pending" style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px; font-size: 0.9em;">
+                <strong><i class="fas fa-clock"></i> Reschedule Proposed:</strong> 
+                ${proposedDate.toLocaleString()}
+            </div>
+        `;
+    } else {
+        statusBadge = '<span class="status-badge status-primary">Confirmed</span>';
+        rescheduleButton = `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
+            <i class="fas fa-calendar-alt"></i> Reschedule
+        </button>`;
+    }
+    
+    // Determine if join button should be enabled
+    const canJoinSession = location === 'online' && validateSessionForJoin(booking);
+    
+    // Create the appropriate join button based on whether meetLink exists
+    let joinButton = '';
+    if (canJoinSession) {
+        if (meetLink) {
+            // Session has a meetLink - create direct link button
+            joinButton = `<a href="${meetLink}" target="_blank" class="btn-primary join-session-link" data-session-id="${booking.id}">
+                <i class="fas fa-video"></i> Join Session
+            </a>`;
+        } else {
+            // Session doesn't have a meetLink yet - create generate button
+            joinButton = `<button class="btn-primary join-session-btn" data-session-id="${booking.id}">
+                <i class="fas fa-video"></i> Generate & Join Session
+            </button>`;
+        }
+    } else {
+        joinButton = '<button class="btn-outline" disabled title="Session not available or outside join window"><i class="fas fa-video"></i> Join Session</button>';
+    }
+    
+    return `
+        <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+            <div class="session-header">
+                <div class="session-title">${subject} Session with ${studentName}</div>
+                <div class="session-date">${formattedDate}</div>
+                ${statusBadge}
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-graduate"></i> 
+                    <span><strong>Student:</strong> ${studentName}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-book"></i> 
+                    <span><strong>Subject:</strong> ${subject}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i> 
+                    <span><strong>Duration:</strong> ${duration} hours</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    <span><strong>Type:</strong> ${location === 'online' ? 'Online' : 'In-Person'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-dollar-sign"></i> 
+                    <span><strong>Rate:</strong> $${hourlyRate}/hour</span>
+                </div>
+            </div>
+            
+            ${rescheduleInfo}
+            
+            <div class="session-actions">
+                ${joinButton}
+                ${rescheduleButton}
+                <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+                <button class="btn-outline details-btn" data-session-id="${booking.id}">
+                    <i class="fas fa-info-circle"></i> Details
+                </button>
+            </div>
+        </div>
+    `;
+}
+       
+// Enhanced Join session function with Jitsi Meet
+async function joinSession(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        session.id = sessionId;
+        
+        // Store for review redirection
+        window.lastJoinedSession = session;
+        
+        // Validate session time
+        if (!validateSessionForJoin(session)) {
+            alert('You can only join sessions 15 minutes before the scheduled time and up to 2 hours after.');
+            return;
+        }
+        
+        // Show join options (embedded or external)
+        showJoinOptionsModal(session);
+        
+    } catch (error) {
+        console.error("Error joining session:", error);
+        alert('Error joining session. Please try again.');
+    }
+}
+
+// Show join options modal
+function showJoinOptionsModal(session) {
+    const modalContent = `
+        <div class="join-options-modal">
+            <h3>Join Tutoring Session</h3>
+            <div class="join-options">
+                <div class="join-option">
+                    <h4><i class="fas fa-window-maximize"></i> Embedded Session</h4>
+                    <p>Join the session directly in this window</p>
+                    <button class="btn-primary" id="joinEmbeddedBtn">
+                        <i class="fas fa-play"></i> Join Embedded
+                    </button>
+                </div>
+                <div class="join-option">
+                    <h4><i class="fas fa-external-link-alt"></i> External Window</h4>
+                    <p>Open session in a new tab</p>
+                    <button class="btn-outline" id="joinExternalBtn">
+                        <i class="fas fa-external-link-alt"></i> Open in New Tab
+                    </button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-outline" id="cancelJoinBtn">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    showCustomModal('Join Session', modalContent, () => {
+        // Setup event listeners after modal is shown
+        document.getElementById('joinEmbeddedBtn').addEventListener('click', () => {
+            startEmbeddedJitsiSession(session);
+            closeModal();
+        });
+        
+        document.getElementById('joinExternalBtn').addEventListener('click', () => {
+            window.open(session.meetLink, '_blank', 'noopener,noreferrer');
+            closeModal();
+        });
+        
+        document.getElementById('cancelJoinBtn').addEventListener('click', closeModal);
+    });
+}
+
+// Start embedded Jitsi session
+function startEmbeddedJitsiSession(session) {
+    // Hide main content and show session container
+    document.getElementById('mainContent').style.display = 'none';
+    
+    const sessionContainer = document.getElementById('sessionContainer') || createSessionContainer(session);
+    sessionContainer.style.display = 'block';
+    
+    // Initialize Jitsi Meet embedded
+    initializeJitsiMeet(session);
+}
+
+// Create session container if it doesn't exist
+function createSessionContainer(session) {
+    const container = document.createElement('div');
+    container.id = 'sessionContainer';
+    container.innerHTML = `
+        <div class="session-header">
+            <button class="btn-outline" id="endSessionBtn">
+                <i class="fas fa-times"></i> End Session
+            </button>
+            <h3>Live Session: ${session.subject || 'Tutoring Session'}</h3>
+        </div>
+        <div id="jitsiMeetContainer"></div>
+        <div class="session-controls">
+            <button class="btn-primary" id="openExternalBtn">
+                <i class="fas fa-external-link-alt"></i> Open in New Tab
+            </button>
+        </div>
+    `;
+    document.body.appendChild(container);
+    
+    // Add event listeners
+    document.getElementById('endSessionBtn').addEventListener('click', endJitsiSession);
+    document.getElementById('openExternalBtn').addEventListener('click', () => {
+        window.open(session.meetLink, '_blank', 'noopener,noreferrer');
+    });
+    
+    return container;
+}
+
+// Initialize Jitsi Meet
+function initializeJitsiMeet(session) {
+    const domain = 'meet.jit.si';
+    const options = {
+        roomName: session.jitsiRoomId || generateJitsiRoomId(session.id),
+        width: '100%',
+        height: 600,
+        parentNode: document.getElementById('jitsiMeetContainer'),
+        configOverwrite: {
+            prejoinPageEnabled: false,
+            startWithAudioMuted: true,
+            startWithVideoMuted: true,
+            disableModeratorIndicator: false,
+            startScreenSharing: false,
+            enableEmailInStats: false,
+            enableWelcomePage: false,
+            enableClosePage: false
+        },
+        interfaceConfigOverwrite: {
+            TOOLBAR_BUTTONS: [
+                'microphone', 'camera', 'closedcaptions', 'desktop', 'fullscreen',
+                'fodeviceselection', 'hangup', 'profile', 'chat', 'recording',
+                'livestreaming', 'etherpad', 'sharedvideo', 'settings', 'raisehand',
+                'videoquality', 'filmstrip', 'invite', 'feedback', 'stats', 'shortcuts',
+                'tileview', 'videobackgroundblur', 'download', 'help', 'mute-everyone',
+                'mute-video-everyone', 'security'
+            ],
+            SETTINGS_SECTIONS: ['devices', 'language', 'moderator', 'profile', 'calendar'],
+            SHOW_JITSI_WATERMARK: false,
+            SHOW_WATERMARK_FOR_GUESTS: false,
+            DEFAULT_BACKGROUND: '#f0f2f5',
+            OPTIMAL_BANDWIDTH: 800000,
+            MAXIMUM_BANDWIDTH: 1000000,
+        },
+        userInfo: {
+            displayName: currentUser.displayName || 'Tutor',
+            email: currentUser.email
+        }
+    };
+    
+    const api = new JitsiMeetExternalAPI(domain, options);
+    
+    // Handle session end
+    api.addEventListener('videoConferenceLeft', () => {
+        endJitsiSession();
+    });
+    
+    // Store API instance for later use
+    window.jitsiApi = api;
+}
+
+// End Jitsi session
+function endJitsiSession() {
+    if (window.jitsiApi) {
+        window.jitsiApi.dispose();
+        window.jitsiApi = null;
+    }
+    
+    // Show main content again
+    document.getElementById('mainContent').style.display = 'block';
+    const sessionContainer = document.getElementById('sessionContainer');
+    if (sessionContainer) {
+        sessionContainer.style.display = 'none';
+    }
+    
+    // Redirect student to review page if applicable
+    if (currentUser.role === 'student') {
+        redirectToReviewPage();
+    }
+}
+
+// Redirect student to review page after session
+function redirectToReviewPage() {
+    // Check if we have a recent session to review
+    const recentSession = getRecentSession();
+    if (recentSession) {
+        // Store session ID for review page
+        sessionStorage.setItem('sessionToReview', recentSession.id);
+        
+        // Redirect to review page
+        window.location.href = 'review-session.html';
+    }
+}
+
+// Helper function to get recent session
+function getRecentSession() {
+    // This would typically query Firestore for recently ended sessions
+    // For now, return the last joined session
+    return window.lastJoinedSession;
+}
+
+// Add event listeners to booking action buttons
+function addBookingActionListeners() {
+    // Join session buttons (for sessions without meet links - need to generate first)
+    document.querySelectorAll('.join-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            generateAndJoinSession(sessionId);
+        });
+    });
+    
+    // Join session links (for sessions with existing meet links - direct join)
+    document.querySelectorAll('.join-session-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            const sessionId = this.getAttribute('data-session-id');
+            console.log('Direct join via existing meet link for session:', sessionId);
+            // The link will naturally redirect to the meet URL
+            // You can add tracking here if needed
+        });
+    });
+
+async function generateAndJoinSession(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        
+        // Generate a new meet link
+        const jitsiRoomId = generateJitsiRoomId(sessionId);
+        const meetLink = generateJitsiLink(jitsiRoomId);
+        
+        // Update the session with the new meet link
+        await db.collection('bookedSessions').doc(sessionId).update({
+            meetLink: meetLink,
+            jitsiRoomId: jitsiRoomId,
+            meetPlatform: 'jitsi_meet',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Open the meet link in a new tab
+        window.open(meetLink, '_blank');
+        
+        // Refresh the bookings to show the new meet link
+        setTimeout(() => {
+            loadMyBookings();
+        }, 1000);
+        
+    } catch (error) {
+        console.error("Error generating meet link:", error);
+        alert('Error generating meeting link. Please try again.');
+    }
+}
+    
+    // Reschedule buttons
+    document.querySelectorAll('.reschedule-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            openRescheduleModal(sessionId);
+        });
+    });
+    
+    // Cancel buttons
+    document.querySelectorAll('.cancel-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            cancelBooking(sessionId);
+        });
+    });
+    
+    // Details buttons
+    document.querySelectorAll('.details-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            showBookingDetails(sessionId);
+        });
+    });
+}
+       
+// Cancel a booking as tutor
+async function cancelBooking(sessionId) {
+    if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: 'tutor',
+            cancellationReason: 'Tutor cancelled the session'
+        });
+        
+        // Show success message
+        showNotification('Booking cancelled successfully.', 'success');
+        
+        // Refresh the bookings display
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error cancelling booking:", error);
+        showNotification('Error cancelling booking. Please try again.', 'error');
+    }
+}
+
+// Show booking details in modal
+async function showBookingDetails(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session details not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        let sessionDate;
+        
+        if (session.date && typeof session.date.toDate === 'function') {
+            sessionDate = session.date.toDate();
+        } else {
+            sessionDate = new Date(session.date);
+        }
+        
+        const modalContent = `
+            <div class="booking-details">
+                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">Session Details</h3>
+                
+                <div class="details-grid" style="display: grid; gap: 15px; margin-bottom: 20px;">
+                    <div class="detail-item">
+                        <strong>Student:</strong> ${session.studentName || 'Unknown'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Subject:</strong> ${session.subject || 'General Tutoring'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Date & Time:</strong> ${sessionDate.toLocaleString()}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Duration:</strong> ${session.duration || '1.5'} hours
+                    </div>
+                    <div class="detail-item">
+                        <strong>Session Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Total Amount:</strong> $${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Status:</strong> <span class="status-badge status-${session.status}">${session.status}</span>
+                    </div>
+                </div>
+                
+                ${session.notes ? `
+                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px;">
+                        <strong>Session Notes:</strong>
+                        <p style="margin-top: 5px; font-style: italic;">${session.notes}</p>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+        
+        showBookingDetailsModal(modalContent);
+        
+    } catch (error) {
+        console.error("Error loading session details:", error);
+        alert('Error loading session details.');
+    }
+}
+
+// Helper function to format session date
+function formatSessionDate(date) {
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    if (date.toDateString() === today.toDateString()) {
+        return `Today, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+    } else if (date.toDateString() === tomorrow.toDateString()) {
+        return `Tomorrow, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+    } else {
+        return `${date.toLocaleDateString()}, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+    }
+}
+
+// Helper function to update bookings count in dashboard stats
+function updateBookingsCount(count) {
+    const upcomingCountElement = document.getElementById('upcomingSessionsCount');
+    if (upcomingCountElement) {
+        upcomingCountElement.textContent = count;
+    }
+}
+
+// Helper function to show notifications
+function showNotification(message, type = 'info') {
+    // You can implement a toast notification system here
+    // For now, using alert as fallback
+    alert(message);
+}
+
+// Show booking details modal
+function showBookingDetailsModal(content) {
+    let modal = document.getElementById('bookingDetailsModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'bookingDetailsModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3>Session Details</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="bookingDetailsModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeBookingDetailsBtn">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const closeActionBtn = modal.querySelector('#closeBookingDetailsBtn');
+        
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        closeActionBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('bookingDetailsModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Open reschedule modal
+function openRescheduleModal(sessionId) {
+    let modal = document.getElementById('rescheduleModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'rescheduleModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Request Reschedule</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="margin-bottom: 15px; color: #666; font-style: italic;">
+                        <i class="fas fa-info-circle"></i> This will send a reschedule request to the student. They will need to accept the new time.
+                    </p>
+                    <form id="rescheduleForm">
+                        <div class="form-group">
+                            <label for="rescheduleDate">Proposed New Date *</label>
+                            <input type="date" id="rescheduleDate" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="rescheduleTime">Proposed New Time *</label>
+                            <input type="time" id="rescheduleTime" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="rescheduleReason">Reason for Reschedule *</label>
+                            <textarea id="rescheduleReason" class="form-control" rows="3" 
+                                      placeholder="Please explain why you need to reschedule this session. The student will see this reason." 
+                                      required></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="cancelRescheduleBtn">Cancel</button>
+                    <button class="btn-warning" id="submitRescheduleBtn">
+                        <i class="fas fa-paper-plane"></i> Send Request to Student
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Set minimum date to tomorrow (can't reschedule for today)
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    document.getElementById('rescheduleDate').min = tomorrowStr;
+    
+    // Clear form and set current session ID
+    document.getElementById('rescheduleForm').reset();
+    modal.setAttribute('data-current-session-id', sessionId);
+    
+    // Set up fresh event listeners
+    setupRescheduleModalEvents();
+    
+    modal.style.display = 'flex';
+    document.getElementById('rescheduleDate').focus();
+}
+
+// Setup reschedule modal event listeners
+function setupRescheduleModalEvents() {
+    const modal = document.getElementById('rescheduleModal');
+    const closeBtn = modal.querySelector('.close-modal');
+    const cancelBtn = modal.querySelector('#cancelRescheduleBtn');
+    const submitBtn = modal.querySelector('#submitRescheduleBtn');
+    const form = document.getElementById('rescheduleForm');
+    
+    // Remove any existing listeners by cloning elements
+    const newCloseBtn = closeBtn.cloneNode(true);
+    closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+    
+    const newCancelBtn = cancelBtn.cloneNode(true);
+    cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+    
+    const newSubmitBtn = submitBtn.cloneNode(true);
+    submitBtn.parentNode.replaceChild(newSubmitBtn, submitBtn);
+    
+    // Add new event listeners
+    newCloseBtn.addEventListener('click', closeRescheduleModal);
+    newCancelBtn.addEventListener('click', closeRescheduleModal);
+    newSubmitBtn.addEventListener('click', handleRescheduleSubmit);
+    
+    // Form submission handler
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        handleRescheduleSubmit();
+    });
+}
+
+// Handle reschedule form submission
+function handleRescheduleSubmit() {
+    const modal = document.getElementById('rescheduleModal');
+    const sessionId = modal.getAttribute('data-current-session-id');
+    
+    if (!sessionId) {
+        alert('Error: Session ID not found. Please refresh the page and try again.');
+        return;
+    }
+    
+    submitRescheduleRequest(sessionId);
+}
+
+// Submit reschedule request (tutor sends request to student)
+async function submitRescheduleRequest(sessionId) {
+    // ... your existing validation code ...
+    
+    try {
+        // ... your existing session data retrieval code ...
+        
+        // CREATE RESCHEDULE REQUEST IN SEPARATE COLLECTION
+        await db.collection('rescheduleRequests').add({
+            sessionId: sessionId,
+            requestedBy: 'tutor',
+            requestedDate: newDateTime,
+            originalDate: sessionData.date,
+            reason: reason,
+            status: 'pending',
+            studentId: sessionData.studentId,
+            tutorId: currentUser.uid,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // ALSO update the session status for tutor dashboard display
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'reschedule_requested',
+            rescheduleRequestedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create a notification for the student WITH VALIDATION
+        const notificationSent = await createStudentNotification(
+            sessionData.studentId,
+            'reschedule_request',
+            `Tutor has requested to reschedule your ${sessionData.subject} session`,
+            sessionId // This should now be validated
+        );
+        
+        if (!notificationSent) {
+            console.warn("Notification failed to send, but reschedule request was created.");
+        }
+        
+        // Close modal
+        closeRescheduleModal();
+        
+        // Show success message
+        showNotification('Reschedule request sent to student! They will need to accept the new time.', 'success');
+        
+        // Refresh bookings after a short delay
+        setTimeout(() => {
+            loadMyBookings();
+        }, 1500);
+        
+    } catch (error) {
+        console.error("Error submitting reschedule request:", error);
+        alert('Error sending reschedule request. Please try again.');
+    }
+}
+
+// Create notification for student
+async function createStudentNotification(studentId, type, message, sessionId) {
+    try {
+        // Validate that sessionId is not undefined
+        if (!sessionId) {
+            console.error("Error: sessionId is undefined when creating notification");
+            return; // Exit early if sessionId is invalid
+        }
+        
+        const notificationData = {
+            userId: studentId,
+            type: type,
+            title: 'Reschedule Request',
+            message: message,
+            relatedSessionId: sessionId, // This was causing the error when undefined
+            isRead: false,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            priority: 'high'
+        };
+        
+        // Remove undefined fields to avoid Firestore errors
+        Object.keys(notificationData).forEach(key => {
+            if (notificationData[key] === undefined) {
+                delete notificationData[key];
+            }
+        });
+        
+        await db.collection('notifications').add(notificationData);
+    } catch (error) {
+        console.error("Error creating student notification:", error);
+    }
+}
+
+
+// Close reschedule modal
+function closeRescheduleModal() {
+    const modal = document.getElementById('rescheduleModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Initialize booking section
+function initBookingsSection() {
+    // Set up any additional event listeners or initializations
+    console.log("Bookings section initialized");
+}
+
+// Safe session confirmation function
+async function confirmSession(sessionId) {
+    try {
+        // Validate sessionId first
+        if (!sessionId) {
+            throw new Error("Session ID is undefined - cannot confirm session");
+        }
+        
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            throw new Error("Session not found");
+        }
+        
+        const sessionData = sessionDoc.data();
+        
+        // Generate Jitsi Meet link
+        const jitsiRoomId = generateJitsiRoomId(sessionId);
+        const jitsiLink = generateJitsiLink(jitsiRoomId);
+        
+        // Update session with Jitsi Meet link
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'confirmed',
+            confirmedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            meetLink: jitsiLink,
+            jitsiRoomId: jitsiRoomId,
+            sessionType: 'online' // Ensure this is set
+        });
+        
+        // Create notification safely
+        await createStudentNotification(
+            sessionData.studentId,
+            'session_confirmed', 
+            `Your ${sessionData.subject} session has been confirmed`, 
+            sessionId
+        );
+        
+        showNotification('Session confirmed successfully!', 'success');
+        
+    } catch (error) {
+        console.error("Error confirming session:", error);
+        showNotification('Error confirming session: ' + error.message, 'error');
+    }
+}
+
+// Utility function to safely prepare data for Firestore
+function prepareFirestoreData(data) {
+    const safeData = { ...data };
+    
+    // Remove undefined and null values
+    Object.keys(safeData).forEach(key => {
+        if (safeData[key] === undefined || safeData[key] === null) {
+            delete safeData[key];
+        }
+        
+        // Convert Date objects to Firestore Timestamp if needed
+        if (safeData[key] instanceof Date) {
+            safeData[key] = firebase.firestore.Timestamp.fromDate(safeData[key]);
+        }
+    });
+    
+    return safeData;
+}
+
+// =============================================
+// MY BOOKINGS SECTION ENDS HERE
+// =============================================
+// =============================================
+// =============================================
+// SESSIONS HISTORY SECTION STARTS HERE
+// =============================================
+
+// Global variables for sessions history
+let allSessionsHistory = [];
+let displayedSessionsCount = 10;
+let currentHistoryFilter = 'all';
+let currentActionTypeFilter = 'all';
+
+// Load sessions history with comprehensive session data
+async function loadSessionsHistory() {
+    const container = document.getElementById('sessionsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading session history...</div>';
+    
+    try {
+        // Get ALL sessions for this tutor (past and future, all statuses)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .orderBy('date', 'desc')
+            .limit(200) // Increased limit to get comprehensive history
+            .get();
+        
+        allSessionsHistory = [];
+        
+        if (sessionsSnapshot.empty) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-history"></i>
+                    <h3>No Session History</h3>
+                    <p>Your session history will appear here once you start teaching.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Process all sessions
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            allSessionsHistory.push(session);
+        });
+        
+        // Apply initial filters and display
+        applySessionHistoryFilters();
+        
+        // Setup filter event listeners
+        setupSessionHistoryFilters();
+        
+    } catch (error) {
+        console.error("Error loading session history:", error);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading History</h3>
+                <p>Failed to load session history. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+// Apply filters to session history
+function applySessionHistoryFilters() {
+    const container = document.getElementById('sessionsContainer');
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    
+    let filteredSessions = [...allSessionsHistory];
+    
+    // Apply time period filter
+    const now = new Date();
+    filteredSessions = filteredSessions.filter(session => {
+        const sessionDate = session.date.toDate();
+        
+        switch(currentHistoryFilter) {
+            case 'month':
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                return sessionDate >= startOfMonth;
+            case '3months':
+                const threeMonthsAgo = new Date();
+                threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+                return sessionDate >= threeMonthsAgo;
+            case 'year':
+                const startOfYear = new Date(now.getFullYear(), 0, 1);
+                return sessionDate >= startOfYear;
+            default: // 'all'
+                return true;
+        }
+    });
+    
+    // Apply action type filter
+    if (currentActionTypeFilter !== 'all') {
+        filteredSessions = filteredSessions.filter(session => 
+            session.status === currentActionTypeFilter
+        );
+    }
+    
+    // Display sessions
+    displayFilteredSessions(filteredSessions, container, loadMoreBtn);
+}
+
+// Display filtered sessions
+function displayFilteredSessions(sessions, container, loadMoreBtn) {
+    if (sessions.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-filter"></i>
+                <h3>No Sessions Match Your Filters</h3>
+                <p>Try adjusting your filter criteria to see more sessions.</p>
+            </div>
+        `;
+        loadMoreBtn.style.display = 'none';
+        return;
+    }
+    
+    // Sort by date (most recent first)
+    sessions.sort((a, b) => b.date.toDate() - a.date.toDate());
+    
+    // Get sessions to display (with load more functionality)
+    const sessionsToDisplay = sessions.slice(0, displayedSessionsCount);
+    
+    let sessionsHTML = `
+        <div class="sessions-table-container">
+            <table class="sessions-table">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Student</th>
+                        <th>Subject</th>
+                        <th>Type</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>Tutor Action</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    sessionsToDisplay.forEach(session => {
+        sessionsHTML += createSessionHistoryRow(session);
+    });
+    
+    sessionsHTML += `
+                </tbody>
+            </table>
+        </div>
+        <div class="session-stats">
+            <div class="stat-item">
+                <span class="stat-number">${sessionsToDisplay.length}</span>
+                <span class="stat-label">Displayed</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${sessions.length}</span>
+                <span class="stat-label">Total Filtered</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${allSessionsHistory.length}</span>
+                <span class="stat-label">All Sessions</span>
+            </div>
+        </div>
+    `;
+    
+    container.innerHTML = sessionsHTML;
+    
+    // Show/hide load more button
+    if (sessions.length > displayedSessionsCount) {
+        loadMoreBtn.style.display = 'block';
+        loadMoreBtn.onclick = () => {
+            displayedSessionsCount += 10;
+            applySessionHistoryFilters();
+        };
+    } else {
+        loadMoreBtn.style.display = 'none';
+    }
+    
+    // Add event listeners
+    addSessionHistoryListeners();
+}
+
+// Create comprehensive session history table row
+function createSessionHistoryRow(session) {
+    const date = session.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const isFutureSession = date > new Date();
+    
+    const statusClass = getStatusClass(session.status);
+    const sessionType = session.sessionType === 'online' ? 'Online' : 'In-Person';
+    
+    // Determine tutor action for this session
+    const tutorAction = getTutorActionForSession(session);
+    const actionClass = getActionClass(tutorAction);
+    
+    return `
+        <tr class="session-history-row ${isFutureSession ? 'future-session' : 'past-session'}">
+            <td>
+                <div>${formattedDate}</div>
+                <div class="timestamp-cell">${formattedTime}</div>
+                ${isFutureSession ? '<div class="future-badge">Upcoming</div>' : ''}
+            </td>
+            <td>${session.studentName || 'Unknown Student'}</td>
+            <td>${session.subject || 'General'}</td>
+            <td>${sessionType}</td>
+            <td>${session.duration || '1.5'}h</td>
+            <td>
+                <span class="status-badge status-${statusClass}">${session.status}</span>
+            </td>
+            <td>
+                <span class="action-badge action-${actionClass}">${tutorAction}</span>
+            </td>
+            <td>
+                <button class="btn-outline view-session-btn" data-session-id="${session.id}">
+                    <i class="fas fa-eye"></i> Details
+                </button>
+                ${session.status === 'completed' ? `
+                    <button class="btn-success invoice-session-btn" data-session-id="${session.id}" style="margin-top: 5px;">
+                        <i class="fas fa-file-invoice"></i> Invoice
+                    </button>
+                ` : ''}
+            </td>
+        </tr>
+    `;
+}
+
+// Get tutor action description for session
+function getTutorActionForSession(session) {
+    const now = new Date();
+    const sessionDate = session.date.toDate();
+    
+    switch(session.status) {
+        case 'completed':
+            return 'Session Completed';
+        case 'confirmed':
+            return sessionDate > now ? 'Session Confirmed' : 'Session Held';
+        case 'pending':
+            return 'Awaiting Response';
+        case 'cancelled':
+            return session.cancelledBy === 'tutor' ? 'You Cancelled' : 'Student Cancelled';
+        case 'rescheduled':
+            return 'Rescheduled';
+        case 'reschedule_requested':
+            return 'Reschedule Pending';
+        default:
+            return 'No Action';
+    }
+}
+
+// Get CSS class for action badge
+function getActionClass(action) {
+    switch(action) {
+        case 'Session Completed':
+        case 'Session Held':
+            return 'success';
+        case 'Session Confirmed':
+            return 'primary';
+        case 'Awaiting Response':
+        case 'Reschedule Pending':
+            return 'warning';
+        case 'You Cancelled':
+        case 'Student Cancelled':
+            return 'error';
+        case 'Rescheduled':
+            return 'info';
+        default:
+            return 'gray';
+    }
+}
+
+// Setup session history filter event listeners
+function setupSessionHistoryFilters() {
+    const historyFilter = document.getElementById('historyFilter');
+    const actionTypeFilter = document.getElementById('actionTypeFilter');
+    
+    if (historyFilter) {
+        historyFilter.addEventListener('change', function() {
+            currentHistoryFilter = this.value;
+            displayedSessionsCount = 10; // Reset to first page
+            applySessionHistoryFilters();
+        });
+    }
+    
+    if (actionTypeFilter) {
+        actionTypeFilter.addEventListener('change', function() {
+            currentActionTypeFilter = this.value;
+            displayedSessionsCount = 10; // Reset to first page
+            applySessionHistoryFilters();
+        });
+    }
+}
+
+// Enhanced session details view for history section
+async function showSessionDetails(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session details not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        const date = session.date.toDate();
+        const isFutureSession = date > new Date();
+        
+        // Get additional session metadata
+        const sessionMetadata = await getSessionMetadata(sessionId);
+        
+        const modalContent = `
+            <div class="session-details">
+                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">
+                    <i class="fas fa-calendar-alt"></i> Session Details
+                </h3>
+                
+                <div class="session-header-info" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h4 style="margin: 0; color: var(--secondary);">${session.subject || 'General Tutoring'}</h4>
+                            <p style="margin: 5px 0 0 0; color: #666;">with ${session.studentName || 'Unknown Student'}</p>
+                        </div>
+                        <span class="status-badge status-${getStatusClass(session.status)}" style="font-size: 14px;">
+                            ${session.status.toUpperCase()}
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="details-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                    <div class="detail-item">
+                        <strong><i class="fas fa-calendar"></i> Date:</strong>
+                        <span>${date.toLocaleDateString()}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-clock"></i> Time:</strong>
+                        <span>${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-user-graduate"></i> Student:</strong>
+                        <span>${session.studentName || 'Unknown'}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-book"></i> Subject:</strong>
+                        <span>${session.subject || 'General Tutoring'}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-clock"></i> Duration:</strong>
+                        <span>${session.duration || '1.5'} hours</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-video"></i> Type:</strong>
+                        <span>${session.sessionType === 'online' ? 'Online' : 'In-Person'}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-dollar-sign"></i> Rate:</strong>
+                        <span>$${session.hourlyRate || '40'}/hour</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong><i class="fas fa-calculator"></i> Total:</strong>
+                        <span>$${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}</span>
+                    </div>
+                </div>
+                
+                ${session.notes ? `
+                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <strong>Session Notes:</strong>
+                        <p style="margin-top: 5px; font-style: italic;">${session.notes}</p>
+                    </div>
+                ` : ''}
+                
+                <div class="session-timeline" style="border-left: 3px solid var(--primary); padding-left: 15px; margin-left: 5px;">
+                    <h4 style="color: var(--primary); margin-bottom: 10px;">Session Timeline</h4>
+                    ${sessionMetadata.timeline.map(event => `
+                        <div style="margin-bottom: 8px; padding: 5px 0;">
+                            <div style="display: flex; align-items: center;">
+                                <div style="width: 8px; height: 8px; background: var(--primary); border-radius: 50%; margin-right: 10px;"></div>
+                                <span style="font-weight: 500;">${event.action}</span>
+                                <span style="margin-left: auto; font-size: 0.8em; color: #666;">
+                                    ${event.timestamp.toDate().toLocaleString()}
+                                </span>
+                            </div>
+                            ${event.details ? `<div style="font-size: 0.9em; color: #666; margin-left: 18px;">${event.details}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+                
+                ${!isFutureSession && session.status === 'completed' ? `
+                    <div style="margin-top: 20px; padding: 15px; background: #e8f5e8; border-radius: 8px;">
+                        <strong style="color: #2e7d32;">This session has been completed.</strong>
+                        <p style="margin: 5px 0 0 0; color: #666;">You can generate an invoice for this session from the Invoice section.</p>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+        
+        showSessionDetailsModal(modalContent);
+        
+    } catch (error) {
+        console.error("Error loading session details:", error);
+        alert('Error loading session details.');
+    }
+}
+
+// Get additional session metadata for timeline
+async function getSessionMetadata(sessionId) {
+    const metadata = {
+        timeline: []
+    };
+    
+    try {
+        // Get session document to check for timestamps
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        const sessionData = sessionDoc.data();
+        
+        // Add creation event
+        if (sessionData.createdAt) {
+            metadata.timeline.push({
+                action: 'Session Created',
+                timestamp: sessionData.createdAt,
+                details: 'Session was booked by student'
+            });
+        }
+        
+        // Add confirmation event
+        if (sessionData.confirmedAt) {
+            metadata.timeline.push({
+                action: 'Session Confirmed',
+                timestamp: sessionData.confirmedAt,
+                details: 'You confirmed this session'
+            });
+        }
+        
+        // Add completion event
+        if (sessionData.completedAt) {
+            metadata.timeline.push({
+                action: 'Session Completed',
+                timestamp: sessionData.completedAt,
+                details: 'Session was marked as completed'
+            });
+        }
+        
+        // Add cancellation event if applicable
+        if (sessionData.cancelledAt) {
+            metadata.timeline.push({
+                action: 'Session Cancelled',
+                timestamp: sessionData.cancelledAt,
+                details: `Cancelled by ${sessionData.cancelledBy || 'unknown'}`
+            });
+        }
+        
+        // Sort timeline by timestamp
+        metadata.timeline.sort((a, b) => a.timestamp.toDate() - b.timestamp.toDate());
+        
+    } catch (error) {
+        console.error("Error loading session metadata:", error);
+    }
+    
+    return metadata;
+}
+
+// Show session details modal
+function showSessionDetailsModal(content) {
+    let modal = document.getElementById('sessionDetailsModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionDetailsModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
+                <div class="modal-header">
+                    <h3>Session Details</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="sessionDetailsModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeSessionDetailsBtn">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const closeActionBtn = modal.querySelector('#closeSessionDetailsBtn');
+        
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        closeActionBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('sessionDetailsModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Add event listeners to session history actions
+function addSessionHistoryListeners() {
+    // View session buttons
+    document.querySelectorAll('.view-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            showSessionDetails(sessionId);
+        });
+    });
+    
+    // Invoice session buttons (for completed sessions)
+    document.querySelectorAll('.invoice-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            // Switch to invoice section and pre-select this session
+            switchToInvoiceSection(sessionId);
+        });
+    });
+}
+
+// Switch to invoice section and pre-select session
+function switchToInvoiceSection(sessionId) {
+    // Activate invoice section menu item
+    document.querySelectorAll('.menu-item a').forEach(item => {
+        item.classList.remove('active');
+        if (item.getAttribute('data-section') === 'invoice-session') {
+            item.classList.add('active');
+        }
+    });
+    
+    // Show invoice section
+    document.querySelectorAll('.dashboard-section').forEach(section => {
+        section.classList.remove('active');
+        if (section.id === 'invoice-session') {
+            section.classList.add('active');
+        }
+    });
+    
+    // Pre-select the session in invoice form
+    setTimeout(() => {
+        const sessionSelect = document.getElementById('completedSession');
+        if (sessionSelect) {
+            sessionSelect.value = sessionId;
+            // Trigger change event to update hours/rate if needed
+            sessionSelect.dispatchEvent(new Event('change'));
+        }
+    }, 100);
+}
+
+// =============================================
+// SESSIONS HISTORY SECTION ENDS HERE
+
+// =============================================
+// INVOICE SESSION SECTION STARTS HERE
+// =============================================
+
+// Global variables for invoice section
+let completedSessions = [];
+let currentSelectedSession = null;
+
+// Load invoice session section
+async function loadInvoiceSession() {
+    const container = document.getElementById('invoice-session');
+    if (!container) return;
+    
+    try {
+        // Clear any existing messages first
+        clearInvoiceMessages();
+        
+        // Load completed sessions for invoicing
+        await loadCompletedSessions();
+        
+        // Setup form event listeners (only if not already set up)
+        if (!window.invoiceFormSetup) {
+            setupInvoiceForm();
+            setupInvoiceCalculations();
+            window.invoiceFormSetup = true;
+        }
+        
+    } catch (error) {
+        console.error("Error loading invoice section:", error);
+        showInvoiceError('Failed to load invoice section. Please try again.');
+    }
+}
+       
+// NEW FUNCTION: Clear existing invoice messages
+function clearInvoiceMessages() {
+    // Remove any existing messages
+    const existingMessages = document.querySelectorAll('.invoice-message, .invoice-error, .input-error');
+    existingMessages.forEach(msg => msg.remove());
+    
+    // Also remove session info display if it exists
+    const sessionInfo = document.getElementById('sessionInfoDisplay');
+    if (sessionInfo) {
+        sessionInfo.remove();
+    }
+}
+
+// UPDATED FUNCTION: Show invoice message (now with clearing)
+function showInvoiceMessage(message) {
+    // Clear any existing messages first
+    clearInvoiceMessages();
+    
+    const messageElement = document.createElement('div');
+    messageElement.className = 'invoice-message';
+    messageElement.style.cssText = `
+        background: #e3f2fd;
+        color: #1565c0;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+        border-left: 4px solid #2196f3;
+    `;
+    messageElement.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
+    
+    const form = document.getElementById('invoiceForm');
+    if (form) {
+        form.insertBefore(messageElement, form.firstChild);
+    }
+}
+
+// UPDATED FUNCTION: Load completed sessions (with message clearing)
+async function loadCompletedSessions() {
+    const sessionSelect = document.getElementById('completedSession');
+    if (!sessionSelect) return;
+    
+    // Clear previous messages
+    clearInvoiceMessages();
+    
+    // Only show loading message if the select is empty
+    if (sessionSelect.options.length <= 1) {
+        sessionSelect.innerHTML = '<option value="">Loading completed sessions...</option>';
+    }
+    
+    try {
+        // Get completed sessions that haven't been invoiced yet
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', '==', 'completed')
+            .orderBy('date', 'desc')
+            .get();
+        
+        completedSessions = [];
+        sessionSelect.innerHTML = '<option value="">Select a completed session</option>';
+        
+        if (sessionsSnapshot.empty) {
+            sessionSelect.innerHTML = '<option value="">No completed sessions available</option>';
+            disableInvoiceForm();
+            // Only show message if there are truly no sessions
+            if (!window.invoiceMessageShown) {
+                showInvoiceMessage('No completed sessions available for invoicing. Complete some sessions first.');
+                window.invoiceMessageShown = true;
+            }
+            return;
+        }
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            completedSessions.push(session);
+            
+            const sessionDate = session.date.toDate();
+            const option = document.createElement('option');
+            option.value = session.id;
+            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${session.duration || '1.5'} hours)`;
+            
+            // Mark if already invoiced
+            if (session.invoiced) {
+                option.textContent += ' - ✓ Submitted for Payment';
+                option.disabled = true;
+            }
+            
+            sessionSelect.appendChild(option);
+        });
+        
+        enableInvoiceForm();
+        window.invoiceMessageShown = false; // Reset since we have sessions now
+        
+    } catch (error) {
+        console.error("Error loading completed sessions:", error);
+        sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
+        disableInvoiceForm();
+        showInvoiceError('Error loading completed sessions. Please try again.');
+    }
+}
+       
+// Setup invoice form functionality
+function setupInvoiceForm() {
+    const sessionSelect = document.getElementById('completedSession');
+    const invoiceForm = document.getElementById('invoiceForm');
+    const generateBtn = document.getElementById('generateInvoiceBtn');
+    
+    if (sessionSelect) {
+        sessionSelect.addEventListener('change', handleSessionSelection);
+    }
+    
+    if (invoiceForm) {
+        invoiceForm.addEventListener('submit', handleInvoiceSubmission);
+    }
+    
+    if (generateBtn) {
+        generateBtn.addEventListener('click', handleInvoiceSubmission);
+    }
+}
+
+// Handle session selection from dropdown
+function handleSessionSelection(event) {
+    const sessionId = event.target.value;
+    currentSelectedSession = completedSessions.find(session => session.id === sessionId);
+    
+    if (currentSelectedSession) {
+        populateSessionDetails(currentSelectedSession);
+    } else {
+        resetInvoiceForm();
+    }
+}
+
+// Populate form with session details
+function populateSessionDetails(session) {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const notesInput = document.getElementById('invoiceNotes');
+    
+    // Set default values from session
+    if (hoursInput) {
+        hoursInput.value = session.duration || '1.5';
+    }
+    
+    if (rateInput) {
+        rateInput.value = session.hourlyRate || '40';
+        rateInput.readOnly = true; // Rate should be fixed based on session
+    }
+    
+    // Pre-populate notes with session information
+    if (notesInput) {
+        const sessionDate = session.date.toDate();
+        const defaultNotes = `Tutoring session completed on ${sessionDate.toLocaleDateString()} for ${session.studentName || 'student'}. Subject: ${session.subject || 'General tutoring'}.`;
+        notesInput.value = session.invoiceNotes || defaultNotes;
+        notesInput.placeholder = 'Add any additional notes for admin (optional)...';
+    }
+    
+    // Recalculate total
+    calculateInvoiceTotal();
+    
+    // Update session info display
+    updateSessionInfoDisplay(session);
+}
+
+// Update session information display
+function updateSessionInfoDisplay(session) {
+    // Create or update session info display
+    let sessionInfo = document.getElementById('sessionInfoDisplay');
+    
+    if (!sessionInfo) {
+        sessionInfo = document.createElement('div');
+        sessionInfo.id = 'sessionInfoDisplay';
+        sessionInfo.className = 'session-info-display';
+        sessionInfo.style.cssText = `
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid var(--primary);
+        `;
+        
+        const form = document.getElementById('invoiceForm');
+        form.insertBefore(sessionInfo, form.firstChild);
+    }
+    
+    const sessionDate = session.date.toDate();
+    const totalAmount = (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2);
+    
+    sessionInfo.innerHTML = `
+        <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">
+            <i class="fas fa-info-circle"></i> Session Details for Payment Request
+        </h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+            <div><strong>Student:</strong> ${session.studentName || 'Unknown'}</div>
+            <div><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</div>
+            <div><strong>Subject:</strong> ${session.subject || 'General'}</div>
+            <div><strong>Time:</strong> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+            <div><strong>Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}</div>
+            <div><strong>Duration:</strong> ${session.duration || '1.5'} hours</div>
+            <div><strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}/hour</div>
+            <div><strong>Total Amount:</strong> $${totalAmount}</div>
+        </div>
+        ${session.notes ? `
+            <div style="margin-top: 10px; padding: 10px; background: white; border-radius: 5px;">
+                <strong>Session Notes:</strong> ${session.notes}
+            </div>
+        ` : ''}
+        
+        <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4caf50;">
+            <strong><i class="fas fa-info-circle"></i> This invoice will be submitted to admin for payment processing.</strong>
+        </div>
+    `;
+}
+
+// Reset invoice form
+function resetInvoiceForm() {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const notesInput = document.getElementById('invoiceNotes');
+    const totalInput = document.getElementById('total');
+    
+    if (hoursInput) hoursInput.value = '1.5';
+    if (rateInput) {
+        rateInput.value = '40';
+        rateInput.readOnly = false;
+    }
+    if (notesInput) notesInput.value = '';
+    if (totalInput) totalInput.value = '60.00';
+    
+    // Remove session info display
+    const sessionInfo = document.getElementById('sessionInfoDisplay');
+    if (sessionInfo) {
+        sessionInfo.remove();
+    }
+    
+    currentSelectedSession = null;
+}
+
+// Handle invoice submission to admin
+async function handleInvoiceSubmission(event) {
+    if (event) event.preventDefault();
+    
+    if (!currentSelectedSession) {
+        showInvoiceError('Please select a completed session first.');
+        return;
+    }
+    
+    if (!validateInvoiceForm()) {
+        return;
+    }
+    
+    // Confirm submission
+    if (!confirm('Submit this invoice to admin for payment processing?\n\nThis action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        await submitInvoiceToAdmin(currentSelectedSession);
+    } catch (error) {
+        console.error("Error submitting invoice:", error);
+        showInvoiceError('Failed to submit invoice. Please try again.');
+    }
+}
+
+// Validate invoice form
+function validateInvoiceForm() {
+    const hours = parseFloat(document.getElementById('hours').value);
+    const rate = parseFloat(document.getElementById('rate').value);
+    const notes = document.getElementById('invoiceNotes').value.trim();
+    
+    if (!hours || hours <= 0) {
+        showInvoiceError('Please enter a valid number of hours (greater than 0).');
+        return false;
+    }
+    
+    if (hours > 24) {
+        showInvoiceError('Please enter a reasonable number of hours (max 24 hours per session).');
+        return false;
+    }
+    
+    if (!rate || rate <= 0) {
+        showInvoiceError('Please enter a valid hourly rate (greater than 0).');
+        return false;
+    }
+    
+    if (rate > 1000) {
+        showInvoiceError('Please enter a reasonable hourly rate.');
+        return false;
+    }
+    
+    if (notes.length > 1000) {
+        showInvoiceError('Additional notes must be less than 1000 characters.');
+        return false;
+    }
+    
+    return true;
+}
+
+// Submit invoice to admin for payment processing
+async function submitInvoiceToAdmin(session) {
+    const generateBtn = document.getElementById('generateInvoiceBtn');
+    const originalText = generateBtn.innerHTML;
+    
+    try {
+        // Show loading state
+        generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting to Admin...';
+        generateBtn.disabled = true;
+        
+        const hours = parseFloat(document.getElementById('hours').value);
+        const rate = parseFloat(document.getElementById('rate').value);
+        const notes = document.getElementById('invoiceNotes').value.trim();
+        const total = hours * rate;
+        
+        // Create invoice data for admin
+        const invoiceData = {
+            sessionId: session.id,
+            tutorId: currentUser.uid,
+            tutorName: userData?.fullName || 'Tutor',
+            tutorEmail: userData?.email || currentUser.email,
+            studentId: session.studentId,
+            studentName: session.studentName,
+            sessionDate: session.date,
+            subject: session.subject,
+            hours: hours,
+            hourlyRate: rate,
+            totalAmount: total,
+            notes: notes,
+            status: 'pending',
+            invoiceNumber: generateInvoiceNumber(),
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            submittedDate: new Date(),
+            paymentStatus: 'pending',
+            sessionType: session.sessionType || 'online',
+            duration: session.duration || '1.5'
+        };
+        
+        // Save invoice to Firestore for admin review
+        const invoiceRef = await db.collection('tutorInvoices').add(invoiceData);
+        
+        // Mark session as invoiced to prevent duplicates
+        await db.collection('bookedSessions').doc(session.id).update({
+            invoiced: true,
+            invoiceId: invoiceRef.id,
+            invoiceSubmittedAt: new Date(),
+            invoiceAmount: total,
+            invoiceStatus: 'pending'
+        });
+        
+        // Show success message
+        showInvoiceSuccess(invoiceData, invoiceRef.id);
+        
+        // Reload completed sessions to update the dropdown
+        await loadCompletedSessions();
+        
+    } finally {
+        // Restore button state
+        generateBtn.innerHTML = originalText;
+        generateBtn.disabled = false;
+    }
+}
+
+// Generate unique invoice number
+function generateInvoiceNumber() {
+    const timestamp = new Date().getTime();
+    const random = Math.floor(Math.random() * 1000);
+    return `TINV-${timestamp}-${random}`;
+}
+
+// Show invoice submission success
+async function showInvoiceSuccess(invoiceData, invoiceId) {
+    const modalContent = createInvoiceSuccessHTML(invoiceData, invoiceId);
+    
+    let modal = document.getElementById('invoiceSuccessModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'invoiceSuccessModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-check-circle" style="color: #4caf50;"></i> Invoice Submitted Successfully</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="invoiceSuccessModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeInvoiceSuccessBtn">Close</button>
+                    <button class="btn-primary" id="viewInvoiceBtn">
+                        <i class="fas fa-eye"></i> View Invoice Details
+                    </button>
+                    <button class="btn-success" id="printInvoiceBtn">
+                        <i class="fas fa-print"></i> Print for Records
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        setupInvoiceSuccessModalEvents(modal, invoiceId);
+    }
+    
+    document.getElementById('invoiceSuccessModalBody').innerHTML = modalContent;
+    modal.style.display = 'flex';
+}
+
+// Create invoice success HTML
+function createInvoiceSuccessHTML(invoiceData, invoiceId) {
+    const sessionDate = invoiceData.sessionDate.toDate();
+    
+    return `
+        <div class="invoice-success">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <i class="fas fa-check-circle" style="font-size: 64px; color: #4caf50; margin-bottom: 15px;"></i>
+                <h3 style="color: #2e7d32; margin-bottom: 10px;">Invoice Submitted for Payment</h3>
+                <p style="color: #666;">Your payment request has been sent to admin for processing.</p>
+            </div>
+            
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">Invoice Summary</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+                    <div><strong>Invoice #:</strong> ${invoiceData.invoiceNumber}</div>
+                    <div><strong>Session Date:</strong> ${sessionDate.toLocaleDateString()}</div>
+                    <div><strong>Student:</strong> ${invoiceData.studentName}</div>
+                    <div><strong>Subject:</strong> ${invoiceData.subject}</div>
+                    <div><strong>Amount:</strong> $${invoiceData.totalAmount.toFixed(2)}</div>
+                    <div><strong>Status:</strong> <span style="color: #ff9800; font-weight: bold;">Pending Payment</span></div>
+                </div>
+            </div>
+            
+            <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; border-left: 4px solid #4caf50;">
+                <h4 style="margin: 0 0 10px 0; color: #2e7d32;">What happens next?</h4>
+                <ul style="margin: 0; padding-left: 20px; color: #666;">
+                    <li>Admin will review your invoice</li>
+                    <li>Payment will be processed within 5-7 business days</li>
+                    <li>You'll receive notification when payment is approved</li>
+                    <li>Check "Your Earnings" section for payment status</li>
+                </ul>
+            </div>
+            
+            <div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px;">
+                <strong><i class="fas fa-clock"></i> Expected Payment Timeline:</strong> 5-7 business days
+            </div>
+        </div>
+    `;
+}
+
+// Setup invoice success modal events
+function setupInvoiceSuccessModalEvents(modal, invoiceId) {
+    const closeBtn = modal.querySelector('.close-modal');
+    const closeActionBtn = modal.querySelector('#closeInvoiceSuccessBtn');
+    const viewBtn = modal.querySelector('#viewInvoiceBtn');
+    const printBtn = modal.querySelector('#printInvoiceBtn');
+    
+    // Close modal
+    closeBtn.addEventListener('click', () => modal.style.display = 'none');
+    closeActionBtn.addEventListener('click', () => modal.style.display = 'none');
+    
+    // View invoice details
+    viewBtn.addEventListener('click', () => viewInvoiceDetails(invoiceId));
+    
+    // Print invoice
+    printBtn.addEventListener('click', () => printInvoice(invoiceId));
+    
+    // Close on background click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+        }
+    });
+}
+
+// View invoice details
+async function viewInvoiceDetails(invoiceId) {
+    try {
+        // Navigate to earnings section or show detailed view
+        alert(`Invoice details for ${invoiceId} would be displayed here.`);
+        // In a full implementation, this would show a detailed invoice view
+    } catch (error) {
+        console.error("Error viewing invoice:", error);
+    }
+}
+
+// Print invoice for records
+function printInvoice(invoiceId) {
+    const printContent = document.getElementById('invoiceSuccessModalBody').innerHTML;
+    
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Invoice ${invoiceId} - Tutor Payment Request</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.4; }
+                @media print { 
+                    body { margin: 10mm; }
+                    .no-print { display: none; }
+                }
+                .header { text-align: center; margin-bottom: 20px; }
+                .summary { background: #f5f5f5; padding: 15px; margin: 15px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>Tutor Payment Request</h1>
+                <p>Invoice: ${invoiceId}</p>
+                <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            </div>
+            ${printContent}
+            <div class="no-print" style="text-align: center; margin-top: 20px;">
+                <button onclick="window.print()" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                    Print This Page
+                </button>
+            </div>
+        </body>
+        </html>
+    `);
+    
+    printWindow.document.close();
+}
+
+// Enhanced invoice calculations
+function setupInvoiceCalculations() {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const totalInput = document.getElementById('total');
+    
+    if (hoursInput && rateInput && totalInput) {
+        hoursInput.addEventListener('input', calculateInvoiceTotal);
+        rateInput.addEventListener('input', calculateInvoiceTotal);
+        
+        // Add validation
+        hoursInput.addEventListener('blur', validateHoursInput);
+        rateInput.addEventListener('blur', validateRateInput);
+        
+        calculateInvoiceTotal();
+    }
+}
+
+// Calculate invoice total
+function calculateInvoiceTotal() {
+    const hours = parseFloat(document.getElementById('hours').value) || 0;
+    const rate = parseFloat(document.getElementById('rate').value) || 0;
+    const total = hours * rate;
+    
+    document.getElementById('total').value = total.toFixed(2);
+}
+
+// Validate hours input
+function validateHoursInput(event) {
+    const hours = parseFloat(event.target.value);
+    if (!hours || hours <= 0) {
+        event.target.style.borderColor = 'var(--error)';
+        showInputError('hoursError', 'Please enter a valid number of hours (greater than 0).');
+    } else if (hours > 24) {
+        event.target.style.borderColor = 'var(--warning)';
+        showInputError('hoursError', 'Are you sure about this many hours? Maximum 24 hours per session.');
+    } else {
+        event.target.style.borderColor = '';
+        clearInputError('hoursError');
+    }
+}
+
+// Validate rate input
+function validateRateInput(event) {
+    const rate = parseFloat(event.target.value);
+    if (!rate || rate <= 0) {
+        event.target.style.borderColor = 'var(--error)';
+        showInputError('rateError', 'Please enter a valid hourly rate (greater than 0).');
+    } else if (rate > 1000) {
+        event.target.style.borderColor = 'var(--warning)';
+        showInputError('rateError', 'Please confirm this hourly rate with admin.');
+    } else {
+        event.target.style.borderColor = '';
+        clearInputError('rateError');
+    }
+}
+
+// Show input error message
+function showInputError(errorId, message) {
+    let errorElement = document.getElementById(errorId);
+    if (!errorElement) {
+        errorElement = document.createElement('div');
+        errorElement.id = errorId;
+        errorElement.className = 'input-error';
+        errorElement.style.cssText = 'color: var(--error); font-size: 0.8em; margin-top: 5px;';
+        
+        const input = document.getElementById(errorId.replace('Error', ''));
+        input.parentNode.appendChild(errorElement);
+    }
+    errorElement.textContent = message;
+}
+
+// Clear input error message
+function clearInputError(errorId) {
+    const errorElement = document.getElementById(errorId);
+    if (errorElement) {
+        errorElement.remove();
+    }
+}
+
+// Disable invoice form when no sessions available
+function disableInvoiceForm() {
+    const form = document.getElementById('invoiceForm');
+    const inputs = form.querySelectorAll('input, select, textarea, button');
+    
+    inputs.forEach(input => {
+        input.disabled = true;
+    });
+}
+
+// Enable invoice form when sessions are available
+function enableInvoiceForm() {
+    const form = document.getElementById('invoiceForm');
+    const inputs = form.querySelectorAll('input, select, textarea, button');
+    
+    inputs.forEach(input => {
+        input.disabled = false;
+    });
+}
+
+// Show invoice message
+function showInvoiceMessage(message) {
+    const messageElement = document.createElement('div');
+    messageElement.style.cssText = `
+        background: #e3f2fd;
+        color: #1565c0;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+        border-left: 4px solid #2196f3;
+    `;
+    messageElement.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
+    
+    const form = document.getElementById('invoiceForm');
+    form.insertBefore(messageElement, form.firstChild);
+}
+
+// Show invoice error message
+function showInvoiceError(message) {
+    // Remove existing error
+    const existingError = document.querySelector('.invoice-error');
+    if (existingError) {
+        existingError.remove();
+    }
+    
+    // Create error element
+    const errorElement = document.createElement('div');
+    errorElement.className = 'invoice-error';
+    errorElement.style.cssText = `
+        background: #fee;
+        color: var(--error);
+        padding: 10px 15px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+        border-left: 4px solid var(--error);
+    `;
+    errorElement.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${message}`;
+    
+    // Insert before form
+    const form = document.getElementById('invoiceForm');
+    form.insertBefore(errorElement, form.firstChild);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (errorElement.parentNode) {
+            errorElement.remove();
+        }
+    }, 5000);
+}
+
+// =============================================
+// INVOICE SESSION SECTION ENDS HERE
+// =============================================
+
+
+// =============================================
+// YOUR EARNINGS SECTION STARTS HERE
+// =============================================
+
+// Load earnings data (focused solely on financial aspects)
+async function loadEarningsData() {
+    try {
+        // Get only completed sessions (these are the ones that generate earnings)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', '==', 'completed')
+            .orderBy('date', 'desc')
+            .get();
+        
+        if (sessionsSnapshot.empty) {
+            displayEmptyEarningsState();
+            return;
+        }
+        
+        const earningsData = processEarningsData(sessionsSnapshot);
+        displayEarningsOverview(earningsData);
+        displayEarningsHistory(earningsData.completedSessions);
+        
+    } catch (error) {
+        console.error("Error loading earnings data:", error);
+        displayEarningsErrorState();
+    }
+}
+
+// Process earnings data from completed sessions
+function processEarningsData(sessionsSnapshot) {
+    const completedSessions = [];
+    let totalEarnings = 0;
+    let totalHours = 0;
+    let currentMonthEarnings = 0;
+    const currentMonth = new Date().getMonth();
+    const currentYear = new Date().getFullYear();
+    
+    sessionsSnapshot.forEach(doc => {
+        const session = doc.data();
+        session.id = doc.id;
+        
+        const sessionDate = session.date.toDate();
+        const duration = parseFloat(session.duration) || 1.5;
+        const hourlyRate = parseFloat(session.hourlyRate) || 40;
+        const sessionEarnings = duration * hourlyRate;
+        
+        // Check if session is in current month
+        if (sessionDate.getMonth() === currentMonth && sessionDate.getFullYear() === currentYear) {
+            currentMonthEarnings += sessionEarnings;
+        }
+        
+        totalEarnings += sessionEarnings;
+        totalHours += duration;
+        
+        completedSessions.push({
+            ...session,
+            sessionDate,
+            duration,
+            hourlyRate,
+            sessionEarnings
+        });
+    });
+    
+    const avgSessionEarnings = completedSessions.length > 0 ? totalEarnings / completedSessions.length : 0;
+    
+    return {
+        completedSessions,
+        totalSessions: completedSessions.length,
+        totalEarnings,
+        avgSessionEarnings,
+        totalHours,
+        currentMonthEarnings
+    };
+}
+
+// Display earnings overview
+function displayEarningsOverview(earningsData) {
+    // Update overview stats
+    document.getElementById('totalSessionsCount').textContent = earningsData.totalSessions;
+    document.getElementById('totalEarnings').textContent = `$${earningsData.totalEarnings.toFixed(2)}`;
+    document.getElementById('avgSessionEarnings').textContent = `$${earningsData.avgSessionEarnings.toFixed(2)}`;
+    document.getElementById('totalHours').textContent = earningsData.totalHours.toFixed(1);
+    
+    // Update main dashboard earnings stat
+    document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentMonthEarnings.toFixed(2)}`;
+}
+
+// Display earnings history table
+function displayEarningsHistory(completedSessions) {
+    const tableBody = document.getElementById('earningsTableBody');
+    const earningsTotal = document.getElementById('earningsTotal');
+    
+    if (completedSessions.length === 0) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 40px;">
+                    <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
+                    <p style="color: #666;">No earnings history yet. Completed sessions will appear here.</p>
+                </td>
+            </tr>
+        `;
+        earningsTotal.textContent = '$0.00';
+        return;
+    }
+    
+    let tableHTML = '';
+    let runningTotal = 0;
+    
+    completedSessions.forEach(session => {
+        runningTotal += session.sessionEarnings;
+        
+        tableHTML += `
+            <tr class="earning-row">
+                <td>${session.sessionDate.toLocaleDateString()}</td>
+                <td>${session.studentName || 'Unknown Student'}</td>
+                <td>${session.subject || 'General'}</td>
+                <td>${session.duration}h</td>
+                <td>$${session.hourlyRate}/h</td>
+                <td><strong>$${session.sessionEarnings.toFixed(2)}</strong></td>
+            </tr>
+        `;
+    });
+    
+    tableBody.innerHTML = tableHTML;
+    earningsTotal.textContent = `$${runningTotal.toFixed(2)}`;
+}
+
+// Display empty earnings state
+function displayEmptyEarningsState() {
+    document.getElementById('totalSessionsCount').textContent = '0';
+    document.getElementById('totalEarnings').textContent = '$0.00';
+    document.getElementById('avgSessionEarnings').textContent = '$0.00';
+    document.getElementById('totalHours').textContent = '0';
+    
+    const tableBody = document.getElementById('earningsTableBody');
+    tableBody.innerHTML = `
+        <tr>
+            <td colspan="6" style="text-align: center; padding: 40px;">
+                <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
+                <h4 style="color: #666; margin-bottom: 10px;">No Earnings Yet</h4>
+                <p style="color: #999;">Your earnings will appear here once you complete sessions with students.</p>
+            </td>
+        </tr>
+    `;
+}
+
+// Display earnings error state
+function displayEarningsErrorState() {
+    const tableBody = document.getElementById('earningsTableBody');
+    tableBody.innerHTML = `
+        <tr>
+            <td colspan="6" style="text-align: center; padding: 40px;">
+                <i class="fas fa-exclamation-triangle" style="font-size: 48px; color: #ffc107; margin-bottom: 15px;"></i>
+                <h4 style="color: #666; margin-bottom: 10px;">Error Loading Earnings</h4>
+                <p style="color: #999;">Please try refreshing the page or contact support if the problem continues.</p>
+            </td>
+        </tr>
+    `;
+}
+
+// =============================================
+// YOUR EARNINGS SECTION ENDS HERE
+// =============================================
+
+// =============================================
+// NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
+// =============================================
+
+// Global variables for notifications
+let notifications = [];
+let unreadCount = 0;
+
+// Initialize notification system with real data
+function initializeNotifications() {
+    setupNotificationBell();
+    loadRealNotifications();
+    startRealTimeNotificationListener();
+}
+
+// Setup notification bell click functionality
+function setupNotificationBell() {
+    const notificationBtn = document.querySelector('.notification-btn');
+    const notificationBadge = document.getElementById('notificationCount');
+    
+    if (notificationBtn) {
+        // Create notification dropdown
+        createNotificationDropdown();
+        
+        notificationBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            toggleNotificationDropdown();
+        });
+        
+        // Close dropdown when clicking elsewhere
+        document.addEventListener('click', function() {
+            closeNotificationDropdown();
+        });
+    }
+}
+
+// Create notification dropdown HTML
+function createNotificationDropdown() {
+    const existingDropdown = document.getElementById('notificationDropdown');
+    if (existingDropdown) {
+        existingDropdown.remove();
+    }
+    
+    const dropdown = document.createElement('div');
+    dropdown.id = 'notificationDropdown';
+    dropdown.className = 'notification-dropdown';
+    dropdown.style.cssText = `
+        position: absolute;
+        top: 50px;
+        right: 0;
+        width: 350px;
+        background: white;
+        border-radius: var(--border-radius);
+        box-shadow: var(--box-shadow-hover);
+        z-index: 2000;
+        display: none;
+        max-height: 400px;
+        overflow-y: auto;
+    `;
+    
+    dropdown.innerHTML = `
+        <div class="notification-header" style="padding: 15px; border-bottom: 1px solid var(--gray-light); display: flex; justify-content: space-between; align-items: center;">
+            <h4 style="margin: 0; color: var(--primary-dark);">Notifications</h4>
+            <div>
+                <button id="markAllReadBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px; margin-right: 5px;">Mark All Read</button>
+                <button id="clearNotificationsBtn" class="btn-outline" style="padding: 4px 8px; font-size: 12px;">Clear All</button>
+            </div>
+        </div>
+        <div class="notification-list" id="notificationList" style="padding: 10px;"></div>
+        <div class="notification-footer" style="padding: 10px; border-top: 1px solid var(--gray-light); text-align: center;">
+            <span style="color: var(--gray); font-size: 12px;" id="notificationFooterText">You're all caught up!</span>
+        </div>
+    `;
+    
+    document.body.appendChild(dropdown);
+    
+    // Add event listeners to dropdown buttons
+    document.getElementById('markAllReadBtn').addEventListener('click', markAllNotificationsAsRead);
+    document.getElementById('clearNotificationsBtn').addEventListener('click', clearAllNotifications);
+}
+
+// Toggle notification dropdown visibility
+function toggleNotificationDropdown() {
+    const dropdown = document.getElementById('notificationDropdown');
+    if (dropdown.style.display === 'block') {
+        dropdown.style.display = 'none';
+    } else {
+        dropdown.style.display = 'block';
+        updateNotificationDropdownContent();
+    }
+}
+
+// Close notification dropdown
+function closeNotificationDropdown() {
+    const dropdown = document.getElementById('notificationDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+}
+
+// Load real notifications from Firestore
+async function loadRealNotifications() {
+    // Add safety check at the beginning
+    if (!currentUser || !currentUser.uid) {
+        console.error("Cannot load notifications: User not authenticated");
+        showNotificationError("Please log in to view notifications");
+        return;
+    }
+    try {
+        // Load notifications from the notifications collection
+        const notificationsSnapshot = await db.collection('notifications')
+            .where('userId', '==', currentUser.uid)
+            .orderBy('createdAt', 'desc')
+            .limit(50)
+            .get();
+        
+        notifications = [];
+        
+        if (!notificationsSnapshot.empty) {
+            // Process each notification and enrich with session data
+            for (const doc of notificationsSnapshot.docs) {
+                const notification = doc.data();
+                notification.id = doc.id;
+                
+                // Enrich notification with session details if available
+                if (notification.relatedSessionId) {
+                    try {
+                        const sessionDoc = await db.collection('bookedSessions').doc(notification.relatedSessionId).get();
+                        if (sessionDoc.exists) {
+                            notification.sessionData = sessionDoc.data();
+                        }
+                    } catch (error) {
+                        console.error("Error loading session data:", error);
+                    }
+                }
+                
+                // Check for reschedule request status if it's a reschedule notification
+                if (notification.type === 'reschedule_request' && notification.relatedSessionId) {
+                    try {
+                        const rescheduleQuery = await db.collection('rescheduleRequests')
+                            .where('sessionId', '==', notification.relatedSessionId)
+                            .where('status', 'in', ['pending', 'accepted', 'declined'])
+                            .orderBy('requestedAt', 'desc')
+                            .limit(1)
+                            .get();
+                        
+                        if (!rescheduleQuery.empty) {
+                            notification.rescheduleData = rescheduleQuery.docs[0].data();
+                        }
+                    } catch (error) {
+                        console.error("Error loading reschedule data:", error);
+                    }
+                }
+                
+                notifications.push(notification);
+            }
+        }
+        
+        updateNotificationBadge();
+        
+    } catch (error) {
+        console.error("Error loading notifications:", error);
+        showNotificationError();
+    }
+}
+
+// Update notification badge count
+function updateNotificationBadge() {
+    const badge = document.getElementById('notificationCount');
+    unreadCount = notifications.filter(n => !n.isRead).length;
+    
+    if (badge) {
+        if (unreadCount > 0) {
+            badge.textContent = unreadCount > 9 ? '9+' : unreadCount.toString();
+            badge.style.display = 'inline-block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+    
+    // Also update the pending sessions count in sidebar if it exists
+    const pendingCountBadge = document.getElementById('pendingCount');
+    if (pendingCountBadge) {
+        const pendingNotifications = notifications.filter(n => 
+            !n.isRead && (n.type === 'session_request' || n.type === 'reschedule_request')
+        ).length;
+        
+        if (pendingNotifications > 0) {
+            pendingCountBadge.textContent = pendingNotifications > 9 ? '9+' : pendingNotifications.toString();
+            pendingCountBadge.style.display = 'inline-block';
+        } else {
+            pendingCountBadge.style.display = 'none';
+        }
+    }
+}
+
+// Update notification dropdown content with real data
+function updateNotificationDropdownContent() {
+    const notificationList = document.getElementById('notificationList');
+    const footerText = document.getElementById('notificationFooterText');
+    
+    if (notifications.length === 0) {
+        notificationList.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--gray);">
+                <i class="fas fa-bell-slash" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>No notifications yet</p>
+            </div>
+        `;
+        footerText.textContent = "You're all caught up!";
+        return;
+    }
+    
+    let notificationsHTML = '';
+    const unreadNotifications = notifications.filter(n => !n.isRead);
+    
+    notifications.forEach(notification => {
+        const timeAgo = getTimeAgo(notification.createdAt);
+        const isUnread = !notification.isRead;
+        
+        // Generate appropriate message based on notification type and data
+        const notificationMessage = generateNotificationMessage(notification);
+        
+        notificationsHTML += `
+            <div class="notification-item ${isUnread ? 'unread' : ''}" 
+                 data-notification-id="${notification.id}"
+                 data-notification-type="${notification.type}"
+                 data-session-id="${notification.relatedSessionId || ''}"
+                 style="padding: 12px; border-bottom: 1px solid var(--gray-light); cursor: pointer; transition: background 0.2s;">
+                <div style="display: flex; align-items: flex-start;">
+                    <div style="margin-right: 10px;">
+                        <div class="notification-icon" style="width: 32px; height: 32px; border-radius: 50%; background: ${getNotificationColor(notification.type)}; display: flex; align-items: center; justify-content: center; color: white;">
+                            <i class="${getNotificationIcon(notification.type)}"></i>
+                        </div>
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; color: var(--dark); margin-bottom: 4px;">${notification.title}</div>
+                        <div style="font-size: 0.9em; color: var(--gray); line-height: 1.4;">${notificationMessage}</div>
+                        <div style="font-size: 0.8em; color: var(--gray); margin-top: 5px;">${timeAgo}</div>
+                    </div>
+                    ${isUnread ? '<div class="unread-indicator" style="width: 8px; height: 8px; background: var(--accent); border-radius: 50%; margin-left: 10px;"></div>' : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    notificationList.innerHTML = notificationsHTML;
+    footerText.textContent = unreadNotifications.length > 0 ? 
+        `${unreadNotifications.length} unread notification${unreadNotifications.length !== 1 ? 's' : ''}` : 
+        "You're all caught up!";
+    
+    // Add click handlers to notification items
+    document.querySelectorAll('.notification-item').forEach(item => {
+        item.addEventListener('click', function() {
+            const notificationId = this.getAttribute('data-notification-id');
+            const notificationType = this.getAttribute('data-notification-type');
+            const sessionId = this.getAttribute('data-session-id');
+            handleNotificationClick(notificationId, notificationType, sessionId);
+        });
+    });
+}
+
+// Generate appropriate message based on notification type and data
+function generateNotificationMessage(notification) {
+    // Use the message from Firestore if available
+    if (notification.message) {
+        return notification.message;
+    }
+    
+    // Fallback messages based on type
+    switch(notification.type) {
+        case 'reschedule_request':
+            if (notification.rescheduleData) {
+                const status = notification.rescheduleData.status;
+                if (status === 'pending') {
+                    return 'A reschedule request is awaiting your response.';
+                } else if (status === 'accepted') {
+                    return 'Reschedule request has been accepted.';
+                } else if (status === 'declined') {
+                    return 'Reschedule request was declined.';
+                }
+            }
+            return 'There is a reschedule request for your session.';
+        
+        case 'session_request':
+            return 'You have a new session request waiting for confirmation.';
+        
+        case 'session_confirmed':
+            return 'Your session has been confirmed.';
+        
+        case 'session_cancelled':
+            return 'A session has been cancelled.';
+        
+        case 'payment_processed':
+            return 'Your payment has been processed successfully.';
+        
+        case 'invoice_submitted':
+            return 'Your invoice has been submitted for processing.';
+        
+        default:
+            return 'You have a new notification.';
+    }
+}
+
+// Handle notification click
+function handleNotificationClick(notificationId, notificationType, sessionId) {
+    const notification = notifications.find(n => n.id === notificationId);
+    
+    if (notification) {
+        // Mark as read
+        if (!notification.isRead) {
+            markNotificationAsRead(notificationId);
+        }
+        
+        // Handle notification based on type
+        switch(notificationType) {
+            case 'session_request':
+            case 'reschedule_request':
+                navigateToSection('tutoring-opportunities');
+                break;
+            
+            case 'session_confirmed':
+                navigateToSection('bookings');
+                break;
+            
+            case 'payment_processed':
+            case 'invoice_submitted':
+                navigateToSection('your-earnings');
+                break;
+            
+            case 'session_cancelled':
+                navigateToSection('sessions');
+                break;
+            
+            default:
+                // For other notifications, just close the dropdown
+                break;
+        }
+        
+        // Close dropdown after click
+        closeNotificationDropdown();
+    }
+}
+
+// Mark a notification as read
+async function markNotificationAsRead(notificationId) {
+    const notification = notifications.find(n => n.id === notificationId);
+    
+    if (notification && !notification.isRead) {
+        try {
+            // Update in Firestore
+            await db.collection('notifications').doc(notificationId).update({
+                isRead: true,
+                readAt: new Date()
+            });
+            
+            // Update local state
+            notification.isRead = true;
+            updateNotificationBadge();
+            updateNotificationDropdownContent();
+            
+        } catch (error) {
+            console.error("Error marking notification as read:", error);
+        }
+    }
+}
+
+// Mark all notifications as read
+async function markAllNotificationsAsRead() {
+    try {
+        const unreadNotifications = notifications.filter(n => !n.isRead);
+        
+        if (unreadNotifications.length === 0) {
+            return;
+        }
+        
+        // Update all in Firestore
+        const batch = db.batch();
+        unreadNotifications.forEach(notification => {
+            const notificationRef = db.collection('notifications').doc(notification.id);
+            batch.update(notificationRef, {
+                isRead: true,
+                readAt: new Date()
+            });
+        });
+        
+        await batch.commit();
+        
+        // Update local state
+        notifications.forEach(notification => {
+            notification.isRead = true;
+        });
+        
+        updateNotificationBadge();
+        updateNotificationDropdownContent();
+        
+    } catch (error) {
+        console.error("Error marking all notifications as read:", error);
+    }
+}
+
+// Clear all notifications
+async function clearAllNotifications() {
+    if (notifications.length === 0) {
+        return;
+    }
+    
+    if (confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) {
+        try {
+            // Delete all from Firestore
+            const batch = db.batch();
+            notifications.forEach(notification => {
+                const notificationRef = db.collection('notifications').doc(notification.id);
+                batch.delete(notificationRef);
+            });
+            
+            await batch.commit();
+            
+            // Clear local state
+            notifications = [];
+            updateNotificationBadge();
+            updateNotificationDropdownContent();
+            
+        } catch (error) {
+            console.error("Error clearing notifications:", error);
+        }
+    }
+}
+
+// Navigate to a specific section
+function navigateToSection(sectionId) {
+    // Find and click the corresponding menu item
+    const menuItem = document.querySelector(`.menu-item a[data-section="${sectionId}"]`);
+    if (menuItem) {
+        menuItem.click();
+    }
+}
+
+// Listen for new notifications in real-time
+function startRealTimeNotificationListener() {
+    // Listen for new notifications in Firestore
+    db.collection('notifications')
+        .where('userId', '==', currentUser.uid)
+        .orderBy('createdAt', 'desc')
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    // New notification added
+                    const notification = change.doc.data();
+                    notification.id = change.doc.id;
+                    
+                    // Check if this notification already exists
+                    const existingIndex = notifications.findIndex(n => n.id === notification.id);
+                    if (existingIndex === -1) {
+                        // Add to beginning of notifications array
+                        notifications.unshift(notification);
+                        
+                        // Update UI
+                        updateNotificationBadge();
+                        
+                        // Show toast notification for new unread alerts
+                        if (!notification.isRead && notification.priority === 'high') {
+                            showToastNotification(notification);
+                        }
+                    }
+                } else if (change.type === 'modified') {
+                    // Notification updated (e.g., marked as read)
+                    const updatedNotification = change.doc.data();
+                    updatedNotification.id = change.doc.id;
+                    
+                    const existingIndex = notifications.findIndex(n => n.id === updatedNotification.id);
+                    if (existingIndex !== -1) {
+                        notifications[existingIndex] = updatedNotification;
+                        updateNotificationBadge();
+                    }
+                } else if (change.type === 'removed') {
+                    // Notification deleted
+                    const removedId = change.doc.id;
+                    notifications = notifications.filter(n => n.id !== removedId);
+                    updateNotificationBadge();
+                }
+            });
+        });
+}
+
+// Show toast notification for important alerts
+function showToastNotification(notification) {
+    // Remove existing toast if any
+    const existingToast = document.querySelector('.notification-toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = 'notification-toast';
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: white;
+        padding: 15px;
+        border-radius: var(--border-radius-sm);
+        box-shadow: var(--box-shadow-hover);
+        z-index: 3000;
+        max-width: 300px;
+        border-left: 4px solid ${getNotificationColor(notification.type)};
+        animation: slideInRight 0.3s ease;
+    `;
+    
+    toast.innerHTML = `
+        <div style="display: flex; align-items: flex-start;">
+            <div style="margin-right: 10px; color: ${getNotificationColor(notification.type)};">
+                <i class="${getNotificationIcon(notification.type)}"></i>
+            </div>
+            <div style="flex: 1;">
+                <div style="font-weight: 600; margin-bottom: 5px;">${notification.title}</div>
+                <div style="font-size: 0.9em; color: var(--gray);">${generateNotificationMessage(notification)}</div>
+            </div>
+            <button class="close-toast" style="background: none; border: none; font-size: 16px; cursor: pointer; color: var(--gray); margin-left: 10px;">×</button>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // Add close button functionality
+    toast.querySelector('.close-toast').addEventListener('click', function() {
+        toast.remove();
+    });
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.remove();
+        }
+    }, 5000);
+}
+
+// Helper function to get time ago string
+function getTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - new Date(date);
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} min ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    
+    return new Date(date).toLocaleDateString();
+}
+
+// Helper function to get notification icon
+function getNotificationIcon(type) {
+    switch(type) {
+        case 'session_request': return 'fas fa-calendar-plus';
+        case 'session_confirmed': return 'fas fa-calendar-check';
+        case 'session_cancelled': return 'fas fa-calendar-times';
+        case 'payment_processed': return 'fas fa-dollar-sign';
+        case 'reschedule_request': return 'fas fa-clock';
+        case 'invoice_submitted': return 'fas fa-file-invoice';
+        default: return 'fas fa-bell';
+    }
+}
+
+// Helper function to get notification color
+function getNotificationColor(type) {
+    switch(type) {
+        case 'session_request': return 'var(--warning)';
+        case 'session_confirmed': return 'var(--success)';
+        case 'session_cancelled': return 'var(--error)';
+        case 'payment_processed': return 'var(--primary)';
+        case 'reschedule_request': return 'var(--accent)';
+        case 'invoice_submitted': return 'var(--success-light)';
+        default: return 'var(--gray)';
+    }
+}
+
+// Show error state
+function showNotificationError() {
+    const notificationList = document.getElementById('notificationList');
+    if (notificationList) {
+        notificationList.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--error);">
+                <i class="fas fa-exclamation-triangle" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>Error loading notifications</p>
+                <button onclick="loadRealNotifications()" class="btn-outline" style="margin-top: 10px;">Try Again</button>
+            </div>
+        `;
+    }
+}
+
+// Add CSS animation for toast
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideInRight {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .notification-item:hover {
+        background: var(--gray-light);
+    }
+    
+    .notification-item.unread {
+        background: rgba(67, 97, 238, 0.05);
+    }
+`;
+document.head.appendChild(style);
+
+// Initialize notification system when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Wait for Firebase auth to be ready and user to be logged in
+    const checkAuth = setInterval(() => {
+        if (typeof db !== 'undefined' && currentUser && currentUser.uid) {
+            clearInterval(checkAuth);
+            initializeNotifications();
+        }
+    }, 100);
+    
+    // Fallback timeout
+    setTimeout(() => {
+        if (currentUser && currentUser.uid) {
+            initializeNotifications();
+        } else {
+            console.warn("Notifications not initialized - user not authenticated");
+        }
+    }, 3000);
+});
+       
+// =============================================
+// NOTIFICATION BELL FUNCTIONALITY ENDS HERE
+// =============================================
        
 </script>    
 </body>
 </html>
-
-
-
-
-
-
-
-
 
