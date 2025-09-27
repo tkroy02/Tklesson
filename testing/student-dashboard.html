@@ -2124,10 +2124,27 @@ document.querySelectorAll('.tab').forEach(tab => {
 //..........................................................................................
 
 //........................................................................................... 
-//My Bookings Section starts here. All JS functionalities of MJy Bookings section starts here
+//My Bookings Section starts here. All JS functionalities of My Bookings section starts here
 //............................................................................................
 
-//Count the number of upcoming sessions and show on the display dashboard
+// Helper function to get CSS class for status badges
+function getStatusClass(status) {
+    switch(status) {
+        case 'confirmed':
+        case 'completed':
+            return 'status-verified';
+        case 'pending':
+            return 'status-pending';
+        case 'cancelled':
+            return 'status-cancelled';
+        case 'reschedule_requested':
+            return 'status-reschedule-requested';
+        default:
+            return 'status-pending';
+    }
+}
+
+// Count the number of upcoming sessions and show on the display dashboard
 function updateUpcomingSessionsCount(count) {
     const countElement = document.getElementById('upcomingSessionsCount');
     if (countElement) {
@@ -2135,54 +2152,113 @@ function updateUpcomingSessionsCount(count) {
     }
 }
 
-// LoadUserBookings function that uses the proper structure:
-function loadUserBookings() {
-    const userId = auth.currentUser.uid;
-    
-    // Query upcoming bookings including reschedule requests
-    db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
-        .where('date', '>=', new Date())
-        .orderBy('date', 'asc')
-        .get()
-        .then((querySnapshot) => {
-            updateUpcomingSessionsCount(querySnapshot.size);
-            
-            // For each booking, check if there's a pending reschedule request
-            const bookingPromises = querySnapshot.docs.map(async (doc) => {
-                const booking = doc.data();
-                const bookingId = doc.id;
-                
-                // Check for pending reschedule requests
-                const rescheduleQuery = await db.collection('rescheduleRequests')
-                    .where('sessionId', '==', bookingId)
-                    .where('status', '==', 'pending')
-                    .get();
-                
-                return {
-                    id: bookingId,
-                    ...booking,
-                    hasPendingReschedule: !rescheduleQuery.empty,
-                    rescheduleRequest: rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data()
-                };
-            });
-            
-            return Promise.all(bookingPromises);
+// Cancel a booking function
+function cancelBooking(bookingId) {
+    if (confirm('Are you sure you want to cancel this booking?')) {
+        // Update the booking status to cancelled
+        db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: new Date()
         })
-        .then((bookingsWithRescheduleInfo) => {
-            loadBookingsDisplay(bookingsWithRescheduleInfo);
+        .then(() => {
+            alert('Booking cancelled successfully.');
+            // Reload the bookings
+            loadUserBookings();
         })
         .catch((error) => {
-            console.error('Error loading booked sessions:', error);
-            const container = document.getElementById('bookingsContainer');
-            if (container) {
-                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+            console.error('Error cancelling booking:', error);
+            alert('Failed to cancel booking. Please try again.');
+        });
+    }
+}
+
+// Join session function with Jitsi Meet
+function joinSession(sessionId) {
+    console.log('Attempting to join session:', sessionId);
+
+    // Validate session ID format
+    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+        alert('Invalid session ID.');
+        return;
+    }
+
+    db.collection('bookedSessions').doc(sessionId).get()
+        .then((doc) => {
+            if (!doc.exists) {
+                alert('Session not found.');
+                return;
             }
+
+            const session = doc.data();
+            const now = new Date();
+            const sessionTime = session.date && typeof session.date.toDate === 'function' ? session.date.toDate() : new Date(session.date);
+
+            // Check if session is confirmed
+            if (session.status !== 'confirmed') {
+                alert('This session has not been confirmed yet. Please wait for tutor confirmation.');
+                return;
+            }
+
+            // Allow joining 15 minutes before and up to 4 hours after session
+            const minutesUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60);
+
+            if (minutesUntilSession > 15) {
+                alert(`Session starts in ${Math.ceil(minutesUntilSession)} minutes. You can join 15 minutes before the session.`);
+                return;
+            } else if (minutesUntilSession < -240) {
+                alert('This session ended more than 4 hours ago. Joining is no longer available.');
+                return;
+            }
+
+            // Generate Jitsi Meet link if not already present
+            let meetingLink = session.meetingLink;
+            if (!meetingLink) {
+                const roomName = generateMeetId(); // This will use your existing function
+                meetingLink = `https://meet.jit.si/${encodeURIComponent(roomName)}`;
+
+                // Save the generated link to Firestore
+                db.collection('bookedSessions').doc(sessionId).update({ meetingLink })
+                    .then(() => console.log('Meeting link saved:', meetingLink))
+                    .catch(err => console.error('Error saving meeting link:', err));
+            }
+
+            // Validate URL before opening
+            try {
+                const url = new URL(meetingLink);
+                if (url.protocol === 'https:') {
+                    window.open(meetingLink, '_blank', 'noopener,noreferrer');
+                } else {
+                    alert('Invalid meeting link.');
+                }
+            } catch (e) {
+                alert('Invalid meeting link.');
+            }
+        })
+        .catch(err => {
+            console.error('Error joining session:', err);
+            alert('Failed to join session. Please try again.');
         });
 }
 
-// Function for reschedule response - CORRECTED VERSION
+// Record join attempt in Firestore
+function recordJoinAttempt(sessionId, userId) {
+    const joinData = {
+        userId: userId,
+        joinedAt: new Date(),
+        userAgent: navigator.userAgent,
+        platform: navigator.platform
+    };
+    
+    db.collection('bookedSessions').doc(sessionId).collection('joinAttempts').add(joinData)
+        .then(() => {
+            console.log('Join attempt recorded for session:', sessionId);
+        })
+        .catch((error) => {
+            console.error('Error recording join attempt:', error);
+        });
+}
+
+// Function for reschedule response
 function respondToReschedule(bookingId, response) {
     if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
         return;
@@ -2256,10 +2332,17 @@ function loadBookingsDisplay(bookings) {
     }
     
     let html = '';
+    const now = new Date();
+    
     bookings.forEach(booking => {
         const date = booking.date.toDate();
         const formattedDate = date.toLocaleDateString();
         const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Calculate if session can be joined (15 minutes before to 30 minutes after end)
+        const sessionEndTime = new Date(date.getTime() + (booking.duration * 60 * 60 * 1000));
+        const canJoin = now >= new Date(date.getTime() - 15 * 60 * 1000) && 
+                       now <= new Date(sessionEndTime.getTime() + 30 * 60 * 1000);
         
         // Sanitize all user inputs to prevent XSS
         const subject = booking.subject || 'No subject';
@@ -2321,8 +2404,10 @@ function loadBookingsDisplay(bookings) {
                          <button class="btn-danger" data-session-id="${sanitizedId}" data-action="decline-reschedule">Decline Reschedule</button>` :
                         `<button class="btn-outline" data-session-id="${sanitizedId}" data-action="cancel">Cancel</button>`
                     }
-                    ${date.getTime() - Date.now() > -240*60*60*1000 ? // allow 4 hrs after session for join
-                        `<button class="btn-primary" data-session-id="${sanitizedId}" data-action="join">Join Session</button>` : ''}
+                    ${canJoin && booking.status === 'confirmed' ? 
+                        `<button class="btn-primary" data-session-id="${sanitizedId}" data-action="join">
+                            <i class="fas fa-video"></i> Join Session
+                         </button>` : ''}
                 </div>
             </div>
         `;
@@ -2358,132 +2443,73 @@ function loadBookingsDisplay(bookings) {
                 break;
         }
     });
-
-  // Helper function to get CSS class for status badges
-function getStatusClass(status) {
-    switch(status) {
-        case 'confirmed':
-        case 'completed':
-            return 'status-verified';
-        case 'pending':
-            return 'status-pending';
-        case 'cancelled':
-            return 'status-cancelled';
-        case 'reschedule_requested':
-            return 'status-reschedule-requested';
-        default:
-            return 'status-pending';
-    }
 }
 
-// Cancel a booking function (make sure this exists)
-function cancelBooking(bookingId) {
-    if (confirm('Are you sure you want to cancel this booking?')) {
-        // Update the booking status to cancelled
-        db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: new Date()
+// LoadUserBookings function that uses the proper structure:
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
+    
+    // Query upcoming bookings including reschedule requests
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .where('date', '>=', new Date())
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            updateUpcomingSessionsCount(querySnapshot.size);
+            
+            // For each booking, check if there's a pending reschedule request
+            const bookingPromises = querySnapshot.docs.map(async (doc) => {
+                const booking = doc.data();
+                const bookingId = doc.id;
+                
+                // Check for pending reschedule requests
+                const rescheduleQuery = await db.collection('rescheduleRequests')
+                    .where('sessionId', '==', bookingId)
+                    .where('status', '==', 'pending')
+                    .get();
+                
+                return {
+                    id: bookingId,
+                    ...booking,
+                    hasPendingReschedule: !rescheduleQuery.empty,
+                    rescheduleRequest: rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data()
+                };
+            });
+            
+            return Promise.all(bookingPromises);
         })
-        .then(() => {
-            alert('Booking cancelled successfully.');
-            // Reload the bookings
-            loadUserBookings();
+        .then((bookingsWithRescheduleInfo) => {
+            loadBookingsDisplay(bookingsWithRescheduleInfo);
         })
         .catch((error) => {
-            console.error('Error cancelling booking:', error);
-            alert('Failed to cancel booking. Please try again.');
+            console.error('Error loading booked sessions:', error);
+            const container = document.getElementById('bookingsContainer');
+            if (container) {
+                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+            }
         });
-    }
 }
 
-
-// Join session function with Jitsi Meet (add this only)
-function joinSession(sessionId) {
-    console.log('Attempting to join session:', sessionId);
-
-    // Validate session ID format
-    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
-        alert('Invalid session ID.');
-        return;
-    }
-
-    db.collection('bookedSessions').doc(sessionId).get()
-        .then((doc) => {
-            if (!doc.exists) {
-                alert('Session not found.');
-                return;
-            }
-
-            const session = doc.data();
-            const now = new Date();
-            const sessionTime = session.date && typeof session.date.toDate === 'function' ? session.date.toDate() : new Date(session.date);
-
-            // Allow joining 15 minutes before and up to 4 hours after session
-            const minutesUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60);
-
-            if (minutesUntilSession > 15) {
-                alert(`Session starts in ${Math.ceil(minutesUntilSession)} minutes. You can join 15 minutes before the session.`);
-                return;
-            } else if (minutesUntilSession < -240) {
-                alert('This session ended more than 4 hours ago. Joining is no longer available.');
-                return;
-            }
-
-            // Generate Jitsi Meet link if not already present
-            let meetingLink = session.meetingLink;
-            if (!meetingLink) {
-                const roomName = generateMeetId(); // This will use your existing function
-                meetingLink = `https://meet.jit.si/${encodeURIComponent(roomName)}`;
-
-                // Save the generated link to Firestore
-                db.collection('bookedSessions').doc(sessionId).update({ meetingLink })
-                    .then(() => console.log('Meeting link saved:', meetingLink))
-                    .catch(err => console.error('Error saving meeting link:', err));
-            }
-
-            // Validate URL before opening
-            try {
-                const url = new URL(meetingLink);
-                if (url.protocol === 'https:') {
-                    window.open(meetingLink, '_blank', 'noopener,noreferrer');
-                } else {
-                    alert('Invalid meeting link.');
-                }
-            } catch (e) {
-                alert('Invalid meeting link.');
-            }
-        })
-        .catch(err => {
-            console.error('Error joining session:', err);
-            alert('Failed to join session. Please try again.');
-        });
-}  
-
-            // Check if session is confirmed
-            if (session.status !== 'confirmed') {
-                alert('This session has not been confirmed yet. Please wait for tutor confirmation.');
-                return;
-            }
-
-      // Record join attempt in Firestore (add this function)
-function recordJoinAttempt(sessionId, userId) {
-    const joinData = {
-        userId: userId,
-        joinedAt: new Date(),
-        userAgent: navigator.userAgent,
-        platform: navigator.platform
+// Show notification when session is confirmed
+function showSessionConfirmedNotification(session) {
+    const notification = {
+        title: 'Session Confirmed!',
+        message: `Your ${session.subject} session with ${session.tutorName} has been confirmed.`,
+        type: 'session_confirmed',
+        sessionId: session.id
     };
     
-    db.collection('bookedSessions').doc(sessionId).collection('joinAttempts').add(joinData)
-        .then(() => {
-            console.log('Join attempt recorded for session:', sessionId);
-        })
-        .catch((error) => {
-            console.error('Error recording join attempt:', error);
-        });
+    // Use your notification system or show a simple alert
+    if (window.notificationSystem) {
+        window.notificationSystem.showToastNotification(notification);
+    } else {
+        alert(notification.message);
+    }
 }
 
-// Call this when user loads the bookings page
+// Setup session listeners
 function setupSessionListeners() {
     const userId = auth.currentUser.uid;
     
@@ -2507,44 +2533,24 @@ function setupSessionListeners() {
         });
 }
 
-// Call this when user leaves the page
+// Cleanup session listeners
 function cleanupSessionListeners() {
     if (window.sessionListenerUnsubscribe) {
         window.sessionListenerUnsubscribe();
         window.sessionListenerUnsubscribe = null;
     }
 }
-// Call this in your page load logic:
-// setupSessionListeners();
 
- // When page loads
+// Event listeners for page lifecycle
 document.addEventListener('DOMContentLoaded', function() {
     if (auth.currentUser) {
         setupSessionListeners();
     }
 });
 
-// When leaving page
 window.addEventListener('beforeunload', cleanupSessionListeners);
 
-// Show notification when session is confirmed
-function showSessionConfirmedNotification(session) {
-    const notification = {
-        title: 'Session Confirmed!',
-        message: `Your ${session.subject} session with ${session.tutorName} has been confirmed.`,
-        type: 'session_confirmed',
-        sessionId: session.id
-    };
-    
-    // Use your notification system or show a simple alert
-    if (window.notificationSystem) {
-        window.notificationSystem.showToastNotification(notification);
-    } else {
-        alert(notification.message);
-    }
-}
-
-  // Initialize session listeners when dashboard loads
+// Initialize session listeners when dashboard loads
 auth.onAuthStateChanged((user) => {
     if (user) {
         currentUser = user;
@@ -2557,98 +2563,6 @@ auth.onAuthStateChanged((user) => {
     }
 });
 
-
-// Update the loadBookingsDisplay function to use the enhanced data:
-function loadBookingsDisplay(bookings) {
-    const container = document.getElementById('bookingsContainer');
-    if (!container) return;
-    
-    if (bookings.length === 0) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
-        return;
-    }
-    
-    let html = '';
-    const now = new Date();
-    
-    bookings.forEach(booking => {
-        const date = booking.date.toDate();
-        const formattedDate = date.toLocaleDateString();
-        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
-        // Calculate if session can be joined (15 minutes before to 30 minutes after end)
-        const sessionEndTime = new Date(date.getTime() + (booking.duration * 60 * 60 * 1000));
-        const canJoin = now >= new Date(date.getTime() - 15 * 60 * 1000) && 
-                       now <= new Date(sessionEndTime.getTime() + 30 * 60 * 1000);
-        
-        // Check if there's a pending reschedule with proposed new date
-        let rescheduleInfo = '';
-        if (booking.hasPendingReschedule && booking.rescheduleRequest) {
-            const newDate = booking.rescheduleRequest.requestedDate.toDate();
-            const newFormattedDate = newDate.toLocaleDateString();
-            const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            
-            rescheduleInfo = `
-                <div class="session-detail" style="color: var(--warning); font-weight: 500;">
-                    <i class="fas fa-exchange-alt"></i>
-                    <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-comment"></i>
-                    <span>Reason: ${booking.rescheduleRequest.reason || 'No reason provided'}</span>
-                </div>
-            `;
-        }
-        
-        html += `
-            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${booking.id}">
-                <div class="session-header">
-                    <div class="session-title">${booking.subject || 'No subject'}</div>
-                    <div class="session-date">${formattedDate} at ${formattedTime}</div>
-                </div>
-                <div class="session-details">
-                    <div class="session-detail">
-                        <i class="fas fa-user-tie"></i>
-                        <span>Tutor: ${booking.tutorName || 'Unknown'}</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-clock"></i>
-                        <span>Duration: ${booking.duration || '1'} hours</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-video"></i>
-                        <span>Type: ${booking.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
-                    </div>
-                    <div class="session-detail">
-                        <i class="fas fa-hourglass-half"></i>
-                        <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${booking.status}</span></span>
-                    </div>
-                    ${booking.meetLink && booking.sessionType === 'online' ? `
-                    <div class="session-detail">
-                        <i class="fas fa-link"></i>
-                        <span>Meeting: ${booking.meetCreated ? 'Ready' : 'Pending'}</span>
-                    </div>
-                    ` : ''}
-                    ${rescheduleInfo}
-                </div>
-                <div class="session-actions">
-                    ${booking.hasPendingReschedule ? 
-                        `<button class="btn-success" onclick="respondToReschedule('${booking.id}', 'accept')">Accept Reschedule</button>
-                         <button class="btn-danger" onclick="respondToReschedule('${booking.id}', 'decline')">Decline Reschedule</button>` :
-                        `<button class="btn-outline" onclick="cancelBooking('${booking.id}')">Cancel</button>`
-                    }
-                    ${canJoin && booking.status === 'confirmed' ? 
-                        `<button class="btn-primary" onclick="joinSession('${booking.id}')">
-                            <i class="fas fa-video"></i> Join Session
-                         </button>` : ''}
-                </div>
-            </div>
-        `;
-    });
-    
-    container.innerHTML = html;
-}
-
 //............................................................................................... 
 //My Bookings Section ends here. All JS functionalities of the My Bookings section ends here
 //...............................................................................................
@@ -2657,6 +2571,7 @@ function loadBookingsDisplay(bookings) {
 </script>    
 </body>
 </html>
+
 
 
 
