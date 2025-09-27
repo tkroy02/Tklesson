@@ -2598,505 +2598,446 @@ const testBookingHtml = booking.status === 'confirmed' ?
 //...............................................................................................
 
 
-//...............................................................................................
-// Sessions History Section starts here. All JS functionalities of the Sessions History section starts here
-//...............................................................................................
+// Global variables for pagination
+let lastVisibleDoc = null;
+let hasMoreSessions = true;
 
-// Global variables for sessions history - MOVE THESE TO THE TOP OF YOUR SCRIPT SECTION
-let sessionsHistory = [];
-let sessionsLastVisible = null;
-let sessionsLoading = false;
-let sessionsHasMore = true;
-const SESSIONS_PAGE_SIZE = 10;
-
-// Setup profile editing functionality - ADD THIS FUNCTION
-function setupProfileEditing() {
-    const editProfileBtn = document.getElementById('editProfileBtn');
-    const profileForm = document.getElementById('profileForm');
-    const saveProfileBtn = document.getElementById('saveProfileBtn');
-    
-    if (editProfileBtn && profileForm && saveProfileBtn) {
-        editProfileBtn.addEventListener('click', function() {
-            if (profileForm.style.display === 'none' || !profileForm.style.display) {
-                profileForm.style.display = 'block';
-                this.textContent = 'Cancel Editing';
-            } else {
-                profileForm.style.display = 'none';
-                this.textContent = 'Edit Profile';
-            }
-        });
-        
-        saveProfileBtn.addEventListener('click', saveProfile);
-    }
-}
-
-// Initialize session history functionality
-function initSessionHistory() {
-    setupSessionHistoryFilters();
-    setupLoadMoreButton();
-}
-
-// Set up filter event listeners
-function setupSessionHistoryFilters() {
-    const historyFilter = document.getElementById('historyFilter');
-    const actionTypeFilter = document.getElementById('actionTypeFilter');
-    
-    if (historyFilter) {
-        historyFilter.addEventListener('change', () => {
-            sessionsLoaded = false;
-            loadUserSessionHistory();
-        });
-    }
-    
-    if (actionTypeFilter) {
-        actionTypeFilter.addEventListener('change', () => {
-            const actionFilter = actionTypeFilter.value;
-            let filteredSessions = sessionsHistory;
-            
-            if (actionFilter !== 'all') {
-                filteredSessions = sessionsHistory.filter(session => 
-                    session.history && session.history.some(entry => entry.action === actionFilter)
-                );
-            }
-            
-            displaySessionsHistory(filteredSessions);
-        });
-    }
-}
-
-// Set up load more button
-function setupLoadMoreButton() {
-    const loadMoreBtn = document.getElementById('loadMoreBtn');
-    if (loadMoreBtn) {
-        loadMoreBtn.addEventListener('click', loadSessionsBatch);
-    }
-}
-
-// Load user session history
-function loadUserSessionHistory() {
+// Function to load sessions with pagination
+function loadSessions(limit = 10, loadMore = false) {
     const container = document.getElementById('sessionsContainer');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
     
-    if (!container) return;
-    
-    // Reset state for new filter
-    sessionsHistory = [];
-    sessionsLastVisible = null;
-    sessionsHasMore = true;
-    
-    container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-    if (loadMoreBtn) loadMoreBtn.style.display = 'none';
-    
-    loadSessionsBatch();
-}
+    if (!container) {
+        console.error('sessionsContainer element not found');
+        return;
+    }
 
-// Load a batch of sessions with filtering
-function loadSessionsBatch() {
-    if (sessionsLoading || !sessionsHasMore) return;
-    
-    sessionsLoading = true;
-    const container = document.getElementById('sessionsContainer');
-    const loadMoreBtn = document.getElementById('loadMoreBtn');
-    
-    if (!container) return;
-    
-    // Show loading state
-    if (sessionsHistory.length === 0) {
+
+// Check if Firebase is available
+    if (typeof db === 'undefined' || typeof auth === 'undefined') {
+        console.error('Firebase not initialized');
+        container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-triangle"></i><h3>System Error</h3><p>Please refresh the page.</p></div>';
+        return;
+
+// Check if user is authenticated
+    if (!auth.currentUser) {
+        container.innerHTML = '<div class="error-state"><i class="fas fa-user"></i><h3>Authentication Required</h3><p>Please log in to view session history.</p></div>';
+        return;
+    }
+
+      if (!loadMore) {
         container.innerHTML = '<div class="spinner" id="sessionsSpinner"></div>';
-    } else if (loadMoreBtn) {
-        loadMoreBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
-        loadMoreBtn.disabled = true;
+        lastVisibleDoc = null;
+        hasMoreSessions = true;
+        if (loadMoreBtn) loadMoreBtn.style.display = 'none';
     }
-    
-    const userId = auth.currentUser.uid;
-    let query = db.collection('bookedSessions')
-        .where('studentId', '==', userId)
-        .orderBy('date', 'desc');
-    
-    // Apply date filter
-    const dateFilter = document.getElementById('historyFilter').value;
-    let startDate = new Date();
-    
-    switch (dateFilter) {
-        case 'month':
-            startDate.setMonth(startDate.getMonth() - 1);
-            break;
-        case '3months':
-            startDate.setMonth(startDate.getMonth() - 3);
-            break;
-        case 'year':
-            startDate.setFullYear(startDate.getFullYear() - 1);
-            break;
-        case 'all':
-        default:
-            startDate = new Date(0);
-            break;
-    }
-    
-    query = query.where('date', '>=', startDate);
-    
-    // Apply pagination
-    if (sessionsLastVisible) {
-        query = query.startAfter(sessionsLastVisible);
-    }
-    
-    query = query.limit(SESSIONS_PAGE_SIZE);
-    
-    query.get()
-        .then((querySnapshot) => {
-            sessionsLoading = false;
-            
-            if (querySnapshot.empty) {
-                if (sessionsHistory.length === 0) {
-                    container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t completed any sessions yet.</p></div>';
-                }
-                sessionsHasMore = false;
-                if (loadMoreBtn) loadMoreBtn.style.display = 'none';
-                return;
-            }
-            
-            // Store the last document for pagination
-            sessionsLastVisible = querySnapshot.docs[querySnapshot.docs.length - 1];
-            
-            // Process sessions
-            const sessionPromises = querySnapshot.docs.map(async (doc) => {
-                const session = doc.data();
-                const sessionId = doc.id;
-                
-                // Get session history/audit trail
-                const history = await getSessionHistory(sessionId);
-                
-                return {
-                    id: sessionId,
-                    ...session,
-                    history: history || []
-                };
-            });
-            
-            return Promise.all(sessionPromises);
-        })
-        .then((sessionsWithHistory) => {
-            if (!sessionsWithHistory) return;
-            
-            sessionsHistory = sessionsHistory.concat(sessionsWithHistory);
-            
-            // Apply action type filter
-            const actionFilter = document.getElementById('actionTypeFilter').value;
-            let filteredSessions = sessionsHistory;
-            
-            if (actionFilter !== 'all') {
-                filteredSessions = sessionsHistory.filter(session => 
-                    session.history && session.history.some(entry => entry.action === actionFilter)
-                );
-            }
-            
-            displaySessionsHistory(filteredSessions);
-            
-            // Show/hide load more button
-            if (loadMoreBtn) {
-                if (sessionsHasMore) {
-                    loadMoreBtn.style.display = 'block';
-                    loadMoreBtn.innerHTML = '<i class="fas fa-chevron-down"></i> Load More Sessions';
-                    loadMoreBtn.disabled = false;
-                } else {
-                    loadMoreBtn.style.display = 'none';
-                }
-            }
-        })
-        .catch((error) => {
-            sessionsLoading = false;
-            console.error('Error loading session history:', error);
-            const container = document.getElementById('sessionsContainer');
-            if (container) {
-                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading History</h3><p>Failed to load your session history. Please try again later.</p></div>';
-            }
-        });
-}
 
-// Get session history/audit trail from sessionHistory subcollection
-async function getSessionHistory(sessionId) {
-    try {
-        const historySnapshot = await db.collection('bookedSessions')
-            .doc(sessionId)
-            .collection('sessionHistory')
-            .orderBy('timestamp', 'asc')
-            .get();
-            
-        if (historySnapshot.empty) {
-            return [];
+
+          // Use the actual collection name 'bookedSessions'
+    let query = db.collection('bookedSessions')
+        .where('studentId', '==', auth.currentUser.uid)
+        .orderBy('date', 'desc')
+        .limit(limit);
+
+
+          if (loadMore && lastVisibleDoc) {
+        query = query.startAfter(lastVisibleDoc);
+    }
+
+          query.get().then(snapshot => {
+        if (snapshot.empty) {
+            if (!loadMore) {
+                container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
+            }
+            hasMoreSessions = false;
+            if (loadMoreBtn) loadMoreBtn.style.display = 'none';
+            return;
+        }
+
+
+            lastVisibleDoc = snapshot.docs[snapshot.docs.length - 1];
+        
+        if (loadMore) {
+            appendSessionHistory(snapshot);
+        } else {
+            loadSessionHistory(snapshot);
         }
         
-        return historySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            timestamp: doc.data().timestamp?.toDate() || new Date()
-        }));
-    } catch (error) {
-        console.error('Error getting session history:', error);
-        return [];
+        // Show/hide load more button
+        if (snapshot.size < limit) {
+            hasMoreSessions = false;
+            if (loadMoreBtn) loadMoreBtn.style.display = 'none';
+        } else {
+            if (loadMoreBtn) loadMoreBtn.style.display = 'block';
+        }
+
+
+            // Apply filters after loading
+        setupHistoryFilters();
+    }).catch(error => {
+        console.error('Error loading sessions:', error);
+        container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-triangle"></i><h3>Error Loading Sessions</h3><p>Please try again later.</p></div>';
+    });
+}
+
+// Main function that's being called from HTML
+function loadUserSessionHistory() {
+    console.log('loadUserSessionHistory called - loading sessions...');
+    loadSessions();
+}
+
+// Helper function to get CSS class for status badges
+function getStatusClass(status) {
+    switch(status) {
+        case 'confirmed':
+        case 'completed':
+            return 'status-verified';
+        case 'pending':
+            return 'status-pending';
+        case 'cancelled':
+            return 'status-cancelled';
+        case 'reschedule_requested':
+            return 'status-reschedule-requested';
+        default:
+            return 'status-pending';
     }
 }
 
-// Display sessions history in a table
-function displaySessionsHistory(sessions) {
+
+  // Helper function to determine action timestamp and type
+function getActionTimestamp(session) {
+  let actionTime = new Date();
+  let actionType = 'Unknown';
+  
+  // Determine the most meaningful action based on available timestamps
+  if (session.cancelledAt) {
+    actionTime = session.cancelledAt.toDate();
+    // Determine who cancelled
+    if (session.cancelledBy === 'student') {
+      actionType = 'Student Cancelled';
+    } else if (session.cancelledBy === 'tutor') {
+      actionType = 'Tutor Cancelled';
+    } else {
+      actionType = 'Cancelled';
+    }
+  } else if (session.completedAt) {
+    actionTime = session.completedAt.toDate();
+    actionType = 'Completed';
+  } else if (session.rescheduleAcceptedAt) {
+    actionTime = session.rescheduleAcceptedAt.toDate();
+    actionType = 'Rescheduled';
+  } else if (session.rescheduleRequestedAt) {
+    actionTime = session.rescheduleRequestedAt.toDate();
+    // Determine who requested reschedule
+    if (session.rescheduleRequestedBy === 'tutor') {
+      actionType = 'Tutor Reschedule Request';
+    } else if (session.rescheduleRequestedBy === 'student') {
+      actionType = 'Student Reschedule Request';
+    } else {
+      actionType = 'Reschedule Requested';
+    }
+  } else if (session.confirmedAt) {
+    actionTime = session.confirmedAt.toDate();
+    // SIMPLIFIED: If confirmedAt exists, it's Tutor Confirmed
+    // (since only tutors confirm sessions in your system)
+    actionType = 'Tutor Confirmed';
+  } else if (session.bookedAt) {
+    actionTime = session.bookedAt.toDate();
+    actionType = 'Student Booked';
+  } else {
+    actionTime = session.date.toDate();
+    actionType = 'Scheduled';
+  }
+  
+  return { actionTime, actionType };
+}
+
+
+  // Update the getActionTypeClass function
+function getActionTypeClass(actionType) {
+  switch(actionType.toLowerCase()) {
+    case 'student booked':
+    case 'tutor confirmed':
+    case 'student confirmed':
+    case 'auto-confirmed':
+    case 'completed':
+      return 'status-verified';
+    case 'student cancelled':
+    case 'tutor cancelled':
+    case 'cancelled':
+      return 'status-pending';
+    case 'tutor reschedule request':
+    case 'student reschedule request':
+    case 'reschedule requested':
+    case 'rescheduled':
+      return 'status-warning';
+    default:
+      return 'status-pending';
+  }
+}
+
+  // Load session history
+function loadSessionHistory(snapshot) {
     const container = document.getElementById('sessionsContainer');
-    const loadMoreBtn = document.getElementById('loadMoreBtn');
     
-    if (!container) return;
+    if (!container) {
+        console.error('sessionsContainer element not found');
+        return;
+    }
     
-    if (sessions.length === 0) {
-        container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Sessions Found</h3><p>No sessions match your current filters.</p></div>';
-        if (loadMoreBtn) loadMoreBtn.style.display = 'none';
+    if (snapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><h3>No Session History</h3><p>You haven\'t had any sessions yet.</p></div>';
         return;
     }
     
     let html = `
-        <div class="table-responsive">
-            <table class="sessions-table">
-                <thead>
-                    <tr>
-                        <th>Date & Time</th>
-                        <th>Tutor</th>
-                        <th>Subject</th>
-                        <th>Duration</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Total Price</th>
-                        <th>Last Action</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
+        <table class="sessions-table">
+            <thead>
+                <tr>
+                    <th>Session Date</th>
+                    <th>Session Time</th>
+                    <th>Tutor</th>
+                    <th>Subject</th>
+                    <th>Duration</th>
+                    <th>Status</th>
+                    <th>Action Date</th>
+                    <th>Action Type</th>
+                </tr>
+            </thead>
+            <tbody>
     `;
-    
-    sessions.forEach(session => {
-        const date = session.date.toDate();
-        const formattedDate = date.toLocaleDateString();
-        const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        const duration = session.duration || '1';
-        const totalPrice = session.totalPrice || (session.hourlyRate || 30) * duration;
+
+
+  snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
-        // Get latest action from history
-        const latestAction = session.history && session.history.length > 0 
-            ? session.history[session.history.length - 1]
-            : { action: 'booked', timestamp: session.bookedAt };
-            
-        const actionText = formatActionText(latestAction.action);
-        const actionTime = latestAction.timestamp?.toLocaleDateString() || 
-                          (session.bookedAt?.toDate ? session.bookedAt.toDate().toLocaleDateString() : 'Unknown');
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
-        // Sanitize all user inputs
-        const tutorName = (session.tutorName || 'Unknown').replace(/[<>"'&]/g, '');
-        const subject = (session.subject || 'No subject').replace(/[<>"'&]/g, '');
-        const sessionType = (session.sessionType === 'in-person' ? 'In-Person' : 'Online').replace(/[<>"'&]/g, '');
-        const status = (session.status || 'unknown').replace(/[<>"'&]/g, '');
-        const sanitizedId = session.id.replace(/[^a-zA-Z0-9_-]/g, '');
+        console.log('Session:', session.status, 'Action Type:', actionType);
         
         html += `
             <tr>
-                <td>
-                    <div>${formattedDate}</div>
-                    <div class="timestamp-cell">${formattedTime}</div>
+                <td>${formattedDate}</td>
+                <td>${formattedTime}</td>
+                <td>${session.tutorName || 'Tutor Name Not Available'}</td>
+                <td>${session.subject || 'No subject specified'}</td>
+                <td>${session.duration || '1'} hours</td>
+                <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+                <td class="timestamp-cell">
+                    <div>${actionDate}</div>
+                    <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
                 </td>
-                <td>${tutorName}</td>
-                <td>${subject}</td>
-                <td>${duration} hour${duration !== '1' ? 's' : ''}</td>
-                <td>${sessionType}</td>
-                <td><span class="status-badge ${getStatusClass(session.status)}">${status}</span></td>
-                <td>$${totalPrice.toFixed(2)}</td>
-                <td>
-                    <div>${actionText}</div>
-                    <div class="timestamp-cell">${actionTime}</div>
-                </td>
-                <td>
-                    <button class="btn-outline view-details-btn" data-session-id="${sanitizedId}">
-                        <i class="fas fa-eye"></i> Details
-                    </button>
-                    ${session.status === 'completed' ? 
-                        `<button class="btn-primary review-btn" data-session-id="${sanitizedId}" data-tutor-id="${session.tutorId}">
-                            <i class="fas fa-star"></i> Review
-                        </button>` : ''
-                    }
-                </td>
+                <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
             </tr>
         `;
     });
     
-    html += `
-                </tbody>
-            </table>
-        </div>
-        <div style="margin-top: 15px; font-size: 14px; color: var(--gray);">
-            <i class="fas fa-info-circle"></i> Showing ${sessions.length} session${sessions.length !== 1 ? 's' : ''}
-        </div>
-    `;
-    
+    html += '</tbody></table>';
     container.innerHTML = html;
     
-    // Add event listeners for action buttons
-    container.addEventListener('click', function(e) {
-        const sessionId = e.target.closest('[data-session-id]')?.getAttribute('data-session-id');
-        const action = e.target.closest('.view-details-btn') ? 'view' : 
-                      e.target.closest('.review-btn') ? 'review' : null;
-        
-        if (!sessionId || !action) return;
-        
-        if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
-            alert('Invalid session ID.');
-            return;
-        }
-        
-        switch(action) {
-            case 'view':
-                viewSessionDetails(sessionId);
-                break;
-            case 'review':
-                const tutorId = e.target.closest('[data-tutor-id]')?.getAttribute('data-tutor-id');
-                openReviewModal(sessionId, tutorId);
-                break;
-        }
-    });
-    
-    // Update hours learned statistic
-    updateHoursLearned(sessions);
+    // Add filter functionality
+    setupHistoryFilters();
 }
 
-// Format action text for display
-function formatActionText(action) {
-    const actionMap = {
-        'student booked': 'Booked by Student',
-        'tutor confirmed': 'Confirmed by Tutor',
-        'student confirmed': 'Confirmed by Student',
-        'auto-confirmed': 'Auto-Confirmed',
-        'completed': 'Completed',
-        'student cancelled': 'Cancelled by Student',
-        'tutor cancelled': 'Cancelled by Tutor',
-        'tutor reschedule request': 'Reschedule Requested (Tutor)',
-        'student reschedule request': 'Reschedule Requested (Student)',
-        'rescheduled': 'Rescheduled',
-        'booked': 'Booked'
-    };
+  function setupHistoryFilters() {
+    const historyFilter = document.getElementById('historyFilter');
+    const actionTypeFilter = document.getElementById('actionTypeFilter');
     
-    return actionMap[action] || action.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-}
-
-// Update hours learned statistic
-function updateHoursLearned(sessions) {
-    const completedSessions = sessions.filter(session => session.status === 'completed');
-    const totalHours = completedSessions.reduce((total, session) => {
-        return total + parseFloat(session.duration || 0);
-    }, 0);
-    
-    const hoursLearnedElement = document.getElementById('hoursLearned');
-    if (hoursLearnedElement) {
-        hoursLearnedElement.textContent = totalHours.toFixed(1);
+    if (!historyFilter || !actionTypeFilter) {
+        console.log('Filter elements not found, skipping filter setup');
+        return;
     }
-}
 
-// View session details
-function viewSessionDetails(sessionId) {
-    db.collection('bookedSessions').doc(sessionId).get()
-        .then((doc) => {
-            if (!doc.exists) {
-                alert('Session not found.');
+
+     // Combined filter function with proper action type filtering
+    const applyFilters = () => {
+        const timeFilter = historyFilter.value;
+        const actionFilter = actionTypeFilter.value;
+        const rows = document.querySelectorAll('#sessionsContainer tbody tr');
+        
+        let visibleCount = 0;
+        
+        // Get current date for time calculations
+        const now = new Date();
+        
+        rows.forEach(row => {
+            // Skip if this is the no-results message row
+            if (row.classList.contains('no-results-message')) {
+                row.style.display = 'none';
                 return;
             }
             
-            const session = doc.data();
-            showSessionDetailsModal(session);
-        })
-        .catch((error) => {
-            console.error('Error loading session details:', error);
-            alert('Failed to load session details.');
+            let showRow = true;
+            
+            // Apply time filter based on ACTION DATE (7th column)
+            if (timeFilter !== 'all') {
+                const actionDateText = row.cells[6].querySelector('div').textContent.trim();
+                const actionDate = new Date(actionDateText);
+                
+                if (!isNaN(actionDate.getTime())) {
+                    let startDate;
+                    
+                    switch(timeFilter) {
+                        case 'month':
+                            startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                            break;
+                        case '3months':
+                            startDate = new Date(now);
+                            startDate.setMonth(now.getMonth() - 3);
+                            break;
+                        case 'year':
+                            startDate = new Date(now.getFullYear(), 0, 1);
+                            break;
+                        default:
+                            startDate = null;
+                    }
+                    
+                    if (startDate && actionDate < startDate) {
+                        showRow = false;
+                    }
+                }
+            }
+            
+            // Apply action type filter (8th column)
+            if (actionFilter !== 'all' && showRow) {
+                const actionTypeElement = row.cells[7].querySelector('.status-badge');
+                if (actionTypeElement) {
+                    const actionType = actionTypeElement.textContent.trim().toLowerCase();
+                    let filterValue = actionFilter.toLowerCase();
+                    
+                    // Handle filter value mappings
+                    if (filterValue === 'student booked') {
+                        showRow = actionType === 'student booked';
+                    } else if (filterValue === 'student confirmed') {
+                        showRow = actionType === 'student confirmed';
+                    } else if (filterValue === 'tutor confirmed') {
+                        showRow = actionType === 'tutor confirmed';
+                    } else if (filterValue === 'completed') {
+                        showRow = actionType === 'completed';
+                    } else if (filterValue === 'student cancelled') {
+                        showRow = actionType === 'student cancelled';
+                    } else if (filterValue === 'tutor cancelled') {
+                        showRow = actionType === 'tutor cancelled';
+                    } else if (filterValue === 'auto-confirmed') {
+                        showRow = actionType === 'auto-confirmed';
+                    } else if (filterValue === 'student reschedule request') {
+                        showRow = actionType === 'student reschedule request';
+                    } else if (filterValue === 'tutor reschedule request') {
+                        showRow = actionType === 'tutor reschedule request';
+                    } else if (filterValue === 'rescheduled') {
+                        showRow = actionType === 'rescheduled';
+                    } else if (filterValue === 'scheduled') {
+                        showRow = actionType === 'scheduled';
+                    } else {
+                        showRow = true;
+                    }
+                } else {
+                    showRow = false;
+                }
+            }
+            
+            row.style.display = showRow ? '' : 'none';
+            if (showRow) visibleCount++;
         });
+        
+        // Show message if no results
+        const tbody = document.querySelector('#sessionsContainer tbody');
+        if (!tbody) return;
+        
+        let noResultsMsg = tbody.querySelector('.no-results-message');
+        
+        if (visibleCount === 0) {
+            if (!noResultsMsg) {
+                noResultsMsg = document.createElement('tr');
+                noResultsMsg.className = 'no-results-message';
+                noResultsMsg.innerHTML = `
+                    <td colspan="8" style="text-align: center; padding: 40px; color: var(--gray);">
+                        <i class="fas fa-search" style="font-size: 24px; margin-bottom: 10px; display: block;"></i>
+                        <h4>No matching sessions found</h4>
+                        <p>Try adjusting your filters</p>
+                    </td>
+                `;
+                tbody.appendChild(noResultsMsg);
+            }
+            noResultsMsg.style.display = '';
+        } else if (noResultsMsg) {
+            noResultsMsg.style.display = 'none';
+        }
+    };
+    
+    // Add event listeners
+    historyFilter.addEventListener('change', applyFilters);
+    actionTypeFilter.addEventListener('change', applyFilters);
+    
+    // Apply filters initially
+    applyFilters();
 }
 
-// Show session details modal
-function showSessionDetailsModal(session) {
-    const date = session.date.toDate();
-    const formattedDate = date.toLocaleDateString();
-    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+function appendSessionHistory(snapshot) {
+    const container = document.querySelector('#sessionsContainer tbody');
     
-    const modalHtml = `
-        <div class="modal-overlay" id="sessionDetailsModal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000;">
-            <div class="modal-content" style="background: white; padding: 24px; border-radius: var(--border-radius); max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto;">
-                <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <h3 style="margin: 0;">Session Details</h3>
-                    <button class="close-modal" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
-                </div>
-                <div class="session-details">
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Subject:</div>
-                        <div class="detail-value" style="flex: 2;">${session.subject || 'N/A'}</div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Tutor:</div>
-                        <div class="detail-value" style="flex: 2;">${session.tutorName || 'N/A'}</div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Date & Time:</div>
-                        <div class="detail-value" style="flex: 2;">${formattedDate} at ${formattedTime}</div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Duration:</div>
-                        <div class="detail-value" style="flex: 2;">${session.duration || 'N/A'} hours</div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Type:</div>
-                        <div class="detail-value" style="flex: 2;">${session.sessionType === 'in-person' ? 'In-Person' : 'Online'}</div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Status:</div>
-                        <div class="detail-value" style="flex: 2;"><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'N/A'}</span></div>
-                    </div>
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Total Price:</div>
-                        <div class="detail-value" style="flex: 2;">$${(session.totalPrice || 0).toFixed(2)}</div>
-                    </div>
-                    ${session.notes ? `
-                    <div class="detail-row" style="display: flex; margin-bottom: 15px;">
-                        <div class="detail-label" style="flex: 1; font-weight: 500;">Notes:</div>
-                        <div class="detail-value" style="flex: 2;">${session.notes}</div>
-                    </div>
-                    ` : ''}
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // Remove existing modal if any
-    const existingModal = document.getElementById('sessionDetailsModal');
-    if (existingModal) {
-        existingModal.remove();
+    if (!container) {
+        console.error('sessionsContainer tbody not found');
+        return;
     }
     
-    // Add modal to page
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    // Remove any existing no-results message
+    const noResultsMsg = container.querySelector('.no-results-message');
+    if (noResultsMsg) {
+        noResultsMsg.remove();
+    }
     
-    // Add event listeners for modal
-    const modal = document.getElementById('sessionDetailsModal');
-    const closeBtn = modal.querySelector('.close-modal');
-    
-    closeBtn.addEventListener('click', () => {
-        modal.remove();
-    });
-    
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.remove();
-        }
+    snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const { actionTime, actionType } = getActionTimestamp(session);
+        const actionDate = actionTime.toLocaleDateString();
+        const actionTimeFormatted = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${formattedDate}</td>
+            <td>${formattedTime}</td>
+            <td>${session.tutorName || 'Tutor Name Not Available'}</td>
+            <td>${session.subject || 'No subject specified'}</td>
+            <td>${session.duration || '1'} hours</td>
+            <td><span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></td>
+            <td class="timestamp-cell">
+                <div>${actionDate}</div>
+                <div style="font-size: 11px; color: var(--gray-light);">${actionTimeFormatted}</div>
+            </td>
+            <td><span class="status-badge ${getActionTypeClass(actionType)}">${actionType}</span></td>
+        `;
+        container.appendChild(row);
     });
 }
 
-// Open review modal
-function openReviewModal(sessionId, tutorId) {
-    alert('Review functionality would open here for session: ' + sessionId);
+// Load more sessions function
+function loadMoreSessions() {
+    if (hasMoreSessions) {
+        loadSessions(10, true);
+    }
 }
 
-//...............................................................................................
-// Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
-//...............................................................................................
-  
+// Auto-initialize if session history container is present on page load
+document.addEventListener('DOMContentLoaded', function() {
+    if (document.getElementById('sessionsContainer')) {
+        console.log('Session history container found, auto-loading sessions...');
+        setTimeout(() => {
+            loadUserSessionHistory();
+        }, 500);
+    }
+}); 
+
+            
 //---------------------------------------------------------------------------------------------------------  
 // Sessions History Section ends here. All JS functionalities of the Sessions History section ends here
 //---------------------------------------------------------------------------------------------------------  
@@ -3104,6 +3045,7 @@ function openReviewModal(sessionId, tutorId) {
 </script>    
 </body>
 </html>
+
 
 
 
