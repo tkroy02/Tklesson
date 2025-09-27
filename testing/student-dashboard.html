@@ -1882,9 +1882,249 @@ function addBookingToUI(bookingId, bookingData) {
 //..........................................................................................
 //Scheduling Section ends here. All JS functionalities of the scheduling section ends here
 //...........................................................................................
-     
+
+
+//..........................................................................................
+//My Tutors Section starts here. All JS functionalities of the My Tutors section starts here
+//...........................................................................................
+
+  // Load available tutors
+function loadAvailableTutors() {
+  const container = document.getElementById('availableTutorsContainer');
+  if (!container) return;
+  
+  container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+  
+  // Query tutors who are available and approved
+  db.collection('tutors')
+    .where('available', '==', true)
+    .where('approved', '==', true)
+    .get()
+    .then((querySnapshot) => {
+      if (!container) return;
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+        return;
+      }
+      
+      querySnapshot.forEach((doc) => {
+        const tutor = doc.data();
+        const tutorCard = document.createElement('div');
+        tutorCard.className = 'tutor-card';
+        tutorCard.innerHTML = `
+          <div class="tutor-header">
+            <div class="tutor-avatar">
+              <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName || 'Tutor'}">
+            </div>
+            <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+            <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+          </div>
+          <div class="tutor-details">
+            <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+            <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+            <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+            <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+            <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+          </div>
+        `;
+        container.appendChild(tutorCard);
+      });
+    })
+    .catch((error) => {
+      console.error('Error loading available tutors:', error);
+      if (container) {
+        container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+      }
+    });
+}
+  
+// Load my tutors (tutors the student has previously booked with)
+function loadMyTutors() {
+  const container = document.getElementById('myTutorsContainer');
+  if (!container) return;
+  
+  container.innerHTML = '<div class="spinner"></div>';
+  
+  // Get the current user ID
+  const userId = auth.currentUser?.uid;
+  if (!userId) {
+    container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Authentication Error</h3><p>Please log in to view your tutors.</p></div>';
+    return;
+  }
+  
+  // Query sessions where this student is involved and status is confirmed
+  db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .where('status', 'in', ['confirmed', 'pending']) // Include both confirmed and pending
+    .where('date', '>=', new Date()) // Only future sessions or recent ones
+    .orderBy('date', 'asc')
+    .get()
+    .then((querySnapshot) => {
+      if (!container) return;
+      container.innerHTML = '';
+      
+      if (querySnapshot.empty) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Active Tutors</h3><p>You don\'t have any upcoming sessions with tutors. Book a session to get started!</p></div>';
+        return;
+      }
+      
+      // Collect unique tutor IDs from confirmed/pending sessions
+      const tutorIds = [];
+      querySnapshot.forEach((doc) => {
+        const session = doc.data();
+        if (session.tutorId && !tutorIds.includes(session.tutorId)) {
+          tutorIds.push(session.tutorId);
+        }
+      });
+      
+      if (tutorIds.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Active Tutors</h3><p>You don\'t have any upcoming sessions with tutors. Book a session to get started!</p></div>';
+        return;
+      }
+      
+      // Get tutor details for each tutor ID
+      const tutorPromises = tutorIds.map(tutorId => 
+        db.collection('tutors').doc(tutorId).get()
+      );
+      
+      Promise.all(tutorPromises)
+        .then((tutorSnapshots) => {
+          if (!container) return;
+          
+          tutorSnapshots.forEach((tutorDoc) => {
+            if (tutorDoc.exists) {
+              const tutor = tutorDoc.data();
+              const tutorCard = document.createElement('div');
+              tutorCard.className = 'tutor-card';
+              tutorCard.innerHTML = `
+                <div class="tutor-header">
+                  <div class="tutor-avatar">
+                    <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName || 'Tutor'}">
+                  </div>
+                  <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+                  <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+                </div>
+                <div class="tutor-details">
+                  <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+                  <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+                  <p><i class="fas fa-clock"></i> Next session: Confirmed</p>
+                  <button class="btn-primary" onclick="bookTutor('${tutorDoc.id}')">Book Again</button>
+                </div>
+              `;
+              container.appendChild(tutorCard);
+            }
+          });
+        })
+        .catch((error) => {
+          console.error('Error loading tutor details:', error);
+          if (container) {
+            container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+          }
+        });
+    })
+    .catch((error) => {
+      console.error('Error loading sessions:', error);
+      if (container) {
+        container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load your tutors. Please try again later.</p></div>';
+      }
+    });
+}
+
+// Update active tutors count
+function updateActiveTutorsCount() {
+  const userId = auth.currentUser?.uid;
+  if (!userId) return;
+
+  db.collection('bookedSessions')
+    .where('studentId', '==', userId)
+    .where('status', 'in', ['confirmed', 'pending'])
+    .where('date', '>=', new Date())
+    .get()
+    .then((querySnapshot) => {
+      // Get unique tutor IDs
+      const tutorIds = new Set();
+      querySnapshot.forEach(doc => {
+        const session = doc.data();
+        if (session.tutorId) {
+          tutorIds.add(session.tutorId);
+        }
+      });
+      
+      document.getElementById('tutorsCount').textContent = tutorIds.size;
+    })
+    .catch(error => {
+      console.error('Error counting active tutors:', error);
+    });
+}
+  
+// Book a tutor
+function bookTutor(tutorId) {
+  // Switch to scheduling tab and pre-select the tutor
+  const schedulingLink = document.querySelector('a[data-section="scheduling"]');
+  const schedulingSection = document.getElementById('scheduling');
+  
+  if (schedulingLink && schedulingSection) {
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelectorAll('.dashboard-section.active').forEach(section => section.classList.remove('active'));
+    
+    schedulingLink.classList.add('active');
+    schedulingSection.classList.add('active');
+    
+    // Wait for the scheduling section to be visible, then select the tutor
+    setTimeout(() => {
+      const tutorSelect = document.getElementById('tutor');
+      if (tutorSelect) {
+        tutorSelect.value = tutorId;
+        
+        // Trigger change event to load subjects
+        const event = new Event('change');
+        tutorSelect.dispatchEvent(event);
+      }
+    }, 100);
+  }
+}
+
+// Set up tabs in the tutors section
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    // Update active tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    this.classList.add('active');
+    
+    // Show the corresponding tab content
+    const tabId = this.getAttribute('data-tab');
+    const tabContent = document.getElementById(`${tabId}-tab`);
+    const searchContainer = document.getElementById('tutorSearchContainer');
+    
+    document.querySelectorAll('.tab-content').forEach(content => {
+      content.classList.remove('active');
+    });
+    
+    if (tabContent) {
+      tabContent.classList.add('active');
+    }
+    
+    // Show search only for available tutors
+    if (searchContainer) {
+      searchContainer.style.display = tabId === 'available-tutors' ? 'block' : 'none';
+    }
+  });
+});
+
+//.........................................................................................
+//My Tutors Section ends here. All JS functionalities of the My Tutors section ends here
+//..........................................................................................
+
+//........................................................................................... 
+//My Bookings Section starts here. All JS functionalities of MJy Bookings section starts here
+//............................................................................................
+
+  
       
 </script>    
 </body>
 </html>
+
 
