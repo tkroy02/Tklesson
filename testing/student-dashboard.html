@@ -2099,9 +2099,9 @@ document.querySelectorAll('.tab').forEach(tab => {
 //My Tutors Section ends here. All JS functionalities of the My Tutors section ends here
 //..........................................................................................
 
-//........................................................................................... 
+//...........................................................................................
 //My Bookings Section starts here. All JS functionalities of My Bookings section starts here
-//............................................................................................
+//...........................................................................................
 
 // Helper function to get CSS class for status badges
 function getStatusClass(status) {
@@ -2148,7 +2148,7 @@ function cancelBooking(bookingId) {
     }
 }
 
-// Join session function with Jitsi Meet
+// Join session function with Jitsi Meet - MODIFIED: Students can only join, not create links
 function joinSession(sessionId) {
     console.log('Attempting to join session:', sessionId);
 
@@ -2175,6 +2175,12 @@ function joinSession(sessionId) {
                 return;
             }
 
+            // Check if tutor has created a meeting link
+            if (!session.meetingLink) {
+                alert('Meeting link not available yet. Please wait for the tutor to create the meeting.');
+                return;
+            }
+
             // Allow joining 15 minutes before and up to 4 hours after session
             const minutesUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60);
 
@@ -2186,28 +2192,20 @@ function joinSession(sessionId) {
                 return;
             }
 
-            // Generate Jitsi Meet link if not already present
-            let meetingLink = session.meetingLink;
-            if (!meetingLink) {
-                const roomName = generateMeetId(); // This will use your existing function
-                meetingLink = `https://meet.jit.si/${encodeURIComponent(roomName)}`;
-
-                // Save the generated link to Firestore
-                db.collection('bookedSessions').doc(sessionId).update({ meetingLink })
-                    .then(() => console.log('Meeting link saved:', meetingLink))
-                    .catch(err => console.error('Error saving meeting link:', err));
-            }
-
-            // Validate URL before opening
+            // Validate URL before opening - STUDENTS CAN ONLY JOIN EXISTING LINKS
             try {
-                const url = new URL(meetingLink);
+                const url = new URL(session.meetingLink);
                 if (url.protocol === 'https:') {
-                    window.open(meetingLink, '_blank', 'noopener,noreferrer');
+                    // Record join attempt for analytics
+                    recordJoinAttempt(sessionId, auth.currentUser.uid);
+                    
+                    // Open the meeting link in a new tab
+                    window.open(session.meetingLink, '_blank', 'noopener,noreferrer');
                 } else {
                     alert('Invalid meeting link.');
                 }
             } catch (e) {
-                alert('Invalid meeting link.');
+                alert('Invalid meeting link. Please contact the tutor.');
             }
         })
         .catch(err => {
@@ -2222,7 +2220,8 @@ function recordJoinAttempt(sessionId, userId) {
         userId: userId,
         joinedAt: new Date(),
         userAgent: navigator.userAgent,
-        platform: navigator.platform
+        platform: navigator.platform,
+        role: 'student' // Explicitly record role
     };
     
     db.collection('bookedSessions').doc(sessionId).collection('joinAttempts').add(joinData)
@@ -2297,7 +2296,7 @@ function respondToReschedule(bookingId, response) {
         });
 }
 
-// Update the loadBookingsDisplay function to use the enhanced data:
+// Update the loadBookingsDisplay function to show appropriate messaging
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2319,6 +2318,9 @@ function loadBookingsDisplay(bookings) {
         const sessionEndTime = new Date(date.getTime() + (booking.duration * 60 * 60 * 1000));
         const canJoin = now >= new Date(date.getTime() - 15 * 60 * 1000) && 
                        now <= new Date(sessionEndTime.getTime() + 30 * 60 * 1000);
+        
+        // Check if meeting link is available
+        const meetingLinkAvailable = booking.meetingLink && booking.status === 'confirmed';
         
         // Sanitize all user inputs to prevent XSS
         const subject = booking.subject || 'No subject';
@@ -2349,6 +2351,24 @@ function loadBookingsDisplay(bookings) {
             `;
         }
         
+        // Meeting link status message
+        let meetingStatusMessage = '';
+        if (booking.status === 'confirmed' && !meetingLinkAvailable) {
+            meetingStatusMessage = `
+                <div class="session-detail" style="color: var(--info); font-style: italic;">
+                    <i class="fas fa-info-circle"></i>
+                    <span>Waiting for tutor to create meeting link</span>
+                </div>
+            `;
+        } else if (meetingLinkAvailable) {
+            meetingStatusMessage = `
+                <div class="session-detail" style="color: var(--success); font-weight: 500;">
+                    <i class="fas fa-check-circle"></i>
+                    <span>Meeting link ready</span>
+                </div>
+            `;
+        }
+        
         html += `
             <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${sanitizedId}">
                 <div class="session-header">
@@ -2372,6 +2392,7 @@ function loadBookingsDisplay(bookings) {
                         <i class="fas fa-hourglass-half"></i>
                         <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${status}</span></span>
                     </div>
+                    ${meetingStatusMessage}
                     ${rescheduleInfo}
                 </div>
                 <div class="session-actions">
@@ -2380,9 +2401,13 @@ function loadBookingsDisplay(bookings) {
                          <button class="btn-danger" data-session-id="${sanitizedId}" data-action="decline-reschedule">Decline Reschedule</button>` :
                         `<button class="btn-outline" data-session-id="${sanitizedId}" data-action="cancel">Cancel</button>`
                     }
-                    ${canJoin && booking.status === 'confirmed' ? 
+                    ${canJoin && meetingLinkAvailable ? 
                         `<button class="btn-primary" data-session-id="${sanitizedId}" data-action="join">
                             <i class="fas fa-video"></i> Join Session
+                         </button>` : ''}
+                    ${canJoin && booking.status === 'confirmed' && !meetingLinkAvailable ? 
+                        `<button class="btn-outline" disabled title="Waiting for tutor to create meeting link">
+                            <i class="fas fa-clock"></i> Awaiting Meeting Link
                          </button>` : ''}
                 </div>
             </div>
@@ -2391,11 +2416,11 @@ function loadBookingsDisplay(bookings) {
     
     container.innerHTML = html;
 
-  // Add informational text
-const infoText = document.createElement('div');
-infoText.className = 'booking-info-text';
-infoText.innerHTML = '<i class="fas fa-info-circle"></i> Join Session button will appear 15 minutes before your scheduled session time.';
-container.appendChild(infoText);
+    // Add informational text
+    const infoText = document.createElement('div');
+    infoText.className = 'booking-info-text';
+    infoText.innerHTML = '<i class="fas fa-info-circle"></i> Join Session button will appear when the tutor creates the meeting link and it\'s within 15 minutes of your session time.';
+    container.appendChild(infoText);
     
     // Use event delegation for all buttons instead of inline onclick
     container.addEventListener('click', function(e) {
@@ -2505,9 +2530,10 @@ function setupSessionListeners() {
                     const session = change.doc.data();
                     const oldSession = change.doc.previous.data();
                     
-                    // Only reload if status changed TO confirmed
-                    if (session.status === 'confirmed' && oldSession?.status !== 'confirmed') {
-                        console.log('Session confirmed, reloading bookings...');
+                    // Only reload if status changed TO confirmed or meeting link was added
+                    if ((session.status === 'confirmed' && oldSession?.status !== 'confirmed') ||
+                        (session.meetingLink && !oldSession?.meetingLink)) {
+                        console.log('Session updated, reloading bookings...');
                         loadUserBookings();
                     }
                 }
@@ -4144,6 +4170,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
