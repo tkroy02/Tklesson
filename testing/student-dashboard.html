@@ -1619,7 +1619,8 @@ function generateMeetId() {
 }
 
 // Set up scheduling form for submission. Mandatory fields must be filled. 
-document.getElementById('schedulingForm').addEventListener('submit', function(e) {
+// Set up scheduling form for submission. Mandatory fields must be filled. 
+document.getElementById('schedulingForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   
   const tutorId = document.getElementById('tutor').value;
@@ -1638,83 +1639,93 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
   // Combine date and time
   const dateTime = new Date(`${date}T${time}`);
 
-  // Get tutor details for the booking
-  db.collection('tutors').doc(tutorId).get()
-    .then((tutorDoc) => {
-      if (!tutorDoc.exists) {
-        alert('Selected tutor not found.');
-        return;
-      }
-      
-      const tutor = tutorDoc.data();
-      const studentId = auth.currentUser.uid;
-      const studentName = userData?.name || 'Unknown Student';
+  try {
+    // Get tutor details for the booking
+    const tutorDoc = await db.collection('tutors').doc(tutorId).get();
+    
+    if (!tutorDoc.exists) {
+      alert('Selected tutor not found.');
+      return;
+    }
+    
+    const tutor = tutorDoc.data();
+    const studentId = auth.currentUser.uid;
+    const studentName = userData?.name || 'Unknown Student';
 
-      // Generate a unique slot ID
-      const slotId = 'slot_' + Date.now();
-      
-      // Generate a unique meet ID (but NOT the actual Jitsi link)
-      const meetId = generateMeetId();
+    // Generate a unique slot ID
+    const slotId = 'slot_' + Date.now();
+    
+    // Generate a unique meet ID (but NOT the actual Jitsi link)
+    const meetId = generateMeetId();
 
-      // Create booking in the bookedSessions collection
-      db.collection('bookedSessions').add({
-        slotId: slotId,
-        tutorId: tutorId,
-        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-        studentId: studentId,
-        studentName: studentName,
-        subject: subject,
-        date: dateTime,
-        duration: duration,
-        sessionType: sessionType,
-        notes: notes,
-        status: 'pending',
-        bookedAt: new Date(),
-        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-        // Updated fields - student can only request, tutor will create the meet link
-        meetCreated: false, // Will be set to true when tutor confirms and creates the link
-        meetId: meetId, // Store the ID for reference, but no link yet
-        meetLink: '', // Empty until tutor creates it
-        meetPlatform: '', // Empty until tutor sets it
-        confirmedAt: null,
-        confirmedBy: null
-      })
-      .then((docRef) => {
-        alert('Session request submitted successfully! It is now pending confirmation from the tutor. The tutor will create the meeting link upon confirmation.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-        
-        // Immediately add the new booking to the UI
-        addBookingToUI(docRef.id, {
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: firebase.firestore.Timestamp.fromDate(dateTime),
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-          meetLink: '', // No link until tutor creates it
-          meetCreated: false,
-          meetId: meetId,
-          meetPlatform: '' // No platform set yet
-        });
-      })
-      .catch((error) => {
-        console.error('Error creating booking:', error);
-        alert('Failed to submit session request. Please try again.');
-      });
-    })
-    .catch((error) => {
+    // Create booking in the bookedSessions collection
+    const docRef = await db.collection('bookedSessions').add({
+      slotId: slotId,
+      tutorId: tutorId,
+      tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+      studentId: studentId,
+      studentName: studentName,
+      subject: subject,
+      date: dateTime,
+      duration: duration,
+      sessionType: sessionType,
+      notes: notes,
+      status: 'pending',
+      bookedAt: new Date(),
+      hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+      totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+      meetCreated: false,
+      meetId: meetId,
+      meetLink: '',
+      meetPlatform: '',
+      confirmedAt: null,
+      confirmedBy: null
+    });
+
+    const sessionId = docRef.id;
+
+    // ✅ SIMPLE: Create notification with ONLY tutorId
+    await db.collection('notifications').add({
+      tutorId: tutorId, // ONLY this field - tutor will see it
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    console.log('Session request submitted and notification created for tutor:', tutorId);
+
+    alert('Session request submitted successfully! It is now pending confirmation from the tutor.');
+    document.getElementById('schedulingForm').reset();
+    document.getElementById('priceSummary').style.display = 'none';
+    document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+    document.getElementById('subject').disabled = true;
+    
+    // Immediately add the new booking to the UI
+    addBookingToUI(sessionId, {
+      slotId: slotId,
+      tutorId: tutorId,
+      tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+      studentId: studentId,
+      studentName: studentName,
+      subject: subject,
+      date: firebase.firestore.Timestamp.fromDate(dateTime),
+      duration: duration,
+      sessionType: sessionType,
+      notes: notes,
+      status: 'pending',
+      bookedAt: new Date(),
+      hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+      totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+      meetLink: '',
+      meetCreated: false,
+      meetId: meetId,
+      meetPlatform: ''
+    });
+
+  } catch (error) {
+    console.error('Error creating booking:', error);
+    alert('Failed to submit session request. Please try again.');
+  }
+});
+  .catch((error) => {
       console.error('Error getting tutor details:', error);
       alert('Failed to submit session request. Please try again.');
     });
@@ -4293,30 +4304,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 500);
 });
 
-// When student requests a session - MAKE SURE THIS EXISTS
-window.studentRequestSession = async function(tutorId, sessionId, studentName, subject) {
-    try {
-        const notificationData = {
-            tutorId: tutorId, // ✅ This goes to the tutor
-            userId: auth.currentUser.uid, // Student's ID
-            type: 'session_request',
-            title: 'New Session Request',
-            message: `${studentName} requested a ${subject} session`,
-            relatedSessionId: sessionId,
-            priority: 'high',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        
-        console.log('Creating notification with data:', notificationData);
-        await db.collection('notifications').add(notificationData);
-        console.log('✅ Session request notification sent to tutor:', tutorId);
-        
-    } catch (error) {
-        console.error('❌ Error sending session request notification:', error);
-        throw error;
-    }
-};
   
 // =======================================================================================================================================
 // Notification System Ends Here. This is Production ready, and this is the end of the project. Awesome!
@@ -4325,6 +4312,7 @@ window.studentRequestSession = async function(tutorId, sessionId, studentName, s
 </script>    
 </body>
 </html>
+
 
 
 
