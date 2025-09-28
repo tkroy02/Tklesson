@@ -1680,46 +1680,86 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
         confirmedAt: null,
         confirmedBy: null
       })
-      .then((docRef) => {
-        alert('Session request submitted successfully! It is now pending confirmation from the tutor. The tutor will create the meeting link upon confirmation.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-        
-        // Immediately add the new booking to the UI
-        addBookingToUI(docRef.id, {
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: firebase.firestore.Timestamp.fromDate(dateTime),
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-          meetLink: '', // No link until tutor creates it
-          meetCreated: false,
-          meetId: meetId,
-          meetPlatform: '' // No platform set yet
-        });
-      })
-      .catch((error) => {
-        console.error('Error creating booking:', error);
-        alert('Failed to submit session request. Please try again.');
-      });
-    })
-    .catch((error) => {
-      console.error('Error getting tutor details:', error);
-      alert('Failed to submit session request. Please try again.');
-    });
-});
+     .then((docRef) => {
+  alert('Session request submitted successfully! It is now pending confirmation from the tutor. The tutor will create the meeting link upon confirmation.');
+  document.getElementById('schedulingForm').reset();
+  document.getElementById('priceSummary').style.display = 'none';
+  document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+  document.getElementById('subject').disabled = true;
 
+  // ===== TUTOR NOTIFICATION =====
+  db.collection('tutorNotifications').add({
+    tutorId: tutorId,
+    type: 'session_request',
+    title: 'New Session Request',
+    message: `${studentName} has requested a ${subject} session on ${date} at ${time} for ${duration} hours`,
+    relatedSessionId: docRef.id,
+    studentId: studentId,
+    studentName: studentName,
+    sessionDetails: {
+      subject: subject,
+      date: date,
+      time: time,
+      duration: duration,
+      sessionType: sessionType,
+      notes: notes,
+      hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+      totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration)
+    },
+    isRead: false,
+    priority: 'high',
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(error => {
+    console.error('Error creating tutor notification:', error);
+  });
+
+  // ===== STUDENT NOTIFICATION =====
+  db.collection('notifications').add({
+    userId: studentId,
+    type: 'session_requested',
+    title: 'Session Request Sent',
+    message: `Your ${subject} session request with ${tutor.personal?.fullName || 'the tutor'} has been sent and is pending confirmation`,
+    relatedSessionId: docRef.id,
+    tutorId: tutorId,
+    tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+    sessionDetails: {
+      subject: subject,
+      date: date,
+      time: time,
+      duration: duration,
+      sessionType: sessionType
+    },
+    isRead: false,
+    priority: 'medium',
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(error => {
+    console.error('Error creating student notification:', error);
+  });
+  // ===== END NOTIFICATION CODE =====
+
+  // Immediately add the new booking to the UI
+  addBookingToUI(docRef.id, {
+    slotId: slotId,
+    tutorId: tutorId,
+    tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+    studentId: studentId,
+    studentName: studentName,
+    subject: subject,
+    date: firebase.firestore.Timestamp.fromDate(dateTime),
+    duration: duration,
+    sessionType: sessionType,
+    notes: notes,
+    status: 'pending',
+    bookedAt: new Date(),
+    hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+    totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+    meetLink: '', // No link until tutor creates it
+    meetCreated: false,
+    meetId: meetId,
+    meetPlatform: '' // No platform set yet
+  });
+})
+      
 // Set up tutor selection change event
 document.getElementById('tutor').addEventListener('change', function() {
   const tutorId = this.value;
@@ -3523,49 +3563,49 @@ class NotificationSystem {
 
     // Update notification badge
     updateBadge() {
-        const badge = document.getElementById('notificationCount');
-        if (!badge) {
-            console.warn('Notification badge element not found');
-            return;
-        }
+  const badge = document.getElementById('notificationCount');
+  if (!badge) {
+    console.warn('Notification badge element not found');
+    return;
+  }
 
-        if (this.unreadCount > 0) {
-            badge.textContent = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
-            badge.style.display = 'flex'; // Use flex instead of removing hidden class
-            badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
-            
-            // Add pulse animation for new notifications
-            badge.style.animation = 'pulse 1s ease-in-out';
-        } else {
-            badge.style.display = 'none';
-            badge.setAttribute('aria-label', 'No unread notifications');
-        }
-    }
+  if (this.unreadCount > 0) {
+    badge.textContent = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
+    badge.style.display = 'flex'; // Use flex instead of removing hidden class
+    badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
+    
+    // Add pulse animation for new notifications
+    badge.style.animation = 'pulse 1s ease-in-out';
+  } else {
+    badge.style.display = 'none';
+    badge.setAttribute('aria-label', 'No unread notifications');
+  }
+}
 
     // Update dropdown content
-    updateDropdownContent() {
-        const list = document.getElementById('notificationList');
-        if (!list) return;
+updateDropdownContent() {
+    const list = document.getElementById('notificationList');
+    if (!list) return;
 
-        if (this.notifications.length === 0) {
-            list.innerHTML = this.getEmptyStateHTML();
-            return;
-        }
-
-        // Ensure notifications are sorted by date (newest first)
-        const sortedNotifications = [...this.notifications].sort((a, b) => {
-            const aTime = a.createdAt?.toDate()?.getTime() || 0;
-            const bTime = b.createdAt?.toDate()?.getTime() || 0;
-            return bTime - aTime; // Descending order (newest first)
-        });
-
-        list.innerHTML = sortedNotifications.map(notification => 
-            this.getNotificationHTML(notification)
-        ).join('');
-
-        this.attachNotificationHandlers();
+    if (this.notifications.length === 0) {
+        list.innerHTML = this.getEmptyStateHTML();
+        return;
     }
 
+    // Ensure notifications are sorted by date (newest first)
+    const sortedNotifications = [...this.notifications].sort((a, b) => {
+        const aTime = a.createdAt?.toDate()?.getTime() || 0;
+        const bTime = b.createdAt?.toDate()?.getTime() || 0;
+        return bTime - aTime; // Descending order (newest first)
+    });
+
+    list.innerHTML = sortedNotifications.map(notification => 
+        this.getNotificationHTML(notification)
+    ).join('');
+
+    this.attachNotificationHandlers();
+}
+  
     // Get notification HTML template
     getNotificationHTML(notification) {
         const timeAgo = this.getTimeAgo(notification.createdAt);
@@ -3938,9 +3978,7 @@ class NotificationSystem {
             session_cancelled: 'A session has been cancelled.',
             payment_processed: 'Your payment has been processed successfully.',
             reschedule_request: 'There is a reschedule request for your session.',
-            invoice_submitted: 'Your invoice has been submitted for processing.',
-            student_feedback: 'You have received new feedback from a student.',
-            new_message: 'You have a new message from a student.'
+            invoice_submitted: 'Your invoice has been submitted for processing.'
         };
         
         return messages[notification.type] || 'You have a new notification.';
@@ -3973,9 +4011,7 @@ class NotificationSystem {
             session_cancelled: 'fas fa-calendar-times',
             payment_processed: 'fas fa-dollar-sign',
             reschedule_request: 'fas fa-clock',
-            invoice_submitted: 'fas fa-file-invoice',
-            student_feedback: 'fas fa-star',
-            new_message: 'fas fa-comment'
+            invoice_submitted: 'fas fa-file-invoice'
         };
         return icons[type] || 'fas fa-bell';
     }
@@ -3987,9 +4023,7 @@ class NotificationSystem {
             session_cancelled: '#dc3545',
             payment_processed: '#007bff',
             reschedule_request: '#6f42c1',
-            invoice_submitted: '#17a2b8',
-            student_feedback: '#fd7e14',
-            new_message: '#20c997'
+            invoice_submitted: '#17a2b8'
         };
         return colors[type] || '#6c757d';
     }
@@ -4070,9 +4104,7 @@ class NotificationSystem {
             session_confirmed: 'bookings',
             session_cancelled: 'sessions',
             payment_processed: 'your-earnings',
-            invoice_submitted: 'your-earnings',
-            student_feedback: 'feedback',
-            new_message: 'messages'
+            invoice_submitted: 'your-earnings'
         };
 
         const sectionId = sectionMap[type];
@@ -4121,144 +4153,6 @@ class NotificationSystem {
     }
 }
 
-// =============================================
-// STUDENT DASHBOARD NOTIFICATION FUNCTIONS
-// Integrated into the notification system
-// =============================================
-
-// When student cancels a session
-async function studentCancelSession(tutorId, sessionId, studentName, subject) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId, // This is crucial - links to tutor's notifications
-            userId: currentUser.uid, // Student's ID
-            type: 'session_cancelled',
-            title: 'Session Cancelled',
-            message: `${studentName} cancelled the ${subject} session`,
-            relatedSessionId: sessionId,
-            priority: 'high',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Cancellation notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending cancellation notification:', error);
-        throw error; // Re-throw to handle in calling function
-    }
-}
-
-// When student requests a session
-async function studentRequestSession(tutorId, sessionId, studentName, subject) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId, // This ensures the tutor receives the notification
-            userId: currentUser.uid,
-            type: 'session_request',
-            title: 'New Session Request',
-            message: `${studentName} requested a ${subject} session`,
-            relatedSessionId: sessionId,
-            priority: 'high',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Session request notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending session request notification:', error);
-        throw error;
-    }
-}
-
-// When student requests reschedule
-async function studentRequestReschedule(tutorId, sessionId, studentName, subject) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId,
-            userId: currentUser.uid,
-            type: 'reschedule_request',
-            title: 'Reschedule Request',
-            message: `${studentName} requested to reschedule ${subject} session`,
-            relatedSessionId: sessionId,
-            priority: 'high',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Reschedule request notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending reschedule notification:', error);
-        throw error;
-    }
-}
-
-// When student confirms a session
-async function studentConfirmSession(tutorId, sessionId, studentName, subject) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId,
-            userId: currentUser.uid,
-            type: 'session_confirmed',
-            title: 'Session Confirmed',
-            message: `${studentName} confirmed the ${subject} session`,
-            relatedSessionId: sessionId,
-            priority: 'medium',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Session confirmation notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending confirmation notification:', error);
-        throw error;
-    }
-}
-
-// When student submits feedback
-async function studentSubmitFeedback(tutorId, sessionId, studentName, rating) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId,
-            userId: currentUser.uid,
-            type: 'student_feedback',
-            title: 'New Feedback Received',
-            message: `${studentName} left ${rating}-star feedback for your session`,
-            relatedSessionId: sessionId,
-            priority: 'medium',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Feedback notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending feedback notification:', error);
-        throw error;
-    }
-}
-
-// When student sends a message (if you have messaging)
-async function studentSendMessage(tutorId, studentName, messagePreview) {
-    try {
-        await db.collection('notifications').add({
-            tutorId: tutorId,
-            userId: currentUser.uid,
-            type: 'new_message',
-            title: 'New Message',
-            message: `New message from ${studentName}: ${messagePreview}`,
-            priority: 'medium',
-            isRead: false,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        console.log('Message notification sent to tutor');
-    } catch (error) {
-        console.error('Error sending message notification:', error);
-        throw error;
-    }
-}
-
-// Make functions globally available
-window.studentCancelSession = studentCancelSession;
-window.studentRequestSession = studentRequestSession;
-window.studentRequestReschedule = studentRequestReschedule;
-window.studentConfirmSession = studentConfirmSession;
-window.studentSubmitFeedback = studentSubmitFeedback;
-window.studentSendMessage = studentSendMessage;
-
 // Initialize notification system when ready
 document.addEventListener('DOMContentLoaded', function() {
     // Create global instance
@@ -4300,6 +4194,15 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
+
+
+
+
+
+
+
+
 
 
 
