@@ -3140,6 +3140,34 @@ function createBookingCard(booking, studentName) {
             <i class="fas fa-calendar-alt"></i> Reschedule
         </button>`;
     }
+
+    // Check if completion buttons should be shown
+    const showCompletionButtons = shouldShowCompletionButtons(booking);
+    let completionButtonsHTML = '';
+    
+    if (showCompletionButtons) {
+        completionButtonsHTML = `
+            <div class="completion-section" style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid var(--primary);">
+                <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">
+                    <i class="fas fa-clipboard-check"></i> Session Completion
+                </h4>
+                <p style="margin: 0 0 10px 0; font-size: 0.9em; color: #666;">
+                    Please select the appropriate status for this session:
+                </p>
+                <div class="completion-buttons" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn-success mark-completed-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-check-circle"></i> Session Completed
+                    </button>
+                    <button class="btn-warning student-no-show-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-user-times"></i> Student No Show
+                    </button>
+                    <button class="btn-danger session-missed-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-calendar-times"></i> Session Missed
+                    </button>
+                </div>
+            </div>
+        `;
+    }
     
     // Determine if join button should be enabled
     const canJoinSession = location === 'online' && validateSessionForJoin(booking);
@@ -3210,6 +3238,7 @@ if (canJoinSession && meetLink) {
             </div>
             
             ${rescheduleInfo}
+            ${completionButtonsHTML}
             
             <div class="session-actions">
                 ${joinButton}
@@ -3522,6 +3551,28 @@ function addBookingActionListeners() {
         btn.addEventListener('click', function() {
             const sessionId = this.getAttribute('data-session-id');
             cancelBooking(sessionId);
+        });
+    });
+
+    // Session completion buttons
+    document.querySelectorAll('.mark-completed-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            markSessionCompleted(sessionId, 'completed');
+        });
+    });
+    
+    document.querySelectorAll('.student-no-show-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            markSessionCompleted(sessionId, 'student_no_show');
+        });
+    });
+    
+    document.querySelectorAll('.session-missed-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            markSessionCompleted(sessionId, 'session_missed');
         });
     });
     
@@ -3847,6 +3898,95 @@ function initBookingsSection() {
     console.log("Bookings section initialized");
 }
 
+// Add this function to check if completion buttons should be shown
+function shouldShowCompletionButtons(session) {
+    const now = new Date();
+    let sessionTime;
+    
+    // Handle both Date objects and Firestore Timestamps
+    if (session.date && typeof session.date.toDate === 'function') {
+        sessionTime = session.date.toDate();
+    } else {
+        sessionTime = new Date(session.date);
+    }
+    
+    // Show completion buttons from session start time onwards
+    return now >= sessionTime;
+}
+
+// Add this function to handle session completion
+async function markSessionCompleted(sessionId, status) {
+    let statusText = '';
+    let confirmationMessage = '';
+    
+    switch(status) {
+        case 'completed':
+            statusText = 'Session Completed';
+            confirmationMessage = 'Are you sure you want to mark this session as completed? This will finalize the session and process payment.';
+            break;
+        case 'student_no_show':
+            statusText = 'Student No Show';
+            confirmationMessage = 'Are you sure the student did not show up for this session? This will be recorded for compliance purposes.';
+            break;
+        case 'session_missed':
+            statusText = 'Session Missed';
+            confirmationMessage = 'Are you sure this session was missed? Please provide a reason for the missed session.';
+            break;
+        default:
+            return;
+    }
+    
+    if (!confirm(confirmationMessage)) {
+        return;
+    }
+    
+    // For session_missed, ask for reason
+    let reason = '';
+    if (status === 'session_missed') {
+        reason = prompt('Please provide a reason for missing the session:');
+        if (!reason || reason.trim() === '') {
+            alert('A reason is required for missed sessions.');
+            return;
+        }
+        reason = reason.trim();
+    }
+    
+    try {
+        const sessionRef = db.collection('bookedSessions').doc(sessionId);
+        const sessionDoc = await sessionRef.get();
+        
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const updateData = {
+            completionStatus: status,
+            completedAt: new Date(),
+            status: 'completed' // Update main status to completed
+        };
+        
+        // Add reason if provided
+        if (reason) {
+            updateData.completionReason = reason;
+        }
+        
+        await sessionRef.update(updateData);
+        
+        // Show success message
+        showNotification(`Session marked as ${statusText.toLowerCase()}.`, 'success');
+        
+        // Refresh the bookings display
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error marking session as completed:", error);
+        showNotification('Error updating session status. Please try again.', 'error');
+    }
+}
+
+       
+       
 // =============================================
 // MY BOOKINGS SECTION ENDS HERE
 // =============================================
@@ -6442,6 +6582,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </script>    
 </body>
 </html>
+
 
 
 
