@@ -5978,23 +5978,31 @@ async function loadInvoiceSession() {
     sessionSelect.innerHTML = '<option value="">Loading sessions...</option>';
     
     try {
+        // Calculate date 7 days ago
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        // Get past sessions from last 7 days that haven't been invoiced
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('status', 'in', ['pending', 'confirmed', 'rescheduled'])
-            .orderBy('date', 'asc')
+            .where('date', '>=', sevenDaysAgo) // Sessions from last 7 days
+            .where('date', '<=', new Date())   // Sessions that already happened (past)
+            .where('invoiced', '!=', true)     // Only non-invoiced sessions
+            .orderBy('date', 'desc')
             .get();
         
-        console.log('✅ Found sessions:', sessionsSnapshot.size);
+        console.log('✅ Found past sessions from last 7 days:', sessionsSnapshot.size);
         
         availableSessions = [];
         sessionSelect.innerHTML = '<option value="">Select a session to invoice</option>';
         
         if (sessionsSnapshot.empty) {
-            sessionSelect.innerHTML = '<option value="">No sessions available</option>';
+            sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
+            showInvoiceMessage('No past sessions found in the last 7 days. Only sessions that have already occurred can be invoiced.');
             return;
         }
         
-        // UPDATED PART - with time formatting
+        // Populate dropdown with time formatting
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
@@ -6024,21 +6032,22 @@ async function loadInvoiceSession() {
                 hour12: true 
             });
             
-            option.textContent = `${dateStr} (${startTimeStr}-${endTimeStr}) - ${session.studentName} - ${session.subject}`;
+            option.textContent = `${dateStr} (${startTimeStr}-${endTimeStr}) - ${session.studentName} - ${session.subject} [${session.status}]`;
             
             sessionSelect.appendChild(option);
         });
         
-        console.log('🎉 Success! Loaded', availableSessions.length, 'sessions');
+        console.log('🎉 Success! Loaded', availableSessions.length, 'past sessions for invoicing');
         invoiceInitialized = true;
         setupInvoiceForm();
         
     } catch (error) {
-        console.error('❌ Error:', error);
+        console.error('❌ Error loading past sessions:', error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
+        showInvoiceError('Error loading past sessions: ' + error.message);
     }
 }
-
+       
 // Call this when your page loads
 document.addEventListener('DOMContentLoaded', function() {
     console.log('📄 Page loaded - setting up invoice listeners');
@@ -6209,6 +6218,26 @@ window.testInvoiceSection = async function() {
     console.log('🧪 TESTING INVOICE SECTION...');
     await loadInvoiceSession();
 };
+
+// Navigate to Earnings section after invoice submission
+function navigateToEarningsSection() {
+    console.log('💰 Navigating to Earnings section...');
+    
+    // Try to find and click the earnings tab
+    const earningsTab = document.querySelector('[data-tab="earnings"], [href*="earnings"], .nav-earnings, #earnings-tab');
+    if (earningsTab) {
+        earningsTab.click();
+        console.log('✅ Clicked earnings tab');
+    }
+    
+    // Also refresh the earnings data to show updates
+    setTimeout(() => {
+        if (typeof loadEarningsData === 'function') {
+            loadEarningsData();
+            console.log('✅ Earnings data refreshed');
+        }
+    }, 1000);
+}
 
 // =============================================
 // INVOICE SESSION SECTION ENDS HERE
@@ -7550,6 +7579,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
