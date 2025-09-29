@@ -2966,18 +2966,11 @@ function getStatusClass(status) {
 //My Students Section Ends here.
 // =============================================
 
-// =============================================
+// =======================================================================================================================================
 // BOOKINGS SECTION STARTS HERE
-// =============================================
+// =======================================================================================================================================
 
-// =============================================
-// CLEAN BOOKINGS SECTION STARTS HERE
-// =============================================
-
-// Remove this line if it exists elsewhere:
-// let confirmedSessions = [];
-
-// Load tutor's bookings
+// Load tutor's bookings (confirmed and upcoming sessions)
 async function loadMyBookings() {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2987,248 +2980,101 @@ async function loadMyBookings() {
     try {
         const userId = currentUser.uid;
         
-        // Get confirmed sessions
+        // Get ALL sessions (we'll filter client-side based on end time)
         const querySnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', userId)
-            .where('status', '==', 'confirmed')
+            .where('status', 'in', ['confirmed', 'reschedule_requested'])
             .orderBy('date', 'asc')
             .get();
         
-        // Filter sessions that haven't ended yet
+        // Filter client-side to include sessions that haven't ended yet
+        const filteredSessions = [];
         const now = new Date();
-        const upcomingSessions = [];
         
         querySnapshot.forEach(doc => {
             const booking = doc.data();
             booking.id = doc.id;
             
-            // Convert Firestore Timestamp to Date
+            // Convert Firestore Timestamp to Date if needed
             if (booking.date && typeof booking.date.toDate === 'function') {
                 booking.date = booking.date.toDate();
             }
             
-            // Calculate session end time
+            // Calculate session end time (start time + duration)
             const sessionEndTime = new Date(booking.date);
             const durationHours = parseFloat(booking.duration) || 1.5;
             sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
             
             // Include sessions that haven't ended yet
             if (sessionEndTime > now) {
-                upcomingSessions.push(booking);
+                filteredSessions.push(booking);
             }
         });
-        
-        // Update UI based on results
-        if (upcomingSessions.length === 0) {
-            showNoBookingsMessage(container);
+
+        if (filteredSessions.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h3>No Upcoming Bookings</h3>
+                    <p>You have no upcoming sessions scheduled.</p>
+                </div>
+            `;
+            confirmedSessions = [];
+            updateBookingsCount(0);
             return;
         }
+
+        // Sort by date
+        filteredSessions.sort((a, b) => a.date - b.date);
+
+        // Process bookings using the clean function
+        const { processedBookings, bookingsHTML } = await processBookings(filteredSessions);
         
-        // Sort by date and display
-        upcomingSessions.sort((a, b) => a.date - b.date);
-        confirmedSessions = upcomingSessions;
+        confirmedSessions = processedBookings;
+        container.innerHTML = bookingsHTML;
         
-        displayBookings(upcomingSessions, container);
+        // Update dashboard stats
+        updateBookingsCount(processedBookings.length);
+        
+        // Add event listeners to action buttons
         addBookingActionListeners();
         
     } catch (error) {
         console.error("Error loading bookings:", error);
-        showErrorMessage(container);
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Error Loading Bookings</h3>
+                <p>Failed to load your bookings. Please try again.</p>
+            </div>
+        `;
     }
 }
 
-// Display bookings in the container
-function displayBookings(bookings, container) {
+// Process bookings with single source of truth
+async function processBookings(filteredSessions) {
+    const processedBookings = [];
     let bookingsHTML = '';
     
-    bookings.forEach(booking => {
-        bookingsHTML += createBookingCard(booking);
-    });
-    
-    container.innerHTML = bookingsHTML;
-}
-
-// Create booking card HTML
-function createBookingCard(booking) {
-    const sessionDate = booking.date && typeof booking.date.toDate === 'function' 
-        ? booking.date.toDate() 
-        : new Date(booking.date);
-    
-    const formattedDate = formatSessionDate(sessionDate);
-    const subject = booking.subject || 'General Tutoring';
-    const duration = booking.duration || '1.5';
-    const studentName = booking.studentName || 'Student';
-    const location = booking.sessionType || 'online';
-    const meetLink = booking.meetLink || '';
-    
-    // Determine join button state
-    const joinButtonHTML = createJoinButton(booking, location, meetLink);
-    
-    return `
-        <div class="session-card" id="booking-${booking.id}">
-            <div class="session-header">
-                <div class="session-title">${subject} Session with ${studentName}</div>
-                <div class="session-date">${formattedDate}</div>
-                <span class="status-badge status-primary">Confirmed</span>
-            </div>
-            
-            <div class="session-details">
-                <div class="session-detail">
-                    <i class="fas fa-user-graduate"></i> 
-                    <span><strong>Student:</strong> ${studentName}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-book"></i> 
-                    <span><strong>Subject:</strong> ${subject}</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas fa-clock"></i> 
-                    <span><strong>Duration:</strong> ${duration} hours</span>
-                </div>
-                <div class="session-detail">
-                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
-                    <span><strong>Type:</strong> ${location === 'online' ? 'Online' : 'In-Person'}</span>
-                </div>
-            </div>
-            
-            <div class="session-actions">
-                ${joinButtonHTML}
-                <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
-                    <i class="fas fa-times"></i> Cancel
-                </button>
-            </div>
-        </div>
-    `;
-}
-
-// Create join button based on session conditions
-function createJoinButton(booking, location, meetLink) {
-    if (location !== 'online' || !meetLink) {
-        return '<button class="btn-outline" disabled><i class="fas fa-video"></i> Not Available</button>';
-    }
-    
-    if (!validateSessionForJoin(booking)) {
-        return '<button class="btn-outline" disabled><i class="fas fa-video"></i> Join Unavailable</button>';
-    }
-    
-    return `
-        <a href="${meetLink}" target="_blank" class="btn-primary join-btn" data-session-id="${booking.id}">
-            <i class="fas fa-video"></i> Join Session
-        </a>
-    `;
-}
-
-// Validate if session can be joined
-function validateSessionForJoin(session) {
-    const now = new Date();
-    let sessionTime;
-    
-    // Handle date conversion
-    if (session.date && typeof session.date.toDate === 'function') {
-        sessionTime = session.date.toDate();
-    } else {
-        sessionTime = new Date(session.date);
-    }
-    
-    // Calculate session end time
-    const sessionEndTime = new Date(sessionTime);
-    const durationHours = parseFloat(session.duration) || 1.5;
-    sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
-    
-    // Allow joining 15 minutes before session start and up to session end time
-    const fifteenMinutesBefore = new Date(sessionTime);
-    fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
-    
-    return now >= fifteenMinutesBefore && now <= sessionEndTime;
-}
-
-// Add event listeners to booking action buttons
-function addBookingActionListeners() {
-    // Cancel buttons
-    document.querySelectorAll('.cancel-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            cancelBooking(sessionId);
-        });
-    });
-}
-
-// Cancel a booking
-async function cancelBooking(sessionId) {
-    if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
-        return;
-    }
-    
-    try {
-        await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelledBy: 'tutor'
-        });
+    for (const booking of filteredSessions) {
+        // Single source of truth: booking status tells us everything
+        booking.hasPendingReschedule = booking.status === 'reschedule_requested';
         
-        showNotification('Booking cancelled successfully.', 'success');
-        loadMyBookings(); // Refresh the bookings
-        
-    } catch (error) {
-        console.error("Error cancelling booking:", error);
-        showNotification('Error cancelling booking. Please try again.', 'error');
+        processedBookings.push(booking);
+        const studentName = booking.studentName || 'Student';
+        bookingsHTML += createBookingCard(booking, studentName);
     }
-}
-
-// Helper function to format session date
-function formatSessionDate(date) {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
     
-    if (date.toDateString() === today.toDateString()) {
-        return `Today, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    } else if (date.toDateString() === tomorrow.toDateString()) {
-        return `Tomorrow, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    } else {
-        return `${date.toLocaleDateString()}, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    }
+    return { processedBookings, bookingsHTML };
 }
 
-// Show empty state message
-function showNoBookingsMessage(container) {
-    container.innerHTML = `
-        <div class="empty-state">
-            <i class="fas fa-calendar-times"></i>
-            <h3>No Upcoming Bookings</h3>
-            <p>You have no upcoming sessions scheduled.</p>
-        </div>
-    `;
-}
 
-// Show error message
-function showErrorMessage(container) {
-    container.innerHTML = `
-        <div class="error-state">
-            <i class="fas fa-exclamation-circle"></i>
-            <h3>Error Loading Bookings</h3>
-            <p>Failed to load your bookings. Please try again.</p>
-        </div>
-    `;
-}
 
-// Show notification (simplified)
-function showNotification(message, type = 'info') {
-    alert(`${type.toUpperCase()}: ${message}`);
-}
-
-// Initialize bookings section
-function initBookingsSection() {
-    console.log("Clean bookings section initialized");
-    loadMyBookings();
-}
+       
+       
 
 // =============================================
-// CLEAN BOOKINGS SECTION ENDS HERE
-// =============================================
-
-// =============================================
-// CLEAN BOOKINGS SECTION ENDS HERE
+// BOOKINGS BOOKINGS SECTION ENDS HERE
 // =============================================
 
 
@@ -5823,6 +5669,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </script>    
 </body>
 </html>
+
 
 
 
