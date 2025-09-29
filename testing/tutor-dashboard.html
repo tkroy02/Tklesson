@@ -5894,12 +5894,34 @@ async function loadCompletedSessions() {
 // =============================================
 
 // =============================================
-// INVOICE SECTION WITH SMART REFRESH
+// NEW INVOICE SECTION - FROM SCRATCH
 // =============================================
 
 let availableSessions = [];
 let invoiceInitialized = false;
-let currentInvoiceSection = false; // Track if we're currently in invoice section
+
+// ADD MISSING FUNCTIONS
+function setupInvoiceCalculations() {
+    console.log('🧮 Setting up invoice calculations...');
+    
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    
+    if (hoursInput && rateInput) {
+        hoursInput.addEventListener('input', calculateInvoiceTotal);
+        rateInput.addEventListener('input', calculateInvoiceTotal);
+        console.log('✅ Invoice calculations setup complete');
+    }
+}
+
+function showInvoiceError(message) {
+    console.error('❌ Invoice Error:', message);
+    alert('Invoice Error: ' + message);
+}
+
+function showInvoiceMessage(message) {
+    console.log('ℹ️ Invoice Message:', message);
+}
 
 // Initialize invoice section when page loads
 function initInvoiceSection() {
@@ -5914,60 +5936,66 @@ function initInvoiceSection() {
     
     console.log('✅ User authenticated:', currentUser.uid);
     
-    // Setup tab listeners
+    // Method 1: Listen for tab clicks
     setupTabListeners();
     
-    // Check current active tab on load
+    // Method 2: Listen for URL hash changes
+    setupHashListeners();
+    
+    // Method 3: Check current active tab on load
     checkActiveTab();
 }
 
-// Listen for tab clicks - ONLY refresh when switching TO invoice section
+// Listen for tab clicks - UPDATED FOR AUTO-REFRESH
 function setupTabListeners() {
     document.addEventListener('click', function(e) {
         const target = e.target;
         
-        // Check if this is a click that switches TO the invoice section
         if (target.closest('[data-tab="invoice"]') || 
             target.closest('[href*="invoice"]') ||
             target.textContent.toLowerCase().includes('invoice') ||
             (target.classList && target.classList.contains('tab-link'))) {
             
-            // Only refresh if we're not already in the invoice section
-            if (!currentInvoiceSection) {
-                console.log('📌 Switching TO invoice section - refreshing sessions');
-                currentInvoiceSection = true;
-                invoiceInitialized = false; // Allow refresh
-                setTimeout(loadInvoiceSession, 100);
-            } else {
-                console.log('📌 Already in invoice section - no refresh needed');
-            }
-        } else {
-            // If clicking other tabs, mark that we're leaving invoice section
-            currentInvoiceSection = false;
+            console.log('📌 Invoice tab clicked - REFRESHING sessions');
+            // Reset initialization so it always refreshes
+            invoiceInitialized = false;
+            setTimeout(loadInvoiceSession, 100);
+        }
+    });
+    
+    window.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'invoice') {
+            console.log('📌 Invoice tab changed via event - REFRESHING sessions');
+            invoiceInitialized = false;
+            loadInvoiceSession();
         }
     });
 }
 
-// Check if invoice is already active on page load
+// Listen for URL changes - UPDATED FOR AUTO-REFRESH
+function setupHashListeners() {
+    window.addEventListener('hashchange', function() {
+        if (window.location.hash.includes('invoice')) {
+            console.log('📌 URL changed to invoice - REFRESHING sessions');
+            invoiceInitialized = false;
+            loadInvoiceSession();
+        }
+    });
+}
+
+// Check if invoice is already active - UPDATED FOR AUTO-REFRESH
 function checkActiveTab() {
     const invoiceSection = document.getElementById('invoice-session');
     if (invoiceSection && invoiceSection.style.display !== 'none') {
-        console.log('📌 Invoice section active on page load - loading sessions');
-        currentInvoiceSection = true;
+        console.log('📌 Invoice section already visible - REFRESHING sessions');
         invoiceInitialized = false;
         loadInvoiceSession();
     }
 }
 
-// MAIN FUNCTION - Only loads when needed
+// MAIN FUNCTION - WITH AUTO-REFRESH
 async function loadInvoiceSession() {
-    // Only load if not already initialized
-    if (invoiceInitialized) {
-        console.log('⚡ Invoice already loaded - skipping refresh');
-        return;
-    }
-    
-    console.log('🚀 loadInvoiceSession RUNNING - Fetching fresh data');
+    console.log('🚀 loadInvoiceSession RUNNING!');
     
     const sessionSelect = document.getElementById('completedSession');
     if (!sessionSelect) {
@@ -5975,11 +6003,11 @@ async function loadInvoiceSession() {
         return;
     }
     
-    // Show loading state
-    sessionSelect.innerHTML = '<option value="">Loading sessions...</option>';
+    // Show loading state immediately
+    sessionSelect.innerHTML = '<option value="">Refreshing sessions...</option>';
     
     try {
-        // SIMPLIFIED QUERY
+        // SIMPLIFIED QUERY - No complex filters to avoid index issues
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
             .orderBy('date', 'desc')
@@ -5994,7 +6022,6 @@ async function loadInvoiceSession() {
         if (sessionsSnapshot.empty) {
             sessionSelect.innerHTML = '<option value="">No sessions available</option>';
             showInvoiceMessage('No sessions found for invoicing.');
-            invoiceInitialized = true;
             return;
         }
         
@@ -6066,18 +6093,102 @@ async function loadInvoiceSession() {
             }
         }
         
-        invoiceInitialized = true; // Mark as loaded
+        invoiceInitialized = true;
         setupInvoiceForm();
         
     } catch (error) {
         console.error('❌ Error loading sessions:', error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
         showInvoiceError('Error loading sessions: ' + error.message);
-        invoiceInitialized = true; // Still mark as initialized to prevent repeated errors
     }
 }
 
-// Handle invoice submission - Only refresh after successful submission
+// Setup form functionality
+function setupInvoiceForm() {
+    console.log('⚙️ Setting up invoice form...');
+    
+    const sessionSelect = document.getElementById('completedSession');
+    const invoiceForm = document.getElementById('invoiceForm');
+    const generateBtn = document.getElementById('generateInvoiceBtn');
+    
+    if (sessionSelect) {
+        sessionSelect.addEventListener('change', function(e) {
+            const sessionId = e.target.value;
+            console.log('Session selected:', sessionId);
+            
+            const session = availableSessions.find(s => s.id === sessionId);
+            if (session) {
+                populateSessionDetails(session);
+            } else {
+                resetInvoiceForm();
+            }
+        });
+    }
+    
+    if (invoiceForm) {
+        invoiceForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            handleInvoiceSubmission();
+        });
+    }
+    
+    if (generateBtn) {
+        generateBtn.addEventListener('click', handleInvoiceSubmission);
+    }
+    
+    setupInvoiceCalculations();
+    console.log('✅ Invoice form setup complete');
+}
+
+// Populate form with session details
+function populateSessionDetails(session) {
+    console.log('📝 Populating details for session:', session.id);
+    
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const notesInput = document.getElementById('invoiceNotes');
+    
+    if (hoursInput) hoursInput.value = session.duration || '1.5';
+    if (rateInput) {
+        rateInput.value = session.hourlyRate || '40';
+        rateInput.readOnly = true;
+    }
+    if (notesInput) {
+        const sessionDate = session.date?.toDate();
+        const defaultNotes = `Tutoring session with ${session.studentName} on ${sessionDate?.toLocaleDateString()}`;
+        notesInput.value = defaultNotes;
+    }
+    
+    calculateInvoiceTotal();
+}
+
+// Reset invoice form
+function resetInvoiceForm() {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const notesInput = document.getElementById('invoiceNotes');
+    const totalInput = document.getElementById('total');
+    
+    if (hoursInput) hoursInput.value = '1.5';
+    if (rateInput) {
+        rateInput.value = '40';
+        rateInput.readOnly = false;
+    }
+    if (notesInput) notesInput.value = '';
+    if (totalInput) totalInput.value = '60.00';
+}
+
+// Calculate invoice total
+function calculateInvoiceTotal() {
+    const hours = parseFloat(document.getElementById('hours')?.value) || 0;
+    const rate = parseFloat(document.getElementById('rate')?.value) || 0;
+    const total = hours * rate;
+    
+    const totalInput = document.getElementById('total');
+    if (totalInput) totalInput.value = total.toFixed(2);
+}
+
+// Handle invoice submission - UPDATED FOR AUTO-NAVIGATION
 async function handleInvoiceSubmission() {
     console.log('🚀 Invoice submission started');
     
@@ -6143,13 +6254,6 @@ async function handleInvoiceSubmission() {
         
         console.log('✅ Invoice submitted successfully:', invoiceRef.id);
         
-        // Reset form
-        resetInvoiceForm();
-        
-        // Force refresh to remove the invoiced session from dropdown
-        invoiceInitialized = false;
-        await loadInvoiceSession();
-        
         // Auto-navigate to earnings section
         navigateToEarningsSection();
         
@@ -6157,6 +6261,10 @@ async function handleInvoiceSubmission() {
         setTimeout(() => {
             alert('Invoice submitted successfully! You can track payment status in Your Earnings section.');
         }, 500);
+        
+        // Force refresh sessions to remove the invoiced one
+        invoiceInitialized = false;
+        await loadInvoiceSession();
         
     } catch (error) {
         console.error('❌ Invoice submission failed:', error);
@@ -6171,10 +6279,32 @@ async function handleInvoiceSubmission() {
     }
 }
 
-// Keep all your other existing functions the same...
-// setupInvoiceCalculations, showInvoiceError, showInvoiceMessage, 
-// populateSessionDetails, resetInvoiceForm, calculateInvoiceTotal, 
-// navigateToEarningsSection, etc.
+// Navigate to Earnings section
+function navigateToEarningsSection() {
+    console.log('💰 Navigating to Earnings section...');
+    
+    // Try to find and click the earnings tab
+    const earningsTab = document.querySelector('[data-tab="earnings"], [href*="earnings"], .nav-earnings, #earnings-tab');
+    if (earningsTab) {
+        earningsTab.click();
+        console.log('✅ Clicked earnings tab');
+    }
+    
+    // Refresh earnings data
+    setTimeout(() => {
+        if (typeof loadEarningsData === 'function') {
+            loadEarningsData();
+            console.log('✅ Earnings data refreshed');
+        }
+    }, 1000);
+}
+
+// Manual test function
+window.testInvoiceSection = async function() {
+    console.log('🧪 TESTING INVOICE SECTION...');
+    invoiceInitialized = false;
+    await loadInvoiceSession();
+};
 
 // Call this when your page loads
 document.addEventListener('DOMContentLoaded', function() {
@@ -7535,18 +7665,6 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
