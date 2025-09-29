@@ -5893,344 +5893,221 @@ async function loadCompletedSessions() {
 // INVOICE SESSION SECTION STARTS HERE
 // =============================================
 
-// Global variables for invoice section
-let completedSessions = [];
-let currentSelectedSession = null;
+// =============================================
+// NEW INVOICE SECTION - FROM SCRATCH
+// =============================================
 
-// Load invoice session section
+let availableSessions = [];
+
+// Main function to load invoice section
 async function loadInvoiceSession() {
+    console.log('🎯 loadInvoiceSession() CALLED');
+    
     const container = document.getElementById('invoice-session');
-    if (!container) return;
+    if (!container) {
+        console.error('❌ Invoice container not found');
+        return;
+    }
+    
+    // Clear any existing content
+    container.innerHTML = '<div class="loading">Loading invoice section...</div>';
     
     try {
-        // Clear any existing messages first
-        clearInvoiceMessages();
-        
-        // Load completed sessions for invoicing
-        await loadCompletedSessions();
-        
-        // Setup form event listeners (only if not already set up)
-        if (!window.invoiceFormSetup) {
-            setupInvoiceForm();
-            setupInvoiceCalculations();
-            window.invoiceFormSetup = true;
-        }
+        await loadAvailableSessions();
+        setupInvoiceForm();
         
     } catch (error) {
-        console.error("Error loading invoice section:", error);
-        showInvoiceError('Failed to load invoice section. Please try again.');
-    }
-}
-       
-// NEW FUNCTION: Clear existing invoice messages
-function clearInvoiceMessages() {
-    // Remove any existing messages
-    const existingMessages = document.querySelectorAll('.invoice-message, .invoice-error, .input-error');
-    existingMessages.forEach(msg => msg.remove());
-    
-    // Also remove session info display if it exists
-    const sessionInfo = document.getElementById('sessionInfoDisplay');
-    if (sessionInfo) {
-        sessionInfo.remove();
+        console.error('❌ Error loading invoice section:', error);
+        container.innerHTML = '<div class="error">Failed to load invoice section</div>';
     }
 }
 
-// UPDATED FUNCTION: Show invoice message (now with clearing)
-function showInvoiceMessage(message) {
-    // Clear any existing messages first
-    clearInvoiceMessages();
+// Load sessions that can be invoiced
+async function loadAvailableSessions() {
+    console.log('📥 loadAvailableSessions() CALLED');
     
-    const messageElement = document.createElement('div');
-    messageElement.className = 'invoice-message';
-    messageElement.style.cssText = `
-        background: #e3f2fd;
-        color: #1565c0;
-        padding: 15px;
-        border-radius: 5px;
-        margin-bottom: 15px;
-        border-left: 4px solid #2196f3;
-    `;
-    messageElement.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
-    
-    const form = document.getElementById('invoiceForm');
-    if (form) {
-        form.insertBefore(messageElement, form.firstChild);
-    }
-}
-
-// UPDATED FUNCTION: Load completed sessions (with message clearing)
-async function loadCompletedSessions() {
     const sessionSelect = document.getElementById('completedSession');
-    if (!sessionSelect) return;
-
-    // Clear previous messages
-    clearInvoiceMessages();
+    if (!sessionSelect) {
+        console.error('❌ completedSession select element not found');
+        return;
+    }
     
-    sessionSelect.innerHTML = '<option value="">Loading recent sessions...</option>';
-
+    sessionSelect.innerHTML = '<option value="">Loading sessions...</option>';
+    
     try {
-        // Calculate date 7 days ago
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        // TEST: Check current user first
+        console.log('👤 Current user UID:', currentUser?.uid);
         
-        // Get sessions from the last 7 days (all statuses except cancelled)
+        if (!currentUser || !currentUser.uid) {
+            throw new Error('User not authenticated');
+        }
+        
+        // TEST: Simple query first - just get ANY sessions for this tutor
+        console.log('🔍 Querying Firestore...');
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('date', '>=', sevenDaysAgo)
-            .where('status', 'in', ['completed', 'confirmed', 'rescheduled'])
-            .orderBy('date', 'desc')
+            .limit(10)
             .get();
-
-        completedSessions = [];
-        sessionSelect.innerHTML = '<option value="">Select a recent session</option>';
-
+        
+        console.log('✅ Query completed. Found:', sessionsSnapshot.size, 'total sessions');
+        
+        availableSessions = [];
+        sessionSelect.innerHTML = '<option value="">Select a session to invoice</option>';
+        
         if (sessionsSnapshot.empty) {
-            sessionSelect.innerHTML = '<option value="">No recent sessions available</option>';
-            disableInvoiceForm();
-            showInvoiceMessage('No sessions in the last 7 days available for invoicing.');
+            console.log('ℹ️ No sessions found at all for this tutor');
+            sessionSelect.innerHTML = '<option value="">No sessions found</option>';
             return;
         }
-
+        
+        // Show ALL sessions found (for debugging)
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
-            completedSessions.push(session);
+            availableSessions.push(session);
             
-            const sessionDate = session.date.toDate();
+            console.log('📋 Session found:', {
+                id: session.id,
+                studentName: session.studentName,
+                status: session.status,
+                date: session.date?.toDate(),
+                invoiced: session.invoiced,
+                tutorId: session.tutorId
+            });
+            
+            const sessionDate = session.date?.toDate();
             const option = document.createElement('option');
             option.value = session.id;
-            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${session.duration || '1.5'} hours) - ${session.status}`;
             
+            let displayText = sessionDate ? sessionDate.toLocaleDateString() : 'Unknown date';
+            displayText += ` - ${session.studentName || 'Student'}`;
+            displayText += ` - ${session.subject || 'General'}`;
+            displayText += ` [${session.status || 'no-status'}]`;
+            
+            if (session.invoiced) {
+                displayText += ' ✓ INVOICED';
+                option.disabled = true;
+            }
+            
+            option.textContent = displayText;
             sessionSelect.appendChild(option);
         });
-
-        enableInvoiceForm();
+        
+        console.log('🎉 Available sessions loaded:', availableSessions.length);
         
     } catch (error) {
-        console.error("Error loading recent sessions:", error);
+        console.error('❌ Error in loadAvailableSessions:', error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
-        disableInvoiceForm();
-        showInvoiceError('Error loading recent sessions. Please try again.');
+        alert('Error loading sessions: ' + error.message);
     }
 }
-       
-// Setup invoice form functionality
+
+// Setup form functionality
 function setupInvoiceForm() {
+    console.log('⚙️ Setting up invoice form...');
+    
     const sessionSelect = document.getElementById('completedSession');
     const invoiceForm = document.getElementById('invoiceForm');
     const generateBtn = document.getElementById('generateInvoiceBtn');
     
     if (sessionSelect) {
-        sessionSelect.addEventListener('change', handleSessionSelection);
+        sessionSelect.addEventListener('change', function(e) {
+            const sessionId = e.target.value;
+            console.log('Session selected:', sessionId);
+            
+            const session = availableSessions.find(s => s.id === sessionId);
+            if (session) {
+                populateSessionDetails(session);
+            }
+        });
     }
     
     if (invoiceForm) {
-        invoiceForm.addEventListener('submit', handleInvoiceSubmission);
+        invoiceForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            handleInvoiceSubmission();
+        });
     }
     
     if (generateBtn) {
         generateBtn.addEventListener('click', handleInvoiceSubmission);
     }
-}
-
-// Handle session selection from dropdown
-function handleSessionSelection(event) {
-    const sessionId = event.target.value;
-    currentSelectedSession = completedSessions.find(session => session.id === sessionId);
     
-    if (currentSelectedSession) {
-        populateSessionDetails(currentSelectedSession);
-    } else {
-        resetInvoiceForm();
-    }
+    console.log('✅ Invoice form setup complete');
 }
 
 // Populate form with session details
 function populateSessionDetails(session) {
+    console.log('📝 Populating details for session:', session.id);
+    
     const hoursInput = document.getElementById('hours');
     const rateInput = document.getElementById('rate');
     const notesInput = document.getElementById('invoiceNotes');
     
-    // Set default values from session
-    if (hoursInput) {
-        hoursInput.value = session.duration || '1.5';
-    }
-    
+    if (hoursInput) hoursInput.value = session.duration || '1.5';
     if (rateInput) {
         rateInput.value = session.hourlyRate || '40';
-        rateInput.readOnly = true; // Rate should be fixed based on session
+        rateInput.readOnly = true;
     }
-    
-    // Pre-populate notes with session information
     if (notesInput) {
-        const sessionDate = session.date.toDate();
-        const defaultNotes = `Tutoring session completed on ${sessionDate.toLocaleDateString()} for ${session.studentName || 'student'}. Subject: ${session.subject || 'General tutoring'}.`;
-        notesInput.value = session.invoiceNotes || defaultNotes;
-        notesInput.placeholder = 'Add any additional notes for admin (optional)...';
+        const sessionDate = session.date?.toDate();
+        const defaultNotes = `Tutoring session with ${session.studentName} on ${sessionDate?.toLocaleDateString()}`;
+        notesInput.value = defaultNotes;
     }
     
-    // Recalculate total
     calculateInvoiceTotal();
-    
-    // Update session info display
-    updateSessionInfoDisplay(session);
 }
 
-// Update session information display
-function updateSessionInfoDisplay(session) {
-    // Create or update session info display
-    let sessionInfo = document.getElementById('sessionInfoDisplay');
+// Calculate invoice total
+function calculateInvoiceTotal() {
+    const hours = parseFloat(document.getElementById('hours')?.value) || 0;
+    const rate = parseFloat(document.getElementById('rate')?.value) || 0;
+    const total = hours * rate;
     
-    if (!sessionInfo) {
-        sessionInfo = document.createElement('div');
-        sessionInfo.id = 'sessionInfoDisplay';
-        sessionInfo.className = 'session-info-display';
-        sessionInfo.style.cssText = `
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            border-left: 4px solid var(--primary);
-        `;
-        
-        const form = document.getElementById('invoiceForm');
-        form.insertBefore(sessionInfo, form.firstChild);
-    }
-    
-    const sessionDate = session.date.toDate();
-    const totalAmount = (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2);
-    
-    sessionInfo.innerHTML = `
-    <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">
-        <i class="fas fa-info-circle"></i> Session Details for Payment Request
-    </h4>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-            <div><strong>Student:</strong> ${session.studentName || 'Unknown'}</div>
-            <div><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</div>
-            <div><strong>Subject:</strong> ${session.subject || 'General'}</div>
-            <div><strong>Time:</strong> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
-            <div><strong>Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}</div>
-            <div><strong>Duration:</strong> ${session.duration || '1.5'} hours</div>
-            <div><strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}/hour</div>
-            <div><strong>Total Amount:</strong> $${totalAmount}</div>
-        </div>
-        ${session.notes ? `
-            <div style="margin-top: 10px; padding: 10px; background: white; border-radius: 5px;">
-                <strong>Session Notes:</strong> ${session.notes}
-            </div>
-        ` : ''}
-        
-        <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4caf50;">
-        <strong><i class="fas fa-info-circle"></i> This invoice will be submitted to admin for payment processing. Sessions from the last 7 days are eligible.</strong>
-    </div>
-`;
-}
-
-// Reset invoice form
-function resetInvoiceForm() {
-    const hoursInput = document.getElementById('hours');
-    const rateInput = document.getElementById('rate');
-    const notesInput = document.getElementById('invoiceNotes');
     const totalInput = document.getElementById('total');
-    
-    if (hoursInput) hoursInput.value = '1.5';
-    if (rateInput) {
-        rateInput.value = '40';
-        rateInput.readOnly = false;
-    }
-    if (notesInput) notesInput.value = '';
-    if (totalInput) totalInput.value = '60.00';
-    
-    // Remove session info display
-    const sessionInfo = document.getElementById('sessionInfoDisplay');
-    if (sessionInfo) {
-        sessionInfo.remove();
-    }
-    
-    currentSelectedSession = null;
+    if (totalInput) totalInput.value = total.toFixed(2);
 }
 
-// Handle invoice submission to admin
-async function handleInvoiceSubmission(event) {
-    if (event) event.preventDefault();
+// Handle invoice submission
+async function handleInvoiceSubmission() {
+    console.log('🚀 Invoice submission started');
     
-    if (!currentSelectedSession) {
-        showInvoiceError('Please select a completed session first.');
+    const sessionSelect = document.getElementById('completedSession');
+    const selectedSessionId = sessionSelect?.value;
+    
+    if (!selectedSessionId) {
+        alert('Please select a session first');
         return;
     }
     
-    if (!validateInvoiceForm()) {
-        return;
-    }
-    
-    // Confirm submission
-    if (!confirm('Submit this invoice to admin for payment processing?\n\nThis action cannot be undone.')) {
+    const session = availableSessions.find(s => s.id === selectedSessionId);
+    if (!session) {
+        alert('Session not found');
         return;
     }
     
     try {
-        await submitInvoiceToAdmin(currentSelectedSession);
-    } catch (error) {
-        console.error("Error submitting invoice:", error);
-        showInvoiceError('Failed to submit invoice. Please try again.');
-    }
-}
-
-// Validate invoice form
-function validateInvoiceForm() {
-    const hours = parseFloat(document.getElementById('hours').value);
-    const rate = parseFloat(document.getElementById('rate').value);
-    const notes = document.getElementById('invoiceNotes').value.trim();
-    
-    if (!hours || hours <= 0) {
-        showInvoiceError('Please enter a valid number of hours (greater than 0).');
-        return false;
-    }
-    
-    if (hours > 24) {
-        showInvoiceError('Please enter a reasonable number of hours (max 24 hours per session).');
-        return false;
-    }
-    
-    if (!rate || rate <= 0) {
-        showInvoiceError('Please enter a valid hourly rate (greater than 0).');
-        return false;
-    }
-    
-    if (rate > 1000) {
-        showInvoiceError('Please enter a reasonable hourly rate.');
-        return false;
-    }
-    
-    if (notes.length > 1000) {
-        showInvoiceError('Additional notes must be less than 1000 characters.');
-        return false;
-    }
-    
-    return true;
-}
-
-// Submit invoice to admin for payment processing
-async function submitInvoiceToAdmin(session) {
-    const generateBtn = document.getElementById('generateInvoiceBtn');
-    const originalText = generateBtn.innerHTML;
-    
-    try {
-        // Show loading state
-        generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting to Admin...';
-        generateBtn.disabled = true;
+        console.log('Submitting invoice for session:', session.id);
         
-        const hours = parseFloat(document.getElementById('hours').value);
-        const rate = parseFloat(document.getElementById('rate').value);
-        const notes = document.getElementById('invoiceNotes').value.trim();
+        // Show loading
+        const generateBtn = document.getElementById('generateInvoiceBtn');
+        const originalText = generateBtn?.innerHTML;
+        if (generateBtn) {
+            generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
+            generateBtn.disabled = true;
+        }
+        
+        // Get form values
+        const hours = parseFloat(document.getElementById('hours')?.value) || 1.5;
+        const rate = parseFloat(document.getElementById('rate')?.value) || 40;
+        const notes = document.getElementById('invoiceNotes')?.value || '';
         const total = hours * rate;
         
-        // Create invoice data for admin
+        // Create invoice
         const invoiceData = {
             sessionId: session.id,
             tutorId: currentUser.uid,
             tutorName: userData?.fullName || 'Tutor',
-            tutorEmail: userData?.email || currentUser.email,
             studentId: session.studentId,
             studentName: session.studentName,
             sessionDate: session.date,
@@ -6240,350 +6117,45 @@ async function submitInvoiceToAdmin(session) {
             totalAmount: total,
             notes: notes,
             status: 'pending',
-            invoiceNumber: generateInvoiceNumber(),
+            invoiceNumber: 'INV-' + Date.now(),
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            submittedDate: new Date(),
-            paymentStatus: 'pending',
-            sessionType: session.sessionType || 'online',
-            duration: session.duration || '1.5'
+            sessionType: session.sessionType || 'online'
         };
         
-        // Save invoice to Firestore for admin review
+        // Save to Firestore
         const invoiceRef = await db.collection('tutorInvoices').add(invoiceData);
         
-        // Mark session as invoiced to prevent duplicates
+        // Mark session as invoiced
         await db.collection('bookedSessions').doc(session.id).update({
             invoiced: true,
             invoiceId: invoiceRef.id,
-            invoiceSubmittedAt: new Date(),
-            invoiceAmount: total,
-            invoiceStatus: 'pending'
+            invoiceSubmittedAt: new Date()
         });
         
-        // Show success message
-        showInvoiceSuccess(invoiceData, invoiceRef.id);
+        console.log('✅ Invoice submitted successfully:', invoiceRef.id);
+        alert('Invoice submitted successfully!');
         
-        // Reload completed sessions to update the dropdown
-        await loadCompletedSessions();
+        // Reload sessions
+        await loadAvailableSessions();
         
-    } finally {
-        // Restore button state
-        generateBtn.innerHTML = originalText;
-        generateBtn.disabled = false;
-    }
-}
-
-// Generate unique invoice number
-function generateInvoiceNumber() {
-    const timestamp = new Date().getTime();
-    const random = Math.floor(Math.random() * 1000);
-    return `TINV-${timestamp}-${random}`;
-}
-
-// Show invoice submission success
-async function showInvoiceSuccess(invoiceData, invoiceId) {
-    const modalContent = createInvoiceSuccessHTML(invoiceData, invoiceId);
-    
-    let modal = document.getElementById('invoiceSuccessModal');
-    
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'invoiceSuccessModal';
-        modal.className = 'modal';
-        modal.style.display = 'none';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width: 600px;">
-                <div class="modal-header">
-                    <h3><i class="fas fa-check-circle" style="color: #4caf50;"></i> Invoice Submitted Successfully</h3>
-                    <span class="close-modal">&times;</span>
-                </div>
-                <div class="modal-body" id="invoiceSuccessModalBody"></div>
-                <div class="modal-actions">
-                    <button class="btn-outline" id="closeInvoiceSuccessBtn">Close</button>
-                    <button class="btn-primary" id="viewInvoiceBtn">
-                        <i class="fas fa-eye"></i> View Invoice Details
-                    </button>
-                    <button class="btn-success" id="printInvoiceBtn">
-                        <i class="fas fa-print"></i> Print for Records
-                    </button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        
-        setupInvoiceSuccessModalEvents(modal, invoiceId);
-    }
-    
-    document.getElementById('invoiceSuccessModalBody').innerHTML = modalContent;
-    modal.style.display = 'flex';
-}
-
-// Create invoice success HTML
-function createInvoiceSuccessHTML(invoiceData, invoiceId) {
-    const sessionDate = invoiceData.sessionDate.toDate();
-    
-    return `
-        <div class="invoice-success">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <i class="fas fa-check-circle" style="font-size: 64px; color: #4caf50; margin-bottom: 15px;"></i>
-                <h3 style="color: #2e7d32; margin-bottom: 10px;">Invoice Submitted for Payment</h3>
-                <p style="color: #666;">Your payment request has been sent to admin for processing.</p>
-            </div>
-            
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">Invoice Summary</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-                    <div><strong>Invoice #:</strong> ${invoiceData.invoiceNumber}</div>
-                    <div><strong>Session Date:</strong> ${sessionDate.toLocaleDateString()}</div>
-                    <div><strong>Student:</strong> ${invoiceData.studentName}</div>
-                    <div><strong>Subject:</strong> ${invoiceData.subject}</div>
-                    <div><strong>Amount:</strong> $${invoiceData.totalAmount.toFixed(2)}</div>
-                    <div><strong>Status:</strong> <span style="color: #ff9800; font-weight: bold;">Pending Payment</span></div>
-                </div>
-            </div>
-            
-            <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; border-left: 4px solid #4caf50;">
-                <h4 style="margin: 0 0 10px 0; color: #2e7d32;">What happens next?</h4>
-                <ul style="margin: 0; padding-left: 20px; color: #666;">
-                    <li>Admin will review your invoice</li>
-                    <li>Payment will be processed within 5-7 business days</li>
-                    <li>You'll receive notification when payment is approved</li>
-                    <li>Check "Your Earnings" section for payment status</li>
-                </ul>
-            </div>
-            
-            <div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px;">
-                <strong><i class="fas fa-clock"></i> Expected Payment Timeline:</strong> 5-7 business days
-            </div>
-        </div>
-    `;
-}
-
-// Setup invoice success modal events
-function setupInvoiceSuccessModalEvents(modal, invoiceId) {
-    const closeBtn = modal.querySelector('.close-modal');
-    const closeActionBtn = modal.querySelector('#closeInvoiceSuccessBtn');
-    const viewBtn = modal.querySelector('#viewInvoiceBtn');
-    const printBtn = modal.querySelector('#printInvoiceBtn');
-    
-    // Close modal
-    closeBtn.addEventListener('click', () => modal.style.display = 'none');
-    closeActionBtn.addEventListener('click', () => modal.style.display = 'none');
-    
-    // View invoice details
-    viewBtn.addEventListener('click', () => viewInvoiceDetails(invoiceId));
-    
-    // Print invoice
-    printBtn.addEventListener('click', () => printInvoice(invoiceId));
-    
-    // Close on background click
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.style.display = 'none';
-        }
-    });
-}
-
-// View invoice details
-async function viewInvoiceDetails(invoiceId) {
-    try {
-        // Navigate to earnings section or show detailed view
-        alert(`Invoice details for ${invoiceId} would be displayed here.`);
-        // In a full implementation, this would show a detailed invoice view
     } catch (error) {
-        console.error("Error viewing invoice:", error);
-    }
-}
-
-// Print invoice for records
-function printInvoice(invoiceId) {
-    const printContent = document.getElementById('invoiceSuccessModalBody').innerHTML;
-    
-    const printWindow = window.open('', '_blank');
-    printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Invoice ${invoiceId} - Tutor Payment Request</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.4; }
-                @media print { 
-                    body { margin: 10mm; }
-                    .no-print { display: none; }
-                }
-                .header { text-align: center; margin-bottom: 20px; }
-                .summary { background: #f5f5f5; padding: 15px; margin: 15px 0; }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Tutor Payment Request</h1>
-                <p>Invoice: ${invoiceId}</p>
-                <p>Generated on: ${new Date().toLocaleDateString()}</p>
-            </div>
-            ${printContent}
-            <div class="no-print" style="text-align: center; margin-top: 20px;">
-                <button onclick="window.print()" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">
-                    Print This Page
-                </button>
-            </div>
-        </body>
-        </html>
-    `);
-    
-    printWindow.document.close();
-}
-
-// Enhanced invoice calculations
-function setupInvoiceCalculations() {
-    const hoursInput = document.getElementById('hours');
-    const rateInput = document.getElementById('rate');
-    const totalInput = document.getElementById('total');
-    
-    if (hoursInput && rateInput && totalInput) {
-        hoursInput.addEventListener('input', calculateInvoiceTotal);
-        rateInput.addEventListener('input', calculateInvoiceTotal);
-        
-        // Add validation
-        hoursInput.addEventListener('blur', validateHoursInput);
-        rateInput.addEventListener('blur', validateRateInput);
-        
-        calculateInvoiceTotal();
-    }
-}
-
-// Calculate invoice total
-function calculateInvoiceTotal() {
-    const hours = parseFloat(document.getElementById('hours').value) || 0;
-    const rate = parseFloat(document.getElementById('rate').value) || 0;
-    const total = hours * rate;
-    
-    document.getElementById('total').value = total.toFixed(2);
-}
-
-// Validate hours input
-function validateHoursInput(event) {
-    const hours = parseFloat(event.target.value);
-    if (!hours || hours <= 0) {
-        event.target.style.borderColor = 'var(--error)';
-        showInputError('hoursError', 'Please enter a valid number of hours (greater than 0).');
-    } else if (hours > 24) {
-        event.target.style.borderColor = 'var(--warning)';
-        showInputError('hoursError', 'Are you sure about this many hours? Maximum 24 hours per session.');
-    } else {
-        event.target.style.borderColor = '';
-        clearInputError('hoursError');
-    }
-}
-
-// Validate rate input
-function validateRateInput(event) {
-    const rate = parseFloat(event.target.value);
-    if (!rate || rate <= 0) {
-        event.target.style.borderColor = 'var(--error)';
-        showInputError('rateError', 'Please enter a valid hourly rate (greater than 0).');
-    } else if (rate > 1000) {
-        event.target.style.borderColor = 'var(--warning)';
-        showInputError('rateError', 'Please confirm this hourly rate with admin.');
-    } else {
-        event.target.style.borderColor = '';
-        clearInputError('rateError');
-    }
-}
-
-// Show input error message
-function showInputError(errorId, message) {
-    let errorElement = document.getElementById(errorId);
-    if (!errorElement) {
-        errorElement = document.createElement('div');
-        errorElement.id = errorId;
-        errorElement.className = 'input-error';
-        errorElement.style.cssText = 'color: var(--error); font-size: 0.8em; margin-top: 5px;';
-        
-        const input = document.getElementById(errorId.replace('Error', ''));
-        input.parentNode.appendChild(errorElement);
-    }
-    errorElement.textContent = message;
-}
-
-// Clear input error message
-function clearInputError(errorId) {
-    const errorElement = document.getElementById(errorId);
-    if (errorElement) {
-        errorElement.remove();
-    }
-}
-
-// Disable invoice form when no sessions available
-function disableInvoiceForm() {
-    const form = document.getElementById('invoiceForm');
-    const inputs = form.querySelectorAll('input, select, textarea, button');
-    
-    inputs.forEach(input => {
-        input.disabled = true;
-    });
-}
-
-// Enable invoice form when sessions are available
-function enableInvoiceForm() {
-    const form = document.getElementById('invoiceForm');
-    const inputs = form.querySelectorAll('input, select, textarea, button');
-    
-    inputs.forEach(input => {
-        input.disabled = false;
-    });
-}
-
-// Show invoice message
-function showInvoiceMessage(message) {
-    const messageElement = document.createElement('div');
-    messageElement.style.cssText = `
-        background: #e3f2fd;
-        color: #1565c0;
-        padding: 15px;
-        border-radius: 5px;
-        margin-bottom: 15px;
-        border-left: 4px solid #2196f3;
-    `;
-    messageElement.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
-    
-    const form = document.getElementById('invoiceForm');
-    form.insertBefore(messageElement, form.firstChild);
-}
-
-// Show invoice error message
-function showInvoiceError(message) {
-    // Remove existing error
-    const existingError = document.querySelector('.invoice-error');
-    if (existingError) {
-        existingError.remove();
-    }
-    
-    // Create error element
-    const errorElement = document.createElement('div');
-    errorElement.className = 'invoice-error';
-    errorElement.style.cssText = `
-        background: #fee;
-        color: var(--error);
-        padding: 10px 15px;
-        border-radius: 5px;
-        margin-bottom: 15px;
-        border-left: 4px solid var(--error);
-    `;
-    errorElement.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${message}`;
-
-    
-    // Insert before form
-    const form = document.getElementById('invoiceForm');
-    form.insertBefore(errorElement, form.firstChild);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (errorElement.parentNode) {
-            errorElement.remove();
+        console.error('❌ Invoice submission failed:', error);
+        alert('Failed to submit invoice: ' + error.message);
+    } finally {
+        // Reset button
+        const generateBtn = document.getElementById('generateInvoiceBtn');
+        if (generateBtn) {
+            generateBtn.innerHTML = 'Generate Invoice';
+            generateBtn.disabled = false;
         }
-    }, 5000);
+    }
 }
+
+// Manual test function (call this in browser console)
+window.testInvoiceSection = async function() {
+    console.log('🧪 TESTING INVOICE SECTION...');
+    await loadInvoiceSession();
+};
 
 // =============================================
 // INVOICE SESSION SECTION ENDS HERE
@@ -7925,6 +7497,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
