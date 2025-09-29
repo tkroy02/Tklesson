@@ -3903,55 +3903,75 @@ function setupRescheduleModalEvents() {
 }
 */
 
-// Setup reschedule modal event listeners
-function setupRescheduleModalEvents() {
-    const modal = document.getElementById('rescheduleModal');
-    
-    // Close modal when clicking X or cancel button
-    modal.querySelector('.close-modal').addEventListener('click', closeRescheduleModal);
-    modal.querySelector('#cancelRescheduleBtn').addEventListener('click', closeRescheduleModal);
-    
-    // Handle form submission
-    modal.querySelector('#submitRescheduleBtn').addEventListener('click', handleRescheduleSubmit);
-    
-    // Also allow form submission with Enter key
-    const form = document.getElementById('rescheduleForm');
-    form.addEventListener('submit', function(e) {
-        e.preventDefault();
-        handleRescheduleSubmit();
-    });
-}
-       
-// Handle reschedule form submission
-function handleRescheduleSubmit() {
-    const modal = document.getElementById('rescheduleModal');
-    const sessionId = modal.getAttribute('data-current-session-id');
-    
-    // Get form values
-    const date = document.getElementById('rescheduleDate').value;
-    const time = document.getElementById('rescheduleTime').value;
-    const reason = document.getElementById('rescheduleReason').value;
-    
-    // Validate form
-    if (!date || !time || !reason) {
-        alert('Please fill in all required fields.');
-        return;
-    }
-    
-    if (!sessionId) {
-        alert('Error: Session ID not found. Please refresh the page and try again.');
-        return;
-    }
-    
-    submitRescheduleRequest(sessionId);
-}
        
 // Submit reschedule request (tutor sends request to student)
 async function submitRescheduleRequest(sessionId) {
-    // ... your existing reschedule request code remains the same ...
-    // (This function doesn't need changes as it doesn't involve meet link generation)
+    console.log('submitRescheduleRequest called for session:', sessionId);
+    
+    try {
+        // Get form values
+        const date = document.getElementById('rescheduleDate').value;
+        const time = document.getElementById('rescheduleTime').value;
+        const reason = document.getElementById('rescheduleReason').value;
+        
+        // Combine date and time into a single Date object
+        const requestedDateTime = new Date(`${date}T${time}`);
+        
+        // Get the original session details
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        
+        // Create the notification in the database
+        const notificationData = {
+            type: 'reschedule_request',
+            sessionId: sessionId,
+            tutorId: currentUser.uid,
+            tutorName: userData?.fullName || 'Tutor',
+            studentId: session.studentId,
+            studentName: session.studentName,
+            originalDate: session.date,
+            requestedDate: requestedDateTime,
+            reason: reason,
+            status: 'pending',
+            createdAt: new Date(),
+            read: false
+        };
+        
+        // Save to notifications collection
+        await db.collection('notifications').add(notificationData);
+        
+        // Update session status to show reschedule is requested
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'reschedule_requested',
+            rescheduleRequestedAt: new Date()
+        });
+        
+        // Show success message
+        showNotification('Reschedule request sent to student successfully!', 'success');
+        
+        // Close the modal
+        closeRescheduleModal();
+        
+        // Refresh the bookings to show updated status
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error submitting reschedule request:", error);
+        showNotification('Error sending reschedule request. Please try again.', 'error');
+    }
 }
 
+// Helper function to show notifications
+function showNotification(message, type = 'info') {
+    // Simple alert for now - you can replace with a toast notification system
+    alert(`${type.toUpperCase()}: ${message}`);
+}
+       
 // Close reschedule modal
 function closeRescheduleModal() {
     const modal = document.getElementById('rescheduleModal');
@@ -6561,6 +6581,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </script>    
 </body>
 </html>
+
 
 
 
