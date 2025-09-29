@@ -6311,24 +6311,23 @@ function navigateToEarningsSection() {
 // YOUR EARNINGS SECTION STARTS HERE
 // =============================================
 
-// Load earnings data (focused solely on financial aspects)
+// Load earnings data from tutorInvoices collection
 async function loadEarningsData() {
     try {
-        // Get only completed sessions (these are the ones that generate earnings)
-        const sessionsSnapshot = await db.collection('bookedSessions')
+        // Get all invoices for this tutor
+        const invoicesSnapshot = await db.collection('tutorInvoices')
             .where('tutorId', '==', currentUser.uid)
-            .where('status', '==', 'completed')
-            .orderBy('date', 'desc')
+            .orderBy('createdAt', 'desc')
             .get();
         
-        if (sessionsSnapshot.empty) {
+        if (invoicesSnapshot.empty) {
             displayEmptyEarningsState();
             return;
         }
         
-        const earningsData = processEarningsData(sessionsSnapshot);
+        const earningsData = processEarningsData(invoicesSnapshot);
         displayEarningsOverview(earningsData);
-        displayEarningsHistory(earningsData.completedSessions);
+        displayEarningsHistory(earningsData.invoices);
         
     } catch (error) {
         console.error("Error loading earnings data:", error);
@@ -6336,46 +6335,49 @@ async function loadEarningsData() {
     }
 }
 
-// Process earnings data from completed sessions
-function processEarningsData(sessionsSnapshot) {
-    const completedSessions = [];
+// Process earnings data from invoices
+function processEarningsData(invoicesSnapshot) {
+    const invoices = [];
     let totalEarnings = 0;
     let totalHours = 0;
     let currentMonthEarnings = 0;
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
     
-    sessionsSnapshot.forEach(doc => {
-        const session = doc.data();
-        session.id = doc.id;
+    invoicesSnapshot.forEach(doc => {
+        const invoice = doc.data();
+        invoice.id = doc.id;
         
-        const sessionDate = session.date.toDate();
-        const duration = parseFloat(session.duration) || 1.5;
-        const hourlyRate = parseFloat(session.hourlyRate) || 40;
-        const sessionEarnings = duration * hourlyRate;
+        const invoiceDate = invoice.createdAt.toDate();
+        const sessionDate = invoice.sessionDate.toDate();
+        const hours = parseFloat(invoice.hours) || 1.5;
+        const hourlyRate = parseFloat(invoice.hourlyRate) || 40;
+        const sessionEarnings = hours * hourlyRate;
         
-        // Check if session is in current month
-        if (sessionDate.getMonth() === currentMonth && sessionDate.getFullYear() === currentYear) {
+        // Check if invoice is in current month
+        if (invoiceDate.getMonth() === currentMonth && invoiceDate.getFullYear() === currentYear) {
             currentMonthEarnings += sessionEarnings;
         }
         
         totalEarnings += sessionEarnings;
-        totalHours += duration;
+        totalHours += hours;
         
-        completedSessions.push({
-            ...session,
+        invoices.push({
+            ...invoice,
+            invoiceDate,
             sessionDate,
-            duration,
+            hours,
             hourlyRate,
-            sessionEarnings
+            sessionEarnings,
+            status: invoice.status || 'pending'
         });
     });
     
-    const avgSessionEarnings = completedSessions.length > 0 ? totalEarnings / completedSessions.length : 0;
+    const avgSessionEarnings = invoices.length > 0 ? totalEarnings / invoices.length : 0;
     
     return {
-        completedSessions,
-        totalSessions: completedSessions.length,
+        invoices,
+        totalSessions: invoices.length,
         totalEarnings,
         avgSessionEarnings,
         totalHours,
@@ -6396,16 +6398,16 @@ function displayEarningsOverview(earningsData) {
 }
 
 // Display earnings history table
-function displayEarningsHistory(completedSessions) {
+function displayEarningsHistory(invoices) {
     const tableBody = document.getElementById('earningsTableBody');
     const earningsTotal = document.getElementById('earningsTotal');
     
-    if (completedSessions.length === 0) {
+    if (invoices.length === 0) {
         tableBody.innerHTML = `
             <tr>
                 <td colspan="6" style="text-align: center; padding: 40px;">
                     <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
-                    <p style="color: #666;">No earnings history yet. Completed sessions will appear here.</p>
+                    <p style="color: #666;">No earnings history yet. Submitted invoices will appear here.</p>
                 </td>
             </tr>
         `;
@@ -6416,17 +6418,17 @@ function displayEarningsHistory(completedSessions) {
     let tableHTML = '';
     let runningTotal = 0;
     
-    completedSessions.forEach(session => {
-        runningTotal += session.sessionEarnings;
+    invoices.forEach(invoice => {
+        runningTotal += invoice.sessionEarnings;
         
         tableHTML += `
             <tr class="earning-row">
-                <td>${session.sessionDate.toLocaleDateString()}</td>
-                <td>${session.studentName || 'Unknown Student'}</td>
-                <td>${session.subject || 'General'}</td>
-                <td>${session.duration}h</td>
-                <td>$${session.hourlyRate}/h</td>
-                <td><strong>$${session.sessionEarnings.toFixed(2)}</strong></td>
+                <td>${invoice.sessionDate.toLocaleDateString()}</td>
+                <td>${invoice.studentName || 'Unknown Student'}</td>
+                <td>${invoice.subject || 'General'}</td>
+                <td>${invoice.hours}h</td>
+                <td>$${invoice.hourlyRate}/h</td>
+                <td><strong>$${invoice.sessionEarnings.toFixed(2)}</strong></td>
             </tr>
         `;
     });
@@ -6448,7 +6450,7 @@ function displayEmptyEarningsState() {
             <td colspan="6" style="text-align: center; padding: 40px;">
                 <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
                 <h4 style="color: #666; margin-bottom: 10px;">No Earnings Yet</h4>
-                <p style="color: #999;">Your earnings will appear here once you complete sessions with students.</p>
+                <p style="color: #999;">Your earnings will appear here once you submit invoices for your sessions.</p>
             </td>
         </tr>
     `;
@@ -6471,7 +6473,6 @@ function displayEarningsErrorState() {
 // =============================================
 // YOUR EARNINGS SECTION ENDS HERE
 // =============================================
-
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
 // =============================================
@@ -7642,6 +7643,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
