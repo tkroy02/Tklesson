@@ -2206,6 +2206,11 @@ function joinSession(sessionId) {
             const session = doc.data();
             const now = new Date();
             const sessionTime = session.date && typeof session.date.toDate === 'function' ? session.date.toDate() : new Date(session.date);
+            
+            // Calculate session end time (start time + duration)
+            const sessionEndTime = new Date(sessionTime);
+            const durationHours = parseFloat(session.duration) || 1.5;
+            sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
 
             // Check if session is confirmed
             if (session.status !== 'confirmed') {
@@ -2219,14 +2224,16 @@ function joinSession(sessionId) {
                 return;
             }
 
-            // Allow joining 15 minutes before and up to 4 hours after session
-            const minutesUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60);
+            // Allow joining 15 minutes before and up to session end time
+            const fifteenMinutesBefore = new Date(sessionTime);
+            fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
 
-            if (minutesUntilSession > 15) {
+            if (now < fifteenMinutesBefore) {
+                const minutesUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60);
                 alert(`Session starts in ${Math.ceil(minutesUntilSession)} minutes. You can join 15 minutes before the session.`);
                 return;
-            } else if (minutesUntilSession < -240) {
-                alert('This session ended more than 4 hours ago. Joining is no longer available.');
+            } else if (now > sessionEndTime) {
+                alert('This session has already ended. Joining is no longer available.');
                 return;
             }
 
@@ -2251,6 +2258,7 @@ function joinSession(sessionId) {
             alert('Failed to join session. Please try again.');
         });
 }
+  
 
 // Record join attempt in Firestore
 function recordJoinAttempt(sessionId, userId) {
@@ -2481,29 +2489,51 @@ function loadBookingsDisplay(bookings) {
 function loadUserBookings() {
     const userId = auth.currentUser.uid;
     
-    // Query upcoming bookings including reschedule requests
+    // Query ALL sessions (we'll filter client-side based on end time)
     db.collection('bookedSessions')
         .where('studentId', '==', userId)
         .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
-        .where('date', '>=', new Date())
         .orderBy('date', 'asc')
         .get()
         .then((querySnapshot) => {
-            updateUpcomingSessionsCount(querySnapshot.size);
+            // Filter client-side to include sessions that haven't ended yet
+            const filteredSessions = [];
+            const now = new Date();
             
-            // For each booking, check if there's a pending reschedule request
-            const bookingPromises = querySnapshot.docs.map(async (doc) => {
+            querySnapshot.forEach(doc => {
                 const booking = doc.data();
                 const bookingId = doc.id;
                 
+                // Convert Firestore Timestamp to Date if needed
+                if (booking.date && typeof booking.date.toDate === 'function') {
+                    booking.date = booking.date.toDate();
+                }
+                
+                // Calculate session end time (start time + duration)
+                const sessionEndTime = new Date(booking.date);
+                const durationHours = parseFloat(booking.duration) || 1.5;
+                sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
+                
+                // Include sessions that haven't ended yet
+                if (sessionEndTime > now) {
+                    filteredSessions.push({
+                        id: bookingId,
+                        ...booking
+                    });
+                }
+            });
+            
+            updateUpcomingSessionsCount(filteredSessions.length);
+            
+            // For each booking, check if there's a pending reschedule request
+            const bookingPromises = filteredSessions.map(async (booking) => {
                 // Check for pending reschedule requests
                 const rescheduleQuery = await db.collection('rescheduleRequests')
-                    .where('sessionId', '==', bookingId)
+                    .where('sessionId', '==', booking.id)
                     .where('status', '==', 'pending')
                     .get();
                 
                 return {
-                    id: bookingId,
                     ...booking,
                     hasPendingReschedule: !rescheduleQuery.empty,
                     rescheduleRequest: rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data()
@@ -2523,6 +2553,7 @@ function loadUserBookings() {
             }
         });
 }
+  
 
 // Show notification when session is confirmed
 function showSessionConfirmedNotification(session) {
@@ -4202,6 +4233,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
