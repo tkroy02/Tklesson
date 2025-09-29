@@ -2981,15 +2981,38 @@ async function loadMyBookings() {
     try {
         const userId = currentUser.uid;
         
-        // Query upcoming bookings (confirmed sessions)
+        // Get ALL sessions (we'll filter client-side based on end time)
         const querySnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', userId)
             .where('status', 'in', ['confirmed', 'reschedule_requested'])
-            .where('date', '>=', new Date())
             .orderBy('date', 'asc')
             .get();
         
-        if (querySnapshot.empty) {
+        // Filter client-side to include sessions that haven't ended yet
+        const filteredSessions = [];
+        const now = new Date();
+        
+        querySnapshot.forEach(doc => {
+            const booking = doc.data();
+            booking.id = doc.id;
+            
+            // Convert Firestore Timestamp to Date if needed
+            if (booking.date && typeof booking.date.toDate === 'function') {
+                booking.date = booking.date.toDate();
+            }
+            
+            // Calculate session end time (start time + duration)
+            const sessionEndTime = new Date(booking.date);
+            const durationHours = parseFloat(booking.duration) || 1.5;
+            sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
+            
+            // Include sessions that haven't ended yet
+            if (sessionEndTime > now) {
+                filteredSessions.push(booking);
+            }
+        });
+        
+        if (filteredSessions.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
                     <i class="fas fa-calendar-times"></i>
@@ -3002,20 +3025,15 @@ async function loadMyBookings() {
             return;
         }
         
+        // Sort by date
+        filteredSessions.sort((a, b) => a.date - b.date);
+        
         confirmedSessions = [];
         let bookingsHTML = '';
         let upcomingCount = 0;
         
         // Process each booking and fetch student details + reschedule info
-        for (const doc of querySnapshot.docs) {
-            const booking = doc.data();
-            booking.id = doc.id;
-            
-            // Convert Firestore Timestamp to Date if needed
-            if (booking.date && typeof booking.date.toDate === 'function') {
-                booking.date = booking.date.toDate();
-            }
-            
+        for (const booking of filteredSessions) {
             // Check for pending reschedule requests in the separate collection
             const rescheduleQuery = await db.collection('rescheduleRequests')
                 .where('sessionId', '==', booking.id)
@@ -3063,7 +3081,7 @@ async function loadMyBookings() {
         `;
     }
 }
-
+       
 // Helper function to validate session for joining
 function validateSessionForJoin(session) {
     const now = new Date();
@@ -3076,13 +3094,18 @@ function validateSessionForJoin(session) {
         sessionTime = new Date(session.date);
     }
     
-    const timeDiff = sessionTime.getTime() - now.getTime();
-    const hoursDiff = timeDiff / (1000 * 60 * 60);
+    // Calculate session end time (start time + duration)
+    const sessionEndTime = new Date(sessionTime);
+    const durationHours = parseFloat(session.duration) || 1.5;
+    sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
     
-    // Allow joining 15 minutes before and 2 hours after session time
-    return hoursDiff >= -0.25 && hoursDiff <= 2;
+    // Allow joining 15 minutes before session start and up to session end time
+    const fifteenMinutesBefore = new Date(sessionTime);
+    fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
+    
+    return now >= fifteenMinutesBefore && now <= sessionEndTime;
 }
-
+       
 // Create booking card HTML for tutor dashboard
 function createBookingCard(booking, studentName) {
     let sessionDate;
@@ -3159,19 +3182,50 @@ function createBookingCard(booking, studentName) {
 
 // Create join button - use button instead of direct link for proper event handling
 let joinButton = '';
-if (canJoinSession && meetLink) {
-    // Session has a meetLink - create direct link button
-    joinButton = `<a href="${meetLink}" target="_blank" class="btn-primary" style="display: inline-block; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-        <i class="fas fa-video"></i> Join Session
-    </a>`;
-} else if (canJoinSession && !meetLink) {
-    // Session is joinable but no meet link exists
+if (location === 'online' && meetLink) {
+    // Session is online and has a meet link - check if we're in the valid time window
+    const now = new Date();
+    
+    // Calculate session end time
+    const sessionEndTime = new Date(sessionDate);
+    const durationHours = parseFloat(booking.duration) || 1.5;
+    sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
+    
+    // Allow joining from 15 minutes before until the session end time
+    const fifteenMinutesBefore = new Date(sessionDate);
+    fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
+    
+    const canJoinNow = now >= fifteenMinutesBefore && now <= sessionEndTime;
+    
+    if (canJoinNow) {
+        // Session is joinable right now
+        joinButton = `<a href="${meetLink}" target="_blank" class="btn-primary" style="display: inline-block; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+            <i class="fas fa-video"></i> Join Session
+        </a>`;
+    } else if (now < fifteenMinutesBefore) {
+        // Session hasn't started yet
+        const timeUntilSession = sessionDate.getTime() - now.getTime();
+        const minutesUntilSession = Math.ceil(timeUntilSession / (1000 * 60));
+        
+        if (minutesUntilSession > 15) {
+            joinButton = `<button class="btn-outline" disabled title="Join available 15 minutes before session">
+                <i class="fas fa-video"></i> Join in ${Math.ceil(minutesUntilSession / 60)}h ${minutesUntilSession % 60}m
+            </button>`;
+        } else {
+            joinButton = '<button class="btn-outline" disabled title="Join available 15 minutes before session"><i class="fas fa-video"></i> Join Soon</button>';
+        }
+    } else {
+        // Session has ended
+        joinButton = '<button class="btn-outline" disabled title="Session has ended"><i class="fas fa-video"></i> Session Ended</button>';
+    }
+} else if (location === 'online' && !meetLink) {
+    // Online session but no meet link available
     joinButton = `<button class="btn-outline" disabled title="Meet link not available yet">
         <i class="fas fa-video"></i> Join Session (Link Pending)
     </button>`;
 } else {
-    // Session not joinable (wrong time or not online)
-    joinButton = '<button class="btn-outline" disabled title="Session not available or outside join window"><i class="fas fa-video"></i> Join Session</button>';
+    // In-person session
+    joinButton = '<button class="btn-outline" disabled title="This is an in-person session"><i class="fas fa-map-marker-alt"></i> In-Person Session</button>';
 }
     
     // Meet link info display
@@ -6455,6 +6509,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </script>    
 </body>
 </html>
+
 
 
 
