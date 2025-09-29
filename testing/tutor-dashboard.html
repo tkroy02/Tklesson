@@ -5903,64 +5903,82 @@ function showInvoiceMessage(message) {
 async function loadCompletedSessions() {
     const sessionSelect = document.getElementById('completedSession');
     if (!sessionSelect) return;
-    
+
     // Clear previous messages
     clearInvoiceMessages();
     
-    // Only show loading message if the select is empty
-    if (sessionSelect.options.length <= 1) {
-        sessionSelect.innerHTML = '<option value="">Loading completed sessions...</option>';
-    }
-    
+    sessionSelect.innerHTML = '<option value="">Loading past sessions...</option>';
+
     try {
-        // Get completed sessions that haven't been invoiced yet
+        const now = new Date();
+        
+        // Get all sessions for this tutor that are in the past
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('status', '==', 'completed')
+            .where('date', '<', now) // Past sessions only
             .orderBy('date', 'desc')
             .get();
-        
+
         completedSessions = [];
-        sessionSelect.innerHTML = '<option value="">Select a completed session</option>';
-        
+        sessionSelect.innerHTML = '<option value="">Select a past session to invoice</option>';
+
         if (sessionsSnapshot.empty) {
-            sessionSelect.innerHTML = '<option value="">No completed sessions available</option>';
+            sessionSelect.innerHTML = '<option value="">No past sessions available</option>';
             disableInvoiceForm();
-            // Only show message if there are truly no sessions
-            if (!window.invoiceMessageShown) {
-                showInvoiceMessage('No completed sessions available for invoicing. Complete some sessions first.');
-                window.invoiceMessageShown = true;
-            }
+            showInvoiceMessage('No past sessions available for invoicing.');
             return;
         }
-        
+
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
+            
+            // Skip sessions that are already invoiced
+            if (session.invoiced) {
+                return; // Skip already invoiced sessions
+            }
+            
             completedSessions.push(session);
             
             const sessionDate = session.date.toDate();
             const option = document.createElement('option');
             option.value = session.id;
-            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${session.duration || '1.5'} hours)`;
             
-            // Mark if already invoiced
-            if (session.invoiced) {
-                option.textContent += ' - ✓ Submitted for Payment';
-                option.disabled = true;
+            // Create more informative option text
+            let statusText = session.status || 'unknown';
+            let duration = session.duration || '1.5';
+            
+            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${duration}h) - ${statusText}`;
+            
+            // Optional: Color code based on status
+            if (session.status === 'cancelled') {
+                option.style.color = '#f44336';
+                option.textContent += ' - Cancelled';
+            } else if (session.status === 'completed') {
+                option.style.color = '#4CAF50';
+                option.textContent += ' - Completed';
+            } else if (session.status === 'confirmed') {
+                option.style.color = '#FF9800';
+                option.textContent += ' - Held (Not Marked Complete)';
             }
             
             sessionSelect.appendChild(option);
         });
-        
-        enableInvoiceForm();
-        window.invoiceMessageShown = false; // Reset since we have sessions now
-        
+
+        if (completedSessions.length === 0) {
+            sessionSelect.innerHTML = '<option value="">All past sessions have been invoiced</option>';
+            disableInvoiceForm();
+            showInvoiceMessage('All your past sessions have already been invoiced.');
+        } else {
+            enableInvoiceForm();
+            showInvoiceMessage(`Found ${completedSessions.length} past session(s) available for invoicing.`);
+        }
+
     } catch (error) {
-        console.error("Error loading completed sessions:", error);
+        console.error("Error loading past sessions:", error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
         disableInvoiceForm();
-        showInvoiceError('Error loading completed sessions. Please try again.');
+        showInvoiceError('Error loading past sessions. Please try again.');
     }
 }
        
@@ -7875,6 +7893,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
