@@ -86,6 +86,83 @@
     background: #e0a800;
 }
 
+// Add this CSS for pagination styling
+const paginationCSS = `
+.pagination-container {
+    margin-top: 20px;
+    text-align: center;
+}
+
+.pagination-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.pagination-info {
+    color: var(--text-secondary, #666);
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+}
+
+.pagination-buttons {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.pagination-btn {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color, #ddd);
+    background: white;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-size: 0.9rem;
+    min-width: 40px;
+}
+
+.pagination-btn:hover {
+    background: var(--gray-light, #f5f5f5);
+    border-color: var(--primary, #4361ee);
+}
+
+.pagination-btn.active {
+    background: var(--primary, #4361ee);
+    color: white;
+    border-color: var(--primary, #4361ee);
+}
+
+.pagination-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-ellipsis {
+    padding: 8px 5px;
+    color: var(--text-secondary, #666);
+}
+
+@media (max-width: 768px) {
+    .pagination-buttons {
+        gap: 3px;
+    }
+    
+    .pagination-btn {
+        padding: 6px 8px;
+        font-size: 0.8rem;
+        min-width: 35px;
+    }
+}
+`;
+
+// Inject the CSS
+const style = document.createElement('style');
+style.textContent = paginationCSS;
+document.head.appendChild(style);
+        
 /* My Bookings Section Styling */
 .bookings-section {
     padding: 2rem;
@@ -1746,11 +1823,6 @@
                     <div class="spinner" id="sessionsSpinner"></div>
                 </div>
 
-                <button id="loadMoreBtn" class="btn-outline" style="display: none; margin: 20px auto;">
-                    <i class="fas fa-chevron-down"></i> Load More Sessions
-                </button>
-            </section>
-
             <section id="invoice-session" class="dashboard-section">
                 <div class="section-header">
                     <h3><i class="fas fa-file-invoice-dollar"></i> Invoice Session</h3>
@@ -1953,6 +2025,8 @@ let confirmedSessions = [];
 let sessionsLoaded = false;
 let tutorsLoaded = false;
 let bookingsLoaded = false;
+let currentSessionsPage = 1;
+const SESSIONS_PER_PAGE = 10;
 
 // Inactivity timer functions
 function resetInactivityTimer() {
@@ -4756,19 +4830,21 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
                 <p>Try adjusting your filter criteria to see more sessions.</p>
             </div>
         `;
-        if (loadMoreBtn) loadMoreBtn.style.display = 'none';
         return;
     }
     
     // Sort by date (most recent first)
     sessions.sort((a, b) => b.date.toDate() - a.date.toDate());
     
-    // Get sessions to display (with load more functionality)
-    const sessionsToDisplay = sessions.slice(0, displayedSessionsCount);
+    // Calculate pagination
+    const totalPages = Math.ceil(sessions.length / SESSIONS_PER_PAGE);
+    const startIndex = (currentSessionsPage - 1) * SESSIONS_PER_PAGE;
+    const endIndex = startIndex + SESSIONS_PER_PAGE;
+    const sessionsToDisplay = sessions.slice(startIndex, endIndex);
     
-    // Create proper table container with fixed height and scrolling
+    // Create table with pagination
     container.innerHTML = `
-        <div class="sessions-table-container" style="max-height: 600px; overflow-y: auto; margin-bottom: 20px;">
+        <div class="sessions-table-container" style="max-height: 500px; overflow-y: auto; margin-bottom: 20px;">
             <table class="sessions-table">
                 <thead>
                     <tr>
@@ -4790,7 +4866,7 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
         <div class="session-stats">
             <div class="stat-item">
                 <span class="stat-number">${sessionsToDisplay.length}</span>
-                <span class="stat-label">Displayed</span>
+                <span class="stat-label">This Page</span>
             </div>
             <div class="stat-item">
                 <span class="stat-number">${sessions.length}</span>
@@ -4801,6 +4877,9 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
                 <span class="stat-label">All Sessions</span>
             </div>
         </div>
+        <div class="pagination-container" id="sessionsPagination">
+            <!-- Pagination will be inserted here -->
+        </div>
     `;
     
     // Add sessions to table body
@@ -4809,21 +4888,98 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
         tableBody.innerHTML += createSessionHistoryRow(session);
     });
     
-    // Show/hide load more button
-    if (loadMoreBtn) {
-        if (sessions.length > displayedSessionsCount) {
-            loadMoreBtn.style.display = 'block';
-            loadMoreBtn.onclick = () => {
-                displayedSessionsCount += 10;
-                applySessionHistoryFilters();
-            };
-        } else {
-            loadMoreBtn.style.display = 'none';
-        }
-    }
+    // Add pagination controls
+    createPaginationControls(totalPages, sessions.length);
     
     // Add event listeners
     addSessionHistoryListeners();
+}
+
+// New: Create pagination controls
+function createPaginationControls(totalPages, totalSessions) {
+    const paginationContainer = document.getElementById('sessionsPagination');
+    if (!paginationContainer) return;
+    
+    if (totalPages <= 1) {
+        paginationContainer.innerHTML = `
+            <div class="pagination-info">
+                Showing all ${totalSessions} sessions
+            </div>
+        `;
+        return;
+    }
+    
+    let paginationHTML = `
+        <div class="pagination-controls">
+            <div class="pagination-info">
+                Page ${currentSessionsPage} of ${totalPages} • 
+                Showing ${Math.min(SESSIONS_PER_PAGE, totalSessions - ((currentSessionsPage - 1) * SESSIONS_PER_PAGE))} of ${totalSessions} sessions
+            </div>
+            <div class="pagination-buttons">
+    `;
+    
+    // Previous button
+    if (currentSessionsPage > 1) {
+        paginationHTML += `<button class="pagination-btn" data-page="${currentSessionsPage - 1}">
+            <i class="fas fa-chevron-left"></i> Previous
+        </button>`;
+    }
+    
+    // Page numbers
+    const maxVisiblePages = 5;
+    let startPage = Math.max(1, currentSessionsPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    
+    // Adjust if we're near the end
+    if (endPage - startPage + 1 < maxVisiblePages) {
+        startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+    
+    // First page + ellipsis
+    if (startPage > 1) {
+        paginationHTML += `<button class="pagination-btn" data-page="1">1</button>`;
+        if (startPage > 2) {
+            paginationHTML += `<span class="pagination-ellipsis">...</span>`;
+        }
+    }
+    
+    // Page numbers
+    for (let i = startPage; i <= endPage; i++) {
+        if (i === currentSessionsPage) {
+            paginationHTML += `<button class="pagination-btn active" data-page="${i}">${i}</button>`;
+        } else {
+            paginationHTML += `<button class="pagination-btn" data-page="${i}">${i}</button>`;
+        }
+    }
+    
+    // Last page + ellipsis
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+            paginationHTML += `<span class="pagination-ellipsis">...</span>`;
+        }
+        paginationHTML += `<button class="pagination-btn" data-page="${totalPages}">${totalPages}</button>`;
+    }
+    
+    // Next button
+    if (currentSessionsPage < totalPages) {
+        paginationHTML += `<button class="pagination-btn" data-page="${currentSessionsPage + 1}">
+            Next <i class="fas fa-chevron-right"></i>
+        </button>`;
+    }
+    
+    paginationHTML += `</div></div>`;
+    paginationContainer.innerHTML = paginationHTML;
+    
+    // Add event listeners to pagination buttons
+    paginationContainer.querySelectorAll('.pagination-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const page = parseInt(btn.dataset.page);
+            if (page !== currentSessionsPage) {
+                currentSessionsPage = page;
+                applySessionHistoryFilters();
+            }
+        });
+    });
 }
        
 // Create comprehensive session history table row
@@ -4923,7 +5079,7 @@ function setupSessionHistoryFilters() {
     if (historyFilter) {
         historyFilter.addEventListener('change', function() {
             currentHistoryFilter = this.value;
-            displayedSessionsCount = 10; // Reset to first page
+            currentSessionsPage = 1; // Reset to page 1
             applySessionHistoryFilters();
         });
     }
@@ -4931,12 +5087,12 @@ function setupSessionHistoryFilters() {
     if (actionTypeFilter) {
         actionTypeFilter.addEventListener('change', function() {
             currentActionTypeFilter = this.value;
-            displayedSessionsCount = 10; // Reset to first page
+            currentSessionsPage = 1; // Reset to page 1
             applySessionHistoryFilters();
         });
     }
 }
-
+       
 // Enhanced session details view for history section
 async function showSessionDetails(sessionId) {
     try {
@@ -7241,6 +7397,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </button>
 </body>
 </html>
+
 
 
 
