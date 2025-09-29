@@ -5897,7 +5897,6 @@ async function loadCompletedSessions() {
 // NEW INVOICE SECTION - FROM SCRATCH
 // =============================================
 
-// Main function to load invoice section
 let availableSessions = [];
 let invoiceInitialized = false;
 
@@ -5931,7 +5930,7 @@ function initInvoiceSection() {
     // Wait for user to be authenticated
     if (!currentUser || !currentUser.uid) {
         console.log('👤 Waiting for user authentication...');
-        setTimeout(initInvoiceSection, 1000); // Retry in 1 second
+        setTimeout(initInvoiceSection, 1000);
         return;
     }
     
@@ -5947,7 +5946,7 @@ function initInvoiceSection() {
     checkActiveTab();
 }
 
-// Listen for tab clicks
+// Listen for tab clicks - UPDATED FOR AUTO-REFRESH
 function setupTabListeners() {
     document.addEventListener('click', function(e) {
         const target = e.target;
@@ -5957,52 +5956,45 @@ function setupTabListeners() {
             target.textContent.toLowerCase().includes('invoice') ||
             (target.classList && target.classList.contains('tab-link'))) {
             
-            console.log('📌 Invoice tab clicked - loading sessions');
+            console.log('📌 Invoice tab clicked - REFRESHING sessions');
+            // Reset initialization so it always refreshes
+            invoiceInitialized = false;
             setTimeout(loadInvoiceSession, 100);
         }
     });
     
     window.addEventListener('tabChanged', function(e) {
         if (e.detail && e.detail.tab === 'invoice') {
-            console.log('📌 Invoice tab changed via event - loading sessions');
+            console.log('📌 Invoice tab changed via event - REFRESHING sessions');
+            invoiceInitialized = false;
             loadInvoiceSession();
         }
     });
 }
 
-// Listen for URL changes
+// Listen for URL changes - UPDATED FOR AUTO-REFRESH
 function setupHashListeners() {
     window.addEventListener('hashchange', function() {
         if (window.location.hash.includes('invoice')) {
-            console.log('📌 URL changed to invoice - loading sessions');
+            console.log('📌 URL changed to invoice - REFRESHING sessions');
+            invoiceInitialized = false;
             loadInvoiceSession();
         }
     });
 }
 
-// Check if invoice is already active
+// Check if invoice is already active - UPDATED FOR AUTO-REFRESH
 function checkActiveTab() {
     const invoiceSection = document.getElementById('invoice-session');
     if (invoiceSection && invoiceSection.style.display !== 'none') {
-        console.log('📌 Invoice section already visible - loading sessions');
+        console.log('📌 Invoice section already visible - REFRESHING sessions');
+        invoiceInitialized = false;
         loadInvoiceSession();
     }
 }
 
-// MAIN FUNCTION - SIMPLIFIED QUERY TO AVOID INDEX ISSUES
+// MAIN FUNCTION - WITH AUTO-REFRESH
 async function loadInvoiceSession() {
-    if (invoiceInitialized) {
-        console.log('⚡ Invoice already loaded, skipping...');
-        return;
-    }
-    
-    // Check authentication again
-    if (!currentUser || !currentUser.uid) {
-        console.error('❌ User not authenticated');
-        showInvoiceError('Please log in to access invoices');
-        return;
-    }
-    
     console.log('🚀 loadInvoiceSession RUNNING!');
     
     const sessionSelect = document.getElementById('completedSession');
@@ -6011,14 +6003,15 @@ async function loadInvoiceSession() {
         return;
     }
     
-    sessionSelect.innerHTML = '<option value="">Loading sessions...</option>';
+    // Show loading state immediately
+    sessionSelect.innerHTML = '<option value="">Refreshing sessions...</option>';
     
     try {
         // SIMPLIFIED QUERY - No complex filters to avoid index issues
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
             .orderBy('date', 'desc')
-            .limit(20) // Limit results
+            .limit(20)
             .get();
         
         console.log('✅ Found total sessions:', sessionsSnapshot.size);
@@ -6028,15 +6021,17 @@ async function loadInvoiceSession() {
         
         if (sessionsSnapshot.empty) {
             sessionSelect.innerHTML = '<option value="">No sessions available</option>';
+            showInvoiceMessage('No sessions found for invoicing.');
             return;
         }
         
-        // Filter manually in JavaScript to avoid Firestore index issues
+        // Filter manually in JavaScript
         const now = new Date();
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         
         let validSessionsCount = 0;
+        let invoicedSessionsCount = 0;
         
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
@@ -6044,10 +6039,14 @@ async function loadInvoiceSession() {
             
             const sessionDate = session.date.toDate();
             
-            // Manual filtering: Past sessions from last 7 days, not invoiced
-            if (sessionDate >= sevenDaysAgo && 
-                sessionDate <= now && 
-                session.invoiced !== true) {
+            // Manual filtering: Past sessions from last 7 days
+            if (sessionDate >= sevenDaysAgo && sessionDate <= now) {
+                
+                // Check if already invoiced
+                if (session.invoiced === true) {
+                    invoicedSessionsCount++;
+                    return; // Skip invoiced sessions
+                }
                 
                 availableSessions.push(session);
                 validSessionsCount++;
@@ -6081,11 +6080,17 @@ async function loadInvoiceSession() {
             }
         });
         
-        console.log('🎉 Success! Loaded', validSessionsCount, 'past sessions for invoicing');
+        console.log('🎉 Success! Loaded', validSessionsCount, 'sessions for invoicing');
+        console.log('📋 Skipped', invoicedSessionsCount, 'already invoiced sessions');
         
         if (validSessionsCount === 0) {
-            sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
-            showInvoiceMessage('No past sessions found in the last 7 days. Only sessions that have already occurred can be invoiced.');
+            if (invoicedSessionsCount > 0) {
+                sessionSelect.innerHTML = '<option value="">All recent sessions have been invoiced</option>';
+                showInvoiceMessage('All sessions from the last 7 days have already been invoiced. Check Your Earnings section for payment status.');
+            } else {
+                sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
+                showInvoiceMessage('No past sessions found in the last 7 days. Only sessions that have already occurred can be invoiced.');
+            }
         }
         
         invoiceInitialized = true;
@@ -6098,28 +6103,6 @@ async function loadInvoiceSession() {
     }
 }
 
-// Rest of your existing functions remain the same...
-// setupInvoiceForm, populateSessionDetails, calculateInvoiceTotal, handleInvoiceSubmission, etc.
-
-// Call this when your page loads
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('📄 Page loaded - setting up invoice listeners');
-    initInvoiceSection();
-});
-
-// Also call it when Firebase is ready
-if (typeof firebase !== 'undefined') {
-    firebase.auth().onAuthStateChanged(function(user) {
-        if (user) {
-            console.log('🔥 User authenticated - setting up invoice listeners');
-            // Don't call initInvoiceSection again if already called
-            if (!invoiceInitialized) {
-                initInvoiceSection();
-            }
-        }
-    });
-}
-       
 // Setup form functionality
 function setupInvoiceForm() {
     console.log('⚙️ Setting up invoice form...');
@@ -6136,6 +6119,8 @@ function setupInvoiceForm() {
             const session = availableSessions.find(s => s.id === sessionId);
             if (session) {
                 populateSessionDetails(session);
+            } else {
+                resetInvoiceForm();
             }
         });
     }
@@ -6151,6 +6136,7 @@ function setupInvoiceForm() {
         generateBtn.addEventListener('click', handleInvoiceSubmission);
     }
     
+    setupInvoiceCalculations();
     console.log('✅ Invoice form setup complete');
 }
 
@@ -6176,6 +6162,22 @@ function populateSessionDetails(session) {
     calculateInvoiceTotal();
 }
 
+// Reset invoice form
+function resetInvoiceForm() {
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    const notesInput = document.getElementById('invoiceNotes');
+    const totalInput = document.getElementById('total');
+    
+    if (hoursInput) hoursInput.value = '1.5';
+    if (rateInput) {
+        rateInput.value = '40';
+        rateInput.readOnly = false;
+    }
+    if (notesInput) notesInput.value = '';
+    if (totalInput) totalInput.value = '60.00';
+}
+
 // Calculate invoice total
 function calculateInvoiceTotal() {
     const hours = parseFloat(document.getElementById('hours')?.value) || 0;
@@ -6186,7 +6188,7 @@ function calculateInvoiceTotal() {
     if (totalInput) totalInput.value = total.toFixed(2);
 }
 
-// Handle invoice submission
+// Handle invoice submission - UPDATED FOR AUTO-NAVIGATION
 async function handleInvoiceSubmission() {
     console.log('🚀 Invoice submission started');
     
@@ -6251,17 +6253,18 @@ async function handleInvoiceSubmission() {
         });
         
         console.log('✅ Invoice submitted successfully:', invoiceRef.id);
-
-// Auto-navigate to earnings section
-navigateToEarningsSection();
-
-// Show brief success message
-setTimeout(() => {
-    alert('Invoice submitted! You can track payment status in Your Earnings section.');
-}, 500);
-
-// Reload sessions to update dropdown (remove invoiced session)
-await loadInvoiceSession();
+        
+        // Auto-navigate to earnings section
+        navigateToEarningsSection();
+        
+        // Show success message
+        setTimeout(() => {
+            alert('Invoice submitted successfully! You can track payment status in Your Earnings section.');
+        }, 500);
+        
+        // Force refresh sessions to remove the invoiced one
+        invoiceInitialized = false;
+        await loadInvoiceSession();
         
     } catch (error) {
         console.error('❌ Invoice submission failed:', error);
@@ -6276,13 +6279,7 @@ await loadInvoiceSession();
     }
 }
 
-// Manual test function (call this in browser console)
-window.testInvoiceSection = async function() {
-    console.log('🧪 TESTING INVOICE SECTION...');
-    await loadInvoiceSession();
-};
-
-// Navigate to Earnings section after invoice submission
+// Navigate to Earnings section
 function navigateToEarningsSection() {
     console.log('💰 Navigating to Earnings section...');
     
@@ -6293,7 +6290,7 @@ function navigateToEarningsSection() {
         console.log('✅ Clicked earnings tab');
     }
     
-    // Also refresh the earnings data to show updates
+    // Refresh earnings data
     setTimeout(() => {
         if (typeof loadEarningsData === 'function') {
             loadEarningsData();
@@ -6302,6 +6299,31 @@ function navigateToEarningsSection() {
     }, 1000);
 }
 
+// Manual test function
+window.testInvoiceSection = async function() {
+    console.log('🧪 TESTING INVOICE SECTION...');
+    invoiceInitialized = false;
+    await loadInvoiceSession();
+};
+
+// Call this when your page loads
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('📄 Page loaded - setting up invoice listeners');
+    initInvoiceSection();
+});
+
+// Also call it when Firebase is ready
+if (typeof firebase !== 'undefined') {
+    firebase.auth().onAuthStateChanged(function(user) {
+        if (user) {
+            console.log('🔥 User authenticated - setting up invoice listeners');
+            if (!invoiceInitialized) {
+                initInvoiceSection();
+            }
+        }
+    });
+}
+       
 // =============================================
 // INVOICE SESSION SECTION ENDS HERE
 // =============================================
@@ -7643,6 +7665,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
