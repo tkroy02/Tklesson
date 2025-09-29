@@ -5829,25 +5829,63 @@ function createPaginationControls(totalPages, totalSessions) {
 // SIMPLE TEST - Load ALL sessions to see what's available
 async function loadCompletedSessions() {
     const sessionSelect = document.getElementById('completedSession');
+    if (!sessionSelect) return;
+    
+    // Clear previous messages
+    clearInvoiceMessages();
+    
+    // Only show loading message if the select is empty
+    if (sessionSelect.options.length <= 1) {
+        sessionSelect.innerHTML = '<option value="">Loading past sessions...</option>';
+    }
     
     try {
-        // Just get ALL sessions first to debug
+        // Calculate date 7 days ago
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        // Get past sessions from last 7 days that haven't been invoiced yet
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
+            .where('date', '>=', sevenDaysAgo)
+            .where('invoiced', '!=', true) // Exclude already invoiced sessions
             .orderBy('date', 'desc')
-            .limit(20)
             .get();
-
-        console.log('Total sessions found:', sessionsSnapshot.size);
+        
+        completedSessions = [];
+        sessionSelect.innerHTML = '<option value="">Select a past session</option>';
+        
+        if (sessionsSnapshot.empty) {
+            sessionSelect.innerHTML = '<option value="">No past sessions available</option>';
+            disableInvoiceForm();
+            if (!window.invoiceMessageShown) {
+                showInvoiceMessage('No past sessions available for invoicing in the last 7 days.');
+                window.invoiceMessageShown = true;
+            }
+            return;
+        }
         
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
-            console.log('Session:', session.id, session.date.toDate(), session.status, session.invoiced);
+            session.id = doc.id;
+            completedSessions.push(session);
+            
+            const sessionDate = session.date.toDate();
+            const option = document.createElement('option');
+            option.value = session.id;
+            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${session.duration || '1.5'} hours)`;
+            
+            sessionSelect.appendChild(option);
         });
-
-        // ... rest of your code
+        
+        enableInvoiceForm();
+        window.invoiceMessageShown = false;
+        
     } catch (error) {
-        console.error("Error:", error);
+        console.error("Error loading past sessions:", error);
+        sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
+        disableInvoiceForm();
+        showInvoiceError('Error loading past sessions. Please try again.');
     }
 }
        
@@ -5859,12 +5897,8 @@ async function loadCompletedSessions() {
 // INVOICE SESSION SECTION STARTS HERE
 // =============================================
 
-// =============================================
-// INVOICE SESSION SECTION STARTS HERE
-// =============================================
-
 // Global variables for invoice section
-let pastSessions = [];
+let completedSessions = [];
 let currentSelectedSession = null;
 
 // Load invoice session section
@@ -5876,8 +5910,8 @@ async function loadInvoiceSession() {
         // Clear any existing messages first
         clearInvoiceMessages();
         
-        // Load past sessions for invoicing (last 7 days)
-        await loadPastSessions();
+        // Load completed sessions for invoicing
+        await loadCompletedSessions();
         
         // Setup form event listeners (only if not already set up)
         if (!window.invoiceFormSetup) {
@@ -5928,83 +5962,62 @@ function showInvoiceMessage(message) {
     }
 }
 
-// UPDATED FUNCTION: Load past sessions from last 7 days (excluding invoiced sessions)
-async function loadPastSessions() {
+// UPDATED FUNCTION: Load completed sessions (with message clearing)
+async function loadCompletedSessions() {
     const sessionSelect = document.getElementById('completedSession');
     if (!sessionSelect) return;
-    
+
     // Clear previous messages
     clearInvoiceMessages();
     
-    // Only show loading message if the select is empty
-    if (sessionSelect.options.length <= 1) {
-        sessionSelect.innerHTML = '<option value="">Loading past sessions...</option>';
-    }
-    
+    sessionSelect.innerHTML = '<option value="">Loading recent sessions...</option>';
+
     try {
         // Calculate date 7 days ago
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         
-        // Get past sessions from last 7 days that haven't been invoiced yet
+        // Get sessions from the last 7 days (all statuses except cancelled)
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
             .where('date', '>=', sevenDaysAgo)
-            .where('invoiced', '!=', true) // Exclude already invoiced sessions
+            .where('status', 'in', ['completed', 'confirmed', 'rescheduled'])
             .orderBy('date', 'desc')
             .get();
-        
-        pastSessions = [];
-        sessionSelect.innerHTML = '<option value="">Select a past session to invoice</option>';
-        
+
+        completedSessions = [];
+        sessionSelect.innerHTML = '<option value="">Select a recent session</option>';
+
         if (sessionsSnapshot.empty) {
-            sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
+            sessionSelect.innerHTML = '<option value="">No recent sessions available</option>';
             disableInvoiceForm();
-            // Only show message if there are truly no sessions
-            if (!window.invoiceMessageShown) {
-                showInvoiceMessage('No past sessions available for invoicing in the last 7 days.');
-                window.invoiceMessageShown = true;
-            }
+            showInvoiceMessage('No sessions in the last 7 days available for invoicing.');
             return;
         }
-        
+
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
-            pastSessions.push(session);
+            completedSessions.push(session);
             
             const sessionDate = session.date.toDate();
             const option = document.createElement('option');
             option.value = session.id;
+            option.textContent = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'} (${session.duration || '1.5'} hours) - ${session.status}`;
             
-            // Create display text with session details
-            let displayText = `${sessionDate.toLocaleDateString()} - ${session.studentName || 'Student'} - ${session.subject || 'General'}`;
-            
-            // Add duration if available
-            if (session.duration) {
-                displayText += ` (${session.duration} hours)`;
-            }
-            
-            // Add status indicator
-            if (session.status) {
-                displayText += ` [${session.status.replace('_', ' ')}]`;
-            }
-            
-            option.textContent = displayText;
             sessionSelect.appendChild(option);
         });
-        
+
         enableInvoiceForm();
-        window.invoiceMessageShown = false; // Reset since we have sessions now
         
     } catch (error) {
-        console.error("Error loading past sessions:", error);
+        console.error("Error loading recent sessions:", error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
         disableInvoiceForm();
-        showInvoiceError('Error loading past sessions. Please try again.');
+        showInvoiceError('Error loading recent sessions. Please try again.');
     }
 }
-
+       
 // Setup invoice form functionality
 function setupInvoiceForm() {
     const sessionSelect = document.getElementById('completedSession');
@@ -6027,7 +6040,7 @@ function setupInvoiceForm() {
 // Handle session selection from dropdown
 function handleSessionSelection(event) {
     const sessionId = event.target.value;
-    currentSelectedSession = pastSessions.find(session => session.id === sessionId);
+    currentSelectedSession = completedSessions.find(session => session.id === sessionId);
     
     if (currentSelectedSession) {
         populateSessionDetails(currentSelectedSession);
@@ -6092,9 +6105,9 @@ function updateSessionInfoDisplay(session) {
     const totalAmount = (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2);
     
     sessionInfo.innerHTML = `
-        <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">
-            <i class="fas fa-info-circle"></i> Session Details for Payment Request
-        </h4>
+    <h4 style="margin: 0 0 10px 0; color: var(--primary-dark);">
+        <i class="fas fa-info-circle"></i> Session Details for Payment Request
+    </h4>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
             <div><strong>Student:</strong> ${session.studentName || 'Unknown'}</div>
             <div><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</div>
@@ -6104,7 +6117,6 @@ function updateSessionInfoDisplay(session) {
             <div><strong>Duration:</strong> ${session.duration || '1.5'} hours</div>
             <div><strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}/hour</div>
             <div><strong>Total Amount:</strong> $${totalAmount}</div>
-            <div><strong>Status:</strong> ${session.status ? session.status.replace('_', ' ') : 'Completed'}</div>
         </div>
         ${session.notes ? `
             <div style="margin-top: 10px; padding: 10px; background: white; border-radius: 5px;">
@@ -6113,9 +6125,9 @@ function updateSessionInfoDisplay(session) {
         ` : ''}
         
         <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4caf50;">
-            <strong><i class="fas fa-info-circle"></i> This invoice will be submitted to admin for payment processing.</strong>
-        </div>
-    `;
+        <strong><i class="fas fa-info-circle"></i> This invoice will be submitted to admin for payment processing. Sessions from the last 7 days are eligible.</strong>
+    </div>
+`;
 }
 
 // Reset invoice form
@@ -6147,7 +6159,7 @@ async function handleInvoiceSubmission(event) {
     if (event) event.preventDefault();
     
     if (!currentSelectedSession) {
-        showInvoiceError('Please select a past session first.');
+        showInvoiceError('Please select a completed session first.');
         return;
     }
     
@@ -6237,8 +6249,7 @@ async function submitInvoiceToAdmin(session) {
             submittedDate: new Date(),
             paymentStatus: 'pending',
             sessionType: session.sessionType || 'online',
-            duration: session.duration || '1.5',
-            originalSessionStatus: session.status || 'completed'
+            duration: session.duration || '1.5'
         };
         
         // Save invoice to Firestore for admin review
@@ -6256,8 +6267,8 @@ async function submitInvoiceToAdmin(session) {
         // Show success message
         showInvoiceSuccess(invoiceData, invoiceRef.id);
         
-        // Reload past sessions to update the dropdown (remove invoiced session)
-        await loadPastSessions();
+        // Reload completed sessions to update the dropdown
+        await loadCompletedSessions();
         
     } finally {
         // Restore button state
@@ -6581,6 +6592,7 @@ function showInvoiceError(message) {
 // =============================================
 // INVOICE SESSION SECTION ENDS HERE
 // =============================================
+
 
 // =============================================
 // YOUR EARNINGS SECTION STARTS HERE
@@ -7917,8 +7929,6 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
-
-
 
 
 
