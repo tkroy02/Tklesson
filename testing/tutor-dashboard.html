@@ -2697,36 +2697,6 @@ function forceRemoveOverlays() {
     console.log('Emergency overlay removal executed');
 }
 
-       // Better overlay watcher - only targets the specific session modal
-function startOverlayWatcher() {
-    setInterval(() => {
-        // Only target the session modal and its backdrop
-        const sessionModal = document.getElementById('sessionModal');
-        const modalBackdrop = document.querySelector('.modal-backdrop');
-        
-        // Check if session modal is hidden but backdrop is still active
-        if (sessionModal && sessionModal.style.display === 'none') {
-            // If modal is hidden, force hide the backdrop too
-            if (modalBackdrop && modalBackdrop.classList.contains('is-active')) {
-                modalBackdrop.classList.remove('is-active');
-                modalBackdrop.style.display = 'none';
-            }
-        }
-        
-        // Additional safety: if backdrop is active but no modal is visible
-        if (modalBackdrop && modalBackdrop.classList.contains('is-active')) {
-            const visibleModals = Array.from(document.querySelectorAll('.modal')).some(
-                modal => modal.style.display !== 'none' && modal.style.display !== ''
-            );
-            
-            if (!visibleModals) {
-                modalBackdrop.classList.remove('is-active');
-                modalBackdrop.style.display = 'none';
-            }
-        }
-    }, 2000); // Check every 2 seconds (less aggressive)
-}
-
        
 // Create session notification for student
 async function createSessionNotification(session, meetLink) {
@@ -3738,12 +3708,12 @@ function setupBookingsFilters() {
 function addBookingCardListeners() {
     // Join session buttons
     document.querySelectorAll('.join-session-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const sessionId = this.getAttribute('data-session-id');
-            const meetLink = this.getAttribute('data-meet-link');
-            joinSession(sessionId, meetLink);
-        });
+    btn.addEventListener('click', function() {
+        const sessionId = this.getAttribute('data-session-id');
+        joinSession(sessionId); // Remove the meetLink parameter
     });
+});
+    
     
     // Reschedule buttons
     document.querySelectorAll('.reschedule-btn').forEach(btn => {
@@ -3771,19 +3741,50 @@ function addBookingCardListeners() {
 }
 
 // Join session functionality
-function joinSession(sessionId, meetLink) {
-    if (!meetLink) {
-        alert('No meeting link available for this session.');
-        return;
+async function joinSession(sessionId) {
+    try {
+        // First, get the latest session data from Firestore to ensure we have the correct meeting link
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        
+        if (!sessionDoc.exists) {
+            alert('Session not found!');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        const meetLink = session.meetLink;
+        
+        if (!meetLink) {
+            alert('No meeting link available for this session. Please contact support.');
+            console.error('No meetLink found for session:', sessionId, session);
+            return;
+        }
+        
+        // Validate the meeting link
+        if (!meetLink.startsWith('http')) {
+            alert('Invalid meeting link format. Please contact support.');
+            console.error('Invalid meetLink format:', meetLink);
+            return;
+        }
+        
+        // Open meeting in new tab
+        window.open(meetLink, '_blank', 'noopener,noreferrer');
+        
+        // Log the join action
+        console.log(`Tutor joined session: ${sessionId}`, meetLink);
+        
+        // Optional: Update session with join timestamp
+        await db.collection('bookedSessions').doc(sessionId).update({
+            lastJoinedByTutor: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+    } catch (error) {
+        console.error("Error joining session:", error);
+        alert('Error joining session. Please try again or contact support.');
     }
-    
-    // Open meeting in new tab
-    window.open(meetLink, '_blank');
-    
-    // Log the join action
-    console.log(`Tutor joined session: ${sessionId}`);
 }
-
+       
 // Open reschedule modal
 async function openRescheduleModal(sessionId) {
     try {
@@ -7171,7 +7172,6 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </button>
 </body>
 </html>
-
 
 
 
