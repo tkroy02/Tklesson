@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1721,24 +1720,23 @@ function loadSectionContent(sectionId) {
                 tutorsLoaded = true;
             }
             break;
-        case 'bookings':
-            if (!bookingsLoaded) {
-                loadMyBookings();
-                bookingsLoaded = true;
-            }
-            break;
-        case 'sessions':
-            if (!sessionsLoaded) {
-                loadSessionsHistory();
-                sessionsLoaded = true;
-            }
-            break;
-        case 'invoice-session':
-            loadInvoiceSession();
-            break;
-        case 'your-earnings':
-            loadEarningsData();
-            break;
+       case 'bookings':
+    if (!bookingsLoaded && currentUser && currentUser.uid) {
+        loadMyBookings();
+        bookingsLoaded = true;
+    } else if (!currentUser || !currentUser.uid) {
+        const container = document.getElementById('bookingsContainer');
+        if (container) {
+            container.innerHTML = `
+                <div class="error-state">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <h3>Authentication Required</h3>
+                    <p>Please log in to view your bookings.</p>
+                </div>
+            `;
+        }
+    }
+    break;
     }
     
     sectionLoading = false;
@@ -2963,113 +2961,82 @@ function getStatusClass(status) {
         default: return 'gray';
     }
 }
-
+// =============================================
 //My Students Section Ends here.
-
-// =============================================
-// =============================================
-// =============================================
-// MY BOOKINGS SECTION STARTS HERE
 // =============================================
 
-// Load tutor's bookings (confirmed and upcoming sessions)
+// =======================================================================================================================================
+// BOOKINGS SECTION STARTS HERE
+// =======================================================================================================================================
+
+// Global variables for bookings
+let allBookings = [];
+let currentBookingsFilter = 'upcoming';
+let displayedBookingsCount = 10;
+
+// Load tutor's bookings
 async function loadMyBookings() {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
     
+    // Check if user is authenticated
+    if (!currentUser || !currentUser.uid) {
+        console.error("User not authenticated");
+        container.innerHTML = `
+            <div class="error-state">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>Authentication Required</h3>
+                <p>Please log in to view your bookings.</p>
+            </div>
+        `;
+        return;
+    }
+    
     container.innerHTML = '<div class="spinner">Loading your bookings...</div>';
     
     try {
-        const userId = currentUser.uid;
-        
-        // Get ALL sessions (we'll filter client-side based on end time)
-        const querySnapshot = await db.collection('bookedSessions')
-            .where('tutorId', '==', userId)
-            .where('status', 'in', ['confirmed', 'reschedule_requested'])
+        // Get all sessions for this tutor (excluding cancelled ones)
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', 'in', ['pending', 'confirmed', 'rescheduled'])
             .orderBy('date', 'asc')
             .get();
         
-        // Filter client-side to include sessions that haven't ended yet
-        const filteredSessions = [];
-        const now = new Date();
+        allBookings = [];
         
-        querySnapshot.forEach(doc => {
-            const booking = doc.data();
-            booking.id = doc.id;
-            
-            // Convert Firestore Timestamp to Date if needed
-            if (booking.date && typeof booking.date.toDate === 'function') {
-                booking.date = booking.date.toDate();
-            }
-            
-            // Calculate session end time (start time + duration)
-            const sessionEndTime = new Date(booking.date);
-            const durationHours = parseFloat(booking.duration) || 1.5;
-            sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
-            
-            // Include sessions that haven't ended yet
-            if (sessionEndTime > now) {
-                filteredSessions.push(booking);
-            }
-        });
-        
-        if (filteredSessions.length === 0) {
+        if (sessionsSnapshot.empty) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <i class="fas fa-calendar-times"></i>
-                    <h3>No Upcoming Bookings</h3>
-                    <p>You have no upcoming sessions scheduled.</p>
+                    <i class="fas fa-bookmark"></i>
+                    <h3>No Bookings Yet</h3>
+                    <p>Your upcoming and pending sessions will appear here.</p>
                 </div>
             `;
-            confirmedSessions = [];
-            updateBookingsCount(0);
+            document.getElementById('upcomingSessionsCount').textContent = '0';
             return;
         }
         
-        // Sort by date
-        filteredSessions.sort((a, b) => a.date - b.date);
+        // Process all bookings
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            allBookings.push(session);
+        });
         
-        confirmedSessions = [];
-        let bookingsHTML = '';
-        let upcomingCount = 0;
+        // Apply initial filter and display
+        applyBookingsFilter();
         
-        // Process each booking and fetch student details + reschedule info
-        for (const booking of filteredSessions) {
-            // Check for pending reschedule requests in the separate collection
-            const rescheduleQuery = await db.collection('rescheduleRequests')
-                .where('sessionId', '==', booking.id)
-                .where('status', '==', 'pending')
-                .get();
-            
-            booking.hasPendingReschedule = !rescheduleQuery.empty;
-            booking.rescheduleRequest = rescheduleQuery.empty ? null : rescheduleQuery.docs[0].data();
-            
-            // Check if reschedule was accepted
-            const acceptedRescheduleQuery = await db.collection('rescheduleRequests')
-                .where('sessionId', '==', booking.id)
-                .where('status', '==', 'accepted')
-                .get();
-            
-            booking.hasAcceptedReschedule = !acceptedRescheduleQuery.empty;
-            booking.acceptedReschedule = acceptedRescheduleQuery.empty ? null : acceptedRescheduleQuery.docs[0].data();
-            
-            confirmedSessions.push(booking);
-            
-            // Use the student name from the booking data
-            let studentName = booking.studentName || 'Student';
-            
-            // Create the booking card HTML
-            bookingsHTML += createBookingCard(booking, studentName);
-            upcomingCount++;
-        }
+        // Setup filter event listeners
+        setupBookingsFilters();
         
-        container.innerHTML = bookingsHTML;
+        // Update upcoming sessions count in dashboard
+        const upcomingCount = allBookings.filter(booking => {
+            const bookingDate = booking.date.toDate();
+            return (booking.status === 'confirmed' || booking.status === 'rescheduled') && 
+                   bookingDate > new Date();
+        }).length;
         
-        // Update dashboard stats
-        updateBookingsCount(upcomingCount);
-        
-        // Add event listeners to action buttons
-        addBookingActionListeners();
+        document.getElementById('upcomingSessionsCount').textContent = upcomingCount;
         
     } catch (error) {
         console.error("Error loading bookings:", error);
@@ -3082,498 +3049,252 @@ async function loadMyBookings() {
         `;
     }
 }
-       
-// Helper function to validate session for joining
-function validateSessionForJoin(session) {
+        
+// Apply filters to bookings
+function applyBookingsFilter() {
+    const container = document.getElementById('bookingsContainer');
+    const loadMoreBtn = document.getElementById('loadMoreBookingsBtn');
+    
+    let filteredBookings = [...allBookings];
     const now = new Date();
-    let sessionTime;
     
-    // Handle both Date objects and Firestore Timestamps
-    if (session.date && typeof session.date.toDate === 'function') {
-        sessionTime = session.date.toDate();
-    } else {
-        sessionTime = new Date(session.date);
+    // Apply status filter
+    switch(currentBookingsFilter) {
+        case 'upcoming':
+            filteredBookings = filteredBookings.filter(booking => {
+                const bookingDate = booking.date.toDate();
+                return (booking.status === 'confirmed' || booking.status === 'rescheduled') && 
+                       bookingDate > now;
+            });
+            break;
+        case 'pending':
+            filteredBookings = filteredBookings.filter(booking => booking.status === 'pending');
+            break;
+        case 'past':
+            filteredBookings = filteredBookings.filter(booking => {
+                const bookingDate = booking.date.toDate();
+                return bookingDate <= now;
+            });
+            break;
+        default: // 'all'
+            // No filter applied
+            break;
     }
     
-    // Calculate session end time (start time + duration)
-    const sessionEndTime = new Date(sessionTime);
-    const durationHours = parseFloat(session.duration) || 1.5;
-    sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
-    
-    // Allow joining 15 minutes before session start and up to session end time
-    const fifteenMinutesBefore = new Date(sessionTime);
-    fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
-    
-    return now >= fifteenMinutesBefore && now <= sessionEndTime;
+    // Display filtered bookings
+    displayFilteredBookings(filteredBookings, container, loadMoreBtn);
 }
-       
-// Create booking card HTML for tutor dashboard
-function createBookingCard(booking, studentName) {
-    let sessionDate;
-    
-    // Handle date conversion from Firestore Timestamp if needed
-    if (booking.date && typeof booking.date.toDate === 'function') {
-        sessionDate = booking.date.toDate();
-    } else {
-        sessionDate = new Date(booking.date);
-    }
-    
-    const formattedDate = formatSessionDate(sessionDate);
-    const subject = booking.subject || 'General Tutoring';
-    const duration = booking.duration || '1.5';
-    const hourlyRate = booking.hourlyRate || '40';
-    const location = booking.sessionType || 'online';
-    
-    // Use existing meet link created by student during booking
-    const meetLink = booking.meetLink || '';
-    const meetPlatform = booking.meetPlatform || '';
-    
-    // Determine reschedule status
-    const isRescheduleRequested = booking.status === 'reschedule_requested';
-    const hasPendingReschedule = booking.hasPendingReschedule;
-    const hasAcceptedReschedule = booking.hasAcceptedReschedule;
-    
-    let statusBadge = '';
-    let rescheduleButton = '';
-    let rescheduleInfo = '';
-    
-    if (hasAcceptedReschedule && booking.acceptedReschedule) {
-        statusBadge = '<span class="status-badge status-success">Reschedule Accepted</span>';
-        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-calendar-check"></i> Reschedule Accepted</button>';
-        
-        let newDate;
-        if (booking.acceptedReschedule.requestedDate && typeof booking.acceptedReschedule.requestedDate.toDate === 'function') {
-            newDate = booking.acceptedReschedule.requestedDate.toDate();
-        } else {
-            newDate = new Date(booking.acceptedReschedule.requestedDate);
-        }
-        
-        rescheduleInfo = `
-            <div class="reschedule-info accepted" style="margin-top: 15px; padding: 10px; background: #d4edda; border-radius: 5px; font-size: 0.9em;">
-                <strong><i class="fas fa-check-circle"></i> Reschedule Accepted:</strong> 
-                New time: ${newDate.toLocaleString()}
-            </div>
-        `;
-    } else if (hasPendingReschedule && booking.rescheduleRequest) {
-        statusBadge = '<span class="status-badge status-warning">Reschedule Requested</span>';
-        rescheduleButton = '<button class="btn-outline" disabled><i class="fas fa-clock"></i> Awaiting Student</button>';
-        
-        let proposedDate;
-        if (booking.rescheduleRequest.requestedDate && typeof booking.rescheduleRequest.requestedDate.toDate === 'function') {
-            proposedDate = booking.rescheduleRequest.requestedDate.toDate();
-        } else {
-            proposedDate = new Date(booking.rescheduleRequest.requestedDate);
-        }
-        
-        rescheduleInfo = `
-            <div class="reschedule-info pending" style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 5px; font-size: 0.9em;">
-                <strong><i class="fas fa-clock"></i> Reschedule Proposed:</strong> 
-                ${proposedDate.toLocaleString()}
-            </div>
-        `;
-    } else {
-        statusBadge = '<span class="status-badge status-primary">Confirmed</span>';
-        rescheduleButton = `<button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
-            <i class="fas fa-calendar-alt"></i> Reschedule
-        </button>`;
-    }
-    
-    // Determine if join button should be enabled
-    const canJoinSession = location === 'online' && validateSessionForJoin(booking);
 
-// Create join button - use button instead of direct link for proper event handling
-let joinButton = '';
-if (location === 'online' && meetLink) {
-    // Session is online and has a meet link - check if we're in the valid time window
-    const now = new Date();
-    
-    // Calculate session end time
-    const sessionEndTime = new Date(sessionDate);
-    const durationHours = parseFloat(booking.duration) || 1.5;
-    sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
-    
-    // Allow joining from 15 minutes before until the session end time
-    const fifteenMinutesBefore = new Date(sessionDate);
-    fifteenMinutesBefore.setMinutes(fifteenMinutesBefore.getMinutes() - 15);
-    
-    const canJoinNow = now >= fifteenMinutesBefore && now <= sessionEndTime;
-    
-    if (canJoinNow) {
-        // Session is joinable right now
-        joinButton = `<a href="${meetLink}" target="_blank" class="btn-primary" style="display: inline-block; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-            <i class="fas fa-video"></i> Join Session
-        </a>`;
-    } else if (now < fifteenMinutesBefore) {
-        // Session hasn't started yet
-        const timeUntilSession = sessionDate.getTime() - now.getTime();
-        const minutesUntilSession = Math.ceil(timeUntilSession / (1000 * 60));
-        
-        if (minutesUntilSession > 15) {
-            joinButton = `<button class="btn-outline" disabled title="Join available 15 minutes before session">
-                <i class="fas fa-video"></i> Join in ${Math.ceil(minutesUntilSession / 60)}h ${minutesUntilSession % 60}m
-            </button>`;
-        } else {
-            joinButton = '<button class="btn-outline" disabled title="Join available 15 minutes before session"><i class="fas fa-video"></i> Join Soon</button>';
-        }
-    } else {
-        // Session has ended
-        joinButton = '<button class="btn-outline" disabled title="Session has ended"><i class="fas fa-video"></i> Session Ended</button>';
+// Display filtered bookings
+function displayFilteredBookings(bookings, container, loadMoreBtn) {
+    if (bookings.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-filter"></i>
+                <h3>No Bookings Match Your Filter</h3>
+                <p>Try selecting a different filter to see more bookings.</p>
+            </div>
+        `;
+        if (loadMoreBtn) loadMoreBtn.style.display = 'none';
+        return;
     }
-} else if (location === 'online' && !meetLink) {
-    // Online session but no meet link available
-    joinButton = `<button class="btn-outline" disabled title="Meet link not available yet">
-        <i class="fas fa-video"></i> Join Session (Link Pending)
-    </button>`;
-} else {
-    // In-person session
-    joinButton = '<button class="btn-outline" disabled title="This is an in-person session"><i class="fas fa-map-marker-alt"></i> In-Person Session</button>';
-}
     
-    // Meet link info display
-    const meetInfoHTML = meetLink ? `
-        <div class="session-detail">
-            <i class="fas fa-video"></i> 
-            <span><strong>Meet Platform:</strong> ${meetPlatform === 'jitsi_meet' ? 'Jitsi Meet' : meetPlatform || 'Video Conference'}</span>
+    // Sort by date (upcoming first)
+    bookings.sort((a, b) => a.date.toDate() - b.date.toDate());
+    
+    // Get bookings to display (with load more functionality)
+    const bookingsToDisplay = bookings.slice(0, displayedBookingsCount);
+    
+    let bookingsHTML = `
+        <div class="bookings-stats">
+            <div class="stat-item">
+                <span class="stat-number">${bookingsToDisplay.length}</span>
+                <span class="stat-label">Displayed</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${bookings.length}</span>
+                <span class="stat-label">Total Filtered</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number">${allBookings.length}</span>
+                <span class="stat-label">All Bookings</span>
+            </div>
         </div>
-        <div class="session-detail">
-            <i class="fas fa-link"></i> 
-            <span><strong>Meeting:</strong> <a href="${meetLink}" target="_blank" style="color: #1976D2; text-decoration: none;">Click to join</a></span>
-        </div>
-    ` : `
-        <div class="session-detail">
-            <i class="fas fa-video"></i> 
-            <span><strong>Meeting:</strong> Link will be provided by student</span>
-        </div>
+        <div class="bookings-list">
     `;
     
+    bookingsToDisplay.forEach(booking => {
+        bookingsHTML += createBookingCard(booking);
+    });
+    
+    bookingsHTML += `</div>`;
+    
+    container.innerHTML = bookingsHTML;
+    
+    // Show/hide load more button
+    if (loadMoreBtn) {
+        if (bookings.length > displayedBookingsCount) {
+            loadMoreBtn.style.display = 'block';
+            loadMoreBtn.onclick = () => {
+                displayedBookingsCount += 10;
+                applyBookingsFilter();
+            };
+        } else {
+            loadMoreBtn.style.display = 'none';
+        }
+    }
+    
+    // Add event listeners to booking cards
+    addBookingCardListeners();
+}
+
+// Create booking card with all functionality
+function createBookingCard(booking) {
+    const date = booking.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const now = new Date();
+    const sessionStartTime = date;
+    const sessionEndTime = new Date(date.getTime() + (parseFloat(booking.duration || 1.5) * 60 * 60 * 1000));
+    
+    const isPastSession = sessionEndTime <= now;
+    const isCurrentSession = sessionStartTime <= now && sessionEndTime > now;
+    const isUpcomingSession = sessionStartTime > now;
+    
+    // Calculate if join button should be active (30 minutes before session starts)
+    const thirtyMinutesBefore = new Date(sessionStartTime.getTime() - (30 * 60 * 1000));
+    const canJoinSession = now >= thirtyMinutesBefore && now <= sessionEndTime;
+    
+    const statusClass = getStatusClass(booking.status);
+    const sessionType = booking.sessionType === 'online' ? 'Online' : 'In-Person';
+    
     return `
-        <div class="session-card ${isRescheduleRequested ? 'reschedule-pending' : ''}" id="booking-${booking.id}">
+        <div class="session-card booking-card ${isPastSession ? 'past-session' : ''} ${isCurrentSession ? 'current-session' : ''}" id="booking-${booking.id}">
             <div class="session-header">
-                <div class="session-title">${subject} Session with ${studentName}</div>
-                <div class="session-date">${formattedDate}</div>
-                ${statusBadge}
+                <div class="session-title">${booking.subject || 'General Tutoring'} Session</div>
+                <div class="session-date">
+                    ${formattedDate}, ${formattedTime}
+                    ${isCurrentSession ? '<span class="live-badge">LIVE</span>' : ''}
+                </div>
             </div>
+            
             <div class="session-details">
                 <div class="session-detail">
-                    <i class="fas fa-user-graduate"></i> 
-                    <span><strong>Student:</strong> ${studentName}</span>
+                    <i class="fas fa-user-graduate"></i> Student: ${booking.studentName || 'Unknown Student'}
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-book"></i> 
-                    <span><strong>Subject:</strong> ${subject}</span>
+                    <i class="fas fa-book"></i> Subject: ${booking.subject || 'General'}
                 </div>
                 <div class="session-detail">
-                    <i class="fas fa-clock"></i> 
-                    <span><strong>Duration:</strong> ${duration} hours</span>
+                    <i class="fas fa-clock"></i> Duration: ${booking.duration || '1.5'} hours
                 </div>
                 <div class="session-detail">
-                    <i class="fas ${location === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
-                    <span><strong>Type:</strong> ${location === 'online' ? 'Online' : 'In-Person'}</span>
+                    <i class="fas ${booking.sessionType === 'online' ? 'fa-video' : 'fa-map-marker-alt'}"></i> 
+                    ${sessionType}
                 </div>
-                ${meetInfoHTML}
                 <div class="session-detail">
-                    <i class="fas fa-dollar-sign"></i> 
-                    <span><strong>Rate:</strong> $${hourlyRate}/hour</span>
+                    <i class="fas fa-dollar-sign"></i> Rate: $${booking.hourlyRate || '40'}/hour
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-sticky-note"></i> Notes: ${booking.notes || 'No notes provided'}
                 </div>
             </div>
             
-            ${rescheduleInfo}
+            <div class="session-status">
+                <span class="status-badge status-${statusClass}">${booking.status.toUpperCase()}</span>
+                ${isCurrentSession ? '<span class="status-badge status-live">IN PROGRESS</span>' : ''}
+                ${isPastSession ? '<span class="status-badge status-completed">COMPLETED</span>' : ''}
+            </div>
             
             <div class="session-actions">
-                ${joinButton}
-                ${rescheduleButton}
-                <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
-                    <i class="fas fa-times"></i> Cancel
-                </button>
+                ${booking.sessionType === 'online' && booking.meetLink ? `
+                    <button class="btn-primary join-session-btn ${canJoinSession ? '' : 'disabled'}" 
+                            data-session-id="${booking.id}" 
+                            data-meet-link="${booking.meetLink}"
+                            ${canJoinSession ? '' : 'disabled="disabled"'}>
+                        <i class="fas fa-video"></i> 
+                        ${canJoinSession ? 'Join Session' : 'Join Available 30min Before'}
+                    </button>
+                ` : ''}
+                
+                ${!isPastSession && booking.status !== 'pending' ? `
+                    <button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-clock"></i> Reschedule
+                    </button>
+                ` : ''}
+                
+                ${!isPastSession ? `
+                    <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                ` : ''}
+                
                 <button class="btn-outline details-btn" data-session-id="${booking.id}">
                     <i class="fas fa-info-circle"></i> Details
                 </button>
             </div>
+            
+            ${booking.rescheduleRequested ? `
+                <div class="reschedule-notice">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <span>Reschedule requested - awaiting student confirmation</span>
+                </div>
+            ` : ''}
         </div>
     `;
 }
-       
-// Enhanced Join session function - uses existing meet link from student
-async function joinSession(sessionId) {
-    try {
-        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        if (!sessionDoc.exists) {
-            alert('Session not found.');
-            return;
-        }
         
-        const session = sessionDoc.data();
-        session.id = sessionId;
-        
-        // Validate session time
-        if (!validateSessionForJoin(session)) {
-            alert('You can only join sessions 15 minutes before the scheduled time and up to 2 hours after.');
-            return;
-        }
-        
-        // Check if meet link exists
-        if (!session.meetLink) {
-            alert('Meeting link is not available yet. Please wait for the student to provide the meeting details.');
-            return;
-        }
-        
-        // Get the button that was clicked to access the data attribute
-        const clickedButton = document.querySelector(`.join-session-btn[data-session-id="${sessionId}"]`);
-        const meetLink = clickedButton ? clickedButton.getAttribute('data-meet-link') : session.meetLink;
-        
-        // Show join options modal with the actual meet link
-        showJoinOptionsModal(session, meetLink);
-        
-    } catch (error) {
-        console.error("Error joining session:", error);
-        alert('Error joining session. Please try again.');
-    }
-}
-       
-// Show join options modal
-function showJoinOptionsModal(session) {
-    const modalContent = `
-        <div class="join-options-modal">
-            <h3><i class="fas fa-video"></i> Join Tutoring Session</h3>
-            <div class="session-info" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <h4 style="margin: 0 0 10px 0;">Session Details</h4>
-                <p style="margin: 5px 0;"><strong>Student:</strong> ${session.studentName || 'Student'}</p>
-                <p style="margin: 5px 0;"><strong>Subject:</strong> ${session.subject || 'General Tutoring'}</p>
-                <p style="margin: 5px 0;"><strong>Platform:</strong> ${session.meetPlatform === 'jitsi_meet' ? 'Jitsi Meet' : session.meetPlatform || 'Video Conference'}</p>
-            </div>
-            
-            <div class="join-options" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
-                <div class="join-option" style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px;">
-                    <div style="font-size: 48px; color: var(--primary); margin-bottom: 10px;">
-                        <i class="fas fa-window-maximize"></i>
-                    </div>
-                    <h4 style="margin: 0 0 10px 0;">Embedded Session</h4>
-                    <p style="margin: 0 0 15px 0; color: #666;">Join directly in this window</p>
-                    <button class="btn-primary" id="joinEmbeddedBtn" style="width: 100%;">
-                        <i class="fas fa-play"></i> Join Embedded
-                    </button>
-                </div>
-                <div class="join-option" style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px;">
-                    <div style="font-size: 48px; color: var(--primary); margin-bottom: 10px;">
-                        <i class="fas fa-external-link-alt"></i>
-                    </div>
-                    <h4 style="margin: 0 0 10px 0;">External Window</h4>
-                    <p style="margin: 0 0 15px 0; color: #666;">Open in a new tab</p>
-                    <button class="btn-outline" id="joinExternalBtn" style="width: 100%;">
-                        <i class="fas fa-external-link-alt"></i> Open New Tab
-                    </button>
-                </div>
-            </div>
-            
-            <div class="modal-actions" style="text-align: center;">
-                <button class="btn-outline" id="cancelJoinBtn">
-                    <i class="fas fa-times"></i> Cancel
-                </button>
-            </div>
-        </div>
-    `;
+// Setup bookings filter event listeners
+function setupBookingsFilters() {
+    // Create filter buttons if they don't exist
+    let filterContainer = document.querySelector('.bookings-filter-container');
     
-    showCustomModal('Join Session', modalContent, () => {
-        // Setup event listeners after modal is shown
-        document.getElementById('joinEmbeddedBtn').addEventListener('click', () => {
-            startEmbeddedJitsiSession(session);
-            closeModal();
-        });
-        
-        document.getElementById('joinExternalBtn').addEventListener('click', () => {
-            window.open(session.meetLink, '_blank', 'noopener,noreferrer');
-            closeModal();
-        });
-        
-        document.getElementById('cancelJoinBtn').addEventListener('click', closeModal);
-    });
-}
-
-       
-// Start embedded Jitsi session
-function startEmbeddedJitsiSession(session) {
-    // Hide main content and show session container
-    document.querySelector('.main-content').style.display = 'none';
-    
-    const sessionContainer = document.getElementById('sessionContainer') || createSessionContainer(session);
-    sessionContainer.style.display = 'block';
-    
-    // Initialize Jitsi Meet embedded
-    initializeJitsiMeet(session);
-}
-
-// Create session container
-function createSessionContainer(session) {
-    const container = document.createElement('div');
-    container.id = 'sessionContainer';
-    container.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: white;
-        z-index: 2000;
-        display: none;
-    `;
-    
-    container.innerHTML = `
-        <div class="session-header" style="padding: 20px; background: var(--primary); color: white; display: flex; justify-content: space-between; align-items: center;">
-            <div>
-                <h3 style="margin: 0; color: white;">Live Session: ${session.subject || 'Tutoring Session'}</h3>
-                <p style="margin: 5px 0 0 0; opacity: 0.9;">with ${session.studentName || 'Student'}</p>
+    if (!filterContainer) {
+        filterContainer = document.createElement('div');
+        filterContainer.className = 'bookings-filter-container';
+        filterContainer.innerHTML = `
+            <div class="filter-buttons">
+                <button class="filter-btn active" data-filter="upcoming">Upcoming</button>
+                <button class="filter-btn" data-filter="pending">Pending</button>
+                <button class="filter-btn" data-filter="past">Past</button>
+                <button class="filter-btn" data-filter="all">All</button>
             </div>
-            <button class="btn-outline" id="endSessionBtn" style="background: rgba(255,255,255,0.2); color: white; border-color: white;">
-                <i class="fas fa-times"></i> End Session
+            <button class="btn-outline" id="loadMoreBookingsBtn" style="display: none;">
+                <i class="fas fa-chevron-down"></i> Load More Bookings
             </button>
-        </div>
-        <div id="jitsiMeetContainer" style="width: 100%; height: calc(100% - 80px);"></div>
-    `;
-    
-    document.body.appendChild(container);
-    
-    // Add event listener for end session button
-    document.getElementById('endSessionBtn').addEventListener('click', endJitsiSession);
-    
-    return container;
-}
-
-// Initialize Jitsi Meet
-function initializeJitsiMeet(session) {
-    // Make sure Jitsi Meet library is loaded
-    if (typeof JitsiMeetExternalAPI === 'undefined') {
-        alert('Jitsi Meet library not loaded. Opening in new tab instead.');
-        window.open(session.meetLink, '_blank', 'noopener,noreferrer');
-        return;
-    }
-    
-    const domain = 'meet.jit.si';
-    const options = {
-        roomName: extractJitsiRoomId(session.meetLink),
-        width: '100%',
-        height: '100%',
-        parentNode: document.getElementById('jitsiMeetContainer'),
-        configOverwrite: {
-            prejoinPageEnabled: false,
-            startWithAudioMuted: true,
-            startWithVideoMuted: true,
-            disableModeratorIndicator: false,
-            startScreenSharing: false,
-            enableEmailInStats: false
-        },
-        interfaceConfigOverwrite: {
-            SHOW_JITSI_WATERMARK: false,
-            SHOW_WATERMARK_FOR_GUESTS: false,
-            DEFAULT_BACKGROUND: '#f0f2f5'
-        },
-        userInfo: {
-            displayName: userData?.fullName || 'Tutor',
-            email: currentUser.email
-        }
-    };
-    
-    try {
-        const api = new JitsiMeetExternalAPI(domain, options);
-        
-        // Handle session events
-        api.addEventListener('videoConferenceJoined', () => {
-            console.log('Successfully joined the conference');
-        });
-        
-        api.addEventListener('videoConferenceLeft', () => {
-            endJitsiSession();
-        });
-        
-        // Store API instance for later use
-        window.jitsiApi = api;
-        
-    } catch (error) {
-        console.error('Error initializing Jitsi Meet:', error);
-        alert('Error starting video session. Opening in new tab instead.');
-        window.open(session.meetLink, '_blank', 'noopener,noreferrer');
-        endJitsiSession();
-    }
-}
-
-// Extract Jitsi room ID from meet link
-function extractJitsiRoomId(meetLink) {
-    if (!meetLink) return null;
-    try {
-        const url = new URL(meetLink);
-        return url.pathname.substring(1); // Remove leading slash
-    } catch (error) {
-        console.error('Error extracting room ID:', error);
-        return `tutor-session-${Date.now()}`;
-    }
-}
-
-// End Jitsi session
-function endJitsiSession() {
-    if (window.jitsiApi) {
-        try {
-            window.jitsiApi.dispose();
-        } catch (error) {
-            console.error('Error disposing Jitsi API:', error);
-        }
-        window.jitsiApi = null;
-    }
-    
-    // Show main content again
-    document.querySelector('.main-content').style.display = 'block';
-    const sessionContainer = document.getElementById('sessionContainer');
-    if (sessionContainer) {
-        sessionContainer.style.display = 'none';
-    }
-}
-
-// Show custom modal function
-function showCustomModal(title, content, onShowCallback) {
-    let modal = document.getElementById('customModal');
-    
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'customModal';
-        modal.className = 'modal';
-        modal.style.display = 'none';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h3>${title}</h3>
-                    <span class="close-modal">&times;</span>
-                </div>
-                <div class="modal-body" id="customModalBody"></div>
-            </div>
         `;
-        document.body.appendChild(modal);
         
-        // Add close functionality
-        modal.querySelector('.close-modal').addEventListener('click', closeModal);
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) closeModal();
+        const bookingsContainer = document.getElementById('bookingsContainer');
+        if (bookingsContainer) {
+            bookingsContainer.parentNode.insertBefore(filterContainer, bookingsContainer);
+        }
+        
+        // Add event listeners to filter buttons
+        const filterButtons = filterContainer.querySelectorAll('.filter-btn');
+        filterButtons.forEach(btn => {
+            btn.addEventListener('click', function() {
+                // Remove active class from all buttons
+                filterButtons.forEach(b => b.classList.remove('active'));
+                // Add active class to clicked button
+                this.classList.add('active');
+                
+                // Update filter and apply
+                currentBookingsFilter = this.getAttribute('data-filter');
+                displayedBookingsCount = 10; // Reset to first page
+                applyBookingsFilter();
+            });
         });
     }
-    
-    document.getElementById('customModalBody').innerHTML = content;
-    modal.style.display = 'flex';
-    
-    if (onShowCallback) onShowCallback();
 }
 
-// Close modal function
-function closeModal() {
-    const modal = document.getElementById('customModal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-       
-// Add event listeners to booking action buttons
-function addBookingActionListeners() {
-    // Add join session button event listeners
+// Add event listeners to booking cards
+function addBookingCardListeners() {
+    // Join session buttons
     document.querySelectorAll('.join-session-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const sessionId = this.getAttribute('data-session-id');
-            joinSession(sessionId);
+            const meetLink = this.getAttribute('data-meet-link');
+            joinSession(sessionId, meetLink);
         });
     });
     
@@ -3589,7 +3310,7 @@ function addBookingActionListeners() {
     document.querySelectorAll('.cancel-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const sessionId = this.getAttribute('data-session-id');
-            cancelBooking(sessionId);
+            openCancelModal(sessionId);
         });
     });
     
@@ -3601,34 +3322,358 @@ function addBookingActionListeners() {
         });
     });
 }
-       
-// Cancel a booking as tutor
-async function cancelBooking(sessionId) {
-    if (!confirm('Are you sure you want to cancel this booking? The student will be notified and this action cannot be undone.')) {
+
+// Join session functionality
+function joinSession(sessionId, meetLink) {
+    if (!meetLink) {
+        alert('No meeting link available for this session.');
+        return;
+    }
+    
+    // Open meeting in new tab
+    window.open(meetLink, '_blank');
+    
+    // Log the join action
+    console.log(`Tutor joined session: ${sessionId}`);
+}
+
+// Open reschedule modal
+async function openRescheduleModal(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        const originalDate = session.date.toDate();
+        
+        // Set minimum date to today
+        const today = new Date().toISOString().split('T')[0];
+        
+        const modalContent = `
+            <h3>Reschedule Session</h3>
+            <p>Request to reschedule your session with ${session.studentName || 'the student'}.</p>
+            
+            <form id="rescheduleForm">
+                <div class="form-group">
+                    <label for="newSessionDate">New Date *</label>
+                    <input type="date" id="newSessionDate" class="form-control" min="${today}" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="newSessionTime">New Time *</label>
+                    <input type="time" id="newSessionTime" class="form-control" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="rescheduleReason">Reason for Reschedule *</label>
+                    <textarea id="rescheduleReason" class="form-control" rows="3" 
+                              placeholder="Please provide a reason for rescheduling this session..." required></textarea>
+                </div>
+                
+                <div class="original-session-info">
+                    <h4>Original Session Details</h4>
+                    <p><strong>Date:</strong> ${originalDate.toLocaleDateString()}</p>
+                    <p><strong>Time:</strong> ${originalDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                    <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
+                    <p><strong>Subject:</strong> ${session.subject || 'General'}</p>
+                </div>
+            </form>
+        `;
+        
+        showRescheduleModal(modalContent, sessionId);
+        
+    } catch (error) {
+        console.error("Error opening reschedule modal:", error);
+        alert('Error loading session details. Please try again.');
+    }
+}
+
+// Show reschedule modal
+function showRescheduleModal(content, sessionId) {
+    let modal = document.getElementById('bookingsRescheduleModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'bookingsRescheduleModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h3>Request Reschedule</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="bookingsRescheduleModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="cancelRescheduleRequestBtn">Cancel</button>
+                    <button class="btn-primary" id="submitRescheduleRequestBtn">Submit Request</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const cancelBtn = modal.querySelector('#cancelRescheduleRequestBtn');
+        const submitBtn = modal.querySelector('#submitRescheduleRequestBtn');
+        
+        closeBtn.addEventListener('click', () => modal.style.display = 'none');
+        cancelBtn.addEventListener('click', () => modal.style.display = 'none');
+        submitBtn.addEventListener('click', () => submitRescheduleRequest(sessionId));
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('bookingsRescheduleModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Submit reschedule request
+async function submitRescheduleRequest(sessionId) {
+    const newDate = document.getElementById('newSessionDate').value;
+    const newTime = document.getElementById('newSessionTime').value;
+    const reason = document.getElementById('rescheduleReason').value.trim();
+    
+    // Validate form
+    if (!newDate || !newTime || !reason) {
+        alert('Please fill in all required fields.');
+        return;
+    }
+    
+    // Combine date and time
+    const newDateTime = new Date(`${newDate}T${newTime}`);
+    
+    if (newDateTime <= new Date()) {
+        alert('Please select a future date and time for the rescheduled session.');
         return;
     }
     
     try {
+        // Update session in bookedSessions
         await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelledBy: 'tutor',
-            cancellationReason: 'Tutor cancelled the session'
+            rescheduleRequested: true,
+            rescheduleRequestedBy: 'tutor',
+            rescheduleRequestedAt: new Date(),
+            proposedNewDate: newDateTime,
+            rescheduleReason: reason,
+            status: 'reschedule_requested',
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
         
-        // Show success message
-        showNotification('Booking cancelled successfully.', 'success');
+        // Create notification for student
+        await createRescheduleNotification(sessionId, reason, newDateTime);
         
-        // Refresh the bookings display
+        // Close modal
+        document.getElementById('bookingsRescheduleModal').style.display = 'none';
+        
+        // Show success message
+        showBookingActionSuccess('Reschedule request sent to student successfully!');
+        
+        // Reload bookings to reflect changes
         loadMyBookings();
         
     } catch (error) {
-        console.error("Error cancelling booking:", error);
-        showNotification('Error cancelling booking. Please try again.', 'error');
+        console.error("Error submitting reschedule request:", error);
+        alert('Error submitting reschedule request. Please try again.');
     }
 }
 
-// Show booking details in modal
+// Create reschedule notification for student
+async function createRescheduleNotification(sessionId, reason, newDateTime) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        const session = sessionDoc.data();
+        
+        await db.collection('notifications').add({
+            userId: session.studentId,
+            type: 'reschedule_request',
+            title: 'Reschedule Request',
+            message: `Tutor has requested to reschedule your ${session.subject} session`,
+            details: {
+                reason: reason,
+                proposedNewDate: newDateTime.toISOString(),
+                tutorName: session.tutorName || 'Your tutor',
+                sessionId: sessionId,
+                subject: session.subject
+            },
+            relatedSessionId: sessionId,
+            isRead: false,
+            priority: 'high',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        console.log('Reschedule notification created for student');
+    } catch (error) {
+        console.error("Error creating reschedule notification:", error);
+    }
+}
+
+// Open cancel modal
+async function openCancelModal(sessionId) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        if (!sessionDoc.exists) {
+            alert('Session not found.');
+            return;
+        }
+        
+        const session = sessionDoc.data();
+        const sessionDate = session.date.toDate();
+        
+        const modalContent = `
+            <h3>Cancel Session</h3>
+            <p>Are you sure you want to cancel your session with ${session.studentName || 'the student'}?</p>
+            
+            <div class="session-info">
+                <h4>Session Details</h4>
+                <p><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</p>
+                <p><strong>Time:</strong> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
+                <p><strong>Subject:</strong> ${session.subject || 'General'}</p>
+                <p><strong>Duration:</strong> ${session.duration || '1.5'} hours</p>
+            </div>
+            
+            <form id="cancelForm">
+                <div class="form-group">
+                    <label for="cancelReason">Reason for Cancellation *</label>
+                    <textarea id="cancelReason" class="form-control" rows="3" 
+                              placeholder="Please provide a reason for cancelling this session..." required></textarea>
+                </div>
+            </form>
+            
+            <div class="warning-message">
+                <i class="fas fa-exclamation-triangle"></i>
+                <span>This action cannot be undone. The student will be notified of the cancellation.</span>
+            </div>
+        `;
+        
+        showCancelModal(modalContent, sessionId);
+        
+    } catch (error) {
+        console.error("Error opening cancel modal:", error);
+        alert('Error loading session details. Please try again.');
+    }
+}
+
+// Show cancel modal
+function showCancelModal(content, sessionId) {
+    let modal = document.getElementById('bookingsCancelModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'bookingsCancelModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h3>Cancel Session</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="bookingsCancelModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="cancelCancelBtn">Keep Session</button>
+                    <button class="btn-danger" id="confirmCancelBtn">Confirm Cancellation</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const cancelBtn = modal.querySelector('#cancelCancelBtn');
+        const confirmBtn = modal.querySelector('#confirmCancelBtn');
+        
+        closeBtn.addEventListener('click', () => modal.style.display = 'none');
+        cancelBtn.addEventListener('click', () => modal.style.display = 'none');
+        confirmBtn.addEventListener('click', () => confirmCancellation(sessionId));
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('bookingsCancelModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+}
+
+// Confirm cancellation
+async function confirmCancellation(sessionId) {
+    const reason = document.getElementById('cancelReason').value.trim();
+    
+    if (!reason) {
+        alert('Please provide a reason for cancellation.');
+        return;
+    }
+    
+    try {
+        // Update session in bookedSessions
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'cancelled',
+            cancelledBy: 'tutor',
+            cancelledAt: new Date(),
+            cancelReason: reason,
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Create notification for student
+        await createCancellationNotification(sessionId, reason);
+        
+        // Close modal
+        document.getElementById('bookingsCancelModal').style.display = 'none';
+        
+        // Show success message
+        showBookingActionSuccess('Session cancelled successfully!');
+        
+        // Reload bookings to reflect changes
+        loadMyBookings();
+        
+    } catch (error) {
+        console.error("Error cancelling session:", error);
+        alert('Error cancelling session. Please try again.');
+    }
+}
+
+// Create cancellation notification for student
+async function createCancellationNotification(sessionId, reason) {
+    try {
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        const session = sessionDoc.data();
+        
+        await db.collection('notifications').add({
+            userId: session.studentId,
+            type: 'session_cancelled',
+            title: 'Session Cancelled',
+            message: `Tutor has cancelled your ${session.subject} session`,
+            details: {
+                reason: reason,
+                tutorName: session.tutorName || 'Your tutor',
+                sessionId: sessionId,
+                subject: session.subject,
+                originalDate: session.date
+            },
+            relatedSessionId: sessionId,
+            isRead: false,
+            priority: 'high',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        console.log('Cancellation notification created for student');
+    } catch (error) {
+        console.error("Error creating cancellation notification:", error);
+    }
+}
+
+// Show booking details
 async function showBookingDetails(sessionId) {
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -3638,117 +3683,94 @@ async function showBookingDetails(sessionId) {
         }
         
         const session = sessionDoc.data();
-        let sessionDate;
+        const date = session.date.toDate();
+        const isPastSession = date <= new Date();
         
-        if (session.date && typeof session.date.toDate === 'function') {
-            sessionDate = session.date.toDate();
-        } else {
-            sessionDate = new Date(session.date);
+        let detailsHTML = `
+            <h3>Session Details</h3>
+            <div class="session-details-grid">
+                <div class="detail-item">
+                    <strong>Student:</strong> ${session.studentName || 'Unknown'}
+                </div>
+                <div class="detail-item">
+                    <strong>Date:</strong> ${date.toLocaleDateString()}
+                </div>
+                <div class="detail-item">
+                    <strong>Time:</strong> ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </div>
+                <div class="detail-item">
+                    <strong>Subject:</strong> ${session.subject || 'General'}
+                </div>
+                <div class="detail-item">
+                    <strong>Duration:</strong> ${session.duration || '1.5'} hours
+                </div>
+                <div class="detail-item">
+                    <strong>Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
+                </div>
+                <div class="detail-item">
+                    <strong>Rate:</strong> $${session.hourlyRate || '40'}/hour
+                </div>
+                <div class="detail-item">
+                    <strong>Total:</strong> $${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}
+                </div>
+                <div class="detail-item">
+                    <strong>Status:</strong> <span class="status-badge status-${getStatusClass(session.status)}">${session.status.toUpperCase()}</span>
+                </div>
+        `;
+        
+        if (session.sessionType === 'online' && session.meetLink) {
+            detailsHTML += `
+                <div class="detail-item">
+                    <strong>Meeting Link:</strong> 
+                    <a href="${session.meetLink}" target="_blank" class="meet-link">${session.meetLink}</a>
+                </div>
+            `;
         }
         
-        // Meet link information
-        const meetInfoHTML = session.meetLink ? `
-            <div class="detail-item">
-                <strong>Meet Platform:</strong> ${session.meetPlatform === 'jitsi_meet' ? 'Jitsi Meet' : session.meetPlatform || 'Video Conference'}
-            </div>
-            <div class="detail-item">
-                <strong>Meeting Link:</strong> 
-                <a href="${session.meetLink}" target="_blank" style="color: #1976D2; text-decoration: none; word-break: break-all;">
-                    ${session.meetLink}
-                </a>
-            </div>
-        ` : `
-            <div class="detail-item">
-                <strong>Meeting Link:</strong> <em>Not provided yet</em>
-            </div>
-        `;
-        
-        const modalContent = `
-            <div class="booking-details">
-                <h3 style="color: var(--primary-dark); margin-bottom: 20px;">Session Details</h3>
-                
-                <div class="details-grid" style="display: grid; gap: 15px; margin-bottom: 20px;">
-                    <div class="detail-item">
-                        <strong>Student:</strong> ${session.studentName || 'Unknown'}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Subject:</strong> ${session.subject || 'General Tutoring'}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Date & Time:</strong> ${sessionDate.toLocaleString()}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Duration:</strong> ${session.duration || '1.5'} hours
-                    </div>
-                    <div class="detail-item">
-                        <strong>Session Type:</strong> ${session.sessionType === 'online' ? 'Online' : 'In-Person'}
-                    </div>
-                    ${meetInfoHTML}
-                    <div class="detail-item">
-                        <strong>Hourly Rate:</strong> $${session.hourlyRate || '40'}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Total Amount:</strong> $${session.totalPrice || (parseFloat(session.duration || 1.5) * parseFloat(session.hourlyRate || 40)).toFixed(2)}
-                    </div>
-                    <div class="detail-item">
-                        <strong>Status:</strong> <span class="status-badge status-${session.status}">${session.status}</span>
-                    </div>
+        if (session.notes) {
+            detailsHTML += `
+                <div class="detail-item full-width">
+                    <strong>Notes:</strong> ${session.notes}
                 </div>
-                
-                ${session.notes ? `
-                    <div class="notes-section" style="background: var(--gray-light); padding: 15px; border-radius: 8px;">
-                        <strong>Session Notes:</strong>
-                        <p style="margin-top: 5px; font-style: italic;">${session.notes}</p>
-                    </div>
-                ` : ''}
-            </div>
-        `;
+            `;
+        }
         
-        showBookingDetailsModal(modalContent);
+        if (session.rescheduleRequested) {
+            detailsHTML += `
+                <div class="detail-item full-width warning">
+                    <strong>Reschedule Requested:</strong> 
+                    ${session.rescheduleReason || 'No reason provided'}
+                </div>
+            `;
+        }
+        
+        if (session.cancelledAt) {
+            detailsHTML += `
+                <div class="detail-item full-width error">
+                    <strong>Cancelled:</strong> 
+                    ${session.cancelReason || 'No reason provided'}
+                    <br><small>on ${session.cancelledAt.toDate().toLocaleString()}</small>
+                </div>
+            `;
+        }
+        
+        detailsHTML += `</div>`;
+        
+        showBookingDetailsModal(detailsHTML);
         
     } catch (error) {
-        console.error("Error loading session details:", error);
+        console.error("Error loading booking details:", error);
         alert('Error loading session details.');
     }
 }
 
-// Helper function to format session date
-function formatSessionDate(date) {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    if (date.toDateString() === today.toDateString()) {
-        return `Today, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    } else if (date.toDateString() === tomorrow.toDateString()) {
-        return `Tomorrow, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    } else {
-        return `${date.toLocaleDateString()}, ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-    }
-}
-
-// Helper function to update bookings count in dashboard stats
-function updateBookingsCount(count) {
-    const upcomingCountElement = document.getElementById('upcomingSessionsCount');
-    if (upcomingCountElement) {
-        upcomingCountElement.textContent = count;
-    }
-}
-
-// Helper function to show notifications
-function showNotification(message, type = 'info') {
-    // You can implement a toast notification system here
-    // For now, using alert as fallback
-    alert(message);
-}
-
 // Show booking details modal
 function showBookingDetailsModal(content) {
-    let modal = document.getElementById('bookingDetailsModal');
+    let modal = document.getElementById('bookingsDetailsModal');
     
     if (!modal) {
         modal = document.createElement('div');
-        modal.id = 'bookingDetailsModal';
+        modal.id = 'bookingsDetailsModal';
         modal.className = 'modal';
         modal.style.display = 'none';
         modal.innerHTML = `
@@ -3757,9 +3779,9 @@ function showBookingDetailsModal(content) {
                     <h3>Session Details</h3>
                     <span class="close-modal">&times;</span>
                 </div>
-                <div class="modal-body" id="bookingDetailsModalBody"></div>
+                <div class="modal-body" id="bookingsDetailsModalBody"></div>
                 <div class="modal-actions">
-                    <button class="btn-outline" id="closeBookingDetailsBtn">Close</button>
+                    <button class="btn-outline" id="closeDetailsBtn">Close</button>
                 </div>
             </div>
         `;
@@ -3767,15 +3789,10 @@ function showBookingDetailsModal(content) {
         
         // Add event listeners
         const closeBtn = modal.querySelector('.close-modal');
-        const closeActionBtn = modal.querySelector('#closeBookingDetailsBtn');
+        const closeDetailsBtn = modal.querySelector('#closeDetailsBtn');
         
-        closeBtn.addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
-        
-        closeActionBtn.addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
+        closeBtn.addEventListener('click', () => modal.style.display = 'none');
+        closeDetailsBtn.addEventListener('click', () => modal.style.display = 'none');
         
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
@@ -3784,141 +3801,254 @@ function showBookingDetailsModal(content) {
         });
     }
     
-    document.getElementById('bookingDetailsModalBody').innerHTML = content;
+    document.getElementById('bookingsDetailsModalBody').innerHTML = content;
     modal.style.display = 'flex';
 }
 
-// Open reschedule modal
-function openRescheduleModal(sessionId) {
-    let modal = document.getElementById('rescheduleModal');
+// Show booking action success message
+function showBookingActionSuccess(message) {
+    // Create toast notification
+    const toast = document.createElement('div');
+    toast.className = 'booking-toast success';
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #4CAF50;
+        color: white;
+        padding: 15px 20px;
+        border-radius: 5px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        max-width: 300px;
+    `;
+    toast.innerHTML = `<i class="fas fa-check-circle"></i> ${message}`;
     
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'rescheduleModal';
-        modal.className = 'modal';
-        modal.style.display = 'none';
-        modal.innerHTML = `
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>Request Reschedule</h3>
-                    <span class="close-modal">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="margin-bottom: 15px; color: #666; font-style: italic;">
-                        <i class="fas fa-info-circle"></i> This will send a reschedule request to the student. They will need to accept the new time.
-                    </p>
-                    <form id="rescheduleForm">
-                        <div class="form-group">
-                            <label for="rescheduleDate">Proposed New Date *</label>
-                            <input type="date" id="rescheduleDate" class="form-control" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="rescheduleTime">Proposed New Time *</label>
-                            <input type="time" id="rescheduleTime" class="form-control" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="rescheduleReason">Reason for Reschedule *</label>
-                            <textarea id="rescheduleReason" class="form-control" rows="3" 
-                                      placeholder="Please explain why you need to reschedule this session. The student will see this reason." 
-                                      required></textarea>
-                        </div>
-                    </form>
-                </div>
-                <div class="modal-actions">
-                    <button class="btn-outline" id="cancelRescheduleBtn">Cancel</button>
-                    <button class="btn-warning" id="submitRescheduleBtn">
-                        <i class="fas fa-paper-plane"></i> Send Request to Student
-                    </button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
+    document.body.appendChild(toast);
     
-    // Set minimum date to tomorrow (can't reschedule for today)
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
-    document.getElementById('rescheduleDate').min = tomorrowStr;
-    
-    // Clear form and set current session ID
-    document.getElementById('rescheduleForm').reset();
-    modal.setAttribute('data-current-session-id', sessionId);
-    
-    // Set up fresh event listeners
-    setupRescheduleModalEvents();
-    
-    modal.style.display = 'flex';
-    document.getElementById('rescheduleDate').focus();
+    // Remove after 3 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
+        }
+    }, 3000);
 }
 
-// Setup reschedule modal event listeners
-function setupRescheduleModalEvents() {
-    const modal = document.getElementById('rescheduleModal');
-    const closeBtn = modal.querySelector('.close-modal');
-    const cancelBtn = modal.querySelector('#cancelRescheduleBtn');
-    const submitBtn = modal.querySelector('#submitRescheduleBtn');
-    const form = document.getElementById('rescheduleForm');
-    
-    // Remove any existing listeners by cloning elements
-    const newCloseBtn = closeBtn.cloneNode(true);
-    closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-    
-    const newCancelBtn = cancelBtn.cloneNode(true);
-    cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
-    
-    const newSubmitBtn = submitBtn.cloneNode(true);
-    submitBtn.parentNode.replaceChild(newSubmitBtn, submitBtn);
-    
-    // Add new event listeners
-    newCloseBtn.addEventListener('click', closeRescheduleModal);
-    newCancelBtn.addEventListener('click', closeRescheduleModal);
-    newSubmitBtn.addEventListener('click', handleRescheduleSubmit);
-    
-    // Form submission handler
-    form.addEventListener('submit', function(e) {
-        e.preventDefault();
-        handleRescheduleSubmit();
-    });
-}
-
-// Handle reschedule form submission
-function handleRescheduleSubmit() {
-    const modal = document.getElementById('rescheduleModal');
-    const sessionId = modal.getAttribute('data-current-session-id');
-    
-    if (!sessionId) {
-        alert('Error: Session ID not found. Please refresh the page and try again.');
-        return;
-    }
-    
-    submitRescheduleRequest(sessionId);
-}
-
-// Submit reschedule request (tutor sends request to student)
-async function submitRescheduleRequest(sessionId) {
-    // ... your existing reschedule request code remains the same ...
-    // (This function doesn't need changes as it doesn't involve meet link generation)
-}
-
-// Close reschedule modal
-function closeRescheduleModal() {
-    const modal = document.getElementById('rescheduleModal');
-    if (modal) {
-        modal.style.display = 'none';
+// Helper function to get status class
+function getStatusClass(status) {
+    switch(status) {
+        case 'completed': return 'success';
+        case 'confirmed': 
+        case 'rescheduled': return 'primary';
+        case 'pending': return 'warning';
+        case 'cancelled': return 'error';
+        case 'reschedule_requested': return 'warning';
+        default: return 'gray';
     }
 }
 
-// Initialize booking section
+// Add CSS styles for bookings section
+function addBookingsStyles() {
+    const styleId = 'bookings-styles';
+    if (document.getElementById(styleId)) return;
+    
+    const styles = `
+        .bookings-filter-container {
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 8px 16px;
+            border: 1px solid var(--gray-light);
+            background: white;
+            border-radius: var(--border-radius-sm);
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 500;
+        }
+        
+        .filter-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        
+        .filter-btn:hover:not(.active) {
+            background: var(--gray-light);
+        }
+        
+        .bookings-stats {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: var(--gray-light);
+            border-radius: var(--border-radius);
+        }
+        
+        .booking-card {
+            position: relative;
+            transition: var(--transition);
+        }
+        
+        .booking-card.current-session {
+            border-left: 4px solid var(--success);
+        }
+        
+        .booking-card.past-session {
+            opacity: 0.8;
+            background: #f8f9fa;
+        }
+        
+        .live-badge {
+            background: var(--error);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.7em;
+            font-weight: bold;
+            margin-left: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .session-status {
+            margin: 10px 0;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .status-live {
+            background: var(--error);
+        }
+        
+        .status-completed {
+            background: var(--success);
+        }
+        
+        .reschedule-notice {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: var(--border-radius-sm);
+            margin-top: 10px;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .original-session-info,
+        .session-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: var(--border-radius-sm);
+            margin: 15px 0;
+        }
+        
+        .warning-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: var(--border-radius-sm);
+            margin-top: 15px;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .session-details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .detail-item {
+            padding: 8px 0;
+        }
+        
+        .detail-item.full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .detail-item.warning {
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid #ffc107;
+        }
+        
+        .detail-item.error {
+            background: #f8d7da;
+            padding: 10px;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid #dc3545;
+        }
+        
+        .meet-link {
+            word-break: break-all;
+            color: var(--primary);
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        
+        @media (max-width: 768px) {
+            .bookings-filter-container {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .filter-buttons {
+                justify-content: center;
+            }
+            
+            .session-details-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .bookings-stats {
+                gap: 15px;
+            }
+            
+            .stat-item {
+                text-align: center;
+            }
+        }
+    `;
+    
+    const styleSheet = document.createElement('style');
+    styleSheet.id = styleId;
+    styleSheet.textContent = styles;
+    document.head.appendChild(styleSheet);
+}
+
+// Initialize bookings section
 function initBookingsSection() {
-    // Set up any additional event listeners or initializations
-    console.log("Bookings section initialized");
+    addBookingsStyles();
+    // loadMyBookings() will be called when the bookings section is shown
 }
 
+// =======================================================================================================================================
+// BOOKINGS SECTION ENDS HERE
+// =======================================================================================================================================       
+
 // =============================================
-// MY BOOKINGS SECTION ENDS HERE
+// BOOKINGS BOOKINGS SECTION ENDS HERE
 // =============================================
-// =============================================
+
+
 // =============================================
 // SESSIONS HISTORY SECTION STARTS HERE
 // =============================================
@@ -6510,5 +6640,10 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </script>    
 </body>
 </html>
+
+
+
+
+
 
 
