@@ -3753,18 +3753,48 @@ function addBookingCardListeners() {
 
 // Join session functionality
 async function joinSession(sessionId) {
-    console.log('Attempting to join session:', sessionId);
+    console.log('Join session called for:', sessionId);
+    
+    // Find the correct button - using the actual class from your booking cards
+    const button = document.querySelector(`.join-session-btn[data-session-id="${sessionId}"]`);
+    
+    if (!button) {
+        console.error('Join button not found for session:', sessionId);
+        // Fallback: proceed without UI updates
+        await performJoinSession(sessionId);
+        return;
+    }
+    
+    const originalHTML = button.innerHTML;
+    const originalDisabled = button.disabled;
     
     try {
-        // Get the button element for potential UI updates
-        const joinButton = document.querySelector(`[data-session-id="${sessionId}"].join-session-btn`);
+        // Show loading state
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Joining...';
+        button.disabled = true;
         
-        // First, get the latest session data from Firestore
+        // Perform the actual join logic
+        await performJoinSession(sessionId);
+        
+    } catch (error) {
+        // Restore button on error
+        button.innerHTML = originalHTML;
+        button.disabled = originalDisabled;
+        console.error('Join session failed:', error);
+    }
+    // Note: We don't restore button on success because page might navigate away
+}
+
+// The actual join logic - no UI manipulation here
+async function performJoinSession(sessionId) {
+    try {
+        console.log('Fetching session data for:', sessionId);
+        
+        // Get fresh session data from Firestore
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
         
         if (!sessionDoc.exists) {
-            alert('Session not found!');
-            return;
+            throw new Error('Session not found in database');
         }
         
         const session = sessionDoc.data();
@@ -3774,39 +3804,34 @@ async function joinSession(sessionId) {
         console.log('Meeting link:', meetLink);
         
         if (!meetLink) {
-            alert('No meeting link available for this session. The meeting room may not have been created yet.');
-            console.error('No meetLink found for session:', sessionId);
-            return;
+            throw new Error('No meeting link available for this session');
         }
         
-        // Validate the meeting link format
+        // Validate link format
         if (!meetLink.startsWith('http')) {
-            alert('Invalid meeting link format. Please contact support.');
-            console.error('Invalid meetLink format:', meetLink);
-            return;
+            throw new Error('Invalid meeting link format');
         }
         
-        // Open meeting in new tab
-        console.log('Opening meeting link:', meetLink);
+        // Open the meeting room in a new tab
+        console.log('Opening meeting room:', meetLink);
         window.open(meetLink, '_blank', 'noopener,noreferrer');
         
-        // Optional: Update session with join timestamp (without affecting UI)
+        // Optional: Log the join action
         try {
             await db.collection('bookedSessions').doc(sessionId).update({
                 lastJoinedByTutor: new Date(),
                 lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
             });
         } catch (updateError) {
-            console.warn('Could not update join timestamp:', updateError);
-            // Continue anyway - this is not critical
+            console.warn('Could not update join timestamp (non-critical):', updateError);
         }
         
     } catch (error) {
-        console.error("Error joining session:", error);
-        alert('Error joining session. Please try again or contact support.');
+        console.error('Error in performJoinSession:', error);
+        alert(`Cannot join session: ${error.message}`);
+        throw error; // Re-throw to handle in parent function
     }
-}
-       
+}       
        
 // Open reschedule modal
 async function openRescheduleModal(sessionId) {
@@ -7195,6 +7220,7 @@ async function notifyTutorInvoiceApproved(invoiceId, amount) {
 </button>
 </body>
 </html>
+
 
 
 
