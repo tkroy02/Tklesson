@@ -2285,49 +2285,47 @@ function respondToReschedule(bookingId, response) {
         return;
     }
 
-    // First, get the reschedule request for this booking
-    db.collection('rescheduleRequests')
-        .where('sessionId', '==', bookingId)
-        .where('status', '==', 'pending')
-        .get()
-        .then((querySnapshot) => {
-            if (querySnapshot.empty) {
-                alert('No pending reschedule request found for this booking.');
+    // Get the current booking to access the proposed new date
+    db.collection('bookedSessions').doc(bookingId).get()
+        .then((doc) => {
+            if (!doc.exists) {
+                alert('Booking not found.');
                 return;
             }
 
-            const rescheduleRequestDoc = querySnapshot.docs[0];
-            const rescheduleRequestId = rescheduleRequestDoc.id;
-            const rescheduleRequest = rescheduleRequestDoc.data();
+            const booking = doc.data();
+            
+            // Verify there's a reschedule request
+            if (!booking.rescheduleRequested || !booking.proposedNewDate) {
+                alert('No reschedule request found for this booking.');
+                return;
+            }
 
             if (response === 'accept') {
-                // Accept the reschedule - update both the booking and the reschedule request
-                const batch = db.batch();
-                
-                // Update the booking with the new date
-                const bookingRef = db.collection('bookedSessions').doc(bookingId);
-                batch.update(bookingRef, {
-                    date: rescheduleRequest.requestedDate,
+                // Accept the reschedule - update with the proposed new date
+                return db.collection('bookedSessions').doc(bookingId).update({
+                    date: booking.proposedNewDate, // Use the proposed new date
                     status: 'confirmed',
-                    rescheduleAcceptedAt: new Date()
+                    rescheduleStatus: 'accepted',
+                    rescheduleRespondedAt: new Date(),
+                    rescheduleRespondedBy: 'student',
+                    previousDate: booking.date, // Store original date
+                    // Clear reschedule request fields
+                    rescheduleRequested: false,
+                    proposedNewDate: null,
+                    rescheduleReason: null
                 });
-
-                // Update the reschedule request status
-                const rescheduleRef = db.collection('rescheduleRequests').doc(rescheduleRequestId);
-                batch.update(rescheduleRef, {
-                    status: 'accepted',
-                    respondedAt: new Date(),
-                    response: 'accepted'
-                });
-
-                // Commit the batch
-                return batch.commit();
             } else {
-                // Decline the reschedule - update only the reschedule request
-                return db.collection('rescheduleRequests').doc(rescheduleRequestId).update({
-                    status: 'declined',
-                    respondedAt: new Date(),
-                    response: 'declined'
+                // Decline the reschedule - keep original date but update status
+                return db.collection('bookedSessions').doc(bookingId).update({
+                    status: 'confirmed', // Return to confirmed status
+                    rescheduleStatus: 'declined',
+                    rescheduleRespondedAt: new Date(),
+                    rescheduleRespondedBy: 'student',
+                    // Clear reschedule request fields
+                    rescheduleRequested: false,
+                    proposedNewDate: null,
+                    rescheduleReason: null
                 });
             }
         })
@@ -2342,10 +2340,77 @@ function respondToReschedule(bookingId, response) {
         });
 }
 
-// FIXED: Use a single global event listener instead of adding new ones each time
-let bookingsContainerListener = null;
+// Updated loadUserBookings function to detect reschedule requests from bookedSessions
+function loadUserBookings() {
+    const userId = auth.currentUser.uid;
+    
+    // Query sessions including reschedule_requested status
+    db.collection('bookedSessions')
+        .where('studentId', '==', userId)
+        .where('status', 'in', ['confirmed', 'pending', 'reschedule_requested'])
+        .orderBy('date', 'asc')
+        .get()
+        .then((querySnapshot) => {
+            // Filter client-side to include sessions that haven't ended yet
+            const filteredSessions = [];
+            const now = new Date();
+            
+            querySnapshot.forEach(doc => {
+                const booking = doc.data();
+                const bookingId = doc.id;
+                
+                // Convert Firestore Timestamps to Date objects
+                if (booking.date && typeof booking.date.toDate === 'function') {
+                    booking.date = booking.date.toDate();
+                }
+                if (booking.proposedNewDate && typeof booking.proposedNewDate.toDate === 'function') {
+                    booking.proposedNewDate = booking.proposedNewDate.toDate();
+                }
+                
+                // Calculate session end time (start time + duration)
+                const sessionEndTime = new Date(booking.date);
+                const durationHours = parseFloat(booking.duration) || 1.5;
+                sessionEndTime.setHours(sessionEndTime.getHours() + durationHours);
+                
+                // Include sessions that haven't ended yet
+                if (sessionEndTime > now) {
+                    filteredSessions.push({
+                        id: bookingId,
+                        ...booking
+                    });
+                }
+            });
+            
+            updateUpcomingSessionsCount(filteredSessions.length);
+            
+            // Check for pending reschedule requests in the booking data
+            const bookingsWithRescheduleInfo = filteredSessions.map(booking => {
+                const hasPendingReschedule = booking.rescheduleRequested && 
+                                           booking.status === 'reschedule_requested';
+                
+                return {
+                    ...booking,
+                    hasPendingReschedule: hasPendingReschedule,
+                    rescheduleRequest: hasPendingReschedule ? {
+                        requestedDate: booking.proposedNewDate, // Use proposedNewDate field
+                        reason: booking.rescheduleReason || 'No reason provided',
+                        requestedBy: booking.rescheduleRequestedBy || 'tutor'
+                    } : null
+                };
+            });
+            
+            loadBookingsDisplay(bookingsWithRescheduleInfo);
+        })
+        .catch((error) => {
+            console.error('Error loading booked sessions:', error);
+            const container = document.getElementById('bookingsContainer');
+            if (container) {
+                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+            }
+        });
+}
 
-// Update the loadBookingsDisplay function to show appropriate messaging
+// Also update the display function to show the correct reschedule information
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
@@ -2359,12 +2424,12 @@ function loadBookingsDisplay(bookings) {
     const now = new Date();
     
     bookings.forEach(booking => {
-        // FIX: Handle both Date objects and Firestore Timestamps
+        // Handle date conversion
         let date;
         if (booking.date && typeof booking.date.toDate === 'function') {
-            date = booking.date.toDate(); // Firestore Timestamp
+            date = booking.date.toDate();
         } else {
-            date = new Date(booking.date); // Already a Date object or string
+            date = new Date(booking.date);
         }
         
         const formattedDate = date.toLocaleDateString();
@@ -2375,9 +2440,9 @@ function loadBookingsDisplay(bookings) {
         const canJoin = now >= new Date(date.getTime() - 15 * 60 * 1000) && 
                        now <= sessionEndTime;
         
-        // Check if meeting link is available (just for button logic)
+        // Check if meeting link is available
         const meetLinkAvailable = booking.meetLink && booking.status === 'confirmed' && booking.meetCreated;
-      
+        
         // Sanitize all user inputs to prevent XSS
         const subject = booking.subject || 'No subject';
         const sanitizedSubject = subject.replace(/[<>"'&]/g, '');
@@ -2390,7 +2455,6 @@ function loadBookingsDisplay(bookings) {
         // Check if there's a pending reschedule with proposed new date
         let rescheduleInfo = '';
         if (booking.hasPendingReschedule && booking.rescheduleRequest) {
-            // FIX: Handle date conversion for reschedule request too
             let newDate;
             if (booking.rescheduleRequest.requestedDate && typeof booking.rescheduleRequest.requestedDate.toDate === 'function') {
                 newDate = booking.rescheduleRequest.requestedDate.toDate();
@@ -2401,11 +2465,12 @@ function loadBookingsDisplay(bookings) {
             const newFormattedDate = newDate.toLocaleDateString();
             const newFormattedTime = newDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
             const reason = (booking.rescheduleRequest.reason || 'No reason provided').replace(/[<>"'&]/g, '');
+            const requestedBy = (booking.rescheduleRequest.requestedBy || 'tutor').replace(/[<>"'&]/g, '');
             
             rescheduleInfo = `
                 <div class="session-detail" style="color: var(--warning); font-weight: 500;">
                     <i class="fas fa-exchange-alt"></i>
-                    <span>Reschedule Proposed: ${newFormattedDate} at ${newFormattedTime}</span>
+                    <span>Reschedule Requested by ${requestedBy}: ${newFormattedDate} at ${newFormattedTime}</span>
                 </div>
                 <div class="session-detail">
                     <i class="fas fa-comment"></i>
@@ -2460,13 +2525,13 @@ function loadBookingsDisplay(bookings) {
     
     container.innerHTML = html;
 
-    // KEEP the informational text - it's helpful for users!
+    // Add informational text
     const infoText = document.createElement('div');
     infoText.className = 'booking-info-text';
     infoText.innerHTML = '<i class="fas fa-info-circle"></i> Join Session button will appear once status is confirmed and it\'s within 15 minutes of your session time.';
     container.appendChild(infoText);
     
-    // FIXED: Only set up the event listener once
+    // Event listener setup remains the same
     if (!bookingsContainerListener) {
         bookingsContainerListener = function(e) {
             const sessionId = e.target.getAttribute('data-session-id');
@@ -4247,6 +4312,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
