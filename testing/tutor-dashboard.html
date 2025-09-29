@@ -5901,14 +5901,46 @@ async function loadCompletedSessions() {
 let availableSessions = [];
 let invoiceInitialized = false;
 
+// ADD MISSING FUNCTIONS
+function setupInvoiceCalculations() {
+    console.log('🧮 Setting up invoice calculations...');
+    
+    const hoursInput = document.getElementById('hours');
+    const rateInput = document.getElementById('rate');
+    
+    if (hoursInput && rateInput) {
+        hoursInput.addEventListener('input', calculateInvoiceTotal);
+        rateInput.addEventListener('input', calculateInvoiceTotal);
+        console.log('✅ Invoice calculations setup complete');
+    }
+}
+
+function showInvoiceError(message) {
+    console.error('❌ Invoice Error:', message);
+    alert('Invoice Error: ' + message);
+}
+
+function showInvoiceMessage(message) {
+    console.log('ℹ️ Invoice Message:', message);
+}
+
 // Initialize invoice section when page loads
 function initInvoiceSection() {
     console.log('🔍 Initializing invoice section...');
     
+    // Wait for user to be authenticated
+    if (!currentUser || !currentUser.uid) {
+        console.log('👤 Waiting for user authentication...');
+        setTimeout(initInvoiceSection, 1000); // Retry in 1 second
+        return;
+    }
+    
+    console.log('✅ User authenticated:', currentUser.uid);
+    
     // Method 1: Listen for tab clicks
     setupTabListeners();
     
-    // Method 2: Listen for URL hash changes (if using hash navigation)
+    // Method 2: Listen for URL hash changes
     setupHashListeners();
     
     // Method 3: Check current active tab on load
@@ -5917,22 +5949,19 @@ function initInvoiceSection() {
 
 // Listen for tab clicks
 function setupTabListeners() {
-    // Listen for clicks on any tab or navigation item
     document.addEventListener('click', function(e) {
         const target = e.target;
         
-        // Check if this is a tab click that should show invoice section
         if (target.closest('[data-tab="invoice"]') || 
             target.closest('[href*="invoice"]') ||
             target.textContent.toLowerCase().includes('invoice') ||
             (target.classList && target.classList.contains('tab-link'))) {
             
             console.log('📌 Invoice tab clicked - loading sessions');
-            setTimeout(loadInvoiceSession, 100); // Small delay to let UI update
+            setTimeout(loadInvoiceSession, 100);
         }
     });
     
-    // Also listen for custom events if your dashboard uses them
     window.addEventListener('tabChanged', function(e) {
         if (e.detail && e.detail.tab === 'invoice') {
             console.log('📌 Invoice tab changed via event - loading sessions');
@@ -5960,10 +5989,17 @@ function checkActiveTab() {
     }
 }
 
-// MAIN FUNCTION - Now with event listener setup
+// MAIN FUNCTION - SIMPLIFIED QUERY TO AVOID INDEX ISSUES
 async function loadInvoiceSession() {
     if (invoiceInitialized) {
         console.log('⚡ Invoice already loaded, skipping...');
+        return;
+    }
+    
+    // Check authentication again
+    if (!currentUser || !currentUser.uid) {
+        console.error('❌ User not authenticated');
+        showInvoiceError('Please log in to access invoices');
         return;
     }
     
@@ -5978,88 +6014,108 @@ async function loadInvoiceSession() {
     sessionSelect.innerHTML = '<option value="">Loading sessions...</option>';
     
     try {
-        // Calculate date 7 days ago
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        
-        // Get past sessions from last 7 days that haven't been invoiced
+        // SIMPLIFIED QUERY - No complex filters to avoid index issues
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
-            .where('date', '>=', sevenDaysAgo) // Sessions from last 7 days
-            .where('date', '<=', new Date())   // Sessions that already happened (past)
-            .where('invoiced', '!=', true)     // Only non-invoiced sessions
             .orderBy('date', 'desc')
+            .limit(20) // Limit results
             .get();
         
-        console.log('✅ Found past sessions from last 7 days:', sessionsSnapshot.size);
+        console.log('✅ Found total sessions:', sessionsSnapshot.size);
         
         availableSessions = [];
         sessionSelect.innerHTML = '<option value="">Select a session to invoice</option>';
         
         if (sessionsSnapshot.empty) {
-            sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
-            showInvoiceMessage('No past sessions found in the last 7 days. Only sessions that have already occurred can be invoiced.');
+            sessionSelect.innerHTML = '<option value="">No sessions available</option>';
             return;
         }
         
-        // Populate dropdown with time formatting
+        // Filter manually in JavaScript to avoid Firestore index issues
+        const now = new Date();
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        let validSessionsCount = 0;
+        
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
-            availableSessions.push(session);
             
             const sessionDate = session.date.toDate();
-            const duration = parseFloat(session.duration || '1.5');
-            const endTime = new Date(sessionDate.getTime() + (duration * 60 * 60 * 1000));
             
-            const option = document.createElement('option');
-            option.value = session.id;
-            
-            const dateStr = sessionDate.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: 'numeric' 
-            });
-            
-            const startTimeStr = sessionDate.toLocaleTimeString('en-US', { 
-                hour: 'numeric', 
-                minute: '2-digit',
-                hour12: true 
-            });
-            
-            const endTimeStr = endTime.toLocaleTimeString('en-US', { 
-                hour: 'numeric', 
-                minute: '2-digit',
-                hour12: true 
-            });
-            
-            option.textContent = `${dateStr} (${startTimeStr}-${endTimeStr}) - ${session.studentName} - ${session.subject} [${session.status}]`;
-            
-            sessionSelect.appendChild(option);
+            // Manual filtering: Past sessions from last 7 days, not invoiced
+            if (sessionDate >= sevenDaysAgo && 
+                sessionDate <= now && 
+                session.invoiced !== true) {
+                
+                availableSessions.push(session);
+                validSessionsCount++;
+                
+                const duration = parseFloat(session.duration || '1.5');
+                const endTime = new Date(sessionDate.getTime() + (duration * 60 * 60 * 1000));
+                
+                const option = document.createElement('option');
+                option.value = session.id;
+                
+                const dateStr = sessionDate.toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric' 
+                });
+                
+                const startTimeStr = sessionDate.toLocaleTimeString('en-US', { 
+                    hour: 'numeric', 
+                    minute: '2-digit',
+                    hour12: true 
+                });
+                
+                const endTimeStr = endTime.toLocaleTimeString('en-US', { 
+                    hour: 'numeric', 
+                    minute: '2-digit',
+                    hour12: true 
+                });
+                
+                option.textContent = `${dateStr} (${startTimeStr}-${endTimeStr}) - ${session.studentName} - ${session.subject}`;
+                
+                sessionSelect.appendChild(option);
+            }
         });
         
-        console.log('🎉 Success! Loaded', availableSessions.length, 'past sessions for invoicing');
+        console.log('🎉 Success! Loaded', validSessionsCount, 'past sessions for invoicing');
+        
+        if (validSessionsCount === 0) {
+            sessionSelect.innerHTML = '<option value="">No past sessions available for invoicing</option>';
+            showInvoiceMessage('No past sessions found in the last 7 days. Only sessions that have already occurred can be invoiced.');
+        }
+        
         invoiceInitialized = true;
         setupInvoiceForm();
         
     } catch (error) {
-        console.error('❌ Error loading past sessions:', error);
+        console.error('❌ Error loading sessions:', error);
         sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
-        showInvoiceError('Error loading past sessions: ' + error.message);
+        showInvoiceError('Error loading sessions: ' + error.message);
     }
 }
-       
+
+// Rest of your existing functions remain the same...
+// setupInvoiceForm, populateSessionDetails, calculateInvoiceTotal, handleInvoiceSubmission, etc.
+
 // Call this when your page loads
 document.addEventListener('DOMContentLoaded', function() {
     console.log('📄 Page loaded - setting up invoice listeners');
     initInvoiceSection();
 });
 
-// Also call it when Firebase is ready if needed
+// Also call it when Firebase is ready
 if (typeof firebase !== 'undefined') {
     firebase.auth().onAuthStateChanged(function(user) {
         if (user) {
             console.log('🔥 User authenticated - setting up invoice listeners');
-            initInvoiceSection();
+            // Don't call initInvoiceSection again if already called
+            if (!invoiceInitialized) {
+                initInvoiceSection();
+            }
         }
     });
 }
@@ -7586,6 +7642,7 @@ document.head.appendChild(mobileStyle);
 </button>
 </body>
 </html>
+
 
 
 
