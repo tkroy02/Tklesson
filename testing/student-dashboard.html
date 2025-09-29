@@ -2131,8 +2131,14 @@ function updateUpcomingSessionsCount(count) {
     }
 }
 
-// Cancel a booking function
-function cancelBooking(bookingId) {
+// Cancel a booking function - FIXED
+function cancelBooking(bookingId, event) {
+    // Stop propagation immediately to prevent multiple triggers
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    
     if (confirm('Are you sure you want to cancel this booking?')) {
         // Update the booking status to cancelled
         db.collection('bookedSessions').doc(bookingId).update({
@@ -2149,16 +2155,17 @@ function cancelBooking(bookingId) {
             alert('Failed to cancel booking. Please try again.');
         });
     }
-    
-    // Stop the event from bubbling up to prevent the infinite dialog loop
-    if (event && event.stopPropagation) {
-        event.stopPropagation();
-    }
     return false;
 }
   
 // Join session function with Jitsi Meet - MODIFIED: Students can only join, not create links
-function joinSession(sessionId) {
+function joinSession(sessionId, event) {
+    // Stop propagation immediately
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    
     console.log('Attempting to join session:', sessionId);
 
     db.collection('bookedSessions').doc(sessionId).get()
@@ -2236,8 +2243,14 @@ function recordJoinAttempt(sessionId, userId) {
         });
 }
 
-// Function for reschedule response
-function respondToReschedule(bookingId, response) {
+// Function for reschedule response - FIXED
+function respondToReschedule(bookingId, response, event) {
+    // Stop propagation immediately
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    
     if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
         return;
     }
@@ -2299,13 +2312,67 @@ function respondToReschedule(bookingId, response) {
         });
 }
 
-// Update the loadBookingsDisplay function to show appropriate messaging
+// SINGLE event listener for the entire bookings container
+let bookingsEventListener = null;
+
+function setupBookingsEventListeners() {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    // Remove existing event listener if it exists
+    if (bookingsEventListener) {
+        container.removeEventListener('click', bookingsEventListener);
+    }
+    
+    // Create new event listener
+    bookingsEventListener = function(e) {
+        // Find the closest button with data attributes
+        const button = e.target.closest('button[data-session-id]');
+        if (!button) return;
+        
+        const sessionId = button.getAttribute('data-session-id');
+        const action = button.getAttribute('data-action');
+        
+        if (!sessionId || !action) return;
+        
+        if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+            alert('Invalid session ID.');
+            return;
+        }
+        
+        // Stop propagation and prevent default immediately
+        e.stopPropagation();
+        e.preventDefault();
+        
+        switch(action) {
+            case 'join':
+                joinSession(sessionId, e);
+                break;
+            case 'cancel':
+                cancelBooking(sessionId, e);
+                break;
+            case 'accept-reschedule':
+                respondToReschedule(sessionId, 'accept', e);
+                break;
+            case 'decline-reschedule':
+                respondToReschedule(sessionId, 'decline', e);
+                break;
+        }
+    };
+    
+    // Attach the single event listener
+    container.addEventListener('click', bookingsEventListener);
+}
+
+// Update the loadBookingsDisplay function to show appropriate messaging - FIXED
 function loadBookingsDisplay(bookings) {
     const container = document.getElementById('bookingsContainer');
     if (!container) return;
     
     if (bookings.length === 0) {
         container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h3>No Upcoming Bookings</h3><p>You have no upcoming sessions scheduled.</p></div>';
+        // Still set up event listeners even for empty state
+        setupBookingsEventListeners();
         return;
     }
     
@@ -2406,33 +2473,8 @@ function loadBookingsDisplay(bookings) {
     infoText.innerHTML = '<i class="fas fa-info-circle"></i> Join Session button will appear once status is confirmed and it\'s within 15 minutes of your session time.';
     container.appendChild(infoText);
     
-    // Keep the event delegation code as is...
-    container.addEventListener('click', function(e) {
-        const sessionId = e.target.getAttribute('data-session-id');
-        const action = e.target.getAttribute('data-action');
-        
-        if (!sessionId || !action) return;
-        
-        if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
-            alert('Invalid session ID.');
-            return;
-        }
-        
-        switch(action) {
-            case 'join':
-                joinSession(sessionId);
-                break;
-            case 'cancel':
-                cancelBooking(sessionId);
-                break;
-            case 'accept-reschedule':
-                respondToReschedule(sessionId, 'accept');
-                break;
-            case 'decline-reschedule':
-                respondToReschedule(sessionId, 'decline');
-                break;
-        }
-    });
+    // Set up the SINGLE event listener
+    setupBookingsEventListeners();
 }
   
 // LoadUserBookings function that uses the proper structure:
@@ -2478,6 +2520,7 @@ function loadUserBookings() {
             const container = document.getElementById('bookingsContainer');
             if (container) {
                 container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Bookings</h3><p>Failed to load your bookings. Please try again later.</p></div>';
+                setupBookingsEventListeners();
             }
         });
 }
@@ -4160,6 +4203,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
