@@ -4551,6 +4551,109 @@ document.addEventListener('DOMContentLoaded', function() {
 // =======================================================================================================================================
 // Notification System Ends Here. This is Production ready, and this is the end of the project. Awesome!
 // =======================================================================================================================================
+
+// ==== STRIPE CUSTOMER MANAGEMENT ====
+
+// Create or get Stripe customer for a student
+exports.createStripeCustomer = onCall(
+  { 
+    secrets: [stripeApiKey],
+  },
+  async (request) => {
+    const stripe = require('stripe')(stripeApiKey.value());
+    
+    try {
+      const { studentId } = request.data;
+      
+      if (!studentId) {
+        throw new HttpsError('invalid-argument', 'Student ID is required');
+      }
+
+      // Check if user is authenticated and matches the requested studentId
+      if (!request.auth || request.auth.uid !== studentId) {
+        throw new HttpsError('unauthenticated', 'User can only create customer for themselves');
+      }
+
+      // Get student data from Firestore
+      const studentDoc = await admin.firestore().collection('students').doc(studentId).get();
+      
+      if (!studentDoc.exists) {
+        throw new HttpsError('not-found', 'Student not found');
+      }
+
+      const studentData = studentDoc.data();
+      
+      // Check if customer already exists
+      if (studentData.stripeCustomerId) {
+        return { 
+          success: true, 
+          customerId: studentData.stripeCustomerId,
+          message: 'Stripe customer already exists' 
+        };
+      }
+
+      // Create new Stripe customer
+      const customer = await stripe.customers.create({
+        email: studentData.email,
+        name: studentData.fullName,
+        phone: studentData.phone,
+        metadata: {
+          firebase_uid: studentId,
+          user_type: 'student'
+        }
+      });
+
+      // Save Stripe Customer ID to student document
+      await admin.firestore().collection('students').doc(studentId).update({
+        stripeCustomerId: customer.id,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      logger.info(`Created Stripe customer ${customer.id} for student ${studentId}`);
+
+      return {
+        success: true,
+        customerId: customer.id,
+        message: 'Stripe customer created successfully'
+      };
+
+    } catch (error) {
+      logger.error('Error creating Stripe customer:', error);
+      throw new HttpsError('internal', `Failed to create Stripe customer: ${error.message}`);
+    }
+  }
+);
+
+// Helper function to ensure student has Stripe customer (can be used by other functions)
+async function ensureStripeCustomer(studentId, studentData) {
+  const stripe = require('stripe')(stripeApiKey.value());
+  
+  if (studentData.stripeCustomerId) {
+    return studentData.stripeCustomerId;
+  }
+  
+  // Create customer if doesn't exist
+  const customer = await stripe.customers.create({
+    email: studentData.email,
+    name: studentData.fullName,
+    phone: studentData.phone,
+    metadata: {
+      firebase_uid: studentId,
+      user_type: 'student'
+    }
+  });
+
+  await admin.firestore().collection('students').doc(studentId).update({
+    stripeCustomerId: customer.id,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return customer.id;
+}
+
+//--------------------------------------------------------------------------------
+  //Stripe payment section ends here
+//----------------------------------------------------------------------------------
   
 </script>    
 </body>
