@@ -2134,6 +2134,7 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
       const meetId = generateMeetId();
 
       // Create booking in the bookedSessions collection
+      // Create booking in the bookedSessions collection
       db.collection('bookedSessions').add({
         slotId: slotId,
         tutorId: tutorId,
@@ -2148,7 +2149,9 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
         status: 'pending',
         bookedAt: new Date(),
         hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+        totalPrice: null, // Will be set when tutor confirms
+        // NEW: Track payment status
+        paymentStatus: 'pending',
         // Updated fields - student can only request, tutor will create the meet link
         meetCreated: false, // Will be set to true when tutor confirms and creates the link
         meetId: meetId, // Store the ID for reference, but no link yet
@@ -2208,7 +2211,7 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
 });
 
 // Set up tutor selection change event
-document.getElementById('tutor').addEventListener('change', function() {
+document.getElementById('tutor').addEventListener('change', async function() {
   const tutorId = this.value;
   const subjectSelect = document.getElementById('subject');
   const priceSummary = document.getElementById('priceSummary');
@@ -2255,13 +2258,57 @@ document.getElementById('tutor').addEventListener('change', function() {
         }
         
         // Show price summary
+        // CHECK PACKAGE BALANCE - NEW CODE
+        let packageMessage = '';
+        let showPackagePricing = false;
+        
+        try {
+          const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
+          if (studentDoc.exists) {
+            const studentData = studentDoc.data();
+            const taiwoBalance = studentData.packageBalances?.taiwo || 0;
+            
+            if (taiwoBalance > 0) {
+              packageMessage = `Package Credit Available: ${taiwoBalance} session${taiwoBalance !== 1 ? 's' : ''}`;
+              showPackagePricing = true;
+            }
+          }
+        } catch (error) {
+          console.error('Error checking package balance:', error);
+        }
+        
+        // Show price summary
         const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
         const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-        const totalPrice = hourlyRate * duration;
         
-        hourlyRateSpan.textContent = hourlyRate;
-        durationDisplay.textContent = duration;
-        totalPriceSpan.textContent = totalPrice.toFixed(2);
+        if (showPackagePricing) {
+          // Student has package credits - show package pricing
+          hourlyRateSpan.textContent = '0 (Package Credit)';
+          durationDisplay.textContent = duration;
+          totalPriceSpan.textContent = '0.00';
+          priceSummary.innerHTML = `
+            <h4>Package Pricing</h4>
+            <p style="color: #48bb78; font-weight: bold;">${packageMessage}</p>
+            <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
+            <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+            <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
+            <p style="font-size: 0.9em; color: #666;">1 package credit will be used when tutor confirms</p>
+          `;
+        } else {
+          // No package credits - show regular pricing
+          const totalPrice = hourlyRate * duration;
+          hourlyRateSpan.textContent = hourlyRate;
+          durationDisplay.textContent = duration;
+          totalPriceSpan.textContent = totalPrice.toFixed(2);
+          priceSummary.innerHTML = `
+            <h4>Price Summary</h4>
+            <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
+            <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+            <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
+            <p style="font-size: 0.9em; color: #666;">Payment will be processed when tutor confirms</p>
+          `;
+        }
+        
         priceSummary.style.display = 'block';
       }
     })
@@ -5172,6 +5219,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
