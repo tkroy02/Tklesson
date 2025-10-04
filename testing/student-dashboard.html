@@ -2028,66 +2028,331 @@ document.querySelectorAll('.menu-item a').forEach(item => {
   item.addEventListener('click', function(e) {
     e.preventDefault();
     
-    // Update active menu item
-    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-    this.classList.add('active');
-    
-    // Show the corresponding section
     const sectionId = this.getAttribute('data-section');
-    document.querySelectorAll('.dashboard-section').forEach(section => {
-      section.classList.remove('active');
-    });
-    document.getElementById(sectionId).classList.add('active');
-
-    // Load specific data based on the section - ONLY if not already loaded
+    
+    // INTERCEPT SCHEDULING SECTION - CHECK CREDITS FIRST
     if (sectionId === 'scheduling') {
-      if (!schedulingLoaded) {
-        loadTutorsForScheduling();
-        schedulingLoaded = true;
-      }
-      // ADD THIS LINE HERE - it should run every time scheduling section is opened
-      updateBookingButtonState();
-    } else if (sectionId === 'tutors') {
-      // Load both my tutors and available tutors when the tutors section is opened
-      if (!tutorsLoaded) {
-        loadMyTutors();
-        loadAvailableTutors();
-        tutorsLoaded = true;
-      }
-    } else if (sectionId === 'bookings') {
-      if (!bookingsLoaded) {
-        loadUserBookings();
-        bookingsLoaded = true;
-      }
-    } else if (sectionId === 'sessions') {
-      // Only load sessions history on first visit to the tab
-      if (!sessionsLoaded) {
-        loadUserSessionHistory();
-        sessionsLoaded = true;
-      }
+      checkCreditsBeforeScheduling().then((hasCredits) => {
+        if (hasCredits) {
+          // User has credits, proceed to scheduling
+          proceedToSection(this, sectionId);
+        } else {
+          // No credits - show purchase prompt and redirect to packages
+          showCreditPurchasePrompt();
+          // Automatically redirect to packages section after a delay
+          setTimeout(() => {
+            document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+            document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+            document.querySelector('a[data-section="packages"]').classList.add('active');
+            document.getElementById('packages').classList.add('active');
+          }, 2000);
+        }
+      });
+      return;
     }
-    // ADD PACKAGES SECTION HANDLING HERE IF NEEDED
-    else if (sectionId === 'packages') {
-      // Refresh package balance when packages section is opened
-      loadPackageBalance();
-    }
+    
+    // For all other sections, proceed normally
+    proceedToSection(this, sectionId);
   });
 });
+
+// Function to proceed to section (moved common logic here)
+function proceedToSection(menuItem, sectionId) {
+  // Update active menu item
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  menuItem.classList.add('active');
   
-  // Set up menu toggle for mobile
-  document.getElementById('menuToggle').addEventListener('click', function() {
-    document.getElementById('sidebar').classList.toggle('active');
+  // Show the corresponding section
+  document.querySelectorAll('.dashboard-section').forEach(section => {
+    section.classList.remove('active');
   });
+  document.getElementById(sectionId).classList.add('active');
 
-  // Set up logout button
-  document.getElementById('logoutBtn').addEventListener('click', function() {
-    auth.signOut().then(() => {
-      window.location.href = 'student-login.html';
-    }).catch(error => {
-      console.error('Logout error:', error);
+  // Load specific data based on the section - ONLY if not already loaded
+  if (sectionId === 'scheduling') {
+    if (!schedulingLoaded) {
+      loadTutorsForScheduling();
+      schedulingLoaded = true;
+    }
+    // Update booking button state every time scheduling section is opened
+    updateBookingButtonState();
+  } else if (sectionId === 'tutors') {
+    // Load both my tutors and available tutors when the tutors section is opened
+    if (!tutorsLoaded) {
+      loadMyTutors();
+      loadAvailableTutors();
+      tutorsLoaded = true;
+    }
+  } else if (sectionId === 'bookings') {
+    if (!bookingsLoaded) {
+      loadUserBookings();
+      bookingsLoaded = true;
+    }
+  } else if (sectionId === 'sessions') {
+    // Only load sessions history on first visit to the tab
+    if (!sessionsLoaded) {
+      loadUserSessionHistory();
+      sessionsLoaded = true;
+    }
+  }
+  // ADD PACKAGES SECTION HANDLING HERE IF NEEDED
+  else if (sectionId === 'packages') {
+    // Refresh package balance when packages section is opened
+    loadPackageBalance();
+  }
+}
+
+// Function to check if student has credits before allowing scheduling
+async function checkCreditsBeforeScheduling() {
+  try {
+    const creditCheck = await checkStudentPackageBalance();
+    return creditCheck.hasCredits;
+  } catch (error) {
+    console.error('Error checking credits for scheduling:', error);
+    return false;
+  }
+}
+
+// Function to show credit purchase prompt
+function showCreditPurchasePrompt() {
+  // Create a temporary toast notification
+  const toast = document.createElement('div');
+  toast.innerHTML = `
+    <div style="
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #ff6b6b;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 10000;
+      max-width: 300px;
+      animation: slideInRight 0.3s ease;
+    ">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <i class="fas fa-exclamation-triangle" style="font-size: 18px;"></i>
+        <div>
+          <strong>No Credits Available</strong>
+          <div style="font-size: 14px; margin-top: 5px;">Redirecting to packages...</div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(toast);
+  
+  // Remove toast after 3 seconds
+  setTimeout(() => {
+    toast.remove();
+  }, 3000);
+}
+
+// Set up menu toggle for mobile
+document.getElementById('menuToggle').addEventListener('click', function() {
+  document.getElementById('sidebar').classList.toggle('active');
+});
+
+// Set up logout button
+document.getElementById('logoutBtn').addEventListener('click', function() {
+  auth.signOut().then(() => {
+    window.location.href = 'student-login.html';
+  }).catch(error => {
+    console.error('Logout error:', error);
+  });
+});
+
+// ============================================================================
+// CREDIT CHECK FUNCTIONS FOR SCHEDULING ACCESS
+// ============================================================================
+
+// Function to check if student has credits before allowing scheduling
+async function checkCreditsBeforeScheduling() {
+  try {
+    const creditCheck = await checkStudentPackageBalance();
+    return creditCheck.hasCredits;
+  } catch (error) {
+    console.error('Error checking credits for scheduling:', error);
+    return false;
+  }
+}
+
+// Function to show credit purchase prompt
+function showCreditPurchasePrompt() {
+  // Create a temporary toast notification
+  const toast = document.createElement('div');
+  toast.innerHTML = `
+    <div style="
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #ff6b6b;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 10000;
+      max-width: 300px;
+      animation: slideInRight 0.3s ease;
+    ">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <i class="fas fa-exclamation-triangle" style="font-size: 18px;"></i>
+        <div>
+          <strong>No Credits Available</strong>
+          <div style="font-size: 14px; margin-top: 5px;">Redirecting to packages...</div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(toast);
+  
+  // Remove toast after 3 seconds
+  setTimeout(() => {
+    toast.remove();
+  }, 3000);
+}
+
+// Update the scheduling section to conditionally show form or message
+function updateSchedulingSectionVisibility(hasCredits) {
+  const schedulingSection = document.getElementById('scheduling');
+  const schedulingForm = document.getElementById('schedulingForm');
+  const noCreditsMessage = document.getElementById('noCreditsMessage');
+  
+  if (!noCreditsMessage) {
+    // Create no credits message if it doesn't exist
+    const messageHtml = `
+      <div id="noCreditsMessage" class="empty-state" style="text-align: center; padding: 40px 20px;">
+        <div style="font-size: 64px; color: #ff6b6b; margin-bottom: 20px;">
+          <i class="fas fa-credit-card"></i>
+        </div>
+        <h3 style="color: #333; margin-bottom: 15px;">No Credits Available</h3>
+        <p style="color: #666; margin-bottom: 25px; max-width: 400px; margin-left: auto; margin-right: auto;">
+          You need package credits to schedule a tutoring session. Purchase a package to get started!
+        </p>
+        <button onclick="redirectToPackagesFromMessage()" class="btn-primary" style="padding: 12px 24px;">
+          <i class="fas fa-shopping-cart"></i> View Available Packages
+        </button>
+      </div>
+    `;
+    
+    schedulingSection.insertAdjacentHTML('beforeend', messageHtml);
+  }
+  
+  // Show/hide based on credit availability
+  if (hasCredits) {
+    schedulingForm.style.display = 'block';
+    document.getElementById('noCreditsMessage').style.display = 'none';
+  } else {
+    schedulingForm.style.display = 'none';
+    document.getElementById('noCreditsMessage').style.display = 'block';
+  }
+}
+
+// Redirect from no credits message
+function redirectToPackagesFromMessage() {
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+  
+  document.querySelector('a[data-section="packages"]').classList.add('active');
+  document.getElementById('packages').classList.add('active');
+}
+
+// Function to proceed to section (moved common logic here)
+function proceedToSection(menuItem, sectionId) {
+  // Update active menu item
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  menuItem.classList.add('active');
+  
+  // Show the corresponding section
+  document.querySelectorAll('.dashboard-section').forEach(section => {
+    section.classList.remove('active');
+  });
+  document.getElementById(sectionId).classList.add('active');
+
+  // Load specific data based on the section - ONLY if not already loaded
+  if (sectionId === 'scheduling') {
+    if (!schedulingLoaded) {
+      loadTutorsForScheduling();
+      schedulingLoaded = true;
+    }
+    // Update booking button state AND section visibility every time scheduling section is opened
+    updateBookingButtonState();
+    
+    // ALSO update the section visibility based on credits
+    checkStudentPackageBalance().then(creditCheck => {
+      updateSchedulingSectionVisibility(creditCheck.hasCredits);
     });
-  });
+    
+  } else if (sectionId === 'tutors') {
+    // Load both my tutors and available tutors when the tutors section is opened
+    if (!tutorsLoaded) {
+      loadMyTutors();
+      loadAvailableTutors();
+      tutorsLoaded = true;
+    }
+  } else if (sectionId === 'bookings') {
+    if (!bookingsLoaded) {
+      loadUserBookings();
+      bookingsLoaded = true;
+    }
+  } else if (sectionId === 'sessions') {
+    // Only load sessions history on first visit to the tab
+    if (!sessionsLoaded) {
+      loadUserSessionHistory();
+      sessionsLoaded = true;
+    }
+  }
+  // ADD PACKAGES SECTION HANDLING HERE IF NEEDED
+  else if (sectionId === 'packages') {
+    // Refresh package balance when packages section is opened
+    loadPackageBalance();
+  }
+}
 
+// Enhanced credit check function
+async function checkStudentPackageBalance() {
+  try {
+    const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
+    
+    if (!studentDoc.exists) {
+      return { hasCredits: false, totalCredits: 0, message: 'Student not found' };
+    }
+    
+    const studentData = studentDoc.data();
+    const packageBalances = studentData.packageBalances || {};
+    
+    // Check ALL package types for available credits
+    const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
+    let totalCredits = 0;
+    let packageDetails = [];
+    
+    availablePackages.forEach(pkg => {
+      const balance = packageBalances[pkg] || 0;
+      if (balance > 0) {
+        totalCredits += balance;
+        packageDetails.push({ type: pkg, balance: balance });
+      }
+    });
+    
+    return {
+      hasCredits: totalCredits > 0,
+      totalCredits: totalCredits,
+      packageDetails: packageDetails,
+      message: totalCredits > 0 
+        ? `You have ${totalCredits} session credit${totalCredits !== 1 ? 's' : ''} available` 
+        : 'No package credits available'
+    };
+    
+  } catch (error) {
+    console.error('Error checking package balance:', error);
+    return { hasCredits: false, totalCredits: 0, message: 'Error checking credits' };
+  }
+}
+
+  
+  
   //......................................................................................
   //Profile Section starts here. All JS functionalities of the profile section starts here
  //.......................................................................................
@@ -2714,6 +2979,97 @@ function addBookingToUI(bookingId, bookingData) {
   // Update upcoming sessions count
   const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
   document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+}
+
+  // ==== SCHEDULING ACCESS CONTROL ====
+
+// Function to check credit availability before allowing scheduling
+async function checkCreditsBeforeScheduling() {
+  try {
+    const creditCheck = await checkStudentPackageBalance();
+    
+    if (!creditCheck.hasCredits) {
+      // Show purchase prompt instead of scheduling form
+      showCreditPurchasePrompt();
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error checking credits:', error);
+    return false;
+  }
+}
+
+// Show credit purchase prompt
+function showCreditPurchasePrompt() {
+  // Create a modal or redirect to packages section
+  const modalHtml = `
+    <div class="purchase-prompt-modal" style="
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    ">
+      <div style="
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        max-width: 500px;
+        text-align: center;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+      ">
+        <div style="font-size: 48px; color: #ff6b6b; margin-bottom: 20px;">
+          <i class="fas fa-credit-card"></i>
+        </div>
+        <h3 style="color: #333; margin-bottom: 15px;">No Credits Available</h3>
+        <p style="color: #666; margin-bottom: 25px; line-height: 1.5;">
+          You need package credits to schedule a session. Purchase a package to get started with tutoring!
+        </p>
+        <div style="display: flex; gap: 15px; justify-content: center;">
+          <button onclick="redirectToPackages()" class="btn-primary" style="padding: 12px 24px;">
+            <i class="fas fa-shopping-cart"></i> View Packages
+          </button>
+          <button onclick="closePurchasePrompt()" class="btn-outline" style="padding: 12px 24px;">
+            Maybe Later
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Add to body
+  const modal = document.createElement('div');
+  modal.innerHTML = modalHtml;
+  modal.id = 'creditPurchasePrompt';
+  document.body.appendChild(modal);
+}
+
+// Redirect to packages section
+function redirectToPackages() {
+  // Close modal
+  closePurchasePrompt();
+  
+  // Navigate to packages section
+  document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+  document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+  
+  document.querySelector('a[data-section="packages"]').classList.add('active');
+  document.getElementById('packages').classList.add('active');
+}
+
+// Close purchase prompt
+function closePurchasePrompt() {
+  const modal = document.getElementById('creditPurchasePrompt');
+  if (modal) {
+    modal.remove();
+  }
 }
 
 //..........................................................................................
@@ -3477,13 +3833,24 @@ auth.onAuthStateChanged((user) => {
         loadDashboardData().then(() => {
             setupSessionListeners();
             setupActivityListeners();
-            
+
+// Check credits when dashboard loads and update scheduling section
+async function initializeCreditCheck() {
+  const creditCheck = await checkStudentPackageBalance();
+  updateSchedulingSectionVisibility(creditCheck.hasCredits);
+}
+
+// Call this in your initDashboard function
+function initDashboard() {
+          
             // SPECIFIC INITIALIZATION CODE THAT SHOULD BE HERE:
             initDashboard(); // Your main dashboard initialization
             loadPackageBalance(); // Load package balance
             setupProfileEditing(); // Profile editing handlers
             setupNotificationSystem(); // Notification system
             resetInactivityTimer(); // Activity tracking
+            // Initialize credit check
+            initializeCreditCheck();
             // Add any other specific initialization functions you have
             
             console.log('Dashboard fully initialized');
@@ -5333,6 +5700,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
