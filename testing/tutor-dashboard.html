@@ -8231,40 +8231,42 @@ document.head.appendChild(mobileStyle);
 //TUTOR CHAT SYSTEM STARTS HERE
 //----------------------------------------------------------------------------------------
 // =============================================
-// TUTOR CHAT SYSTEM
+// TUTOR CHAT SYSTEM - EXACTLY LIKE STUDENT DASHBOARD
 // =============================================
 
-// =============================================
-// TUTOR CHAT SYSTEM - SIMPLIFIED & FIXED
-// =============================================
-
-let currentChatId = null;
-let currentStudentId = null;
+// Global chat variables with initialization tracking - SAME AS STUDENT
+let currentChat = null;
 let chatMessagesListener = null;
+let contactsListener = null;
+let typingTimeout = null;
+let chatSystemInitialized = false;
+let chatListenersActive = false;
 
-// Initialize tutor chat
-function initializeTutorChat() {
-    console.log('💬 Initializing tutor chat...');
-    
-    if (!currentUser || !currentUser.uid) {
-        setTimeout(initializeTutorChat, 1000);
+// Initialize chat system - SAME PATTERN AS STUDENT
+function initTutorChatSystem() {
+    if (chatSystemInitialized) {
+        console.log('Tutor chat system already initialized');
         return;
     }
     
-    setupChatEventListeners();
-    loadTutorChats();
-    updateUnreadBadge();
+    console.log('Initializing tutor chat system...');
+    chatSystemInitialized = true;
+    
+    setupTutorChatEventListeners();
+    loadTutorChatContacts();
+    setupTutorRealtimeListeners();
 }
 
-// Setup event listeners
-function setupChatEventListeners() {
+// Setup chat event listeners - SIMILAR TO STUDENT
+function setupTutorChatEventListeners() {
+    // Send message on button click
     const sendBtn = document.getElementById('sendMessageBtn');
-    const messageInput = document.getElementById('messageInput');
-    
     if (sendBtn) {
         sendBtn.addEventListener('click', sendTutorMessage);
     }
     
+    // Send message on Enter key (but allow Shift+Enter for new line)
+    const messageInput = document.getElementById('messageInput');
     if (messageInput) {
         messageInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -8272,284 +8274,176 @@ function setupChatEventListeners() {
                 sendTutorMessage();
             }
         });
+        
+        // Auto-resize textarea
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
     }
     
+    // Contact search
     const contactSearch = document.getElementById('contactSearch');
     if (contactSearch) {
-        contactSearch.addEventListener('input', filterChatContacts);
-    }
-}
-
-// Load tutor's chats
-async function loadTutorChats() {
-    const contactsList = document.getElementById('contactsList');
-    if (!contactsList) return;
-    
-    contactsList.innerHTML = '<div class="empty-state">Loading conversations...</div>';
-    
-    try {
-        const chatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', currentUser.uid)
-            .orderBy('lastMessageAt', 'desc')
-            .get();
-        
-        if (chatsSnapshot.empty) {
-            contactsList.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-comments"></i>
-                    <h4>No Conversations Yet</h4>
-                    <p>When students message you, conversations will appear here.</p>
-                </div>
-            `;
-            return;
-        }
-        
-        const contacts = [];
-        
-        for (const doc of chatsSnapshot.docs) {
-            const chat = doc.data();
-            
-            // Find the student ID
-            const studentId = chat.participants.find(pid => pid !== currentUser.uid);
-            if (!studentId) continue;
-            
-            const studentName = chat.participantNames?.[studentId] || 'Student';
-            const unreadCount = chat.unreadCounts?.[currentUser.uid] || 0;
-            
-            contacts.push({
-                chatId: doc.id,
-                studentId: studentId,
-                studentName: studentName,
-                lastMessage: chat.lastMessage || 'No messages yet',
-                unreadCount: unreadCount,
-                timestamp: chat.lastMessageAt || chat.lastUpdated,
-                subject: chat.subject || 'General'
-            });
-        }
-        
-        displayTutorContacts(contacts);
-        
-    } catch (error) {
-        console.error("Error loading chats:", error);
-        contactsList.innerHTML = `
-            <div class="error-state">
-                <i class="fas fa-exclamation-circle"></i>
-                <h4>Error Loading Conversations</h4>
-                <p>${error.message}</p>
-            </div>
-        `;
-    }
-}
-
-// Display contacts
-function displayTutorContacts(contacts) {
-    const contactsList = document.getElementById('contactsList');
-    if (!contactsList) return;
-    
-    if (contacts.length === 0) {
-        contactsList.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-comments"></i>
-                <h4>No Conversations</h4>
-                <p>Your conversations with students will appear here</p>
-            </div>
-        `;
-        return;
-    }
-    
-    contactsList.innerHTML = contacts.map(contact => `
-        <div class="contact-item" data-chat-id="${contact.chatId}" data-student-id="${contact.studentId}">
-            <div class="contact-avatar">
-                <i class="fas fa-user-graduate"></i>
-            </div>
-            <div class="contact-info">
-                <div class="contact-name">${contact.studentName}</div>
-                <div class="contact-subject">${contact.subject}</div>
-            </div>
-            <div class="contact-status">
-                <div class="last-message">${contact.lastMessage}</div>
-                <div class="timestamp-cell">${formatMessageTime(contact.timestamp?.toDate())}</div>
-                ${contact.unreadCount > 0 ? 
-                    `<div class="unread-count">${contact.unreadCount}</div>` : ''}
-            </div>
-        </div>
-    `).join('');
-    
-    // Add click listeners
-    contactsList.querySelectorAll('.contact-item').forEach(item => {
-        item.addEventListener('click', function() {
-            const chatId = this.getAttribute('data-chat-id');
-            const studentId = this.getAttribute('data-student-id');
-            const studentName = this.querySelector('.contact-name').textContent;
-            const subject = this.querySelector('.contact-subject').textContent;
-            
-            openTutorChat(chatId, studentId, studentName, subject);
+        contactSearch.addEventListener('input', function(e) {
+            filterTutorContacts(e.target.value);
         });
-    });
-}
-
-// Open chat
-function openTutorChat(chatId, studentId, studentName, subject) {
-    currentChatId = chatId;
-    currentStudentId = studentId;
-    
-    // Update UI
-    document.querySelectorAll('.contact-item').forEach(item => {
-        item.classList.remove('active');
-    });
-    document.querySelector(`[data-chat-id="${chatId}"]`).classList.add('active');
-    
-    // Show chat interface
-    document.getElementById('chatHeader').style.display = 'flex';
-    document.getElementById('emptyChatState').style.display = 'none';
-    document.getElementById('messagesContainer').style.display = 'flex';
-    document.getElementById('messageInputContainer').style.display = 'block';
-    
-    // Update header
-    document.getElementById('currentContactName').textContent = studentName;
-    document.getElementById('currentContactSubject').textContent = subject;
-    
-    // Load messages
-    loadChatMessages(chatId);
-    
-    // Mark as read
-    markChatAsRead(chatId);
-}
-
-// Load messages - FIXED: Only use messages subcollection
-async function loadChatMessages(chatId) {
-    const messagesContainer = document.getElementById('messagesContainer');
-    if (!messagesContainer) return;
-    
-    messagesContainer.innerHTML = '<div class="empty-state">Loading messages...</div>';
-    
-    try {
-        // Load from messages subcollection only
-        const messagesSnapshot = await db.collection('chats')
-            .doc(chatId)
-            .collection('messages')
-            .orderBy('timestamp', 'asc')
-            .get();
-        
-        if (!messagesSnapshot.empty) {
-            console.log('Found messages in subcollection:', messagesSnapshot.size);
-            displayMessages(messagesSnapshot);
-            setupMessageListener(chatId);
-        } else {
-            messagesContainer.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-comments"></i>
-                    <h4>No Messages Yet</h4>
-                    <p>Start a conversation with this student</p>
-                </div>
-            `;
-        }
-        
-    } catch (error) {
-        console.error("Error loading messages:", error);
-        messagesContainer.innerHTML = `
-            <div class="error-state">
-                <i class="fas fa-exclamation-circle"></i>
-                <h4>Error Loading Messages</h4>
-                <p>${error.message}</p>
-            </div>
-        `;
     }
 }
 
-// Display messages
-function displayMessages(messagesSnapshot) {
-    const messagesContainer = document.getElementById('messagesContainer');
-    if (!messagesContainer) return;
+// Load chat contacts - SIMILAR TO STUDENT BUT FOR TUTOR
+function loadTutorChatContacts() {
+    const contactsList = document.getElementById('contactsList');
+    if (!contactsList) return;
     
-    messagesContainer.innerHTML = '';
+    // Clean up previous listener
+    if (contactsListener) {
+        contactsListener();
+    }
     
-    messagesSnapshot.forEach(doc => {
-        const message = doc.data();
-        const messageElement = createMessageElement(message);
-        messagesContainer.appendChild(messageElement);
-    });
+    contactsList.innerHTML = '<div class="loading-state">Loading conversations...</div>';
     
-    // Scroll to bottom
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    const tutorId = currentUser.uid;
+    
+    contactsListener = db.collection('chats')
+        .where('participants', 'array-contains', tutorId)
+        .orderBy('lastMessageAt', 'desc')
+        .onSnapshot(async (snapshot) => {
+            if (snapshot.empty) {
+                contactsList.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-comments"></i>
+                        <h4>No Conversations</h4>
+                        <p>Your conversations with students will appear here</p>
+                    </div>
+                `;
+                updateTutorUnreadMessagesCount(0);
+                return;
+            }
+            
+            contactsList.innerHTML = '';
+            const contacts = [];
+            let totalUnread = 0;
+            
+            for (const doc of snapshot.docs) {
+                const chat = doc.data();
+                const studentId = chat.participants.find(id => id !== tutorId);
+                
+                if (studentId) {
+                    try {
+                        // Get student details
+                        const studentDoc = await db.collection('students').doc(studentId).get();
+                        if (studentDoc.exists) {
+                            const student = studentDoc.data();
+                            const unreadCount = chat.unreadCounts?.[tutorId] || 0;
+                            totalUnread += unreadCount;
+                            
+                            const contact = {
+                                chatId: doc.id,
+                                studentId: studentId,
+                                studentName: student.fullName || 'Student',
+                                studentAvatar: student.photoURL,
+                                lastMessage: chat.lastMessage,
+                                lastMessageAt: chat.lastMessageAt,
+                                unreadCount: unreadCount,
+                                subject: chat.subject || 'General'
+                            };
+                            contacts.push(contact);
+                            
+                            const contactElement = createTutorContactElement(contact);
+                            contactsList.appendChild(contactElement);
+                        }
+                    } catch (error) {
+                        console.error('Error loading student details:', error);
+                    }
+                }
+            }
+            
+            updateTutorUnreadMessagesCount(totalUnread);
+        }, (error) => {
+            console.error('Error loading contacts:', error);
+            contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
+        });
 }
 
-// Create message element
-function createMessageElement(message) {
-    const messageDiv = document.createElement('div');
-    const isTutor = message.senderId === currentUser.uid;
-    const messageTime = message.timestamp?.toDate() || new Date();
+// Create contact element - SIMILAR TO STUDENT
+function createTutorContactElement(contact) {
+    const contactDiv = document.createElement('div');
+    contactDiv.className = `contact-item ${currentChat?.studentId === contact.studentId ? 'active' : ''}`;
+    contactDiv.setAttribute('data-student-id', contact.studentId);
+    contactDiv.setAttribute('data-chat-id', contact.chatId);
     
-    messageDiv.className = `message ${isTutor ? 'sent' : 'received'}`;
-    messageDiv.innerHTML = `
-        <div class="message-text">${message.text}</div>
-        <div class="message-time">${formatMessageTime(messageTime)}</div>
+    const lastMessageTime = contact.lastMessageAt ? formatMessageTime(contact.lastMessageAt.toDate()) : '';
+    const unreadBadge = contact.unreadCount > 0 ? 
+        `<div class="unread-count">${contact.unreadCount}</div>` : '';
+    
+    contactDiv.innerHTML = `
+        <div class="contact-avatar">
+            ${contact.studentAvatar ? 
+                `<img src="${contact.studentAvatar}" alt="${contact.studentName}">` : 
+                `<i class="fas fa-user-graduate"></i>`
+            }
+        </div>
+        <div class="contact-info">
+            <div class="contact-name">${contact.studentName}</div>
+            <div class="contact-subject">${contact.subject}</div>
+            <div class="last-message">${contact.lastMessage || 'No messages yet'}</div>
+        </div>
+        <div class="contact-status">
+            <div class="status-online"></div>
+            ${unreadBadge}
+            <div class="last-message-time">${lastMessageTime}</div>
+        </div>
     `;
     
-    return messageDiv;
+    contactDiv.addEventListener('click', () => openTutorChat(contact));
+    
+    return contactDiv;
 }
 
-// Send message as tutor - FIXED: No duplication
-async function sendTutorMessage() {
-    const messageInput = document.getElementById('messageInput');
-    const sendBtn = document.getElementById('sendMessageBtn');
-    
-    if (!messageInput || !currentChatId) {
-        alert('Please select a conversation first.');
-        return;
-    }
-    
-    const messageText = messageInput.value.trim();
-    if (!messageText) return;
-    
-    // Disable send button
-    sendBtn.disabled = true;
-    const originalHTML = sendBtn.innerHTML;
-    sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-    
+// Open chat with student - SIMILAR TO STUDENT
+async function openTutorChat(contact) {
     try {
-        const messageData = {
-            text: messageText,
-            senderId: currentUser.uid,
-            senderName: userData?.fullName || 'Tutor',
-            timestamp: new Date(),
-            read: false
-        };
+        currentChat = contact;
         
-        // Add message to messages subcollection
-        await db.collection('chats')
-            .doc(currentChatId)
-            .collection('messages')
-            .add(messageData);
-        
-        // Update chat with last message info - ONLY ONCE
-        await db.collection('chats').doc(currentChatId).update({
-            lastMessage: messageText,
-            lastMessageAt: new Date(),
-            lastUpdated: new Date(),
-            [`unreadCounts.${currentStudentId}`]: firebase.firestore.FieldValue.increment(1)
+        // Update UI to show chat is active
+        document.querySelectorAll('.contact-item').forEach(item => {
+            item.classList.remove('active');
         });
+        const activeContact = document.querySelector(`[data-student-id="${contact.studentId}"]`);
+        if (activeContact) {
+            activeContact.classList.add('active');
+        }
         
-        // Clear input and reset button
-        messageInput.value = '';
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = originalHTML;
+        // Show chat interface
+        document.getElementById('emptyChatState').style.display = 'none';
+        document.getElementById('chatHeader').style.display = 'flex';
+        document.getElementById('messagesContainer').style.display = 'flex';
+        document.getElementById('messageInputContainer').style.display = 'block';
         
-        console.log('Message sent successfully');
+        // Update header
+        document.getElementById('currentContactName').textContent = contact.studentName;
+        document.getElementById('currentContactSubject').textContent = contact.subject;
+        
+        // Load messages
+        loadTutorChatMessages(contact.chatId);
+        
+        // Mark as read
+        await markTutorChatAsRead(contact.chatId);
         
     } catch (error) {
-        console.error("Error sending message:", error);
-        alert('Error sending message: ' + error.message);
-        
-        // Reset button on error
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = originalHTML;
+        console.error('Error opening chat:', error);
     }
 }
 
-// Setup real-time message listener
-function setupMessageListener(chatId) {
-    // Remove existing listener
+// Load chat messages - SAME AS STUDENT
+function loadTutorChatMessages(chatId) {
+    const messagesContainer = document.getElementById('messagesContainer');
+    if (!messagesContainer) return;
+    
+    messagesContainer.innerHTML = '<div class="loading-state">Loading messages...</div>';
+    
+    // Clean up previous listener
     if (chatMessagesListener) {
         chatMessagesListener();
     }
@@ -8558,90 +8452,106 @@ function setupMessageListener(chatId) {
         .doc(chatId)
         .collection('messages')
         .orderBy('timestamp', 'asc')
-        .onSnapshot(snapshot => {
-            const messagesContainer = document.getElementById('messagesContainer');
-            if (!messagesContainer) return;
+        .onSnapshot((snapshot) => {
+            if (snapshot.empty) {
+                messagesContainer.innerHTML = '<div class="empty-state">No messages yet. Start the conversation!</div>';
+                return;
+            }
             
             messagesContainer.innerHTML = '';
-            
             snapshot.forEach(doc => {
                 const message = doc.data();
-                const messageElement = createMessageElement(message);
+                const messageElement = createTutorMessageElement(message);
                 messagesContainer.appendChild(messageElement);
             });
             
             // Scroll to bottom
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            
-        }, error => {
-            console.error("Message listener error:", error);
         });
 }
 
-// Mark chat as read
-async function markChatAsRead(chatId) {
-    try {
-        await db.collection('chats').doc(chatId).update({
-            [`unreadCounts.${currentUser.uid}`]: 0
-        });
-        
-        // Update unread badge
-        updateUnreadBadge();
-        
-        // Update the contact item
-        const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
-        if (contactItem) {
-            const unreadCountElement = contactItem.querySelector('.unread-count');
-            if (unreadCountElement) {
-                unreadCountElement.style.display = 'none';
-            }
-        }
-        
-    } catch (error) {
-        console.error("Error marking chat as read:", error);
-    }
-}
-
-// Update unread badge in sidebar
-async function updateUnreadBadge() {
-    try {
-        const chatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', currentUser.uid)
-            .get();
-        
-        let totalUnread = 0;
-        
-        chatsSnapshot.forEach(doc => {
-            const chat = doc.data();
-            const unreadCount = chat.unreadCounts?.[currentUser.uid] || 0;
-            totalUnread += unreadCount;
-        });
-        
-        const badgeElement = document.getElementById('unreadMessagesCount');
-        if (badgeElement) {
-            if (totalUnread > 0) {
-                badgeElement.textContent = totalUnread;
-                badgeElement.style.display = 'inline-block';
-            } else {
-                badgeElement.style.display = 'none';
-            }
-        }
-        
-    } catch (error) {
-        console.error("Error updating unread badge:", error);
-    }
-}
-
-// Filter contacts
-function filterChatContacts() {
-    const searchTerm = document.getElementById('contactSearch').value.toLowerCase();
-    const contactItems = document.querySelectorAll('.contact-item');
+// Create message element - SAME AS STUDENT
+function createTutorMessageElement(message) {
+    const messageDiv = document.createElement('div');
+    const isSent = message.senderId === currentUser.uid;
     
-    contactItems.forEach(item => {
-        const contactName = item.querySelector('.contact-name').textContent.toLowerCase();
-        const contactSubject = item.querySelector('.contact-subject').textContent.toLowerCase();
+    messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
+    messageDiv.innerHTML = `
+        <div class="message-text">${message.text}</div>
+        <div class="message-time">${formatMessageTime(message.timestamp?.toDate())}</div>
+    `;
+    
+    return messageDiv;
+}
+
+// Send message - SIMILAR TO STUDENT
+async function sendTutorMessage() {
+    const messageInput = document.getElementById('messageInput');
+    if (!messageInput) return;
+    
+    const text = messageInput.value.trim();
+    
+    if (!text || !currentChat) return;
+    
+    try {
+        const messageData = {
+            text: text,
+            senderId: currentUser.uid,
+            senderName: userData?.fullName || 'Tutor',
+            timestamp: new Date(),
+            read: false
+        };
         
-        if (contactName.includes(searchTerm) || contactSubject.includes(searchTerm)) {
+        // Add message to subcollection - SAME AS STUDENT
+        await db.collection('chats')
+            .doc(currentChat.chatId)
+            .collection('messages')
+            .add(messageData);
+        
+        // Update chat last message - SAME AS STUDENT
+        await db.collection('chats')
+            .doc(currentChat.chatId)
+            .update({
+                lastMessage: text,
+                lastMessageAt: new Date(),
+                [`unreadCounts.${currentChat.studentId}`]: firebase.firestore.FieldValue.increment(1)
+            });
+        
+        // Clear input
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
+        
+    } catch (error) {
+        console.error('Error sending message:', error);
+        alert('Failed to send message. Please try again.');
+    }
+}
+
+// Mark chat as read - SAME AS STUDENT
+async function markTutorChatAsRead(chatId) {
+    try {
+        await db.collection('chats')
+            .doc(chatId)
+            .update({
+                [`unreadCounts.${currentUser.uid}`]: 0
+            });
+            
+        // Update unread counts
+        updateTutorUnreadMessagesCount();
+    } catch (error) {
+        console.error('Error marking chat as read:', error);
+    }
+}
+
+// Filter contacts - SAME AS STUDENT
+function filterTutorContacts(searchTerm) {
+    const contactItems = document.querySelectorAll('.contact-item');
+    contactItems.forEach(item => {
+        const studentName = item.querySelector('.contact-name').textContent.toLowerCase();
+        const studentSubject = item.querySelector('.contact-subject').textContent.toLowerCase();
+        const searchLower = searchTerm.toLowerCase();
+        
+        if (studentName.includes(searchLower) || studentSubject.includes(searchLower)) {
             item.style.display = 'flex';
         } else {
             item.style.display = 'none';
@@ -8649,56 +8559,103 @@ function filterChatContacts() {
     });
 }
 
-// Format message time
-function formatMessageTime(timestamp) {
-    if (!timestamp) return '';
-    
-    const now = new Date();
-    const messageTime = new Date(timestamp);
-    const diffInMinutes = Math.floor((now - messageTime) / (1000 * 60));
-    
-    if (diffInMinutes < 1) return 'Just now';
-    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
-    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`;
-    
-    return messageTime.toLocaleDateString();
+// Update unread messages count in menu - SAME AS STUDENT
+function updateTutorUnreadMessagesCount(count) {
+    const unreadBadge = document.getElementById('unreadMessagesCount');
+    if (unreadBadge) {
+        if (count > 0) {
+            unreadBadge.textContent = count > 99 ? '99+' : count.toString();
+            unreadBadge.style.display = 'inline';
+        } else {
+            unreadBadge.style.display = 'none';
+        }
+    }
 }
 
-// Quick message function
-function insertQuickMessage(message) {
+// Setup realtime listeners - SAME AS STUDENT
+function setupTutorRealtimeListeners() {
+    console.log('Setting up realtime tutor chat listeners...');
+    chatListenersActive = true;
+}
+
+// Clean up chat system properly - SAME AS STUDENT
+function cleanupTutorChatSystem() {
+    if (contactsListener) {
+        contactsListener();
+        contactsListener = null;
+    }
+    
+    if (chatMessagesListener) {
+        chatMessagesListener();
+        chatMessagesListener = null;
+    }
+    
+    currentChat = null;
+    chatSystemInitialized = false;
+    chatListenersActive = false;
+    
+    console.log('Tutor chat system cleaned up');
+}
+
+// Format message time - SAME AS STUDENT
+function formatMessageTime(date) {
+    if (!date) return '';
+    
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    
+    return date.toLocaleDateString();
+}
+
+// Quick message function - SAME AS STUDENT
+function insertQuickMessage(text) {
     const messageInput = document.getElementById('messageInput');
     if (messageInput) {
-        messageInput.value = message;
+        messageInput.value = text;
         messageInput.focus();
     }
 }
 
-// Initialize when page loads
-document.addEventListener('DOMContentLoaded', function() {
-    // Initialize when user is authenticated
-    const authCheck = setInterval(() => {
-        if (currentUser && currentUser.uid) {
-            clearInterval(authCheck);
-            initializeTutorChat();
-            
-            // Refresh when switching to chat section
-            const chatMenuItem = document.querySelector('[data-section="chat"]');
-            if (chatMenuItem) {
-                chatMenuItem.addEventListener('click', function() {
-                    setTimeout(() => {
-                        loadTutorChats();
-                        updateUnreadBadge();
-                    }, 100);
-                });
-            }
-        }
-    }, 500);
-});
+// Initialize chat system when dashboard loads - SAME AS STUDENT
+function initializeTutorChatOnAuth() {
+    if (currentUser) {
+        setTimeout(() => {
+            initTutorChatSystem();
+        }, 2000);
+    }
+}
 
-// Also initialize when auth state changes
+// Add chat initialization to your existing auth state listener
 auth.onAuthStateChanged((user) => {
     if (user) {
-        setTimeout(initializeTutorChat, 1000);
+        currentUser = user;
+        // ... your existing code ...
+        
+        // Initialize tutor chat system
+        initializeTutorChatOnAuth();
+    } else {
+        // Clean up when user logs out
+        cleanupTutorChatSystem();
+    }
+});
+
+// Also initialize when switching to chat section
+document.addEventListener('DOMContentLoaded', function() {
+    const chatMenuItem = document.querySelector('[data-section="chat"]');
+    if (chatMenuItem) {
+        chatMenuItem.addEventListener('click', function() {
+            if (!chatSystemInitialized) {
+                setTimeout(() => {
+                    initTutorChatSystem();
+                }, 100);
+            }
+        });
     }
 });
 
@@ -8713,6 +8670,7 @@ auth.onAuthStateChanged((user) => {
 </button>
 </body>
 </html>
+
 
 
 
