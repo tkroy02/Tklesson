@@ -2023,6 +2023,9 @@ function initDashboard() {
   // Initialize package store - ADD THIS LINE
   initPackageStore();
   
+  // Initialize scheduling button state
+  updateBookingButtonState();
+  
   // Set up navigation
 document.querySelectorAll('.menu-item a').forEach(item => {
   item.addEventListener('click', function(e) {
@@ -2045,6 +2048,7 @@ document.querySelectorAll('.menu-item a').forEach(item => {
         loadTutorsForScheduling();
         schedulingLoaded = true;
       }
+      
       // ADD THIS LINE HERE - it should run every time scheduling section is opened
       updateBookingButtonState();
     } else if (sectionId === 'tutors') {
@@ -2228,9 +2232,16 @@ document.addEventListener('DOMContentLoaded', initDashboard);
 // Function to check if student has any package credits
 async function checkStudentPackageBalance() {
   try {
+    // Check if user is authenticated
+    if (!auth.currentUser) {
+      console.warn('User not authenticated for credit check');
+      return { hasCredits: false, totalCredits: 0, message: 'User not authenticated' };
+    }
+    
     const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
     
     if (!studentDoc.exists) {
+      console.warn('Student document not found:', auth.currentUser.uid);
       return { hasCredits: false, totalCredits: 0, message: 'Student not found' };
     }
     
@@ -2243,10 +2254,14 @@ async function checkStudentPackageBalance() {
     let packageDetails = [];
     
     availablePackages.forEach(pkg => {
-      const balance = packageBalances[pkg] || 0;
+      const balance = parseInt(packageBalances[pkg]) || 0;
       if (balance > 0) {
         totalCredits += balance;
-        packageDetails.push({ type: pkg, balance: balance });
+        packageDetails.push({ 
+          type: pkg, 
+          balance: balance,
+          displayName: getPackageDisplayName(pkg)
+        });
       }
     });
     
@@ -2261,30 +2276,95 @@ async function checkStudentPackageBalance() {
     
   } catch (error) {
     console.error('Error checking package balance:', error);
-    return { hasCredits: false, totalCredits: 0, message: 'Error checking credits' };
+    return { 
+      hasCredits: false, 
+      totalCredits: 0, 
+      message: 'Error checking credits. Please try again.' 
+    };
   }
+}
+
+  // Helper function for package names
+function getPackageDisplayName(packageType) {
+  const names = {
+    'taiwo': 'Taiwo Package',
+    'hourly': 'Hourly Session',
+    'bronze': 'Bronze Package',
+    'silver': 'Silver Package', 
+    'gold': 'Gold Package'
+  };
+  return names[packageType] || packageType;
 }
 
 // Function to update booking button based on credit availability
 async function updateBookingButtonState() {
   const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
-  if (!submitButton) return;
-  
-  const creditCheck = await checkStudentPackageBalance();
-  
   if (!creditCheck.hasCredits) {
+      // No credits - disable button and show warning
+      submitButton.disabled = true;
+      submitButton.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No Credits Available';
+      submitButton.style.backgroundColor = '#e53e3e';
+      submitButton.style.cursor = 'not-allowed';
+      submitButton.title = 'Purchase package credits to book sessions. Click to go to Packages.';
+      
+      // Make button redirect to packages when clicked
+      submitButton.onclick = function(e) {
+        e.preventDefault();
+        // Navigate to packages section
+        document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+        document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+        
+        document.querySelector('a[data-section="packages"]').classList.add('active');
+        document.getElementById('packages').classList.add('active');
+      };
+    } else {
+      // Credits available - enable button
+      submitButton.disabled = false;
+      submitButton.innerHTML = '<i class="fas fa-calendar-check"></i> Schedule Session';
+      submitButton.style.backgroundColor = '';
+      submitButton.style.cursor = '';
+      submitButton.title = `Book session using available credits (${creditCheck.totalCredits} available)`;
+      
+      // Restore original form submission handler
+      submitButton.onclick = null;
+    }
+  } catch (error) {
+    console.error('Error updating booking button state:', error);
+    // Default to disabled on error
     submitButton.disabled = true;
-    submitButton.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No Credits Available';
+    submitButton.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Error Checking Credits';
     submitButton.style.backgroundColor = '#e53e3e';
-    submitButton.title = 'Purchase package credits to book sessions';
-  } else {
-    submitButton.disabled = false;
-    submitButton.innerHTML = '<i class="fas fa-calendar-check"></i> Schedule Session';
-    submitButton.style.backgroundColor = '';
-    submitButton.title = '';
   }
 }
 
+// Add real-time listener for credit changes
+function setupCreditMonitoring() {
+  if (!auth.currentUser) return;
+  
+  // Listen for changes to student document (package balances)
+  db.collection('students').doc(auth.currentUser.uid)
+    .onSnapshot((doc) => {
+      if (doc.exists) {
+        console.log('Student data updated, refreshing credit display');
+        loadPackageBalance(); // Update package balance display
+        updateBookingButtonState(); // Update scheduling button
+        
+        // If we're on the scheduling section, also update the price summary
+        const schedulingSection = document.getElementById('scheduling');
+        if (schedulingSection && schedulingSection.classList.contains('active')) {
+          const tutorSelect = document.getElementById('tutor');
+          if (tutorSelect && tutorSelect.value) {
+            // Trigger change event to refresh price summary
+            const event = new Event('change');
+            tutorSelect.dispatchEvent(event);
+          }
+        }
+      }
+    }, (error) => {
+      console.error('Error monitoring credit changes:', error);
+    });
+}
+  
 //Tutors are loaded for scheduling through the dropdown menu
 function loadTutorsForScheduling() {
   console.log('🚨 loadTutorsForScheduling CALLED - Stack trace:', new Error().stack);
@@ -3462,6 +3542,8 @@ auth.onAuthStateChanged((user) => {
         loadDashboardData().then(() => {
             setupSessionListeners();
             setupActivityListeners();
+            setupCreditMonitoring(); // ADD THIS LINE
+
             
             // SPECIFIC INITIALIZATION CODE THAT SHOULD BE HERE:
             initDashboard(); // Your main dashboard initialization
@@ -5318,6 +5400,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
