@@ -2487,10 +2487,16 @@ document.addEventListener('DOMContentLoaded', initDashboard);
 
 
 //.......................................................................................
-//Scheduling Section starts. All JS functionalities of the Scheduling section starts here
-//....................................................................................... 
+// SCHEDULING SECTION - Organized Structure
+//.......................................................................................
 
-// Function to check if student has any package credits
+// =============================================================================
+// 1. CREDIT MANAGEMENT & VALIDATION
+// =============================================================================
+
+/**
+ * Check if student has any available package credits
+ */
 async function checkStudentPackageBalance() {
   try {
     const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
@@ -2530,7 +2536,9 @@ async function checkStudentPackageBalance() {
   }
 }
 
-// Function to update booking button based on credit availability
+/**
+ * Update booking button state based on credit availability
+ */
 async function updateBookingButtonState() {
   const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
   if (!submitButton) return;
@@ -2550,7 +2558,13 @@ async function updateBookingButtonState() {
   }
 }
 
-//Tutors are loaded for scheduling through the dropdown menu
+// =============================================================================
+// 2. TUTOR MANAGEMENT & UI UPDATES
+// =============================================================================
+
+/**
+ * Load available tutors for scheduling dropdown
+ */
 function loadTutorsForScheduling() {
   console.log('🚨 loadTutorsForScheduling CALLED - Stack trace:', new Error().stack);
   const tutorSelect = document.getElementById('tutor');
@@ -2571,17 +2585,18 @@ function loadTutorsForScheduling() {
     .then((querySnapshot) => {
       tutorSpinner.style.display = 'none';
       
-if (querySnapshot.empty) {
-  // Clear all except first option, then add no tutors message
-  while (tutorSelect.options.length > 1) {
-    tutorSelect.remove(1);
-  }
-  const noTutorsOption = document.createElement('option');
-  noTutorsOption.value = "";
-  noTutorsOption.textContent = "No available tutors found";
-  tutorSelect.appendChild(noTutorsOption);
-  return;
-}
+      if (querySnapshot.empty) {
+        // Clear all except first option, then add no tutors message
+        while (tutorSelect.options.length > 1) {
+          tutorSelect.remove(1);
+        }
+        const noTutorsOption = document.createElement('option');
+        noTutorsOption.value = "";
+        noTutorsOption.textContent = "No available tutors found";
+        tutorSelect.appendChild(noTutorsOption);
+        return;
+      }
+      
       querySnapshot.forEach((doc) => {
         const tutor = doc.data();
         const option = document.createElement('option');
@@ -2611,12 +2626,156 @@ if (querySnapshot.empty) {
     });
 }
 
-// Function to generate a unique meet ID (but not the actual link)
+/**
+ * Handle tutor selection change - populate subjects and update pricing
+ */
+document.getElementById('tutor').addEventListener('change', function() {
+  const tutorId = this.value;
+  const subjectSelect = document.getElementById('subject');
+  const priceSummary = document.getElementById('priceSummary');
+  const hourlyRateSpan = document.getElementById('hourlyRate');
+  const durationDisplay = document.getElementById('durationDisplay');
+  const totalPriceSpan = document.getElementById('totalPrice');
+  
+  if (!tutorId) {
+    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
+    subjectSelect.disabled = true;
+    priceSummary.style.display = 'none';
+    return;
+  }
+  
+  // Get tutor data to populate subjects and hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        
+        // Populate subjects
+        subjectSelect.innerHTML = '';
+        let subjects = [];
+        
+        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+          subjects = tutor.subjects.subjects;
+        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+          subjects = tutor.subjects;
+        }
+        
+        if (subjects.length > 0) {
+          subjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject;
+            option.textContent = subject;
+            subjectSelect.appendChild(option);
+          });
+          subjectSelect.disabled = false;
+        } else {
+          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+          subjectSelect.disabled = true;
+        }
+        
+        // Update pricing based on package balance
+        updatePricingBasedOnCredits(tutor);
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+      subjectSelect.disabled = true;
+      priceSummary.style.display = 'none';
+    });
+});
+
+/**
+ * Update pricing display based on student's package credits
+ */
+function updatePricingBasedOnCredits(tutor) {
+  const priceSummary = document.getElementById('priceSummary');
+  
+  db.collection('students').doc(auth.currentUser.uid).get()
+    .then((studentDoc) => {
+      let packageMessage = '';
+      let showPackagePricing = false;
+      let totalCredits = 0;
+      
+      if (studentDoc.exists) {
+        const studentData = studentDoc.data();
+        const packageBalances = studentData.packageBalances || {};
+        
+        // Check ALL package types
+        const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
+        availablePackages.forEach(pkg => {
+          totalCredits += packageBalances[pkg] || 0;
+        });
+        
+        if (totalCredits > 0) {
+          packageMessage = `Package Credits Available: ${totalCredits} session${totalCredits !== 1 ? 's' : ''}`;
+          showPackagePricing = true;
+        }
+      }
+      
+      // Show price summary
+      const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+      const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+      
+      if (showPackagePricing) {
+        // Student has package credits - show package pricing
+        priceSummary.innerHTML = `
+          <h4>Package Pricing</h4>
+          <p style="color: #48bb78; font-weight: bold;">${packageMessage}</p>
+          <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
+          <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+          <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
+          <p style="font-size: 0.9em; color: #666;">1 package credit will be automatically deducted after session completion</p>
+        `;
+      } else {
+        // No package credits - show regular pricing with warning
+        const totalPrice = hourlyRate * duration;
+        priceSummary.innerHTML = `
+          <h4>Price Summary</h4>
+          <p style="color: #e53e3e; font-weight: bold;">⚠️ No package credits available</p>
+          <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
+          <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+          <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
+          <p style="font-size: 0.9em; color: #e53e3e;">You need package credits to book sessions</p>
+        `;
+      }
+      
+      priceSummary.style.display = 'block';
+      
+      // Update booking button state based on credits
+      updateBookingButtonState();
+    })
+    .catch((error) => {
+      console.error('Error checking package balance:', error);
+      // Fallback to regular pricing
+      const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+      const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+      const totalPrice = hourlyRate * duration;
+      
+      priceSummary.innerHTML = `
+        <h4>Price Summary</h4>
+        <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
+        <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+        <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
+      `;
+      priceSummary.style.display = 'block';
+    });
+}
+
+// =============================================================================
+// 3. BOOKING SUBMISSION & PROCESSING
+// =============================================================================
+
+/**
+ * Generate a unique meet ID (but not the actual link)
+ */
 function generateMeetId() {
   return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
-// Set up scheduling form for submission with credit validation
+/**
+ * Handle scheduling form submission with credit validation
+ */
 document.getElementById('schedulingForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   
@@ -2768,167 +2927,13 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
     });
 });
 
-// Set up tutor selection change event
-document.getElementById('tutor').addEventListener('change', function() {
-  const tutorId = this.value;
-  const subjectSelect = document.getElementById('subject');
-  const priceSummary = document.getElementById('priceSummary');
-  const hourlyRateSpan = document.getElementById('hourlyRate');
-  const durationDisplay = document.getElementById('durationDisplay');
-  const totalPriceSpan = document.getElementById('totalPrice');
-  
-  if (!tutorId) {
-    subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
-    subjectSelect.disabled = true;
-    priceSummary.style.display = 'none';
-    return;
-  }
-  
-  // Get tutor data to populate subjects and hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        
-        // Populate subjects (existing code remains)
-        subjectSelect.innerHTML = '';
-        let subjects = [];
-        
-        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-          subjects = tutor.subjects.subjects;
-        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-          subjects = tutor.subjects;
-        }
-        
-        if (subjects.length > 0) {
-          subjects.forEach(subject => {
-            const option = document.createElement('option');
-            option.value = subject;
-            option.textContent = subject;
-            subjectSelect.appendChild(option);
-          });
-          subjectSelect.disabled = false;
-        } else {
-          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
-          subjectSelect.disabled = true;
-        }
-        
-        // CHECK PACKAGE BALANCE - UPDATED TO CHECK ALL PACKAGES
-        db.collection('students').doc(auth.currentUser.uid).get()
-          .then((studentDoc) => {
-            let packageMessage = '';
-            let showPackagePricing = false;
-            let totalCredits = 0;
-            
-            if (studentDoc.exists) {
-              const studentData = studentDoc.data();
-              const packageBalances = studentData.packageBalances || {};
-              
-              // Check ALL package types
-              const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
-              availablePackages.forEach(pkg => {
-                totalCredits += packageBalances[pkg] || 0;
-              });
-              
-              if (totalCredits > 0) {
-                packageMessage = `Package Credits Available: ${totalCredits} session${totalCredits !== 1 ? 's' : ''}`;
-                showPackagePricing = true;
-              }
-            }
-            
-            // Show price summary
-            const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-            const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-            
-            if (showPackagePricing) {
-              // Student has package credits - show package pricing
-              hourlyRateSpan.textContent = '0 (Package Credit)';
-              durationDisplay.textContent = duration;
-              totalPriceSpan.textContent = '0.00';
-              priceSummary.innerHTML = `
-                <h4>Package Pricing</h4>
-                <p style="color: #48bb78; font-weight: bold;">${packageMessage}</p>
-                <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
-                <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
-                <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
-                <p style="font-size: 0.9em; color: #666;">1 package credit will be automatically deducted after session completion</p>
-              `;
-            } else {
-              // No package credits - show regular pricing with warning
-              const totalPrice = hourlyRate * duration;
-              hourlyRateSpan.textContent = hourlyRate;
-              durationDisplay.textContent = duration;
-              totalPriceSpan.textContent = totalPrice.toFixed(2);
-              priceSummary.innerHTML = `
-                <h4>Price Summary</h4>
-                <p style="color: #e53e3e; font-weight: bold;">⚠️ No package credits available</p>
-                <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
-                <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
-                <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
-                <p style="font-size: 0.9em; color: #e53e3e;">You need package credits to book sessions</p>
-              `;
-            }
-            
-            priceSummary.style.display = 'block';
-            
-            // Update booking button state based on credits
-            updateBookingButtonState();
-          })
-          .catch((error) => {
-            console.error('Error checking package balance:', error);
-            // Fallback to regular pricing
-            const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-            const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-            const totalPrice = hourlyRate * duration;
-            
-            hourlyRateSpan.textContent = hourlyRate;
-            durationDisplay.textContent = duration;
-            totalPriceSpan.textContent = totalPrice.toFixed(2);
-            priceSummary.innerHTML = `
-              <h4>Price Summary</h4>
-              <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
-              <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
-              <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
-            `;
-            priceSummary.style.display = 'block';
-          });
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-      subjectSelect.disabled = true;
-      priceSummary.style.display = 'none';
-    });
-});
-  
-// Set up duration change event to update price
-document.getElementById('duration').addEventListener('change', function() {
-  const tutorSelect = document.getElementById('tutor');
-  const tutorId = tutorSelect.value;
-  
-  if (!tutorId) return;
-  
-  // Get tutor hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-        const duration = parseFloat(this.value) || 1.5;
-        const totalPrice = hourlyRate * duration;
-        
-        document.getElementById('hourlyRate').textContent = hourlyRate;
-        document.getElementById('durationDisplay').textContent = duration;
-        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-    });
-});
+// =============================================================================
+// 4. UI MANAGEMENT & DYNAMIC UPDATES
+// =============================================================================
 
-// Add new booking to UI immediately
+/**
+ * Add new booking to UI immediately after submission
+ */
 function addBookingToUI(bookingId, bookingData) {
   const container = document.getElementById('bookingsContainer');
   
@@ -2981,9 +2986,41 @@ function addBookingToUI(bookingId, bookingData) {
   document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
 }
 
-  // ==== SCHEDULING ACCESS CONTROL ====
+/**
+ * Handle duration change to update price display
+ */
+document.getElementById('duration').addEventListener('change', function() {
+  const tutorSelect = document.getElementById('tutor');
+  const tutorId = tutorSelect.value;
+  
+  if (!tutorId) return;
+  
+  // Get tutor hourly rate
+  db.collection('tutors').doc(tutorId).get()
+    .then((doc) => {
+      if (doc.exists) {
+        const tutor = doc.data();
+        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+        const duration = parseFloat(this.value) || 1.5;
+        const totalPrice = hourlyRate * duration;
+        
+        document.getElementById('hourlyRate').textContent = hourlyRate;
+        document.getElementById('durationDisplay').textContent = duration;
+        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
+      }
+    })
+    .catch((error) => {
+      console.error('Error loading tutor details:', error);
+    });
+});
 
-// Function to check credit availability before allowing scheduling
+// =============================================================================
+// 5. ACCESS CONTROL & CREDIT VALIDATION
+// =============================================================================
+
+/**
+ * Check credit availability before allowing scheduling
+ */
 async function checkCreditsBeforeScheduling() {
   try {
     const creditCheck = await checkStudentPackageBalance();
@@ -3001,7 +3038,9 @@ async function checkCreditsBeforeScheduling() {
   }
 }
 
-// Show credit purchase prompt
+/**
+ * Show credit purchase prompt modal
+ */
 function showCreditPurchasePrompt() {
   // Create a modal or redirect to packages section
   const modalHtml = `
@@ -3051,7 +3090,9 @@ function showCreditPurchasePrompt() {
   document.body.appendChild(modal);
 }
 
-// Redirect to packages section
+/**
+ * Redirect to packages section
+ */
 function redirectToPackages() {
   // Close modal
   closePurchasePrompt();
@@ -3064,7 +3105,9 @@ function redirectToPackages() {
   document.getElementById('packages').classList.add('active');
 }
 
-// Close purchase prompt
+/**
+ * Close purchase prompt modal
+ */
 function closePurchasePrompt() {
   const modal = document.getElementById('creditPurchasePrompt');
   if (modal) {
@@ -5700,6 +5743,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
