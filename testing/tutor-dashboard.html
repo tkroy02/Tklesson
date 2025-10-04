@@ -8235,7 +8235,7 @@ document.head.appendChild(mobileStyle);
 // =============================================
 
 // =============================================
-// TUTOR CHAT FIX - Matching Your Existing Structure
+// TUTOR CHAT SYSTEM - SIMPLIFIED & FIXED
 // =============================================
 
 let currentChatId = null;
@@ -8244,7 +8244,7 @@ let chatMessagesListener = null;
 
 // Initialize tutor chat
 function initializeTutorChat() {
-    console.log('💬 Initializing tutor chat with existing structure...');
+    console.log('💬 Initializing tutor chat...');
     
     if (!currentUser || !currentUser.uid) {
         setTimeout(initializeTutorChat, 1000);
@@ -8274,7 +8274,6 @@ function setupChatEventListeners() {
         });
     }
     
-    // Contact search
     const contactSearch = document.getElementById('contactSearch');
     if (contactSearch) {
         contactSearch.addEventListener('input', filterChatContacts);
@@ -8289,15 +8288,10 @@ async function loadTutorChats() {
     contactsList.innerHTML = '<div class="empty-state">Loading conversations...</div>';
     
     try {
-        console.log('Loading chats for tutor:', currentUser.uid);
-        
-        // Query chats where tutor is a participant
         const chatsSnapshot = await db.collection('chats')
             .where('participants', 'array-contains', currentUser.uid)
-            .orderBy('lastUpdated', 'desc')
+            .orderBy('lastMessageAt', 'desc')
             .get();
-        
-        console.log('Found chats:', chatsSnapshot.size);
         
         if (chatsSnapshot.empty) {
             contactsList.innerHTML = `
@@ -8314,16 +8308,12 @@ async function loadTutorChats() {
         
         for (const doc of chatsSnapshot.docs) {
             const chat = doc.data();
-            console.log('Chat:', chat);
             
-            // Find the student ID (the other participant)
+            // Find the student ID
             const studentId = chat.participants.find(pid => pid !== currentUser.uid);
             if (!studentId) continue;
             
-            // Get student name from participantNames map
             const studentName = chat.participantNames?.[studentId] || 'Student';
-            
-            // Get unread count for tutor
             const unreadCount = chat.unreadCounts?.[currentUser.uid] || 0;
             
             contacts.push({
@@ -8426,7 +8416,7 @@ function openTutorChat(chatId, studentId, studentName, subject) {
     markChatAsRead(chatId);
 }
 
-// Load messages - Check if messages are in subcollection or same document
+// Load messages - FIXED: Only use messages subcollection
 async function loadChatMessages(chatId) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
@@ -8434,7 +8424,7 @@ async function loadChatMessages(chatId) {
     messagesContainer.innerHTML = '<div class="empty-state">Loading messages...</div>';
     
     try {
-        // Try to load from messages subcollection first
+        // Load from messages subcollection only
         const messagesSnapshot = await db.collection('chats')
             .doc(chatId)
             .collection('messages')
@@ -8445,16 +8435,6 @@ async function loadChatMessages(chatId) {
             console.log('Found messages in subcollection:', messagesSnapshot.size);
             displayMessages(messagesSnapshot);
             setupMessageListener(chatId);
-            return;
-        }
-        
-        // If no subcollection, check if messages are stored in the chat document
-        const chatDoc = await db.collection('chats').doc(chatId).get();
-        const chatData = chatDoc.data();
-        
-        if (chatData.messages && Array.isArray(chatData.messages)) {
-            console.log('Found messages in chat document:', chatData.messages.length);
-            displayMessagesFromArray(chatData.messages);
         } else {
             messagesContainer.innerHTML = `
                 <div class="empty-state">
@@ -8477,7 +8457,7 @@ async function loadChatMessages(chatId) {
     }
 }
 
-// Display messages from subcollection
+// Display messages
 function displayMessages(messagesSnapshot) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
@@ -8494,22 +8474,6 @@ function displayMessages(messagesSnapshot) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// Display messages from array (if stored in chat document)
-function displayMessagesFromArray(messagesArray) {
-    const messagesContainer = document.getElementById('messagesContainer');
-    if (!messagesContainer) return;
-    
-    messagesContainer.innerHTML = '';
-    
-    messagesArray.forEach(message => {
-        const messageElement = createMessageElement(message);
-        messagesContainer.appendChild(messageElement);
-    });
-    
-    // Scroll to bottom
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
 // Create message element
 function createMessageElement(message) {
     const messageDiv = document.createElement('div');
@@ -8518,14 +8482,14 @@ function createMessageElement(message) {
     
     messageDiv.className = `message ${isTutor ? 'sent' : 'received'}`;
     messageDiv.innerHTML = `
-        <div class="message-text">${message.text || message.content || message.message}</div>
+        <div class="message-text">${message.text}</div>
         <div class="message-time">${formatMessageTime(messageTime)}</div>
     `;
     
     return messageDiv;
 }
 
-// Send message as tutor
+// Send message as tutor - FIXED: No duplication
 async function sendTutorMessage() {
     const messageInput = document.getElementById('messageInput');
     const sendBtn = document.getElementById('sendMessageBtn');
@@ -8544,8 +8508,6 @@ async function sendTutorMessage() {
     sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
     
     try {
-        console.log('Sending message in chat:', currentChatId);
-        
         const messageData = {
             text: messageText,
             senderId: currentUser.uid,
@@ -8554,24 +8516,13 @@ async function sendTutorMessage() {
             read: false
         };
         
-        // Try to add to messages subcollection
-        try {
-            await db.collection('chats')
-                .doc(currentChatId)
-                .collection('messages')
-                .add(messageData);
-        } catch (error) {
-            console.log('No messages subcollection, updating chat document directly');
-            // If subcollection doesn't exist, update the chat document
-            await db.collection('chats').doc(currentChatId).update({
-                lastMessage: messageText,
-                lastMessageAt: new Date(),
-                lastUpdated: new Date(),
-                [`unreadCounts.${currentStudentId}`]: firebase.firestore.FieldValue.increment(1)
-            });
-        }
+        // Add message to messages subcollection
+        await db.collection('chats')
+            .doc(currentChatId)
+            .collection('messages')
+            .add(messageData);
         
-        // Update chat with last message info
+        // Update chat with last message info - ONLY ONCE
         await db.collection('chats').doc(currentChatId).update({
             lastMessage: messageText,
             lastMessageAt: new Date(),
@@ -8762,6 +8713,7 @@ auth.onAuthStateChanged((user) => {
 </button>
 </body>
 </html>
+
 
 
 
