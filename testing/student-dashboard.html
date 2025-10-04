@@ -2843,7 +2843,22 @@ function addBookingToUI(bookingId, bookingData) {
 checkSessionStatusForCredits();
 
 async function debugCreditDeduction() {
+  // Wait for authentication
+  if (!auth.currentUser) {
+    console.log('Waiting for authentication...');
+    setTimeout(debugCreditDeduction, 1000);
+    return;
+  }
+
   try {
+    console.log('Testing Cloud Functions connection...');
+    
+    // First test basic connection
+    const testConnection = firebase.functions().httpsCallable('testConnection');
+    const testResult = await testConnection();
+    console.log('Cloud Functions test:', testResult.data);
+    
+    // Now try the debug function
     const debugCreditDeduction = firebase.functions().httpsCallable('debugCreditDeduction');
     const result = await debugCreditDeduction();
     
@@ -2851,43 +2866,80 @@ async function debugCreditDeduction() {
     console.log('Current time:', result.data.currentTime);
     console.log('Sessions found:', result.data.sessionsFound);
     
-    result.data.sessions.forEach(session => {
-      console.log(`Session: ${session.subject}`, {
-        sessionTime: session.sessionTime,
-        hoursUntilSession: Math.round(session.hoursUntilSession * 100) / 100,
-        shouldHaveDeducted: session.shouldHaveDeducted,
-        usedPackageCredit: session.usedPackageCredit,
-        twentyFourHoursBefore: session.twentyFourHoursBefore
+    if (result.data.sessions && result.data.sessions.length > 0) {
+      result.data.sessions.forEach(session => {
+        console.log(`Session: ${session.subject}`, {
+          sessionTime: session.sessionTime,
+          hoursUntilSession: Math.round(session.hoursUntilSession * 100) / 100,
+          shouldHaveDeducted: session.shouldHaveDeducted,
+          usedPackageCredit: session.usedPackageCredit,
+          twentyFourHoursBefore: session.twentyFourHoursBefore
+        });
       });
-    });
-    
-    alert(`Credit Deduction Debug:\nFound ${result.data.sessionsFound} sessions\nCheck browser console for details`);
+    } else {
+      console.log('No sessions found that need credit deduction');
+    }
     
   } catch (error) {
     console.error('Debug failed:', error);
-    alert('Debug failed: ' + error.message);
+    
+    if (error.message.includes('CORS') || error.code === 'internal') {
+      alert('CORS Error: Cloud Function needs CORS configuration update');
+    } else {
+      alert('Debug failed: ' + error.message);
+    }
   }
 }
 
-// Run this to see what's happening
-debugCreditDeduction();
+  async function checkSessionsDirectly() {
+  if (!auth.currentUser) {
+    console.log('Waiting for authentication...');
+    setTimeout(checkSessionsDirectly, 1000);
+    return;
+  }
 
-async function forceCreditDeduction(sessionId) {
   try {
-    const forceCreditDeduction = firebase.functions().httpsCallable('forceCreditDeduction');
-    const result = await forceCreditDeduction({ sessionId });
+    console.log('=== DIRECT SESSION CHECK ===');
     
-    console.log('Force credit deduction result:', result.data);
-    alert(`Force Credit Deduction: ${result.data.message}`);
+    // Get all confirmed sessions for this student
+    const sessionsSnapshot = await db.collection('bookedSessions')
+      .where('studentId', '==', auth.currentUser.uid)
+      .where('status', '==', 'confirmed')
+      .get();
+
+    const now = new Date();
+    console.log(`Found ${sessionsSnapshot.size} confirmed sessions`);
     
-    // Reload package balance
-    loadPackageBalance();
+    sessionsSnapshot.forEach(doc => {
+      const session = doc.data();
+      const sessionTime = session.date.toDate();
+      const hoursFromNow = (sessionTime - now) / (1000 * 60 * 60);
+      const hoursUntil24hWindow = hoursFromNow - 24;
+      
+      console.log(`📚 ${session.subject}`, {
+        sessionId: doc.id,
+        sessionTime: sessionTime.toLocaleString(),
+        hoursFromNow: Math.round(hoursFromNow * 100) / 100,
+        hoursUntil24hWindow: Math.round(hoursUntil24hWindow * 100) / 100,
+        within24hWindow: hoursUntil24hWindow <= 0,
+        paymentStatus: session.paymentStatus,
+        usedPackageCredit: session.usedPackageCredit || false
+      });
+    });
+
+    // Also check current package balance
+    const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
+    if (studentDoc.exists) {
+      console.log('💰 Current package balances:', studentDoc.data().packageBalances);
+    }
     
   } catch (error) {
-    console.error('Force deduction failed:', error);
-    alert('Force deduction failed: ' + error.message);
+    console.error('Direct check failed:', error);
   }
 }
+
+// Run this instead for now
+checkSessionsDirectly();
   
 //..........................................................................................
 //Scheduling Section ends here. All JS functionalities of the scheduling section ends here
@@ -5498,6 +5550,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
