@@ -3273,6 +3273,7 @@ function addBookingToUI(bookingId, bookingData) {
 
 // Add this function to your existing JavaScript
 async function createChatRoom(sessionId, studentId, tutorId, sessionData) {
+    // Generate consistent chat ID (same for all sessions between this student and tutor)
     const chatId = [studentId, tutorId].sort().join('_');
     
     try {
@@ -3285,32 +3286,55 @@ async function createChatRoom(sessionId, studentId, tutorId, sessionData) {
         const studentName = studentDoc.data()?.name || studentDoc.data()?.fullName || 'Student';
         const tutorName = tutorDoc.data()?.personal?.fullName || tutorDoc.data()?.fullName || 'Tutor';
         
-        await db.collection('chats').doc(chatId).set({
-            participants: [studentId, tutorId],
-            participantNames: {
-                [studentId]: studentName,
-                [tutorId]: tutorName
-            },
-            sessionId: sessionId,
-            subject: sessionData.subject || 'General Tutoring',
-            status: 'active',
-            lastMessage: '',
-            lastMessageAt: null,
-            unreadCounts: { 
-                [studentId]: 0, 
-                [tutorId]: 0 
-            },
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        // Check if chat already exists
+        const existingChat = await db.collection('chats').doc(chatId).get();
         
-        console.log('Chat room created successfully:', chatId);
-        return chatId;
+        if (existingChat.exists) {
+            // Chat exists - just update it with new session info if needed
+            console.log('Using existing chat room:', chatId);
+            
+            // Update the chat with current session info
+            await db.collection('chats').doc(chatId).update({
+                lastUpdated: firebase.firestore.FieldValue.serverTimestamp(),
+                // Keep existing sessionId or update to latest? 
+                // You might want to track multiple sessions or keep the latest
+                latestSessionId: sessionId,
+                subject: sessionData.subject || existingChat.data().subject || 'General Tutoring'
+            });
+            
+            return chatId;
+        } else {
+            // Create new chat room
+            await db.collection('chats').doc(chatId).set({
+                participants: [studentId, tutorId],
+                participantNames: {
+                    [studentId]: studentName,
+                    [tutorId]: tutorName
+                },
+                sessionId: sessionId, // Store the first session ID
+                latestSessionId: sessionId, // Track latest session
+                subject: sessionData.subject || 'General Tutoring',
+                status: 'active',
+                lastMessage: '',
+                lastMessageAt: null,
+                unreadCounts: { 
+                    [studentId]: 0, 
+                    [tutorId]: 0 
+                },
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
+            console.log('Created new chat room:', chatId);
+            return chatId;
+        }
+        
     } catch (error) {
         console.error('Error creating chat room:', error);
         throw error;
     }
 }
+
 
   
 //..........................................................................................
@@ -6366,34 +6390,34 @@ async function startNewChat(tutorId) {
 // Create or get chat between student and tutor
 async function getOrCreateChat(tutorId) {
     const studentId = auth.currentUser.uid;
+    const chatId = [studentId, tutorId].sort().join('_');
     
     try {
-        // First, try to find existing chat
-        const existingChats = await db.collection('chats')
-            .where('participants', 'array-contains', studentId)
-            .get();
+        // Check if chat already exists
+        const existingChat = await db.collection('chats').doc(chatId).get();
         
-        // Check if chat with this tutor already exists
-        let existingChat = null;
-        existingChats.forEach(doc => {
-            const chat = doc.data();
-            if (chat.participants.includes(tutorId)) {
-                existingChat = { id: doc.id, ...chat };
-            }
-        });
-        
-        if (existingChat) {
-            console.log('Found existing chat:', existingChat.id);
-            return existingChat;
+        if (existingChat.exists) {
+            console.log('Found existing chat:', chatId);
+            return { id: chatId, ...existingChat.data() };
         }
         
         // Create new chat
         console.log('Creating new chat between student and tutor...');
+        
+        // Get user names
+        const [studentDoc, tutorDoc] = await Promise.all([
+            db.collection('students').doc(studentId).get(),
+            db.collection('tutors').doc(tutorId).get()
+        ]);
+        
+        const studentName = studentDoc.data()?.name || studentDoc.data()?.fullName || 'Student';
+        const tutorName = tutorDoc.data()?.personal?.fullName || tutorDoc.data()?.fullName || 'Tutor';
+        
         const chatData = {
             participants: [studentId, tutorId],
             participantNames: {
-                [studentId]: userData?.name || 'Student',
-                [tutorId]: 'Tutor' // We'll update this when we load tutor data
+                [studentId]: studentName,
+                [tutorId]: tutorName
             },
             lastMessage: '',
             lastMessageAt: new Date(),
@@ -6405,31 +6429,21 @@ async function getOrCreateChat(tutorId) {
             typing: {
                 [studentId]: false,
                 [tutorId]: false
-            }
+            },
+            status: 'active'
         };
         
-        // Get tutor name if possible
-        try {
-            const tutorDoc = await db.collection('tutors').doc(tutorId).get();
-            if (tutorDoc.exists) {
-                const tutor = tutorDoc.data();
-                chatData.participantNames[tutorId] = tutor.personal?.fullName || 'Tutor';
-            }
-        } catch (error) {
-            console.warn('Could not load tutor name:', error);
-        }
+        await db.collection('chats').doc(chatId).set(chatData);
+        console.log('Created new chat:', chatId);
         
-        const chatRef = await db.collection('chats').add(chatData);
-        console.log('Created new chat:', chatRef.id);
-        
-        return { id: chatRef.id, ...chatData };
+        return { id: chatId, ...chatData };
         
     } catch (error) {
         console.error('Error creating/getting chat:', error);
         throw error;
     }
 }
-
+  
 // Initialize chat system when dashboard loads
 function initializeChatOnAuth() {
     if (auth.currentUser) {
@@ -6450,6 +6464,66 @@ auth.onAuthStateChanged((user) => {
         initializeChatOnAuth();
     }
 });
+
+// One-time function to clean up duplicate chats
+async function cleanupDuplicateChats() {
+    const studentId = auth.currentUser.uid;
+    
+    try {
+        // Get all chats for this student
+        const chatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', studentId)
+            .get();
+        
+        const chatGroups = {};
+        
+        // Group chats by tutor-student pair
+        chatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const tutorId = chat.participants.find(id => id !== studentId);
+            
+            if (tutorId) {
+                const chatKey = [studentId, tutorId].sort().join('_');
+                
+                if (!chatGroups[chatKey]) {
+                    chatGroups[chatKey] = [];
+                }
+                chatGroups[chatKey].push({ id: doc.id, ...chat });
+            }
+        });
+        
+        // For each group with multiple chats, keep the newest and delete others
+        const cleanupPromises = [];
+        
+        Object.entries(chatGroups).forEach(([chatKey, chats]) => {
+            if (chats.length > 1) {
+                // Sort by creation date (newest first)
+                chats.sort((a, b) => {
+                    const aTime = a.createdAt?.toDate()?.getTime() || 0;
+                    const bTime = b.createdAt?.toDate()?.getTime() || 0;
+                    return bTime - aTime;
+                });
+                
+                // Keep the newest chat, delete others
+                const chatsToDelete = chats.slice(1);
+                
+                chatsToDelete.forEach(chat => {
+                    console.log(`Deleting duplicate chat: ${chat.id}`);
+                    cleanupPromises.push(db.collection('chats').doc(chat.id).delete());
+                });
+            }
+        });
+        
+        await Promise.all(cleanupPromises);
+        console.log('Duplicate chat cleanup completed');
+        
+    } catch (error) {
+        console.error('Error cleaning up duplicate chats:', error);
+    }
+}
+
+// Run this once to clean up existing duplicates
+// You can call this from browser console: cleanupDuplicateChats()
   
 // =======================================================
 // STUDENT CHAT SYSTEM WITH AUTO-CREATION ENDS HERE
@@ -6458,6 +6532,7 @@ auth.onAuthStateChanged((user) => {
 </script>    
 </body>
 </html>
+
 
 
 
