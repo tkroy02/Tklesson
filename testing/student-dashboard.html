@@ -2487,18 +2487,61 @@ document.addEventListener('DOMContentLoaded', initDashboard);
 
 
 //.......................................................................................
-// SCHEDULING SECTION - Organized Structure
+// SCHEDULING SECTION STARTS HERE - Organized Structure
+//.......................................................................................
+
+//.......................................................................................
+// SCHEDULING SECTION - OPTIMIZED & CORRECTED VERSION
 //.......................................................................................
 
 // =============================================================================
-// 1. CREDIT MANAGEMENT & VALIDATION
+// 1. CACHE MANAGEMENT & PERFORMANCE OPTIMIZATION
 // =============================================================================
 
+let cachedTutors = null;
+let cachedPackageBalance = null;
+let isTutorsLoading = false;
+
 /**
- * Check if student has any available package credits
+ * Preload scheduling data for better performance
  */
-async function checkStudentPackageBalance() {
+async function preloadSchedulingData() {
   try {
+    console.time('PreloadSchedulingData');
+    const [tutorsSnapshot, studentDoc] = await Promise.all([
+      db.collection('tutors')
+        .where('available', '==', true)
+        .where('approved', '==', true)
+        .limit(100) // Added reasonable limit
+        .get(),
+      db.collection('students').doc(auth.currentUser.uid).get()
+    ]);
+    
+    cachedTutors = tutorsSnapshot;
+    cachedPackageBalance = studentDoc.exists ? studentDoc.data().packageBalances : {};
+    console.timeEnd('PreloadSchedulingData');
+    
+  } catch (error) {
+    console.error('Error preloading scheduling data:', error);
+  }
+}
+
+/**
+ * Check if student has any available package credits (uses cache)
+ */
+async function checkStudentPackageBalance(useCache = true) {
+  try {
+    if (useCache && cachedPackageBalance) {
+      const totalCredits = calculateTotalCredits(cachedPackageBalance);
+      return {
+        hasCredits: totalCredits > 0,
+        totalCredits: totalCredits,
+        message: totalCredits > 0 
+          ? `You have ${totalCredits} session credit${totalCredits !== 1 ? 's' : ''} available` 
+          : 'No package credits available'
+      };
+    }
+
     const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
     
     if (!studentDoc.exists) {
@@ -2507,24 +2550,13 @@ async function checkStudentPackageBalance() {
     
     const studentData = studentDoc.data();
     const packageBalances = studentData.packageBalances || {};
+    cachedPackageBalance = packageBalances; // Update cache
     
-    // Check ALL package types for available credits
-    const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
-    let totalCredits = 0;
-    let packageDetails = [];
-    
-    availablePackages.forEach(pkg => {
-      const balance = packageBalances[pkg] || 0;
-      if (balance > 0) {
-        totalCredits += balance;
-        packageDetails.push({ type: pkg, balance: balance });
-      }
-    });
+    const totalCredits = calculateTotalCredits(packageBalances);
     
     return {
       hasCredits: totalCredits > 0,
       totalCredits: totalCredits,
-      packageDetails: packageDetails,
       message: totalCredits > 0 
         ? `You have ${totalCredits} session credit${totalCredits !== 1 ? 's' : ''} available` 
         : 'No package credits available'
@@ -2537,13 +2569,21 @@ async function checkStudentPackageBalance() {
 }
 
 /**
+ * Calculate total credits from package balances
+ */
+function calculateTotalCredits(packageBalances) {
+  const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
+  return availablePackages.reduce((total, pkg) => total + (packageBalances[pkg] || 0), 0);
+}
+
+/**
  * Update booking button state based on credit availability
  */
 async function updateBookingButtonState() {
   const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
   if (!submitButton) return;
   
-  const creditCheck = await checkStudentPackageBalance();
+  const creditCheck = await checkStudentPackageBalance(true); // Use cache
   
   if (!creditCheck.hasCredits) {
     submitButton.disabled = true;
@@ -2559,16 +2599,25 @@ async function updateBookingButtonState() {
 }
 
 // =============================================================================
-// 2. TUTOR MANAGEMENT & UI UPDATES
+// 2. OPTIMIZED TUTOR MANAGEMENT & UI UPDATES
 // =============================================================================
 
 /**
- * Load available tutors for scheduling dropdown
+ * Load available tutors for scheduling dropdown (optimized)
  */
-function loadTutorsForScheduling() {
-  console.log('🚨 loadTutorsForScheduling CALLED - Stack trace:', new Error().stack);
+async function loadTutorsForScheduling() {
+  if (isTutorsLoading) return;
+  
+  console.log('🚨 loadTutorsForScheduling CALLED');
   const tutorSelect = document.getElementById('tutor');
   const tutorSpinner = document.getElementById('tutorSpinner');
+  
+  if (!tutorSelect) {
+    console.error('Tutor select element not found');
+    return;
+  }
+  
+  isTutorsLoading = true;
   
   // Clear existing options except the first one
   while (tutorSelect.options.length > 1) {
@@ -2576,355 +2625,352 @@ function loadTutorsForScheduling() {
   }
   
   tutorSpinner.style.display = 'block';
+  tutorSelect.disabled = true;
 
-  // Tutors who are approved and available are queried
-  db.collection('tutors')
-    .where('available', '==', true)
-    .where('approved', '==', true)
-    .get()
-    .then((querySnapshot) => {
-      tutorSpinner.style.display = 'none';
+  try {
+    // Use cached data if available, otherwise fetch fresh
+    let tutorsSnapshot = cachedTutors;
+    if (!tutorsSnapshot) {
+      tutorsSnapshot = await db.collection('tutors')
+        .where('available', '==', true)
+        .where('approved', '==', true)
+        .limit(100)
+        .get();
+      cachedTutors = tutorsSnapshot;
+    }
+
+    tutorSpinner.style.display = 'none';
+    tutorSelect.disabled = false;
+    
+    if (tutorsSnapshot.empty) {
+      const noTutorsOption = document.createElement('option');
+      noTutorsOption.value = "";
+      noTutorsOption.textContent = "No available tutors found";
+      tutorSelect.appendChild(noTutorsOption);
+      return;
+    }
+    
+    // Use document fragment for better performance
+    const fragment = document.createDocumentFragment();
+    
+    tutorsSnapshot.forEach((doc) => {
+      const tutor = doc.data();
+      const option = document.createElement('option');
+      option.value = doc.id;
       
-      if (querySnapshot.empty) {
-        // Clear all except first option, then add no tutors message
-        while (tutorSelect.options.length > 1) {
-          tutorSelect.remove(1);
-        }
-        const noTutorsOption = document.createElement('option');
-        noTutorsOption.value = "";
-        noTutorsOption.textContent = "No available tutors found";
-        tutorSelect.appendChild(noTutorsOption);
-        return;
-      }
+      const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
+      const subjectsText = getTutorSubjectsText(tutor);
       
-      querySnapshot.forEach((doc) => {
-        const tutor = doc.data();
-        const option = document.createElement('option');
-        option.value = doc.id;
-   
-        // Extract tutor name and subjects based on your data structure
-        const tutorName = tutor.personal?.fullName || 'Unknown Tutor';
-        let subjectsText = 'No subjects listed';
-        
-        // Check for nested subjects structure
-        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-          subjectsText = tutor.subjects.subjects.join(', ');
-        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-          // Fallback for different structure
-          subjectsText = tutor.subjects.join(', ');
-        }
-        
-        option.textContent = `${tutorName} - ${subjectsText}`;
-        option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
-        tutorSelect.appendChild(option);
-      });
-    })
-    .catch((error) => {
-      tutorSpinner.style.display = 'none';
-      console.error('Error loading tutors:', error);
-      alert('Failed to load tutors. Please try again.');
+      option.textContent = `${tutorName} - ${subjectsText}`;
+      option.setAttribute('data-hourly-rate', tutor.professional?.hourlyRate || 30);
+      fragment.appendChild(option);
     });
+    
+    tutorSelect.appendChild(fragment);
+    
+  } catch (error) {
+    console.error('Error loading tutors:', error);
+    tutorSpinner.style.display = 'none';
+    alert('Failed to load tutors. Please try again.');
+  } finally {
+    isTutorsLoading = false;
+  }
 }
 
 /**
- * Handle tutor selection change - populate subjects and update pricing
+ * Extract tutor subjects text
  */
-document.getElementById('tutor').addEventListener('change', function() {
+function getTutorSubjectsText(tutor) {
+  if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+    return tutor.subjects.subjects.slice(0, 3).join(', '); // Limit to 3 subjects
+  } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+    return tutor.subjects.slice(0, 3).join(', ');
+  }
+  return 'No subjects listed';
+}
+
+/**
+ * Handle tutor selection change - optimized with caching
+ */
+document.getElementById('tutor')?.addEventListener('change', function() {
   const tutorId = this.value;
   const subjectSelect = document.getElementById('subject');
   const priceSummary = document.getElementById('priceSummary');
-  const hourlyRateSpan = document.getElementById('hourlyRate');
-  const durationDisplay = document.getElementById('durationDisplay');
-  const totalPriceSpan = document.getElementById('totalPrice');
   
   if (!tutorId) {
     subjectSelect.innerHTML = '<option value="">Select a tutor first</option>';
     subjectSelect.disabled = true;
-    priceSummary.style.display = 'none';
+    if (priceSummary) priceSummary.style.display = 'none';
     return;
   }
   
-  // Get tutor data to populate subjects and hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        
-        // Populate subjects
-        subjectSelect.innerHTML = '';
-        let subjects = [];
-        
-        if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
-          subjects = tutor.subjects.subjects;
-        } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
-          subjects = tutor.subjects;
+  // Use cached tutors instead of DB call
+  const tutorDoc = cachedTutors?.docs.find(doc => doc.id === tutorId);
+  if (tutorDoc) {
+    const tutor = tutorDoc.data();
+    updateTutorSubjects(tutor);
+    updatePricingBasedOnCredits(tutor);
+  } else {
+    // Fallback to DB call if not in cache
+    db.collection('tutors').doc(tutorId).get()
+      .then((doc) => {
+        if (doc.exists) {
+          const tutor = doc.data();
+          updateTutorSubjects(tutor);
+          updatePricingBasedOnCredits(tutor);
         }
-        
-        if (subjects.length > 0) {
-          subjects.forEach(subject => {
-            const option = document.createElement('option');
-            option.value = subject;
-            option.textContent = subject;
-            subjectSelect.appendChild(option);
-          });
-          subjectSelect.disabled = false;
-        } else {
-          subjectSelect.innerHTML = '<option value="">No subjects available</option>';
-          subjectSelect.disabled = true;
-        }
-        
-        // Update pricing based on package balance
-        updatePricingBasedOnCredits(tutor);
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-      subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-      subjectSelect.disabled = true;
-      priceSummary.style.display = 'none';
-    });
+      })
+      .catch((error) => {
+        console.error('Error loading tutor details:', error);
+        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+        subjectSelect.disabled = true;
+        if (priceSummary) priceSummary.style.display = 'none';
+      });
+  }
 });
 
 /**
- * Update pricing display based on student's package credits
+ * Update tutor subjects in dropdown
  */
-function updatePricingBasedOnCredits(tutor) {
-  const priceSummary = document.getElementById('priceSummary');
+function updateTutorSubjects(tutor) {
+  const subjectSelect = document.getElementById('subject');
+  if (!subjectSelect) return;
   
-  db.collection('students').doc(auth.currentUser.uid).get()
-    .then((studentDoc) => {
-      let packageMessage = '';
-      let showPackagePricing = false;
-      let totalCredits = 0;
-      
-      if (studentDoc.exists) {
-        const studentData = studentDoc.data();
-        const packageBalances = studentData.packageBalances || {};
-        
-        // Check ALL package types
-        const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
-        availablePackages.forEach(pkg => {
-          totalCredits += packageBalances[pkg] || 0;
-        });
-        
-        if (totalCredits > 0) {
-          packageMessage = `Package Credits Available: ${totalCredits} session${totalCredits !== 1 ? 's' : ''}`;
-          showPackagePricing = true;
-        }
-      }
-      
-      // Show price summary
-      const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-      const duration = parseFloat(document.getElementById('duration').value) || 1.5;
-      
-      if (showPackagePricing) {
-        // Student has package credits - show package pricing
-        priceSummary.innerHTML = `
-          <h4>Package Pricing</h4>
-          <p style="color: #48bb78; font-weight: bold;">${packageMessage}</p>
-          <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
-          <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
-          <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
-          <p style="font-size: 0.9em; color: #666;">1 package credit will be automatically deducted after session completion</p>
-        `;
-      } else {
-        // No package credits - show regular pricing with warning
-        const totalPrice = hourlyRate * duration;
-        priceSummary.innerHTML = `
-          <h4>Price Summary</h4>
-          <p style="color: #e53e3e; font-weight: bold;">⚠️ No package credits available</p>
-          <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
-          <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
-          <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
-          <p style="font-size: 0.9em; color: #e53e3e;">You need package credits to book sessions</p>
-        `;
-      }
-      
-      priceSummary.style.display = 'block';
-      
-      // Update booking button state based on credits
-      updateBookingButtonState();
-    })
-    .catch((error) => {
-      console.error('Error checking package balance:', error);
-      // Fallback to regular pricing
-      const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-      const duration = parseFloat(document.getElementById('duration').value) || 1.5;
+  subjectSelect.innerHTML = '';
+  let subjects = [];
+  
+  if (tutor.subjects && tutor.subjects.subjects && tutor.subjects.subjects.length > 0) {
+    subjects = tutor.subjects.subjects;
+  } else if (tutor.subjects && Array.isArray(tutor.subjects)) {
+    subjects = tutor.subjects;
+  }
+  
+  if (subjects.length > 0) {
+    subjects.forEach(subject => {
+      const option = document.createElement('option');
+      option.value = subject;
+      option.textContent = subject;
+      subjectSelect.appendChild(option);
+    });
+    subjectSelect.disabled = false;
+  } else {
+    subjectSelect.innerHTML = '<option value="">No subjects available</option>';
+    subjectSelect.disabled = true;
+  }
+}
+
+/**
+ * Update pricing display based on student's package credits (optimized)
+ */
+async function updatePricingBasedOnCredits(tutor) {
+  const priceSummary = document.getElementById('priceSummary');
+  if (!priceSummary) return;
+  
+  try {
+    const creditCheck = await checkStudentPackageBalance(true); // Use cache
+    const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+    const duration = parseFloat(document.getElementById('duration')?.value) || 1.5;
+    
+    if (creditCheck.hasCredits) {
+      // Student has package credits - show package pricing
+      priceSummary.innerHTML = `
+        <h4>Package Pricing</h4>
+        <p style="color: #48bb78; font-weight: bold;">${creditCheck.message}</p>
+        <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
+        <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+        <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
+        <p style="font-size: 0.9em; color: #666;">1 package credit will be automatically deducted after session completion</p>
+      `;
+    } else {
+      // No package credits - show regular pricing with warning
       const totalPrice = hourlyRate * duration;
-      
       priceSummary.innerHTML = `
         <h4>Price Summary</h4>
+        <p style="color: #e53e3e; font-weight: bold;">⚠️ No package credits available</p>
         <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
         <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
         <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
+        <p style="font-size: 0.9em; color: #e53e3e;">You need package credits to book sessions</p>
       `;
-      priceSummary.style.display = 'block';
-    });
+    }
+    
+    priceSummary.style.display = 'block';
+    updateBookingButtonState();
+    
+  } catch (error) {
+    console.error('Error updating pricing:', error);
+    // Fallback to regular pricing
+    const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+    const duration = parseFloat(document.getElementById('duration')?.value) || 1.5;
+    const totalPrice = hourlyRate * duration;
+    
+    priceSummary.innerHTML = `
+      <h4>Price Summary</h4>
+      <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
+      <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
+      <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
+    `;
+    priceSummary.style.display = 'block';
+  }
 }
 
 // =============================================================================
-// 3. BOOKING SUBMISSION & PROCESSING
+// 3. OPTIMIZED BOOKING SUBMISSION & PROCESSING
 // =============================================================================
 
 /**
- * Generate a unique meet ID (but not the actual link)
+ * Generate a unique meet ID
  */
 function generateMeetId() {
   return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
 /**
- * Handle scheduling form submission with credit validation
+ * Handle scheduling form submission with credit validation (optimized)
  */
-document.getElementById('schedulingForm').addEventListener('submit', async function(e) {
+document.getElementById('schedulingForm')?.addEventListener('submit', async function(e) {
   e.preventDefault();
   
   const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
+  if (!submitButton) return;
+  
   const originalButtonText = submitButton.innerHTML;
   
   // Disable button and show spinner
   submitButton.disabled = true;
   submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking credits...';
   
-  // First check if student has any package credits
-  const creditCheck = await checkStudentPackageBalance();
-  
-  if (!creditCheck.hasCredits) {
-    alert('❌ You need package credits to book a session. Please purchase a package first.');
+  try {
+    // First check if student has any package credits
+    const creditCheck = await checkStudentPackageBalance(true);
     
-    // Show package store section
-    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-    document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+    if (!creditCheck.hasCredits) {
+      alert('❌ You need package credits to book a session. Please purchase a package first.');
+      showCreditPurchasePrompt();
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalButtonText;
+      return;
+    }
     
-    document.querySelector('a[data-section="packages"]').classList.add('active');
-    document.getElementById('packages').classList.add('active');
+    // Continue with booking if credits are available
+    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     
-    // Re-enable button
-    submitButton.disabled = false;
-    submitButton.innerHTML = originalButtonText;
-    return;
-  }
-  
-  // Continue with booking if credits are available
-  submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
-  
-  const tutorId = document.getElementById('tutor').value;
-  const subject = document.getElementById('subject').value;
-  const date = document.getElementById('date').value;
-  const time = document.getElementById('time').value;
-  const duration = document.getElementById('duration').value;
-  const sessionType = document.getElementById('sessionType').value;
-  const notes = document.getElementById('notes').value;
-  
-  if (!tutorId || !subject || !date || !time) {
-    alert('Please fill in all required fields.');
-    // Re-enable button
-    submitButton.disabled = false;
-    submitButton.innerHTML = originalButtonText;
-    return;
-  }
+    const tutorId = document.getElementById('tutor').value;
+    const subject = document.getElementById('subject').value;
+    const date = document.getElementById('date').value;
+    const time = document.getElementById('time').value;
+    const duration = document.getElementById('duration').value;
+    const sessionType = document.getElementById('sessionType').value;
+    const notes = document.getElementById('notes').value;
+    
+    if (!tutorId || !subject || !date || !time) {
+      alert('Please fill in all required fields.');
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalButtonText;
+      return;
+    }
 
-  // Combine date and time
-  const dateTime = new Date(`${date}T${time}`);
+    // Combine date and time
+    const dateTime = new Date(`${date}T${time}`);
+    
+    // Validate date is not in the past
+    if (dateTime < new Date()) {
+      alert('Please select a future date and time.');
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalButtonText;
+      return;
+    }
 
-  // Get tutor details for the booking
-  db.collection('tutors').doc(tutorId).get()
-    .then((tutorDoc) => {
-      if (!tutorDoc.exists) {
+    // Get tutor details from cache or DB
+    const tutorDoc = cachedTutors?.docs.find(doc => doc.id === tutorId);
+    let tutor;
+    
+    if (tutorDoc) {
+      tutor = tutorDoc.data();
+    } else {
+      const tutorSnapshot = await db.collection('tutors').doc(tutorId).get();
+      if (!tutorSnapshot.exists) {
         alert('Selected tutor not found.');
-        // Re-enable button
         submitButton.disabled = false;
         submitButton.innerHTML = originalButtonText;
         return;
       }
-      
-      const tutor = tutorDoc.data();
-      const studentId = auth.currentUser.uid;
-      const studentName = userData?.name || 'Unknown Student';
+      tutor = tutorSnapshot.data();
+    }
 
-      // Generate a unique slot ID
-      const slotId = 'slot_' + Date.now();
-      
-      // Generate a unique meet ID (but NOT the actual Jitsi link)
-      const meetId = generateMeetId();
+    const studentId = auth.currentUser.uid;
+    const studentName = userData?.name || 'Unknown Student';
+    const slotId = 'slot_' + Date.now();
+    const meetId = generateMeetId();
 
-      // Create booking in the bookedSessions collection
-      db.collection('bookedSessions').add({
-        slotId: slotId,
-        tutorId: tutorId,
-        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-        studentId: studentId,
-        studentName: studentName,
-        subject: subject,
-        date: dateTime,
-        duration: duration,
-        sessionType: sessionType,
-        notes: notes,
-        status: 'pending',
-        bookedAt: new Date(),
-        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-        totalPrice: null,
-        paymentStatus: 'pending_auto_deduction', // UPDATED: Now uses auto deduction
-        meetCreated: false,
-        meetId: meetId,
-        meetLink: '',
-        meetPlatform: '',
-        confirmedAt: null,
-        confirmedBy: null,
-        studentCreditsAtBooking: creditCheck.totalCredits // Track credits at time of booking
-      })
-      .then((docRef) => {
-        alert('✅ Session request submitted successfully! It is now pending confirmation from the tutor.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-        
-        // Immediately add the new booking to the UI
-        addBookingToUI(docRef.id, {
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: firebase.firestore.Timestamp.fromDate(dateTime),
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-          meetLink: '',
-          meetCreated: false,
-          meetId: meetId,
-          meetPlatform: '',
-          paymentStatus: 'pending_auto_deduction'
-        });
-        
-        // Re-enable button and restore original text
-        submitButton.disabled = false;
-        submitButton.innerHTML = originalButtonText;
-        
-        // Update button state after booking
-        updateBookingButtonState();
-      })
-      .catch((error) => {
-        console.error('Error creating booking:', error);
-        alert('Failed to submit session request. Please try again.');
-        // Re-enable button and restore original text
-        submitButton.disabled = false;
-        submitButton.innerHTML = originalButtonText;
-      });
-    })
-    .catch((error) => {
-      console.error('Error getting tutor details:', error);
-      alert('Failed to submit session request. Please try again.');
-      // Re-enable button and restore original text
-      submitButton.disabled = false;
-      submitButton.innerHTML = originalButtonText;
+    // Create booking in the bookedSessions collection
+    const bookingRef = await db.collection('bookedSessions').add({
+      slotId: slotId,
+      tutorId: tutorId,
+      tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+      studentId: studentId,
+      studentName: studentName,
+      subject: subject,
+      date: dateTime,
+      duration: duration,
+      sessionType: sessionType,
+      notes: notes,
+      status: 'pending',
+      bookedAt: new Date(),
+      hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+      totalPrice: null,
+      paymentStatus: 'pending_auto_deduction',
+      meetCreated: false,
+      meetId: meetId,
+      meetLink: '',
+      meetPlatform: '',
+      confirmedAt: null,
+      confirmedBy: null,
+      studentCreditsAtBooking: creditCheck.totalCredits
     });
+
+    alert('✅ Session request submitted successfully! It is now pending confirmation from the tutor.');
+    
+    // Reset form
+    document.getElementById('schedulingForm').reset();
+    document.getElementById('priceSummary').style.display = 'none';
+    document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+    document.getElementById('subject').disabled = true;
+    
+    // Immediately add the new booking to the UI
+    addBookingToUI(bookingRef.id, {
+      slotId: slotId,
+      tutorId: tutorId,
+      tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+      studentId: studentId,
+      studentName: studentName,
+      subject: subject,
+      date: firebase.firestore.Timestamp.fromDate(dateTime),
+      duration: duration,
+      sessionType: sessionType,
+      notes: notes,
+      status: 'pending',
+      bookedAt: new Date(),
+      hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+      totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+      meetLink: '',
+      meetCreated: false,
+      meetId: meetId,
+      meetPlatform: '',
+      paymentStatus: 'pending_auto_deduction'
+    });
+    
+    // Update button state after booking
+    await updateBookingButtonState();
+    
+  } catch (error) {
+    console.error('Error creating booking:', error);
+    alert('Failed to submit session request. Please try again.');
+  } finally {
+    // Re-enable button and restore original text
+    submitButton.disabled = false;
+    submitButton.innerHTML = originalButtonText;
+  }
 });
 
 // =============================================================================
@@ -2936,6 +2982,7 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
  */
 function addBookingToUI(bookingId, bookingData) {
   const container = document.getElementById('bookingsContainer');
+  if (!container) return;
   
   // Format date and time
   const date = bookingData.date.toDate();
@@ -2982,36 +3029,38 @@ function addBookingToUI(bookingId, bookingData) {
   }
   
   // Update upcoming sessions count
-  const currentCount = parseInt(document.getElementById('upcomingSessionsCount').textContent);
-  document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
+  const countElement = document.getElementById('upcomingSessionsCount');
+  if (countElement) {
+    const currentCount = parseInt(countElement.textContent) || 0;
+    countElement.textContent = currentCount + 1;
+  }
 }
 
 /**
- * Handle duration change to update price display
+ * Handle duration change to update price display (optimized)
  */
-document.getElementById('duration').addEventListener('change', function() {
+document.getElementById('duration')?.addEventListener('change', function() {
   const tutorSelect = document.getElementById('tutor');
-  const tutorId = tutorSelect.value;
+  const tutorId = tutorSelect?.value;
   
   if (!tutorId) return;
   
-  // Get tutor hourly rate
-  db.collection('tutors').doc(tutorId).get()
-    .then((doc) => {
-      if (doc.exists) {
-        const tutor = doc.data();
-        const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
-        const duration = parseFloat(this.value) || 1.5;
-        const totalPrice = hourlyRate * duration;
-        
-        document.getElementById('hourlyRate').textContent = hourlyRate;
-        document.getElementById('durationDisplay').textContent = duration;
-        document.getElementById('totalPrice').textContent = totalPrice.toFixed(2);
-      }
-    })
-    .catch((error) => {
-      console.error('Error loading tutor details:', error);
-    });
+  // Use cached tutors instead of DB call
+  const tutorDoc = cachedTutors?.docs.find(doc => doc.id === tutorId);
+  if (tutorDoc) {
+    const tutor = tutorDoc.data();
+    const hourlyRate = parseFloat(tutor.professional?.hourlyRate) || 30;
+    const duration = parseFloat(this.value) || 1.5;
+    const totalPrice = hourlyRate * duration;
+    
+    const hourlyRateElement = document.getElementById('hourlyRate');
+    const durationDisplayElement = document.getElementById('durationDisplay');
+    const totalPriceElement = document.getElementById('totalPrice');
+    
+    if (hourlyRateElement) hourlyRateElement.textContent = hourlyRate;
+    if (durationDisplayElement) durationDisplayElement.textContent = duration;
+    if (totalPriceElement) totalPriceElement.textContent = totalPrice.toFixed(2);
+  }
 });
 
 // =============================================================================
@@ -3023,10 +3072,9 @@ document.getElementById('duration').addEventListener('change', function() {
  */
 async function checkCreditsBeforeScheduling() {
   try {
-    const creditCheck = await checkStudentPackageBalance();
+    const creditCheck = await checkStudentPackageBalance(true); // Use cache
     
     if (!creditCheck.hasCredits) {
-      // Show purchase prompt instead of scheduling form
       showCreditPurchasePrompt();
       return false;
     }
@@ -3042,7 +3090,9 @@ async function checkCreditsBeforeScheduling() {
  * Show credit purchase prompt modal
  */
 function showCreditPurchasePrompt() {
-  // Create a modal or redirect to packages section
+  // Close any existing modal first
+  closePurchasePrompt();
+  
   const modalHtml = `
     <div class="purchase-prompt-modal" style="
       position: fixed;
@@ -3083,7 +3133,6 @@ function showCreditPurchasePrompt() {
     </div>
   `;
   
-  // Add to body
   const modal = document.createElement('div');
   modal.innerHTML = modalHtml;
   modal.id = 'creditPurchasePrompt';
@@ -3094,15 +3143,17 @@ function showCreditPurchasePrompt() {
  * Redirect to packages section
  */
 function redirectToPackages() {
-  // Close modal
   closePurchasePrompt();
   
   // Navigate to packages section
   document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
   document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
   
-  document.querySelector('a[data-section="packages"]').classList.add('active');
-  document.getElementById('packages').classList.add('active');
+  const packagesLink = document.querySelector('a[data-section="packages"]');
+  const packagesSection = document.getElementById('packages');
+  
+  if (packagesLink) packagesLink.classList.add('active');
+  if (packagesSection) packagesSection.classList.add('active');
 }
 
 /**
@@ -3114,6 +3165,248 @@ function closePurchasePrompt() {
     modal.remove();
   }
 }
+
+// =============================================================================
+// 6. INITIALIZATION & CLEANUP
+// =============================================================================
+
+/**
+ * Initialize scheduling section
+ */
+async function initializeSchedulingSection() {
+  console.time('InitializeScheduling');
+  
+  try {
+    // Preload data in background
+    preloadSchedulingData();
+    
+    // Load tutors for dropdown
+    await loadTutorsForScheduling();
+    
+    // Update button state
+    await updateBookingButtonState();
+    
+    console.log('Scheduling section initialized');
+  } catch (error) {
+    console.error('Error initializing scheduling section:', error);
+  } finally {
+    console.timeEnd('InitializeScheduling');
+  }
+}
+
+/**
+ * Cleanup scheduling section (call when leaving dashboard)
+ */
+function cleanupSchedulingSection() {
+  cachedTutors = null;
+  cachedPackageBalance = null;
+  isTutorsLoading = false;
+}
+
+// =============================================================================
+// 7. BOOKING CANCELLATION FUNCTIONALITY
+// =============================================================================
+
+/**
+ * Cancel a booking and update UI immediately
+ */
+async function cancelBooking(bookingId) {
+    if (!bookingId) {
+        console.error('No booking ID provided for cancellation');
+        return;
+    }
+
+    if (!confirm('Are you sure you want to cancel this session request?')) {
+        return;
+    }
+
+    try {
+        console.log('Attempting to cancel booking:', bookingId);
+        
+        // Update the booking status to 'cancelled' in Firestore
+        await db.collection('bookedSessions').doc(bookingId).update({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: auth.currentUser.uid
+        });
+
+        console.log('Booking cancelled successfully:', bookingId);
+        
+        // Remove the booking from the UI immediately
+        removeBookingFromUI(bookingId);
+        
+        // Show success message
+        showNotification('Session request cancelled successfully', 'success');
+        
+    } catch (error) {
+        console.error('Error cancelling booking:', error);
+        
+        // Check if it's a permissions error
+        if (error.code === 'permission-denied') {
+            showNotification('You do not have permission to cancel this session', 'error');
+        } else if (error.code === 'not-found') {
+            showNotification('Session not found. It may have already been cancelled.', 'error');
+            // Remove from UI anyway since it doesn't exist
+            removeBookingFromUI(bookingId);
+        } else {
+            showNotification('Failed to cancel session. Please try again.', 'error');
+        }
+    }
+}
+
+/**
+ * Remove booking from UI after cancellation
+ */
+function removeBookingFromUI(bookingId) {
+    const bookingElement = document.getElementById(`booking-${bookingId}`);
+    const container = document.getElementById('bookingsContainer');
+    
+    if (bookingElement) {
+        bookingElement.remove();
+        console.log('Removed booking from UI:', bookingId);
+        
+        // Update upcoming sessions count
+        updateUpcomingSessionsCount();
+        
+        // If no bookings left, show empty state
+        if (container && container.children.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h3>No Upcoming Sessions</h3>
+                    <p>You don't have any scheduled sessions yet.</p>
+                    <button class="btn-primary" onclick="showSchedulingSection()">Schedule Your First Session</button>
+                </div>
+            `;
+        }
+    } else {
+        console.warn('Booking element not found in UI:', bookingId);
+    }
+}
+
+/**
+ * Update the upcoming sessions count
+ */
+function updateUpcomingSessionsCount() {
+    const countElement = document.getElementById('upcomingSessionsCount');
+    const container = document.getElementById('bookingsContainer');
+    
+    if (countElement && container) {
+        // Count only non-cancelled sessions (elements with session-card class)
+        const activeBookings = container.querySelectorAll('.session-card').length;
+        countElement.textContent = activeBookings;
+    }
+}
+
+/**
+ * Show notification to user
+ */
+function showNotification(message, type = 'info') {
+    // You can use your existing notification system or create a simple one
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.innerHTML = `
+        <div class="notification-content">
+            <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+            <span>${message}</span>
+        </div>
+    `;
+    
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${type === 'success' ? '#48bb78' : type === 'error' ? '#e53e3e' : '#3182ce'};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        animation: slideIn 0.3s ease-out;
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 5000);
+}
+
+/**
+ * Navigate to scheduling section
+ */
+function showSchedulingSection() {
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+    
+    const schedulingLink = document.querySelector('a[data-section="scheduling"]');
+    const schedulingSection = document.getElementById('scheduling');
+    
+    if (schedulingLink) schedulingLink.classList.add('active');
+    if (schedulingSection) schedulingSection.classList.add('active');
+}
+
+// Also update the addBookingToUI function to ensure cancel button works:
+function addBookingToUI(bookingId, bookingData) {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    // Format date and time
+    const date = bookingData.date.toDate();
+    const formattedDate = date.toLocaleDateString();
+    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Create booking card HTML with proper cancel button
+    const bookingCard = `
+        <div class="session-card" id="booking-${bookingId}">
+            <div class="session-header">
+                <div class="session-title">${bookingData.subject || 'No subject'}</div>
+                <div class="session-date">${formattedDate} at ${formattedTime}</div>
+            </div>
+            <div class="session-details">
+                <div class="session-detail">
+                    <i class="fas fa-user-tie"></i>
+                    <span>Tutor: ${bookingData.tutorName || 'Unknown'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-clock"></i>
+                    <span>Duration: ${bookingData.duration || '1'} hours</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-video"></i>
+                    <span>Type: ${bookingData.sessionType === 'in-person' ? 'In-Person' : 'Online'}</span>
+                </div>
+                <div class="session-detail">
+                    <i class="fas fa-hourglass-half"></i>
+                    <span>Status: <span class="status-badge status-pending">Pending</span></span>
+                </div>
+            </div>
+            <div class="session-actions">
+                <button class="btn-outline cancel-booking-btn" onclick="cancelBooking('${bookingId}')">
+                    <i class="fas fa-times"></i> Cancel Request
+                </button>
+            </div>
+        </div>
+    `;
+    
+    // If container has empty state message, replace it
+    if (container.innerHTML.includes('no upcoming bookings') || container.innerHTML.includes('No Upcoming Sessions') || container.innerHTML.includes('<p>Loading')) {
+        container.innerHTML = bookingCard;
+    } else {
+        // Prepend the new booking to the top
+        container.innerHTML = bookingCard + container.innerHTML;
+    }
+    
+    // Update upcoming sessions count
+    updateUpcomingSessionsCount();
+}
+  
+//..........................................................................................
+// SCHEDULING SECTION ENDS HERE
+//..........................................................................................
 
 //..........................................................................................
 //Scheduling Section ends here. All JS functionalities of the scheduling section ends here
@@ -5746,6 +6039,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
