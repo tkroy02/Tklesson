@@ -2929,7 +2929,7 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
     return;
   }
   
-  // Continue with booking if credits are available
+ // Continue with booking if credits are available
   submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
   
   const tutorId = document.getElementById('tutor').value;
@@ -2953,7 +2953,7 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
 
   // Get tutor details for the booking
   db.collection('tutors').doc(tutorId).get()
-    .then((tutorDoc) => {
+    .then(async (tutorDoc) => {
       if (!tutorDoc.exists) {
         alert('Selected tutor not found.');
         // Re-enable button
@@ -2973,7 +2973,7 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
       const meetId = generateMeetId();
 
       // Create booking in the bookedSessions collection
-      db.collection('bookedSessions').add({
+      const bookingRef = await db.collection('bookedSessions').add({
         slotId: slotId,
         tutorId: tutorId,
         tutorName: tutor.personal?.fullName || 'Unknown Tutor',
@@ -2988,60 +2988,76 @@ document.getElementById('schedulingForm').addEventListener('submit', async funct
         bookedAt: new Date(),
         hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
         totalPrice: null,
-        paymentStatus: 'pending_auto_deduction', // UPDATED: Now uses auto deduction
+        paymentStatus: 'pending_auto_deduction',
         meetCreated: false,
         meetId: meetId,
         meetLink: '',
         meetPlatform: '',
         confirmedAt: null,
         confirmedBy: null,
-        studentCreditsAtBooking: creditCheck.totalCredits // Track credits at time of booking
-      })
-      .then((docRef) => {
-        alert('✅ Session request submitted successfully! It is now pending confirmation from the tutor.');
-        document.getElementById('schedulingForm').reset();
-        document.getElementById('priceSummary').style.display = 'none';
-        document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
-        document.getElementById('subject').disabled = true;
-        
-        // Immediately add the new booking to the UI
-        addBookingToUI(docRef.id, {
-          slotId: slotId,
-          tutorId: tutorId,
-          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
-          studentId: studentId,
-          studentName: studentName,
-          subject: subject,
-          date: firebase.firestore.Timestamp.fromDate(dateTime),
-          duration: duration,
-          sessionType: sessionType,
-          notes: notes,
-          status: 'pending',
-          bookedAt: new Date(),
-          hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-          totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-          meetLink: '',
-          meetCreated: false,
-          meetId: meetId,
-          meetPlatform: '',
-          paymentStatus: 'pending_auto_deduction'
-        });
-        
-        // Re-enable button and restore original text
-        submitButton.disabled = false;
-        submitButton.innerHTML = originalButtonText;
-        
-        // Update button state after booking
-        updateBookingButtonState();
-      })
-      .catch((error) => {
-        console.error('Error creating booking:', error);
-        alert('Failed to submit session request. Please try again.');
-        // Re-enable button and restore original text
-        submitButton.disabled = false;
-        submitButton.innerHTML = originalButtonText;
+        studentCreditsAtBooking: creditCheck.totalCredits
       });
+
+      // CREATE CHAT ROOM FOR THIS SESSION
+      try {
+        const sessionData = {
+          subject: subject,
+          tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+          studentName: studentName
+        };
+        
+        await createChatRoom(bookingRef.id, studentId, tutorId, sessionData);
+        console.log('Chat room created for session:', bookingRef.id);
+      } catch (chatError) {
+        console.error('Failed to create chat room, but session was booked:', chatError);
+        // Don't block the booking if chat creation fails
+      }
+
+      alert('✅ Session request submitted successfully! It is now pending confirmation from the tutor. A chat room has been created for communication.');
+      document.getElementById('schedulingForm').reset();
+      document.getElementById('priceSummary').style.display = 'none';
+      document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
+      document.getElementById('subject').disabled = true;
+      
+      // Immediately add the new booking to the UI
+      addBookingToUI(bookingRef.id, {
+        slotId: slotId,
+        tutorId: tutorId,
+        tutorName: tutor.personal?.fullName || 'Unknown Tutor',
+        studentId: studentId,
+        studentName: studentName,
+        subject: subject,
+        date: firebase.firestore.Timestamp.fromDate(dateTime),
+        duration: duration,
+        sessionType: sessionType,
+        notes: notes,
+        status: 'pending',
+        bookedAt: new Date(),
+        hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
+        totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
+        meetLink: '',
+        meetCreated: false,
+        meetId: meetId,
+        meetPlatform: '',
+        paymentStatus: 'pending_auto_deduction'
+      });
+      
+      // Re-enable button and restore original text
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalButtonText;
+      
+      // Update button state after booking
+      updateBookingButtonState();
     })
+    .catch((error) => {
+      console.error('Error creating booking:', error);
+      alert('Failed to submit session request. Please try again.');
+      // Re-enable button and restore original text
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalButtonText;
+    });
+});
+  
     .catch((error) => {
       console.error('Error getting tutor details:', error);
       alert('Failed to submit session request. Please try again.');
@@ -3264,6 +3280,48 @@ function addBookingToUI(bookingId, bookingData) {
   document.getElementById('upcomingSessionsCount').textContent = currentCount + 1;
 }
 
+// Add this function to your existing JavaScript
+async function createChatRoom(sessionId, studentId, tutorId, sessionData) {
+    const chatId = [studentId, tutorId].sort().join('_');
+    
+    try {
+        // Get user names
+        const [studentDoc, tutorDoc] = await Promise.all([
+            db.collection('students').doc(studentId).get(),
+            db.collection('tutors').doc(tutorId).get()
+        ]);
+        
+        const studentName = studentDoc.data()?.name || studentDoc.data()?.fullName || 'Student';
+        const tutorName = tutorDoc.data()?.personal?.fullName || tutorDoc.data()?.fullName || 'Tutor';
+        
+        await db.collection('chats').doc(chatId).set({
+            participants: [studentId, tutorId],
+            participantNames: {
+                [studentId]: studentName,
+                [tutorId]: tutorName
+            },
+            sessionId: sessionId,
+            subject: sessionData.subject || 'General Tutoring',
+            status: 'active',
+            lastMessage: '',
+            lastMessageAt: null,
+            unreadCounts: { 
+                [studentId]: 0, 
+                [tutorId]: 0 
+            },
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        console.log('Chat room created successfully:', chatId);
+        return chatId;
+    } catch (error) {
+        console.error('Error creating chat room:', error);
+        throw error;
+    }
+}
+
+  
 //..........................................................................................
 //Scheduling Section ends here. All JS functionalities of the scheduling section ends here
 //...........................................................................................//..........................................................................................
@@ -6409,5 +6467,6 @@ auth.onAuthStateChanged((user) => {
 </script>    
 </body>
 </html>
+
 
 
