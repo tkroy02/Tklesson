@@ -2024,53 +2024,55 @@ function initDashboard() {
   initPackageStore();
   
   // Set up navigation
-  document.querySelectorAll('.menu-item a').forEach(item => {
-    item.addEventListener('click', function(e) {
-        e.preventDefault();
-        
-        // Update active menu item
-        document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
-        this.classList.add('active');
-        
-        // Show the corresponding section
-        const sectionId = this.getAttribute('data-section');
-        document.querySelectorAll('.dashboard-section').forEach(section => {
-            section.classList.remove('active');
-        });
-        document.getElementById(sectionId).classList.add('active');
+document.querySelectorAll('.menu-item a').forEach(item => {
+  item.addEventListener('click', function(e) {
+    e.preventDefault();
+    
+    // Update active menu item
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    this.classList.add('active');
+    
+    // Show the corresponding section
+    const sectionId = this.getAttribute('data-section');
+    document.querySelectorAll('.dashboard-section').forEach(section => {
+      section.classList.remove('active');
+    });
+    document.getElementById(sectionId).classList.add('active');
 
-        // Load specific data based on the section - ONLY if not already loaded
-        if (sectionId === 'scheduling') {
-    if (!schedulingLoaded) {
+    // Load specific data based on the section - ONLY if not already loaded
+    if (sectionId === 'scheduling') {
+      if (!schedulingLoaded) {
         loadTutorsForScheduling();
         schedulingLoaded = true;
-    }
-} else if (sectionId === 'tutors') {
-    // Load both my tutors and available tutors when the tutors section is opened
-    if (!tutorsLoaded) {
+      }
+      // ADD THIS LINE HERE - it should run every time scheduling section is opened
+      updateBookingButtonState();
+    } else if (sectionId === 'tutors') {
+      // Load both my tutors and available tutors when the tutors section is opened
+      if (!tutorsLoaded) {
         loadMyTutors();
         loadAvailableTutors();
         tutorsLoaded = true;
-    }
-} else if (sectionId === 'bookings') {
-    if (!bookingsLoaded) {
+      }
+    } else if (sectionId === 'bookings') {
+      if (!bookingsLoaded) {
         loadUserBookings();
         bookingsLoaded = true;
-    }
-} else if (sectionId === 'sessions') {
-    // Only load sessions history on first visit to the tab
-    if (!sessionsLoaded) {
+      }
+    } else if (sectionId === 'sessions') {
+      // Only load sessions history on first visit to the tab
+      if (!sessionsLoaded) {
         loadUserSessionHistory();
         sessionsLoaded = true;
+      }
     }
-}
-// ADD PACKAGES SECTION HANDLING HERE IF NEEDED
-else if (sectionId === 'packages') {
-    // Refresh package balance when packages section is opened
-    loadPackageBalance();
-}
-    });
+    // ADD PACKAGES SECTION HANDLING HERE IF NEEDED
+    else if (sectionId === 'packages') {
+      // Refresh package balance when packages section is opened
+      loadPackageBalance();
+    }
   });
+});
   
   // Set up menu toggle for mobile
   document.getElementById('menuToggle').addEventListener('click', function() {
@@ -2223,6 +2225,66 @@ document.addEventListener('DOMContentLoaded', initDashboard);
 //Scheduling Section starts. All JS functionalities of the Scheduling section starts here
 //....................................................................................... 
 
+// Function to check if student has any package credits
+async function checkStudentPackageBalance() {
+  try {
+    const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
+    
+    if (!studentDoc.exists) {
+      return { hasCredits: false, totalCredits: 0, message: 'Student not found' };
+    }
+    
+    const studentData = studentDoc.data();
+    const packageBalances = studentData.packageBalances || {};
+    
+    // Check ALL package types for available credits
+    const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
+    let totalCredits = 0;
+    let packageDetails = [];
+    
+    availablePackages.forEach(pkg => {
+      const balance = packageBalances[pkg] || 0;
+      if (balance > 0) {
+        totalCredits += balance;
+        packageDetails.push({ type: pkg, balance: balance });
+      }
+    });
+    
+    return {
+      hasCredits: totalCredits > 0,
+      totalCredits: totalCredits,
+      packageDetails: packageDetails,
+      message: totalCredits > 0 
+        ? `You have ${totalCredits} session credit${totalCredits !== 1 ? 's' : ''} available` 
+        : 'No package credits available'
+    };
+    
+  } catch (error) {
+    console.error('Error checking package balance:', error);
+    return { hasCredits: false, totalCredits: 0, message: 'Error checking credits' };
+  }
+}
+
+// Function to update booking button based on credit availability
+async function updateBookingButtonState() {
+  const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
+  if (!submitButton) return;
+  
+  const creditCheck = await checkStudentPackageBalance();
+  
+  if (!creditCheck.hasCredits) {
+    submitButton.disabled = true;
+    submitButton.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No Credits Available';
+    submitButton.style.backgroundColor = '#e53e3e';
+    submitButton.title = 'Purchase package credits to book sessions';
+  } else {
+    submitButton.disabled = false;
+    submitButton.innerHTML = '<i class="fas fa-calendar-check"></i> Schedule Session';
+    submitButton.style.backgroundColor = '';
+    submitButton.title = '';
+  }
+}
+
 //Tutors are loaded for scheduling through the dropdown menu
 function loadTutorsForScheduling() {
   console.log('🚨 loadTutorsForScheduling CALLED - Stack trace:', new Error().stack);
@@ -2289,8 +2351,8 @@ function generateMeetId() {
   return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
-// Set up scheduling form for submission. Mandatory fields must be filled. 
-document.getElementById('schedulingForm').addEventListener('submit', function(e) {
+// Set up scheduling form for submission with credit validation
+document.getElementById('schedulingForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   
   const submitButton = document.querySelector('#schedulingForm button[type="submit"]');
@@ -2298,6 +2360,28 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
   
   // Disable button and show spinner
   submitButton.disabled = true;
+  submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking credits...';
+  
+  // First check if student has any package credits
+  const creditCheck = await checkStudentPackageBalance();
+  
+  if (!creditCheck.hasCredits) {
+    alert('❌ You need package credits to book a session. Please purchase a package first.');
+    
+    // Show package store section
+    document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+    document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+    
+    document.querySelector('a[data-section="packages"]').classList.add('active');
+    document.getElementById('packages').classList.add('active');
+    
+    // Re-enable button
+    submitButton.disabled = false;
+    submitButton.innerHTML = originalButtonText;
+    return;
+  }
+  
+  // Continue with booking if credits are available
   submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
   
   const tutorId = document.getElementById('tutor').value;
@@ -2341,7 +2425,6 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
       const meetId = generateMeetId();
 
       // Create booking in the bookedSessions collection
-      // Create booking in the bookedSessions collection
       db.collection('bookedSessions').add({
         slotId: slotId,
         tutorId: tutorId,
@@ -2356,19 +2439,18 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
         status: 'pending',
         bookedAt: new Date(),
         hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
-        totalPrice: null, // Will be set when tutor confirms
-        // NEW: Track payment status
-        paymentStatus: 'pending',
-        // Updated fields - student can only request, tutor will create the meet link
-        meetCreated: false, // Will be set to true when tutor confirms and creates the link
-        meetId: meetId, // Store the ID for reference, but no link yet
-        meetLink: '', // Empty until tutor creates it
-        meetPlatform: '', // Empty until tutor sets it
+        totalPrice: null,
+        paymentStatus: 'pending_auto_deduction', // UPDATED: Now uses auto deduction
+        meetCreated: false,
+        meetId: meetId,
+        meetLink: '',
+        meetPlatform: '',
         confirmedAt: null,
-        confirmedBy: null
+        confirmedBy: null,
+        studentCreditsAtBooking: creditCheck.totalCredits // Track credits at time of booking
       })
       .then((docRef) => {
-        alert('Session request submitted successfully! It is now pending confirmation from the tutor. The tutor will create the meeting link upon confirmation.');
+        alert('✅ Session request submitted successfully! It is now pending confirmation from the tutor.');
         document.getElementById('schedulingForm').reset();
         document.getElementById('priceSummary').style.display = 'none';
         document.getElementById('subject').innerHTML = '<option value="">Select a tutor first</option>';
@@ -2390,15 +2472,19 @@ document.getElementById('schedulingForm').addEventListener('submit', function(e)
           bookedAt: new Date(),
           hourlyRate: parseFloat(tutor.professional?.hourlyRate) || 30,
           totalPrice: (parseFloat(tutor.professional?.hourlyRate) || 30) * parseFloat(duration),
-          meetLink: '', // No link until tutor creates it
+          meetLink: '',
           meetCreated: false,
           meetId: meetId,
-          meetPlatform: '' // No platform set yet
+          meetPlatform: '',
+          paymentStatus: 'pending_auto_deduction'
         });
         
         // Re-enable button and restore original text
         submitButton.disabled = false;
         submitButton.innerHTML = originalButtonText;
+        
+        // Update button state after booking
+        updateBookingButtonState();
       })
       .catch((error) => {
         console.error('Error creating booking:', error);
@@ -2462,18 +2548,25 @@ document.getElementById('tutor').addEventListener('change', function() {
           subjectSelect.disabled = true;
         }
         
-        // CHECK PACKAGE BALANCE - FIXED CODE
+        // CHECK PACKAGE BALANCE - UPDATED TO CHECK ALL PACKAGES
         db.collection('students').doc(auth.currentUser.uid).get()
           .then((studentDoc) => {
             let packageMessage = '';
             let showPackagePricing = false;
+            let totalCredits = 0;
             
             if (studentDoc.exists) {
               const studentData = studentDoc.data();
-              const taiwoBalance = studentData.packageBalances?.taiwo || 0;
+              const packageBalances = studentData.packageBalances || {};
               
-              if (taiwoBalance > 0) {
-                packageMessage = `Package Credit Available: ${taiwoBalance} session${taiwoBalance !== 1 ? 's' : ''}`;
+              // Check ALL package types
+              const availablePackages = ['taiwo', 'hourly', 'bronze', 'silver', 'gold'];
+              availablePackages.forEach(pkg => {
+                totalCredits += packageBalances[pkg] || 0;
+              });
+              
+              if (totalCredits > 0) {
+                packageMessage = `Package Credits Available: ${totalCredits} session${totalCredits !== 1 ? 's' : ''}`;
                 showPackagePricing = true;
               }
             }
@@ -2493,24 +2586,28 @@ document.getElementById('tutor').addEventListener('change', function() {
                 <p>Hourly Rate: $<span id="hourlyRate">0 (Package Credit)</span></p>
                 <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
                 <p><strong>Total: $<span id="totalPrice">0.00</span></strong></p>
-                <p style="font-size: 0.9em; color: #666;">1 package credit will be used when tutor confirms</p>
+                <p style="font-size: 0.9em; color: #666;">1 package credit will be automatically deducted after session completion</p>
               `;
             } else {
-              // No package credits - show regular pricing
+              // No package credits - show regular pricing with warning
               const totalPrice = hourlyRate * duration;
               hourlyRateSpan.textContent = hourlyRate;
               durationDisplay.textContent = duration;
               totalPriceSpan.textContent = totalPrice.toFixed(2);
               priceSummary.innerHTML = `
                 <h4>Price Summary</h4>
+                <p style="color: #e53e3e; font-weight: bold;">⚠️ No package credits available</p>
                 <p>Hourly Rate: $<span id="hourlyRate">${hourlyRate}</span></p>
                 <p>Duration: <span id="durationDisplay">${duration}</span> hours</p>
                 <p><strong>Total: $<span id="totalPrice">${totalPrice.toFixed(2)}</span></strong></p>
-                <p style="font-size: 0.9em; color: #666;">Payment will be processed when tutor confirms</p>
+                <p style="font-size: 0.9em; color: #e53e3e;">You need package credits to book sessions</p>
               `;
             }
             
             priceSummary.style.display = 'block';
+            
+            // Update booking button state based on credits
+            updateBookingButtonState();
           })
           .catch((error) => {
             console.error('Error checking package balance:', error);
@@ -2621,8 +2718,7 @@ function addBookingToUI(bookingId, bookingData) {
 
 //..........................................................................................
 //Scheduling Section ends here. All JS functionalities of the scheduling section ends here
-//...........................................................................................
-//..........................................................................................
+//...........................................................................................//..........................................................................................
 //My Tutors Section starts here. All JS functionalities of the My Tutors section starts here
 //...........................................................................................
 
@@ -5222,6 +5318,10 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
+
+
+
 
 
 
