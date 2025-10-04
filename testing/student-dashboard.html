@@ -3211,134 +3211,146 @@ function cleanupSchedulingSection() {
  * Cancel a booking and update UI immediately
  */
 async function cancelBooking(bookingId) {
+    console.log('cancelBooking called with ID:', bookingId);
+    
     if (!bookingId) {
         console.error('No booking ID provided for cancellation');
+        alert('Error: No booking ID provided');
         return;
     }
 
-    if (!confirm('Are you sure you want to cancel this session request?')) {
+    // Confirm cancellation
+    if (!confirm('Are you sure you want to cancel this session request? This action cannot be undone.')) {
         return;
     }
 
     try {
-        console.log('Attempting to cancel booking:', bookingId);
+        console.log('Starting cancellation process for:', bookingId);
         
+        // Show loading state on the button
+        const bookingElement = document.getElementById(`booking-${bookingId}`);
+        const cancelButton = bookingElement?.querySelector('.btn-outline');
+        if (cancelButton) {
+            cancelButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling...';
+            cancelButton.disabled = true;
+        }
+
         // Update the booking status to 'cancelled' in Firestore
         await db.collection('bookedSessions').doc(bookingId).update({
             status: 'cancelled',
-            cancelledAt: new Date(),
+            cancelledAt: firebase.firestore.FieldValue.serverTimestamp(),
             cancelledBy: auth.currentUser.uid
         });
 
-        console.log('Booking cancelled successfully:', bookingId);
+        console.log('Successfully cancelled booking in Firestore:', bookingId);
         
-        // Remove the booking from the UI immediately
+        // Remove from UI immediately
         removeBookingFromUI(bookingId);
         
         // Show success message
-        showNotification('Session request cancelled successfully', 'success');
+        alert('✅ Session cancelled successfully!');
         
     } catch (error) {
         console.error('Error cancelling booking:', error);
+        console.error('Error details:', error.message, error.code);
         
-        // Check if it's a permissions error
+        // Reset button state
+        const bookingElement = document.getElementById(`booking-${bookingId}`);
+        const cancelButton = bookingElement?.querySelector('.btn-outline');
+        if (cancelButton) {
+            cancelButton.innerHTML = 'Cancel Request';
+            cancelButton.disabled = false;
+        }
+        
+        // Show appropriate error message
         if (error.code === 'permission-denied') {
-            showNotification('You do not have permission to cancel this session', 'error');
+            alert('❌ You do not have permission to cancel this session.');
         } else if (error.code === 'not-found') {
-            showNotification('Session not found. It may have already been cancelled.', 'error');
+            alert('❌ Session not found. It may have already been cancelled.');
             // Remove from UI anyway since it doesn't exist
             removeBookingFromUI(bookingId);
+        } else if (error.code === 'failed-precondition') {
+            alert('❌ This session can no longer be cancelled.');
         } else {
-            showNotification('Failed to cancel session. Please try again.', 'error');
+            alert('❌ Failed to cancel session. Please try again.');
         }
     }
 }
 
 /**
- * Remove booking from UI after cancellation
+ * Remove booking from UI after cancellation - SIMPLIFIED
  */
 function removeBookingFromUI(bookingId) {
-    const bookingElement = document.getElementById(`booking-${bookingId}`);
-    const container = document.getElementById('bookingsContainer');
+    console.log('Removing booking from UI:', bookingId);
     
+    const bookingElement = document.getElementById(`booking-${bookingId}`);
     if (bookingElement) {
-        bookingElement.remove();
-        console.log('Removed booking from UI:', bookingId);
+        bookingElement.style.opacity = '0.5';
+        bookingElement.style.transition = 'opacity 0.3s ease';
         
-        // Update upcoming sessions count
-        updateUpcomingSessionsCount();
-        
-        // If no bookings left, show empty state
-        if (container && container.children.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-calendar-times"></i>
-                    <h3>No Upcoming Sessions</h3>
-                    <p>You don't have any scheduled sessions yet.</p>
-                    <button class="btn-primary" onclick="showSchedulingSection()">Schedule Your First Session</button>
-                </div>
-            `;
-        }
+        // Remove after animation
+        setTimeout(() => {
+            bookingElement.remove();
+            console.log('Booking removed from UI:', bookingId);
+            
+            // Update sessions count
+            updateUpcomingSessionsCount();
+            
+            // Show empty state if no bookings left
+            showEmptyStateIfNeeded();
+        }, 300);
     } else {
-        console.warn('Booking element not found in UI:', bookingId);
+        console.warn('Booking element not found for ID:', bookingId);
+        updateUpcomingSessionsCount();
+        showEmptyStateIfNeeded();
     }
 }
 
 /**
- * Update the upcoming sessions count
+ * Update sessions count - SIMPLIFIED
  */
 function updateUpcomingSessionsCount() {
     const countElement = document.getElementById('upcomingSessionsCount');
     const container = document.getElementById('bookingsContainer');
     
-    if (countElement && container) {
-        // Count only non-cancelled sessions (elements with session-card class)
-        const activeBookings = container.querySelectorAll('.session-card').length;
-        countElement.textContent = activeBookings;
+    if (!countElement || !container) return;
+    
+    // Count actual session cards
+    const sessionCards = container.querySelectorAll('.session-card');
+    const activeCount = sessionCards.length;
+    
+    countElement.textContent = activeCount;
+    console.log('Updated sessions count to:', activeCount);
+}
+
+/**
+ * Show empty state if no bookings
+ */
+function showEmptyStateIfNeeded() {
+    const container = document.getElementById('bookingsContainer');
+    if (!container) return;
+    
+    const sessionCards = container.querySelectorAll('.session-card');
+    
+    if (sessionCards.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-calendar-times" style="font-size: 3em; color: #9ca3af; margin-bottom: 1rem;"></i>
+                <h3 style="color: #6b7280; margin-bottom: 0.5rem;">No Upcoming Sessions</h3>
+                <p style="color: #9ca3af; margin-bottom: 1.5rem;">You don't have any scheduled sessions yet.</p>
+                <button class="btn-primary" onclick="showSchedulingSection()" style="padding: 10px 20px;">
+                    <i class="fas fa-plus"></i> Schedule Your First Session
+                </button>
+            </div>
+        `;
     }
 }
 
 /**
- * Show notification to user
- */
-function showNotification(message, type = 'info') {
-    // You can use your existing notification system or create a simple one
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.innerHTML = `
-        <div class="notification-content">
-            <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
-            <span>${message}</span>
-        </div>
-    `;
-    
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: ${type === 'success' ? '#48bb78' : type === 'error' ? '#e53e3e' : '#3182ce'};
-        color: white;
-        padding: 12px 20px;
-        border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        z-index: 10000;
-        animation: slideIn 0.3s ease-out;
-    `;
-    
-    document.body.appendChild(notification);
-    
-    // Auto remove after 5 seconds
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.parentNode.removeChild(notification);
-        }
-    }, 5000);
-}
-
-/**
- * Navigate to scheduling section
+ * Show scheduling section
  */
 function showSchedulingSection() {
+    // Navigate to scheduling section
     document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
     document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
     
@@ -3348,6 +3360,10 @@ function showSchedulingSection() {
     if (schedulingLink) schedulingLink.classList.add('active');
     if (schedulingSection) schedulingSection.classList.add('active');
 }
+
+// Make sure the cancelBooking function is globally accessible
+window.cancelBooking = cancelBooking;
+  
 
 // Also update the addBookingToUI function to ensure cancel button works:
 function addBookingToUI(bookingId, bookingData) {
@@ -6039,6 +6055,7 @@ function initPackageStore() {
 </script>    
 </body>
 </html>
+
 
 
 
