@@ -5783,13 +5783,363 @@ function initPackageStore() {
 // END PACKAGE STORE FUNCTIONS
 // ============================================================================  
 
+// =============================================
+// STUDENT CHAT SYSTEM WITH AUTO-CREATION
+// =============================================
+
+// Global chat variables
+let currentChat = null;
+let chatMessagesListener = null;
+let contactsListener = null;
+let typingTimeout = null;
+
+// Initialize chat system with auto-creation
+async function initChatSystem() {
+    console.log('Initializing student chat system with auto-creation...');
+    
+    // First, ensure database structure exists
+    await ensureChatDatabaseStructure();
+    
+    // Then setup the chat system
+    setupChatEventListeners();
+    loadChatContacts();
+    setupRealtimeListeners();
+}
+
+// Ensure chats collection and structure exists
+async function ensureChatDatabaseStructure() {
+    try {
+        // Check if chats collection exists by trying to read from it
+        const testQuery = await db.collection('chats').limit(1).get();
+        console.log('Chats collection exists:', !testQuery.empty);
+        
+        if (testQuery.empty) {
+            console.log('No chats found. Database structure is ready for new chats.');
+        }
+        
+        // We don't need to pre-create empty collections in Firestore
+        // They'll be created automatically when we add the first document
+        
+    } catch (error) {
+        console.error('Error checking database structure:', error);
+        // If there's an error, the collection might not exist yet, but that's fine
+        // Firestore will create it when we add the first document
+    }
+}
+
+// Create or get chat between student and tutor
+async function getOrCreateChat(tutorId) {
+    const studentId = auth.currentUser.uid;
+    
+    try {
+        // First, try to find existing chat
+        const existingChats = await db.collection('chats')
+            .where('participants', 'array-contains', studentId)
+            .get();
+        
+        // Check if chat with this tutor already exists
+        let existingChat = null;
+        existingChats.forEach(doc => {
+            const chat = doc.data();
+            if (chat.participants.includes(tutorId)) {
+                existingChat = { id: doc.id, ...chat };
+            }
+        });
+        
+        if (existingChat) {
+            console.log('Found existing chat:', existingChat.id);
+            return existingChat;
+        }
+        
+        // Create new chat
+        console.log('Creating new chat between student and tutor...');
+        const chatData = {
+            participants: [studentId, tutorId],
+            participantNames: {
+                [studentId]: userData?.name || 'Student',
+                [tutorId]: 'Tutor' // We'll update this when we load tutor data
+            },
+            lastMessage: '',
+            lastMessageAt: new Date(),
+            createdAt: new Date(),
+            unreadCounts: {
+                [studentId]: 0,
+                [tutorId]: 0
+            },
+            typing: {
+                [studentId]: false,
+                [tutorId]: false
+            }
+        };
+        
+        // Get tutor name if possible
+        try {
+            const tutorDoc = await db.collection('tutors').doc(tutorId).get();
+            if (tutorDoc.exists) {
+                const tutor = tutorDoc.data();
+                chatData.participantNames[tutorId] = tutor.personal?.fullName || 'Tutor';
+            }
+        } catch (error) {
+            console.warn('Could not load tutor name:', error);
+        }
+        
+        const chatRef = await db.collection('chats').add(chatData);
+        console.log('Created new chat:', chatRef.id);
+        
+        return { id: chatRef.id, ...chatData };
+        
+    } catch (error) {
+        console.error('Error creating/getting chat:', error);
+        throw error;
+    }
+}
+
+// Start new chat with tutor (called from tutors list)
+async function startNewChat(tutorId) {
+    try {
+        // Show loading state
+        const contactsList = document.getElementById('contactsList');
+        if (contactsList) {
+            contactsList.innerHTML = '<div class="loading-purchase"></div>';
+        }
+        
+        // Create or get chat
+        const chat = await getOrCreateChat(tutorId);
+        
+        // Open the chat
+        const contact = {
+            chatId: chat.id,
+            tutorId: tutorId,
+            tutorName: chat.participantNames[tutorId] || 'Tutor',
+            tutorSubjects: [], // We'll load this separately
+            lastMessage: chat.lastMessage,
+            lastMessageAt: chat.lastMessageAt,
+            unreadCount: chat.unreadCounts[auth.currentUser.uid] || 0
+        };
+        
+        // Load tutor subjects
+        try {
+            const tutorDoc = await db.collection('tutors').doc(tutorId).get();
+            if (tutorDoc.exists) {
+                const tutor = tutorDoc.data();
+                contact.tutorSubjects = tutor.subjects?.subjects || [];
+                contact.tutorAvatar = tutor.photoURL;
+            }
+        } catch (error) {
+            console.warn('Could not load tutor details:', error);
+        }
+        
+        await openChat(contact);
+        
+    } catch (error) {
+        console.error('Error starting new chat:', error);
+        alert('Failed to start chat. Please try again.');
+    }
+}
+
+// Update the contact element creation to include start chat button
+function createContactElement(contact) {
+    const contactDiv = document.createElement('div');
+    contactDiv.className = `contact-item ${currentChat?.tutorId === contact.tutorId ? 'active' : ''}`;
+    contactDiv.setAttribute('data-tutor-id', contact.tutorId);
+    contactDiv.setAttribute('data-chat-id', contact.chatId);
+    
+    const lastMessageTime = contact.lastMessageAt ? formatMessageTime(contact.lastMessageAt.toDate()) : '';
+    const unreadBadge = contact.unreadCount > 0 ? 
+        `<div class="unread-count">${contact.unreadCount}</div>` : '';
+    
+    contactDiv.innerHTML = `
+        <div class="contact-avatar">
+            ${contact.tutorAvatar ? 
+                `<img src="${contact.tutorAvatar}" alt="${contact.tutorName}">` : 
+                `<i class="fas fa-user-tie"></i>`
+            }
+        </div>
+        <div class="contact-info">
+            <div class="contact-name">${contact.tutorName}</div>
+            <div class="contact-subject">${contact.tutorSubjects.join(', ') || 'No subjects listed'}</div>
+            <div class="last-message">${contact.lastMessage || 'No messages yet'}</div>
+        </div>
+        <div class="contact-status">
+            <div class="status-online"></div>
+            ${unreadBadge}
+            <div class="last-message-time">${lastMessageTime}</div>
+        </div>
+    `;
+    
+    contactDiv.addEventListener('click', () => openChat(contact));
+    
+    return contactDiv;
+}
+
+// Add start chat functionality to tutor cards
+function addChatToTutorCards() {
+    // Add chat buttons to available tutors
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('start-chat-btn') || 
+            e.target.closest('.start-chat-btn')) {
+            const button = e.target.classList.contains('start-chat-btn') ? 
+                e.target : e.target.closest('.start-chat-btn');
+            const tutorId = button.getAttribute('data-tutor-id');
+            
+            if (tutorId) {
+                // Switch to chat section first
+                document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+                document.querySelectorAll('.dashboard-section').forEach(section => section.classList.remove('active'));
+                
+                document.querySelector('a[data-section="chat"]').classList.add('active');
+                document.getElementById('chat').classList.add('active');
+                
+                // Then start chat
+                startNewChat(tutorId);
+            }
+        }
+    });
+}
+
+// Update the tutor cards to include chat buttons
+function enhanceTutorCardsWithChat() {
+    // This would be called after loading tutors to add chat buttons
+    const tutorCards = document.querySelectorAll('.tutor-card');
+    tutorCards.forEach(card => {
+        const tutorId = card.getAttribute('data-tutor-id');
+        if (tutorId) {
+            const detailsSection = card.querySelector('.tutor-details');
+            if (detailsSection && !detailsSection.querySelector('.start-chat-btn')) {
+                const chatBtn = document.createElement('button');
+                chatBtn.className = 'btn-outline start-chat-btn';
+                chatBtn.setAttribute('data-tutor-id', tutorId);
+                chatBtn.innerHTML = '<i class="fas fa-comments"></i> Message';
+                detailsSection.appendChild(chatBtn);
+            }
+        }
+    });
+}
+
+// Update the loadAvailableTutors function to include chat
+function loadAvailableTutorsWithChat() {
+    const container = document.getElementById('availableTutorsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner" id="tutorsSpinner"></div>';
+    
+    db.collection('tutors')
+        .where('available', '==', true)
+        .where('approved', '==', true)
+        .get()
+        .then((querySnapshot) => {
+            if (!container) return;
+            container.innerHTML = '';
+            
+            if (querySnapshot.empty) {
+                container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Available Tutors</h3><p>There are no tutors available at the moment. Please check back later.</p></div>';
+                return;
+            }
+            
+            querySnapshot.forEach((doc) => {
+                const tutor = doc.data();
+                const tutorCard = document.createElement('div');
+                tutorCard.className = 'tutor-card';
+                tutorCard.setAttribute('data-tutor-id', doc.id);
+                
+                tutorCard.innerHTML = `
+                    <div class="tutor-header">
+                        <div class="tutor-avatar">
+                            <img src="${tutor.photoURL || 'https://via.placeholder.com/70'}" alt="${tutor.personal?.fullName || 'Tutor'}">
+                        </div>
+                        <div class="tutor-name">${tutor.personal?.fullName || 'Unknown Tutor'}</div>
+                        <div class="tutor-subject">${tutor.subjects?.subjects ? tutor.subjects.subjects.join(', ') : 'No subjects listed'}</div>
+                    </div>
+                    <div class="tutor-details">
+                        <p><i class="fas fa-graduation-cap"></i> ${tutor.professional?.qualifications || 'No qualifications listed'}</p>
+                        <p><i class="fas fa-star"></i> Rating: ${tutor.rating || 'No rating'} (${tutor.reviewCount || 0} reviews)</p>
+                        <p><i class="fas fa-dollar-sign"></i> $${tutor.professional?.hourlyRate || 'N/A'}/hour</p>
+                        <p><i class="fas fa-clock"></i> Response time: ${tutor.responseTime || 'Unknown'}</p>
+                        <button class="btn-primary" onclick="bookTutor('${doc.id}')">Book Session</button>
+                        <button class="btn-outline start-chat-btn" data-tutor-id="${doc.id}">
+                            <i class="fas fa-comments"></i> Message
+                        </button>
+                    </div>
+                `;
+                container.appendChild(tutorCard);
+            });
+        })
+        .catch((error) => {
+            console.error('Error loading available tutors:', error);
+            if (container) {
+                container.innerHTML = '<div class="error-state"><i class="fas fa-exclamation-circle"></i><h3>Error Loading Tutors</h3><p>Failed to load available tutors. Please try again later.</p></div>';
+            }
+        });
+}
+
+// Enhanced initialization
+async function initChatSystemComplete() {
+    console.log('Initializing complete chat system...');
+    
+    try {
+        // Ensure database structure
+        await ensureChatDatabaseStructure();
+        
+        // Setup event listeners
+        setupChatEventListeners();
+        
+        // Add chat functionality to tutor cards
+        addChatToTutorCards();
+        
+        // Load contacts
+        await loadChatContacts();
+        
+        // Setup realtime listeners
+        setupRealtimeListeners();
+        
+        console.log('Chat system initialized successfully');
+        
+    } catch (error) {
+        console.error('Failed to initialize chat system:', error);
+    }
+}
+
+// Update the main initialization in DOMContentLoaded
+document.addEventListener('DOMContentLoaded', function() {
+    // ... existing chat section creation code ...
+    
+    // Enhanced initialization
+    auth.onAuthStateChanged((user) => {
+        if (user) {
+            // Initialize chat system after a short delay to ensure user data is loaded
+            setTimeout(initChatSystemComplete, 1500);
+            
+            // Override the tutors loading function to include chat
+            const originalLoadAvailableTutors = loadAvailableTutors;
+            loadAvailableTutors = loadAvailableTutorsWithChat;
+        }
+    });
+});
+
+// Utility function to cleanup listeners when needed
+function cleanupChatSystem() {
+    if (chatMessagesListener) {
+        chatMessagesListener();
+        chatMessagesListener = null;
+    }
+    
+    if (contactsListener) {
+        contactsListener();
+        contactsListener = null;
+    }
+    
+    if (typingTimeout) {
+        clearTimeout(typingTimeout);
+        typingTimeout = null;
+    }
+    
+    currentChat = null;
+}
+
+// Export functions for global access
+window.startNewChat = startNewChat;
+window.getOrCreateChat = getOrCreateChat;
+  
 </script>    
 </body>
 </html>
-
-
-
-
-
-
-
