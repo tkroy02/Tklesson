@@ -2626,19 +2626,24 @@ document.querySelectorAll('.menu-item a').forEach(item => {
       // Refresh package balance when packages section is opened
       loadPackageBalance();
     }
-    // ADD CHAT SECTION HANDLING
-    else if (sectionId === 'chat') {
-      // Ensure chat container is visible and reload contacts when chat section is opened
-      const chatContainer = document.getElementById('chatContainer');
-      if (chatContainer) {
-        chatContainer.style.display = 'block';
-      }
-      loadChatContacts();
+  // ADD CHAT SECTION HANDLING
+else if (sectionId === 'chat') {
+    // Initialize chat system only once
+    if (!chatSystemInitialized) {
+        initChatSystem();
+    } else {
+        // Just reload contacts if already initialized
+        loadChatContacts();
     }
+    
+    // Ensure chat container is visible
+    const chatContainer = document.getElementById('chatContainer');
+    if (chatContainer) {
+        chatContainer.style.display = 'block';
+    }
+}
   });
-});
   
-
   // Set up logout button
   document.getElementById('logoutBtn').addEventListener('click', function() {
     auth.signOut().then(() => {
@@ -5963,15 +5968,24 @@ function initPackageStore() {
 // CHAT SYSTEM IMPLEMENTATION
 // =======================================================
 
-// Global chat variables
+// Global chat variables with initialization tracking
 let currentChat = null;
 let chatMessagesListener = null;
 let contactsListener = null;
 let typingTimeout = null;
+let chatSystemInitialized = false;
+let chatListenersActive = false;
 
 // Initialize chat system
 function initChatSystem() {
+    if (chatSystemInitialized) {
+        console.log('Chat system already initialized');
+        return;
+    }
+    
     console.log('Initializing chat system...');
+    chatSystemInitialized = true;
+    
     setupChatEventListeners();
     loadChatContacts();
     setupRealtimeListeners();
@@ -6016,11 +6030,18 @@ function loadChatContacts() {
     const contactsList = document.getElementById('contactsList');
     if (!contactsList) return;
     
+    // Clean up previous listener
+    if (contactsListener) {
+        contactsListener();
+    }
+    
     contactsList.innerHTML = '<div class="loading-state">Loading conversations...</div>';
     
     const studentId = auth.currentUser.uid;
     
-    // Listen for chats where the student is a participant
+    // Use a Set to track unique contacts
+    const uniqueContacts = new Set();
+    
     contactsListener = db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .orderBy('lastMessageAt', 'desc')
@@ -6041,36 +6062,48 @@ function loadChatContacts() {
             const contacts = [];
             let totalUnread = 0;
             
+            // Clear the Set for new data
+            uniqueContacts.clear();
+            
             for (const doc of snapshot.docs) {
                 const chat = doc.data();
                 const otherParticipantId = chat.participants.find(id => id !== studentId);
                 
                 if (otherParticipantId) {
-                    try {
-                        // Get tutor details
-                        const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
-                        if (tutorDoc.exists) {
-                            const tutor = tutorDoc.data();
-                            const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                            totalUnread += unreadCount;
-                            
-                            const contact = {
-                                chatId: doc.id,
-                                tutorId: otherParticipantId,
-                                tutorName: tutor.personal?.fullName || 'Tutor',
-                                tutorSubjects: tutor.subjects?.subjects || [],
-                                tutorAvatar: tutor.photoURL,
-                                lastMessage: chat.lastMessage,
-                                lastMessageAt: chat.lastMessageAt,
-                                unreadCount: unreadCount
-                            };
-                            contacts.push(contact);
-                            
-                            const contactElement = createContactElement(contact);
-                            contactsList.appendChild(contactElement);
+                    const contactKey = `${studentId}_${otherParticipantId}`;
+                    
+                    // Check for duplicates
+                    if (!uniqueContacts.has(contactKey)) {
+                        uniqueContacts.add(contactKey);
+                        
+                        try {
+                            // Get tutor details
+                            const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
+                            if (tutorDoc.exists) {
+                                const tutor = tutorDoc.data();
+                                const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                                totalUnread += unreadCount;
+                                
+                                const contact = {
+                                    chatId: doc.id,
+                                    tutorId: otherParticipantId,
+                                    tutorName: tutor.personal?.fullName || 'Tutor',
+                                    tutorSubjects: tutor.subjects?.subjects || [],
+                                    tutorAvatar: tutor.photoURL,
+                                    lastMessage: chat.lastMessage,
+                                    lastMessageAt: chat.lastMessageAt,
+                                    unreadCount: unreadCount
+                                };
+                                contacts.push(contact);
+                                
+                                const contactElement = createContactElement(contact);
+                                contactsList.appendChild(contactElement);
+                            }
+                        } catch (error) {
+                            console.error('Error loading tutor details:', error);
                         }
-                    } catch (error) {
-                        console.error('Error loading tutor details:', error);
+                    } else {
+                        console.log('Duplicate contact skipped:', contactKey);
                     }
                 }
             }
@@ -6082,6 +6115,25 @@ function loadChatContacts() {
         });
 }
 
+// Clean up chat system properly
+function cleanupChatSystem() {
+    if (contactsListener) {
+        contactsListener();
+        contactsListener = null;
+    }
+    
+    if (chatMessagesListener) {
+        chatMessagesListener();
+        chatMessagesListener = null;
+    }
+    
+    currentChat = null;
+    chatSystemInitialized = false;
+    chatListenersActive = false;
+    
+    console.log('Chat system cleaned up');
+}
+  
 // Create contact element
 function createContactElement(contact) {
     const contactDiv = document.createElement('div');
@@ -6532,6 +6584,7 @@ async function cleanupDuplicateChats() {
 </script>    
 </body>
 </html>
+
 
 
 
