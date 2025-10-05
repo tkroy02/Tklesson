@@ -9579,45 +9579,491 @@ document.addEventListener('DOMContentLoaded', function() {
 //----------------------------------------------------------------------------------
 //RATINGS AND REVIEWS SECTION START HERE
 //-----------------------------------------------------------------------------------
-@media (max-width: 768px) {
-    /* Fix back button position below menu toggle */
-    #mobileChatHeader {
-        position: relative;
-        padding: 60px 0 10px 0; /* Increased top padding to make space for menu toggle */
-        background: white;
-        border-bottom: 1px solid #f1f5f9;
+// =============================================
+// RATINGS & REVIEWS SECTION
+// =============================================
+
+// Global variables
+let allReviews = [];
+let currentReviewFilter = 'all';
+let currentRatingFilter = 'all';
+
+// Load ratings and reviews
+async function loadRatingsAndReviews() {
+    const container = document.getElementById('reviewsContainer');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="spinner">Loading reviews...</div>';
+    
+    try {
+        // Get all reviews for this tutor
+        const reviewsSnapshot = await db.collection('ratings_reviews')
+            .where('tutorId', '==', currentUser.uid)
+            .orderBy('createdAt', 'desc')
+            .get();
+        
+        allReviews = [];
+        
+        if (reviewsSnapshot.empty) {
+            showEmptyReviewsState(container);
+            updateRatingStats([]);
+            return;
+        }
+        
+        // Process reviews
+        reviewsSnapshot.forEach(doc => {
+            const review = doc.data();
+            review.id = doc.id;
+            allReviews.push(review);
+        });
+        
+        // Update rating statistics
+        updateRatingStats(allReviews);
+        
+        // Apply filters and display
+        applyReviewFilters();
+        
+        // Setup filter listeners
+        setupReviewFilters();
+        
+    } catch (error) {
+        console.error("Error loading reviews:", error);
+        showErrorState(container);
+    }
+}
+
+// Update rating statistics
+function updateRatingStats(reviews) {
+    if (reviews.length === 0) {
+        document.getElementById('averageRating').textContent = '0.0';
+        document.getElementById('totalReviews').textContent = '0 Reviews';
+        resetRatingBars();
+        return;
     }
     
-    .chat-back-btn {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 10px 15px;
-        background: #667eea;
+    // Calculate average rating
+    const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
+    const averageRating = totalRating / reviews.length;
+    
+    // Count ratings by star
+    const ratingCounts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0};
+    reviews.forEach(review => {
+        ratingCounts[review.rating]++;
+    });
+    
+    // Update UI
+    document.getElementById('averageRating').textContent = averageRating.toFixed(1);
+    document.getElementById('totalReviews').textContent = `${reviews.length} Review${reviews.length !== 1 ? 's' : ''}`;
+    
+    // Update stars display
+    updateAverageStars(averageRating);
+    
+    // Update rating bars
+    updateRatingBars(ratingCounts, reviews.length);
+}
+
+// Update average stars display
+function updateAverageStars(averageRating) {
+    const starsContainer = document.getElementById('averageStars');
+    starsContainer.innerHTML = '';
+    
+    for (let i = 1; i <= 5; i++) {
+        const star = document.createElement('span');
+        star.className = 'star';
+        
+        if (i <= Math.floor(averageRating)) {
+            star.className += ' filled';
+            star.innerHTML = '★';
+        } else if (i === Math.ceil(averageRating) && averageRating % 1 > 0) {
+            star.className += ' half-filled';
+            star.innerHTML = '★';
+        } else {
+            star.innerHTML = '★';
+        }
+        
+        starsContainer.appendChild(star);
+    }
+}
+
+// Update rating bars
+function updateRatingBars(ratingCounts, totalReviews) {
+    for (let rating = 5; rating >= 1; rating--) {
+        const count = ratingCounts[rating] || 0;
+        const percentage = totalReviews > 0 ? (count / totalReviews) * 100 : 0;
+        
+        const barFill = document.querySelector(`.bar-fill[data-rating="${rating}"]`);
+        const countElement = document.getElementById(`count${rating}`);
+        
+        if (barFill) {
+            barFill.style.width = `${percentage}%`;
+        }
+        if (countElement) {
+            countElement.textContent = count;
+        }
+    }
+}
+
+// Reset rating bars
+function resetRatingBars() {
+    for (let rating = 5; rating >= 1; rating--) {
+        const barFill = document.querySelector(`.bar-fill[data-rating="${rating}"]`);
+        const countElement = document.getElementById(`count${rating}`);
+        
+        if (barFill) barFill.style.width = '0%';
+        if (countElement) countElement.textContent = '0';
+    }
+}
+
+// Apply review filters
+function applyReviewFilters() {
+    const container = document.getElementById('reviewsContainer');
+    let filteredReviews = [...allReviews];
+    
+    // Apply rating filter
+    if (currentRatingFilter !== 'all') {
+        filteredReviews = filteredReviews.filter(review => 
+            review.rating === parseInt(currentRatingFilter)
+        );
+    }
+    
+    // Apply response filter
+    if (currentReviewFilter !== 'all') {
+        filteredReviews = filteredReviews.filter(review => {
+            if (currentReviewFilter === 'responded') {
+                return review.tutorResponse && review.tutorResponse.trim() !== '';
+            } else if (currentReviewFilter === 'not-responded') {
+                return !review.tutorResponse || review.tutorResponse.trim() === '';
+            }
+            return true;
+        });
+    }
+    
+    // Display filtered reviews
+    displayReviews(filteredReviews, container);
+}
+
+// Display reviews
+function displayReviews(reviews, container) {
+    if (reviews.length === 0) {
+        container.innerHTML = `
+            <div class="reviews-empty-state">
+                <i class="fas fa-star"></i>
+                <h4>No Reviews Found</h4>
+                <p>No reviews match your current filter criteria.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = reviews.map(review => createReviewCard(review)).join('');
+    
+    // Add event listeners
+    addReviewCardListeners();
+}
+
+// Create review card
+function createReviewCard(review) {
+    const reviewDate = review.createdAt.toDate();
+    const hasResponse = review.tutorResponse && review.tutorResponse.trim() !== '';
+    
+    return `
+        <div class="review-card rating-${review.rating}" data-review-id="${review.id}">
+            <div class="review-header">
+                <div class="review-student-info">
+                    <div class="student-avatar">
+                        <i class="fas fa-user-graduate"></i>
+                    </div>
+                    <div class="student-details">
+                        <h4>${review.studentName || 'Student'}</h4>
+                        <div class="subject">${review.subject || 'General Tutoring'}</div>
+                        <div class="stars">
+                            ${generateStars(review.rating)}
+                        </div>
+                    </div>
+                </div>
+                <div class="review-meta">
+                    <div class="review-date">${formatReviewDate(reviewDate)}</div>
+                    ${review.sessionId ? `<div class="session-reference">Session #${review.sessionId.substring(0, 8)}</div>` : ''}
+                </div>
+            </div>
+            
+            <div class="review-content">
+                <div class="review-text">${review.review || 'No review text provided.'}</div>
+            </div>
+            
+            ${hasResponse ? `
+                <div class="review-response">
+                    <div class="response-header">
+                        <h5><i class="fas fa-reply"></i> Your Response</h5>
+                        <div class="response-date">${formatReviewDate(review.respondedAt.toDate())}</div>
+                    </div>
+                    <div class="response-text">${review.tutorResponse}</div>
+                </div>
+            ` : ''}
+            
+            <div class="review-actions">
+                <div class="response-indicator ${hasResponse ? 'responded' : 'not-responded'}">
+                    <i class="fas ${hasResponse ? 'fa-check-circle' : 'fa-clock'}"></i>
+                    ${hasResponse ? 'Responded' : 'Not Responded'}
+                </div>
+                ${!hasResponse ? `
+                    <button class="response-btn" data-review-id="${review.id}">
+                        <i class="fas fa-reply"></i> Respond
+                    </button>
+                ` : `
+                    <button class="response-btn" data-review-id="${review.id}">
+                        <i class="fas fa-edit"></i> Edit Response
+                    </button>
+                `}
+            </div>
+        </div>
+    `;
+}
+
+// Generate stars HTML
+function generateStars(rating) {
+    let starsHTML = '';
+    for (let i = 1; i <= 5; i++) {
+        if (i <= rating) {
+            starsHTML += '<span class="star filled">★</span>';
+        } else {
+            starsHTML += '<span class="star">★</span>';
+        }
+    }
+    return starsHTML;
+}
+
+// Format review date
+function formatReviewDate(date) {
+    const now = new Date();
+    const diffTime = Math.abs(now - date);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    
+    return date.toLocaleDateString();
+}
+
+// Setup review filters
+function setupReviewFilters() {
+    const ratingFilter = document.getElementById('ratingFilter');
+    const responseFilter = document.getElementById('responseFilter');
+    
+    if (ratingFilter) {
+        ratingFilter.addEventListener('change', function() {
+            currentRatingFilter = this.value;
+            applyReviewFilters();
+        });
+    }
+    
+    if (responseFilter) {
+        responseFilter.addEventListener('change', function() {
+            currentReviewFilter = this.value;
+            applyReviewFilters();
+        });
+    }
+}
+
+// Add review card listeners
+function addReviewCardListeners() {
+    document.querySelectorAll('.response-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const reviewId = this.getAttribute('data-review-id');
+            openResponseModal(reviewId);
+        });
+    });
+}
+
+// Open response modal
+async function openResponseModal(reviewId) {
+    const review = allReviews.find(r => r.id === reviewId);
+    if (!review) return;
+    
+    const modalContent = `
+        <h3>Respond to Review</h3>
+        <div class="review-preview">
+            <div class="student-info">
+                <strong>${review.studentName}</strong> - ${generateStars(review.rating)}
+            </div>
+            <div class="review-text-preview">"${review.review}"</div>
+        </div>
+        <form id="responseForm">
+            <div class="form-group">
+                <label for="responseText">Your Response</label>
+                <textarea 
+                    id="responseText" 
+                    class="response-textarea" 
+                    placeholder="Write a thoughtful response to this review..."
+                    rows="5"
+                >${review.tutorResponse || ''}</textarea>
+            </div>
+        </form>
+        <div class="response-guidelines">
+            <h4><i class="fas fa-lightbulb"></i> Response Tips</h4>
+            <ul>
+                <li>Thank the student for their feedback</li>
+                <li>Address any specific concerns mentioned</li>
+                <li>Keep it professional and positive</li>
+                <li>Offer to help with future learning needs</li>
+            </ul>
+        </div>
+    `;
+    
+    showResponseModal(modalContent, reviewId);
+}
+
+// Show response modal
+function showResponseModal(content, reviewId) {
+    let modal = document.getElementById('responseModal');
+    
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'responseModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3>Respond to Review</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="responseModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="cancelResponseBtn">Cancel</button>
+                    <button class="btn-primary" id="submitResponseBtn">Submit Response</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        const closeBtn = modal.querySelector('.close-modal');
+        const cancelBtn = modal.querySelector('#cancelResponseBtn');
+        const submitBtn = modal.querySelector('#submitResponseBtn');
+        
+        closeBtn.addEventListener('click', () => modal.style.display = 'none');
+        cancelBtn.addEventListener('click', () => modal.style.display = 'none');
+        submitBtn.addEventListener('click', () => submitResponse(reviewId));
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    document.getElementById('responseModalBody').innerHTML = content;
+    modal.style.display = 'flex';
+    
+    // Focus on textarea
+    setTimeout(() => {
+        const textarea = document.getElementById('responseText');
+        if (textarea) textarea.focus();
+    }, 100);
+}
+
+// Submit response
+async function submitResponse(reviewId) {
+    const modal = document.getElementById('responseModal');
+    const responseText = document.getElementById('responseText').value.trim();
+    
+    if (!responseText) {
+        alert('Please write a response before submitting.');
+        return;
+    }
+    
+    try {
+        // Update review with response
+        await db.collection('ratings_reviews').doc(reviewId).update({
+            tutorResponse: responseText,
+            respondedAt: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Close modal
+        modal.style.display = 'none';
+        
+        // Show success message
+        showReviewActionSuccess('Response submitted successfully!');
+        
+        // Reload reviews to reflect changes
+        loadRatingsAndReviews();
+        
+    } catch (error) {
+        console.error("Error submitting response:", error);
+        alert('Error submitting response. Please try again.');
+    }
+}
+
+// Show empty state
+function showEmptyReviewsState(container) {
+    container.innerHTML = `
+        <div class="reviews-empty-state">
+            <i class="fas fa-star"></i>
+            <h4>No Reviews Yet</h4>
+            <p>Your reviews from students will appear here once they rate your sessions.</p>
+            <div class="encouragement-message">
+                <p>Focus on providing great tutoring sessions, and the reviews will follow!</p>
+            </div>
+        </div>
+    `;
+}
+
+// Show error state
+function showErrorState(container) {
+    container.innerHTML = `
+        <div class="error-state">
+            <i class="fas fa-exclamation-circle"></i>
+            <h3>Error Loading Reviews</h3>
+            <p>Failed to load reviews. Please try again.</p>
+        </div>
+    `;
+}
+
+// Show success message
+function showReviewActionSuccess(message) {
+    const toast = document.createElement('div');
+    toast.className = 'booking-toast success';
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #4CAF50;
         color: white;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 0.9em;
-        font-weight: 500;
-        margin: 0 15px; /* Removed top margin since we're using header padding */
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        position: absolute;
-        top: 50px; /* Position below menu toggle */
-        left: 15px;
-        z-index: 5;
-    }
+        padding: 15px 20px;
+        border-radius: 5px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        max-width: 300px;
+    `;
+    toast.innerHTML = `<i class="fas fa-check-circle"></i> ${message}`;
     
-    /* Ensure menu toggle stays above */
-    .menu-toggle {
-        position: absolute;
-        top: 15px;
-        left: 15px;
-        z-index: 10; /* Higher than back button */
-    }
+    document.body.appendChild(toast);
     
-    .chat-back-btn:hover {
-        background: #5a67d8;
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
+        }
+    }, 3000);
+}
+
+// Initialize ratings and reviews section
+function initRatingsAndReviews() {
+    // This will be called when the section is activated
+    loadRatingsAndReviews();
+}
+
+// Add to your section loading function
+function loadSectionContent(sectionId) {
+    // ... existing code ...
+    
+    switch(sectionId) {
+        case 'ratings-reviews':
+            initRatingsAndReviews();
+            break;
+        // ... other cases ...
     }
 }
 
@@ -9633,6 +10079,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </button>
 </body>
 </html>
+
 
 
 
