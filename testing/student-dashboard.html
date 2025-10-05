@@ -7220,10 +7220,273 @@ document.addEventListener('DOMContentLoaded', function() {
 // =======================================================
 // STUDENT CHAT SYSTEM WITH AUTO-CREATION ENDS HERE
 // =======================================================
+
+// =========================================================
+// REVIEWS AND RATINGS START HERE
+// ==========================================================
+
+// Global variables for review pagination
+let currentPendingPage = 1;
+let currentSubmittedPage = 1;
+const REVIEWS_PER_PAGE = 10;
+let allPendingSessions = [];
+let allSubmittedReviews = [];
+
+// Load reviews with pagination
+function loadReviewsSection() {
+    loadPendingReviews();
+    loadSubmittedReviews();
+}
+
+// Pending Reviews - Limited to 10 visible
+function loadPendingReviews() {
+    const container = document.getElementById('pendingReviewsContainer');
+    const studentId = auth.currentUser.uid;
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+
+    // Get completed sessions from last 30 days without reviews
+    db.collection('bookedSessions')
+        .where('studentId', '==', studentId)
+        .where('status', '==', 'completed')
+        .where('date', '>=', cutoffTime)
+        .where('reviewStatus', '==', 'pending')
+        .orderBy('date', 'desc')
+        .get()
+        .then(snapshot => {
+            allPendingSessions = [];
+            snapshot.forEach(doc => {
+                allPendingSessions.push({
+                    id: doc.id,
+                    ...doc.data()
+                });
+            });
+
+            // AUTO-CLEANUP: Only show most recent 20 total, remove older ones from display
+            if (allPendingSessions.length > 20) {
+                allPendingSessions = allPendingSessions.slice(0, 20);
+            }
+
+            updatePendingReviewsDisplay();
+            updatePendingReviewsCount();
+        })
+        .catch(error => {
+            console.error('Error loading pending reviews:', error);
+            container.innerHTML = getReviewsErrorState();
+        });
+}
+
+// Update display with pagination
+function updatePendingReviewsDisplay() {
+    const container = document.getElementById('pendingReviewsContainer');
+    const totalPages = Math.ceil(allPendingSessions.length / REVIEWS_PER_PAGE);
+    
+    // Get current page items
+    const startIndex = (currentPendingPage - 1) * REVIEWS_PER_PAGE;
+    const endIndex = startIndex + REVIEWS_PER_PAGE;
+    const currentSessions = allPendingSessions.slice(startIndex, endIndex);
+
+    if (currentSessions.length === 0) {
+        container.innerHTML = getPendingReviewsEmptyState();
+        return;
+    }
+
+    let html = '';
+    
+    currentSessions.forEach(session => {
+        const sessionDate = session.date.toDate();
+        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        html += `
+            <div class="review-card pending">
+                <div class="review-header">
+                    <div class="review-tutor-info">
+                        <h5>${session.subject || 'Tutoring Session'}</h5>
+                        <div class="review-session-meta">
+                            <i class="fas fa-user-tie"></i> ${session.tutorName || 'Tutor'} • 
+                            <i class="fas fa-calendar"></i> ${formattedDate} • 
+                            <i class="fas fa-clock"></i> ${formattedTime}
+                        </div>
+                    </div>
+                    <div class="session-duration">
+                        ${session.duration || '1'} hour${session.duration !== 1 ? 's' : ''}
+                    </div>
+                </div>
+                
+                <div class="review-actions">
+                    <button class="btn-primary" onclick="showReviewModal('${session.id}')">
+                        <i class="fas fa-star"></i> Write Review
+                    </button>
+                    <button class="btn-outline" onclick="dismissReview('${session.id}')">
+                        <i class="fas fa-times"></i> Dismiss
+                    </button>
+                </div>
+            </div>
+        `;
+    });
+
+    // Add pagination if needed
+    if (totalPages > 1) {
+        html += createReviewsPagination('pending', currentPendingPage, totalPages);
+    }
+
+    container.innerHTML = html;
+}
+
+// Submitted Reviews - Limited to 10 visible
+function loadSubmittedReviews() {
+    const container = document.getElementById('submittedReviewsContainer');
+    const studentId = auth.currentUser.uid;
+
+    db.collection('ratings_Reviews')
+        .where('studentId', '==', studentId)
+        .orderBy('createdAt', 'desc')
+        .limit(50) // Maximum fetch limit
+        .get()
+        .then(snapshot => {
+            allSubmittedReviews = [];
+            snapshot.forEach(doc => {
+                allSubmittedReviews.push({
+                    id: doc.id,
+                    ...doc.data()
+                });
+            });
+
+            // AUTO-CLEANUP: Only keep 30 most recent reviews in memory
+            if (allSubmittedReviews.length > 30) {
+                allSubmittedReviews = allSubmittedReviews.slice(0, 30);
+            }
+
+            updateSubmittedReviewsDisplay();
+        })
+        .catch(error => {
+            console.error('Error loading submitted reviews:', error);
+            container.innerHTML = getReviewsErrorState();
+        });
+}
+
+function updateSubmittedReviewsDisplay() {
+    const container = document.getElementById('submittedReviewsContainer');
+    const totalPages = Math.ceil(allSubmittedReviews.length / REVIEWS_PER_PAGE);
+    
+    const startIndex = (currentSubmittedPage - 1) * REVIEWS_PER_PAGE;
+    const endIndex = startIndex + REVIEWS_PER_PAGE;
+    const currentReviews = allSubmittedReviews.slice(startIndex, endIndex);
+
+    if (currentReviews.length === 0) {
+        container.innerHTML = getSubmittedReviewsEmptyState();
+        return;
+    }
+
+    let html = '';
+    
+    currentReviews.forEach(review => {
+        const reviewDate = review.createdAt.toDate();
+        const formattedDate = reviewDate.toLocaleDateString();
+        
+        html += `
+            <div class="review-card submitted">
+                <div class="review-header">
+                    <div class="review-tutor-info">
+                        <h5>${review.tutorName || 'Tutor'}</h5>
+                        <div class="review-session-meta">
+                            <i class="fas fa-calendar"></i> Reviewed on ${formattedDate}
+                        </div>
+                    </div>
+                    <div class="star-rating-static">
+                        ${generateStaticStars(review.rating)}
+                    </div>
+                </div>
+                
+                ${review.reviewText ? `
+                    <div class="review-text">"${review.reviewText}"</div>
+                ` : ''}
+                
+                <div class="review-meta">
+                    <span>Session: ${review.subject || 'General'}</span>
+                    <button class="btn-outline btn-small" onclick="editReview('${review.id}')">
+                        <i class="fas fa-edit"></i> Edit Review
+                    </button>
+                </div>
+            </div>
+        `;
+    });
+
+    if (totalPages > 1) {
+        html += createReviewsPagination('submitted', currentSubmittedPage, totalPages);
+    }
+
+    container.innerHTML = html;
+}
+
+// Pagination Helper
+function createReviewsPagination(type, currentPage, totalPages) {
+    return `
+        <div class="reviews-pagination">
+            <button class="pagination-btn" ${currentPage === 1 ? 'disabled' : ''} 
+                onclick="changeReviewsPage('${type}', ${currentPage - 1})">
+                <i class="fas fa-chevron-left"></i> Previous
+            </button>
+            
+            <span class="pagination-info">Page ${currentPage} of ${totalPages}</span>
+            
+            <button class="pagination-btn" ${currentPage === totalPages ? 'disabled' : ''}
+                onclick="changeReviewsPage('${type}', ${currentPage + 1})">
+                Next <i class="fas fa-chevron-right"></i>
+            </button>
+        </div>
+    `;
+}
+
+function changeReviewsPage(type, newPage) {
+    if (type === 'pending') {
+        currentPendingPage = newPage;
+        updatePendingReviewsDisplay();
+    } else {
+        currentSubmittedPage = newPage;
+        updateSubmittedReviewsDisplay();
+    }
+}
+
+// Auto-cleanup older sessions (runs periodically)
+function cleanupOldPendingSessions() {
+    const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
+    
+    // Auto-mark very old pending reviews as dismissed
+    db.collection('bookedSessions')
+        .where('studentId', '==', auth.currentUser.uid)
+        .where('status', '==', 'completed')
+        .where('reviewStatus', '==', 'pending')
+        .where('date', '<', thirtyDaysAgo)
+        .get()
+        .then(snapshot => {
+            const batch = db.batch();
+            snapshot.forEach(doc => {
+                batch.update(doc.ref, {
+                    reviewStatus: 'auto_dismissed',
+                    dismissedAt: new Date()
+                });
+            });
+            return batch.commit();
+        })
+        .then(() => {
+            console.log(`Auto-dismissed ${snapshot.size} old pending reviews`);
+        });
+}
+
+// Run cleanup every hour
+setInterval(cleanupOldPendingSessions, 60 * 60 * 1000);
+
+ // =========================================================
+// REVIEWS AND RATINGS END HERE
+// ========================================================== 
+  
   
 </script>    
 </body>
 </html>
+
 
 
 
