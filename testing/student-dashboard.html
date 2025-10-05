@@ -7478,6 +7478,295 @@ function cleanupOldPendingSessions() {
 // Run cleanup every hour
 setInterval(cleanupOldPendingSessions, 60 * 60 * 1000);
 
+// Star rating generation
+function generateStaticStars(rating) {
+    let stars = '';
+    const fullStars = Math.floor(rating);
+    const hasHalfStar = rating % 1 !== 0;
+    
+    // Full stars
+    for (let i = 0; i < fullStars; i++) {
+        stars += '<i class="fas fa-star"></i>';
+    }
+    
+    // Half star
+    if (hasHalfStar) {
+        stars += '<i class="fas fa-star-half-alt"></i>';
+    }
+    
+    // Empty stars
+    const emptyStars = 5 - Math.ceil(rating);
+    for (let i = 0; i < emptyStars; i++) {
+        stars += '<i class="far fa-star"></i>';
+    }
+    
+    return stars;
+}
+
+// Review modal functions
+function showReviewModal(sessionId, sessionData = null) {
+    // If sessionData not provided, fetch it
+    if (!sessionData) {
+        db.collection('bookedSessions').doc(sessionId).get()
+            .then(doc => {
+                if (doc.exists) {
+                    showReviewModal(sessionId, doc.data());
+                }
+            });
+        return;
+    }
+    
+    // Create and show modal
+    const modalHTML = `
+        <div class="review-modal-overlay" id="reviewModalOverlay">
+            <div class="review-modal">
+                <div class="modal-header">
+                    <h3>Rate Your Session</h3>
+                    <button class="close-btn" onclick="closeReviewModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="session-info">
+                        <h4>${sessionData.subject || 'Tutoring Session'}</h4>
+                        <p>with ${sessionData.tutorName || 'Your Tutor'}</p>
+                        <p class="session-date">${sessionData.date.toDate().toLocaleDateString()}</p>
+                    </div>
+                    
+                    <div class="rating-section">
+                        <label>Overall Rating:</label>
+                        <div class="star-rating" id="starRating">
+                            ${[1,2,3,4,5].map(star => `
+                                <span class="star" data-rating="${star}" onclick="setRating(${star})">★</span>
+                            `).join('')}
+                        </div>
+                        <div class="rating-text" id="ratingText">Tap stars to rate</div>
+                    </div>
+                    
+                    <div class="review-text-section">
+                        <label for="reviewText">Your Review (Optional):</label>
+                        <textarea 
+                            id="reviewText" 
+                            placeholder="Share details about your experience. What went well? What could be improved?"
+                            rows="4"
+                        ></textarea>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-primary" onclick="submitReview('${sessionId}', '${sessionData.tutorId}')" id="submitReviewBtn" disabled>
+                        Submit Review
+                    </button>
+                    <button class="btn-outline" onclick="dismissReview('${sessionId}')">
+                        Dismiss
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+function setRating(rating) {
+    const stars = document.querySelectorAll('#starRating .star');
+    const ratingText = document.getElementById('ratingText');
+    const submitBtn = document.getElementById('submitReviewBtn');
+    
+    stars.forEach((star, index) => {
+        if (index < rating) {
+            star.classList.add('active');
+        } else {
+            star.classList.remove('active');
+        }
+    });
+    
+    // Update rating text
+    const ratingTexts = {
+        1: 'Poor',
+        2: 'Fair', 
+        3: 'Good',
+        4: 'Very Good',
+        5: 'Excellent'
+    };
+    
+    ratingText.textContent = ratingTexts[rating] || 'Tap stars to rate';
+    
+    // Enable submit button
+    submitBtn.disabled = false;
+    
+    // Store current rating
+    window.currentRating = rating;
+}
+
+async function submitReview(sessionId, tutorId) {
+    const rating = window.currentRating;
+    const reviewText = document.getElementById('reviewText').value.trim();
+    const submitBtn = document.getElementById('submitReviewBtn');
+    
+    if (!rating) {
+        alert('Please select a rating');
+        return;
+    }
+    
+    try {
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
+        submitBtn.disabled = true;
+        
+        // Save to ratings_reviews collection
+        await db.collection('ratings_reviews').add({
+            sessionId: sessionId,
+            tutorId: tutorId,
+            studentId: auth.currentUser.uid,
+            studentName: userData?.name || 'Student',
+            rating: rating,
+            reviewText: reviewText,
+            createdAt: new Date(),
+            subject: // get from session data if available
+        });
+        
+        // Update session review status
+        await db.collection('bookedSessions').doc(sessionId).update({
+            reviewStatus: 'completed',
+            reviewedAt: new Date()
+        });
+        
+        // Update tutor's average rating (you'll need a Cloud Function for this)
+        await updateTutorRating(tutorId);
+        
+        // Close modal and refresh reviews section
+        closeReviewModal();
+        loadReviewsSection();
+        
+        // Show success message
+        showToast('Review submitted successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error submitting review:', error);
+        alert('Failed to submit review. Please try again.');
+        submitBtn.innerHTML = 'Submit Review';
+        submitBtn.disabled = false;
+    }
+}
+
+function dismissReview(sessionId) {
+    if (confirm('Are you sure you want to dismiss this review? You won\'t be prompted again.')) {
+        db.collection('bookedSessions').doc(sessionId).update({
+            reviewStatus: 'dismissed',
+            dismissedAt: new Date()
+        }).then(() => {
+            closeReviewModal();
+            loadReviewsSection();
+        });
+    }
+}
+
+function closeReviewModal() {
+    const modal = document.getElementById('reviewModalOverlay');
+    if (modal) {
+        modal.remove();
+    }
+    window.currentRating = null;
+}
+
+// Update pending reviews count badge
+function updatePendingReviewsCount() {
+    const badge = document.getElementById('pendingReviewsCount');
+    if (!badge) return;
+    
+    const count = allPendingSessions.length;
+    if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : count.toString();
+        badge.style.display = 'inline';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+// Empty state templates
+function getPendingReviewsEmptyState() {
+    return `
+        <div class="reviews-empty-state">
+            <i class="fas fa-check-circle"></i>
+            <h4>All Caught Up!</h4>
+            <p>No pending reviews. Your feedback helps tutors improve.</p>
+        </div>
+    `;
+}
+
+function getSubmittedReviewsEmptyState() {
+    return `
+        <div class="reviews-empty-state">
+            <i class="fas fa-star"></i>
+            <h4>No Reviews Yet</h4>
+            <p>Your completed session reviews will appear here</p>
+        </div>
+    `;
+}
+
+function getReviewsErrorState() {
+    return `
+        <div class="error-state">
+            <i class="fas fa-exclamation-triangle"></i>
+            <h3>Error Loading Reviews</h3>
+            <p>Please try again later</p>
+        </div>
+    `;
+}
+
+// Update tutor rating (simplified - you'll need a Cloud Function for accurate averaging)
+async function updateTutorRating(tutorId) {
+    // This is a simplified version - you should use a Cloud Function
+    // to properly calculate the average rating
+    
+    const reviewsSnapshot = await db.collection('ratings_reviews')
+        .where('tutorId', '==', tutorId)
+        .get();
+    
+    let totalRating = 0;
+    let reviewCount = 0;
+    
+    reviewsSnapshot.forEach(doc => {
+        const review = doc.data();
+        totalRating += review.rating;
+        reviewCount++;
+    });
+    
+    const averageRating = reviewCount > 0 ? totalRating / reviewCount : 0;
+    
+    // Update tutor document
+    await db.collection('tutors').doc(tutorId).update({
+        rating: Math.round(averageRating * 2) / 2, // Round to nearest 0.5
+        reviewCount: reviewCount
+    });
+}
+
+// Toast notification
+function showToast(message, type = 'info') {
+    // Use your existing notification system or create a simple one
+    const toast = document.createElement('div');
+    toast.className = `toast-notification toast-${type}`;
+    toast.innerHTML = `
+        <div class="toast-content">
+            <i class="fas fa-${type === 'success' ? 'check-circle' : 'info-circle'}"></i>
+            <span>${message}</span>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.remove();
+    }, 3000);
+}
+
+// Initialize reviews when section is opened
+document.addEventListener('DOMContentLoaded', function() {
+    // Add click handler for reviews section
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('a[data-section="reviews"]')) {
+            loadReviewsSection();
+        }
+    });
+});
+  
  // =========================================================
 // REVIEWS AND RATINGS END HERE
 // ========================================================== 
@@ -7486,6 +7775,7 @@ setInterval(cleanupOldPendingSessions, 60 * 60 * 1000);
 </script>    
 </body>
 </html>
+
 
 
 
