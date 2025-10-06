@@ -547,43 +547,7 @@ body {
     .timestamp-cell {
         font-size: 0.75em;
     }
-
-/* Add these styles to your CSS file */
-.student-nav-badge {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background: #e74c3c;
-    color: white;
-    border-radius: 10px;
-    min-width: 18px;
-    height: 18px;
-    font-size: 11px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-    font-weight: bold;
-}
-
-.global-unread-badge {
-    background: #e74c3c;
-    color: white;
-    border-radius: 10px;
-    min-width: 20px;
-    height: 20px;
-    font-size: 12px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 0 5px;
-    font-weight: bold;
-}
-
-.nav-item {
-    position: relative;
-}
-  
+    
     /* Chat Messages Area - Mobile */
     .chat-messages {
         height: 60vh;
@@ -6725,7 +6689,7 @@ function initPackageStore() {
 // =======================================================
 
 // =======================================================
-// CHAT SECTION STARTS HERE
+// CHAT SYSTEM IMPLEMENTATION
 // =======================================================
 
 // Global chat variables with initialization tracking
@@ -6735,13 +6699,6 @@ let contactsListener = null;
 let typingTimeout = null;
 let chatSystemInitialized = false;
 let chatListenersActive = false;
-let studentUnreadCounts = {}; // Track unread counts per chat
-let globalUnreadListener = null; // Global unread listener
-
-const STUDENT_NOTIFICATION_CONFIG = {
-    globalUnreadCount: 0,
-    enableDesktopNotifications: true
-};
 
 // Initialize chat system
 function initChatSystem() {
@@ -6750,90 +6707,12 @@ function initChatSystem() {
         return;
     }
     
-    console.log('Initializing chat system with notifications...');
+    console.log('Initializing chat system...');
     chatSystemInitialized = true;
     
     setupChatEventListeners();
     loadChatContacts();
     setupRealtimeListeners();
-    initStudentGlobalUnreadCount(); // NEW
-    createStudentSidebarBadge(); // NEW
-    
-    // Request notification permission
-    if ("Notification" in window && Notification.permission === "default") {
-        Notification.requestPermission();
-    }
-}
-
-  // NEW: Initialize global unread count for student
-async function initStudentGlobalUnreadCount() {
-    try {
-        const studentId = auth.currentUser.uid;
-        const chatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', studentId)
-            .get();
-        
-        let totalUnread = 0;
-        chatsSnapshot.forEach(doc => {
-            const chat = doc.data();
-            const unreadCount = chat.unreadCounts?.[studentId] || 0;
-            totalUnread += unreadCount;
-            
-            // Store individual chat unread counts
-            const otherParticipantId = chat.participants.find(id => id !== studentId);
-            if (otherParticipantId) {
-                studentUnreadCounts[otherParticipantId] = unreadCount;
-            }
-        });
-        
-        STUDENT_NOTIFICATION_CONFIG.globalUnreadCount = totalUnread;
-        updateStudentGlobalUnreadBadges();
-    } catch (error) {
-        console.error('Error initializing student global unread count:', error);
-    }
-}
-
-// NEW: Create sidebar badge for student
-function createStudentSidebarBadge() {
-    const messagesLink = document.querySelector('[data-section="messages-and-chats"]');
-    if (messagesLink && !messagesLink.querySelector('.nav-badge')) {
-        const badge = document.createElement('span');
-        badge.className = 'nav-badge student-nav-badge';
-        badge.style.cssText = `
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            background: #e74c3c;
-            color: white;
-            border-radius: 10px;
-            min-width: 18px;
-            height: 18px;
-            font-size: 11px;
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 0 4px;
-            font-weight: bold;
-        `;
-        messagesLink.style.position = 'relative';
-        messagesLink.appendChild(badge);
-        updateStudentSidebarNotification();
-    }
-}
-
-// NEW: Update student sidebar notification
-function updateStudentSidebarNotification() {
-    const sidebarBadge = document.querySelector('.student-nav-badge');
-    const totalUnread = STUDENT_NOTIFICATION_CONFIG.globalUnreadCount;
-    
-    if (sidebarBadge) {
-        if (totalUnread > 0) {
-            sidebarBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-            sidebarBadge.style.display = 'flex';
-        } else {
-            sidebarBadge.style.display = 'none';
-        }
-    }
 }
 
 // Setup chat event listeners
@@ -7018,16 +6897,6 @@ function cleanupChatSystem() {
     
     console.log('Chat system cleaned up');
 }
-
-  // ADD THESE LINES:
-    if (globalUnreadListener) {
-        globalUnreadListener();
-        globalUnreadListener = null;
-    }
-    
-    // Reset notification counts
-    studentUnreadCounts = {};
-    STUDENT_NOTIFICATION_CONFIG.globalUnreadCount = 0;
   
 // Create contact element
 function createContactElement(contact) {
@@ -7446,36 +7315,10 @@ function updateUnreadMessagesCount(count) {
 
 // Setup realtime listeners
 function setupRealtimeListeners() {
-    console.log('Setting up realtime chat listeners with notifications...');
-    
-    const studentId = auth.currentUser.uid;
-    
-    // Listen for chat updates
-    db.collection('chats')
-        .where('participants', 'array-contains', studentId)
-        .onSnapshot((snapshot) => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'modified') {
-                    const chat = change.doc.data();
-                    const otherParticipantId = chat.participants.find(id => id !== studentId);
-                    
-                    if (otherParticipantId && chat.unreadCounts) {
-                        const unreadCount = chat.unreadCounts[studentId] || 0;
-                        studentUnreadCounts[otherParticipantId] = unreadCount;
-                        
-                        // Update contact badge
-                        updateStudentContactBadge(otherParticipantId, unreadCount);
-                        
-                        // Update global counts
-                        updateStudentGlobalUnreadCount();
-                    }
-                }
-            });
-        });
-    
-    // NEW: Set up message listeners for all student chats
-    setupStudentMessageListeners();
+    console.log('Setting up realtime chat listeners...');
+    // Additional real-time features can be added here
 }
+
 // Start new chat with tutor (called from tutors list)
 async function startNewChat(tutorId) {
     try {
@@ -7519,203 +7362,6 @@ async function startNewChat(tutorId) {
     }
 }
 
-// NEW: Set up message listeners for all student chats
-function setupStudentMessageListeners() {
-    const studentId = auth.currentUser.uid;
-    
-    // Get all chats where student is a participant
-    db.collection('chats')
-        .where('participants', 'array-contains', studentId)
-        .get()
-        .then(snapshot => {
-            snapshot.forEach(doc => {
-                const chatId = doc.id;
-                setupStudentChatMessageListener(chatId);
-            });
-        });
-}
-
-// NEW: Set up listener for individual student chat messages
-function setupStudentChatMessageListener(chatId) {
-    db.collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .orderBy('timestamp', 'desc')
-        .limit(1)
-        .onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    const message = change.doc.data();
-                    const studentId = auth.currentUser.uid;
-                    
-                    // If message is from someone else and not read
-                    if (message.senderId !== studentId && !message.read) {
-                        handleStudentNewIncomingMessage(chatId, message);
-                    }
-                }
-            });
-        });
-}
-
-// NEW: Handle new incoming message for student
-async function handleStudentNewIncomingMessage(chatId, message) {
-    try {
-        const studentId = auth.currentUser.uid;
-        const chatDoc = await db.collection('chats').doc(chatId).get();
-        
-        if (chatDoc.exists) {
-            const chat = chatDoc.data();
-            const senderId = message.senderId;
-            const senderName = chat.participantNames?.[senderId] || 'Someone';
-            
-            // Update unread count for this chat
-            const currentUnread = studentUnreadCounts[senderId] || 0;
-            studentUnreadCounts[senderId] = currentUnread + 1;
-            
-            // Update UI
-            updateStudentContactBadge(senderId, currentUnread + 1);
-            updateStudentGlobalUnreadCount();
-            updateStudentSidebarNotification();
-            
-            // Show desktop notification if not focused on this chat
-            if (!currentChat || currentChat.tutorId !== senderId) {
-                showStudentDesktopNotification(senderName, message.text, senderId === 'admin');
-            }
-        }
-    } catch (error) {
-        console.error('Error handling new student message:', error);
-    }
-}
-
-  // NEW: Update student contact badge
-function updateStudentContactBadge(contactId, unreadCount) {
-    const contactElement = document.querySelector(`[data-tutor-id="${contactId}"]`);
-    if (!contactElement) return;
-    
-    const statusElement = contactElement.querySelector('.contact-status');
-    const existingBadge = statusElement.querySelector('.unread-count');
-    
-    // Remove existing badge
-    if (existingBadge) {
-        existingBadge.remove();
-    }
-    
-    // Add new badge if needed
-    if (unreadCount > 0) {
-        const unreadBadge = document.createElement('div');
-        unreadBadge.className = 'unread-count';
-        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-        statusElement.appendChild(unreadBadge);
-    }
-}
-
-// NEW: Update student global unread count
-function updateStudentGlobalUnreadCount() {
-    const totalUnread = Object.values(studentUnreadCounts).reduce((sum, count) => sum + count, 0);
-    STUDENT_NOTIFICATION_CONFIG.globalUnreadCount = totalUnread;
-    updateStudentGlobalUnreadBadges();
-}
-
-// NEW: Update all student global unread badges
-function updateStudentGlobalUnreadBadges() {
-    const totalUnread = STUDENT_NOTIFICATION_CONFIG.globalUnreadCount;
-    
-    // Update menu badge
-    updateUnreadMessagesCount(totalUnread);
-    
-    // Update sidebar badge
-    updateStudentSidebarNotification();
-    
-    // Update chat header badge if in chat section
-    updateStudentChatHeaderBadge(totalUnread);
-}
-
-// NEW: Update student chat header badge
-function updateStudentChatHeaderBadge(totalUnread) {
-    const chatHeaderBadge = document.getElementById('studentChatHeaderBadge');
-    if (!chatHeaderBadge) {
-        // Create badge if it doesn't exist
-        const chatHeader = document.querySelector('.chat-header');
-        if (chatHeader) {
-            const badge = document.createElement('div');
-            badge.id = 'studentChatHeaderBadge';
-            badge.className = 'global-unread-badge';
-            badge.style.cssText = `
-                background: #e74c3c;
-                color: white;
-                border-radius: 10px;
-                min-width: 20px;
-                height: 20px;
-                font-size: 12px;
-                display: none;
-                align-items: center;
-                justify-content: center;
-                padding: 0 5px;
-                font-weight: bold;
-                margin-left: 10px;
-            `;
-            chatHeader.appendChild(badge);
-        }
-    } else {
-        if (totalUnread > 0) {
-            chatHeaderBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-            chatHeaderBadge.style.display = 'flex';
-        } else {
-            chatHeaderBadge.style.display = 'none';
-        }
-    }
-}
-
-// NEW: Show student desktop notification
-function showStudentDesktopNotification(senderName, message, isAdmin = false) {
-    if (!STUDENT_NOTIFICATION_CONFIG.enableDesktopNotifications) return;
-    
-    // Check if browser supports notifications
-    if (!("Notification" in window)) {
-        return;
-    }
-    
-    // Check if permission is granted
-    if (Notification.permission === "granted") {
-        createStudentNotification(senderName, message, isAdmin);
-    } 
-    // Otherwise, ask for permission
-    else if (Notification.permission !== "denied") {
-        Notification.requestPermission().then(permission => {
-            if (permission === "granted") {
-                createStudentNotification(senderName, message, isAdmin);
-            }
-        });
-    }
-}
-
-// NEW: Create student notification
-function createStudentNotification(senderName, message, isAdmin = false) {
-    const title = isAdmin ? `Support: ${senderName}` : `Tutor: ${senderName}`;
-    
-    const notification = new Notification(title, {
-        body: message.length > 100 ? message.substring(0, 100) + '...' : message,
-        icon: '/favicon.ico',
-        tag: 'student-message'
-    });
-    
-    // Close notification after 5 seconds
-    setTimeout(() => {
-        notification.close();
-    }, 5000);
-    
-    // Focus window when notification is clicked
-    notification.onclick = function() {
-        window.focus();
-        
-        // Switch to messages section
-        const messagesLink = document.querySelector('[data-section="messages-and-chats"]');
-        if (messagesLink) {
-            messagesLink.click();
-        }
-    };
-}
-  
 // Create or get chat between student and tutor
 async function getOrCreateChat(tutorId) {
     const studentId = auth.currentUser.uid;
@@ -8515,8 +8161,5 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
-
-
-
 
 
