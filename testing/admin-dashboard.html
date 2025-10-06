@@ -2480,10 +2480,10 @@ function initAdminChatSystem() {
     
     setupAdminChatEventListeners();
     loadAdminChatContacts();
-    setupAdminRealtimeListeners();
+    setupAdminRealtimeListeners(); // This function now exists below
 }
 
-// Setup Admin Chat Event Listeners - UPDATED FOR MAIN SECTION
+// Setup Admin Chat Event Listeners
 function setupAdminChatEventListeners() {
     // Send message functionality
     const sendMessageBtn = document.getElementById('sendMessageBtn');
@@ -2546,7 +2546,7 @@ function setupAdminChatEventListeners() {
     }
 }
 
-// Load Admin Chat Contacts - UPDATED FOR MAIN SECTION
+// Load Admin Chat Contacts
 function loadAdminChatContacts() {
     const tutorContacts = document.getElementById('tutorContacts');
     const studentContacts = document.getElementById('studentContacts');
@@ -2557,17 +2557,11 @@ function loadAdminChatContacts() {
     studentContacts.innerHTML = '<div class="loading-state">Loading students...</div>';
     
     const chatTypeFilter = document.getElementById('chatTypeFilter')?.value || 'all';
-    const chatStatusFilter = document.getElementById('chatStatusFilter')?.value || 'all';
     
     // Load tutors based on filters
-    let tutorQuery = db.collection('tutors');
-    
     if (chatTypeFilter === 'tutors' || chatTypeFilter === 'all') {
-        if (chatStatusFilter === 'active') {
-            tutorQuery = tutorQuery.where('approved', '==', true);
-        }
-        
-        tutorQuery.get()
+        db.collection('tutors').where('approved', '==', true)
+            .get()
             .then((snapshot) => {
                 tutorContacts.innerHTML = '';
                 adminChatSystem.tutors = [];
@@ -2597,14 +2591,9 @@ function loadAdminChatContacts() {
     }
     
     // Load students based on filters
-    let studentQuery = db.collection('students');
-    
     if (chatTypeFilter === 'students' || chatTypeFilter === 'all') {
-        if (chatStatusFilter === 'active') {
-            studentQuery = studentQuery.where('status', '==', 'active');
-        }
-        
-        studentQuery.get()
+        db.collection('students').where('status', '==', 'active')
+            .get()
             .then((snapshot) => {
                 studentContacts.innerHTML = '';
                 adminChatSystem.students = [];
@@ -2634,7 +2623,7 @@ function loadAdminChatContacts() {
     }
 }
 
-// Create Admin Contact Element - UPDATED FOR MAIN SECTION
+// Create Admin Contact Element
 function createAdminContactElement(user, type) {
     const contactDiv = document.createElement('div');
     contactDiv.className = 'contact-item';
@@ -2678,7 +2667,7 @@ function createAdminContactElement(user, type) {
     return contactDiv;
 }
 
-// Open Admin Chat - UPDATED FOR MAIN SECTION
+// Open Admin Chat
 async function openAdminChat(user, type) {
     try {
         // Create chat data object
@@ -2741,9 +2730,6 @@ async function openAdminChat(user, type) {
         alert('Error opening chat. Please try again.');
     }
 }
-
-// The rest of your functions (loadAdminChatMessages, sendAdminMessage, etc.) remain the same
-// but will now work with your main section elements
 
 // Load Admin Chat Messages
 function loadAdminChatMessages(chatId) {
@@ -2874,21 +2860,268 @@ async function sendAdminMessage() {
     }
 }
 
-// Add these helper functions for the new buttons:
+// Send Admin Notification
+async function sendAdminNotification(userId, userType, message) {
+    try {
+        const notificationData = {
+            title: 'New message from Admin',
+            body: message.length > 50 ? message.substring(0, 50) + '...' : message,
+            type: 'admin_message',
+            sender: 'admin',
+            recipient: userId,
+            timestamp: new Date(),
+            read: false,
+            chatId: adminChatSystem.currentChat.chatId
+        };
+        
+        // Add to user's notifications collection
+        await db.collection(userType === 'tutor' ? 'tutors' : 'students')
+            .doc(userId)
+            .collection('notifications')
+            .add(notificationData);
+            
+    } catch (error) {
+        console.error('Error sending notification:', error);
+    }
+}
+
+// Indicate Admin Typing
+function indicateAdminTyping(chatId) {
+    // Clear previous timeout
+    if (adminChatSystem.typingTimeout) {
+        clearTimeout(adminChatSystem.typingTimeout);
+    }
+    
+    // Set typing status
+    db.collection('chats').doc(chatId).update({
+        'typing.admin': true,
+        'lastTyping': new Date()
+    });
+    
+    // Clear typing status after 3 seconds
+    adminChatSystem.typingTimeout = setTimeout(() => {
+        db.collection('chats').doc(chatId).update({
+            'typing.admin': false
+        });
+    }, 3000);
+}
+
+// Mark Admin Chat as Read
+async function markAdminChatAsRead(chatId, userId, userType) {
+    try {
+        await db.collection('chats')
+            .doc(chatId)
+            .update({
+                [`unreadCounts.admin`]: 0
+            });
+            
+        // Update local unread count
+        if (adminChatSystem.unreadCounts[userId]) {
+            adminChatSystem.unreadCounts[userId] = 0;
+            updateContactUnreadBadge(userId);
+            updateGlobalUnreadCount();
+        }
+    } catch (error) {
+        console.error('Error marking admin chat as read:', error);
+    }
+}
+
+// Load Unread Counts for Tutors
+async function loadUnreadCountsForTutors() {
+    try {
+        const adminChatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', 'admin')
+            .get();
+            
+        adminChatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const tutorId = chat.participants.find(id => id !== 'admin' && chat.participantTypes?.[id] === 'tutor');
+            
+            if (tutorId && chat.unreadCounts) {
+                const unreadCount = chat.unreadCounts.admin || 0;
+                if (unreadCount > 0) {
+                    adminChatSystem.unreadCounts[tutorId] = unreadCount;
+                    updateContactUnreadBadge(tutorId);
+                }
+            }
+        });
+        
+        updateGlobalUnreadCount();
+    } catch (error) {
+        console.error('Error loading unread counts for tutors:', error);
+    }
+}
+
+// Load Unread Counts for Students
+async function loadUnreadCountsForStudents() {
+    try {
+        const adminChatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', 'admin')
+            .get();
+            
+        adminChatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const studentId = chat.participants.find(id => id !== 'admin' && chat.participantTypes?.[id] === 'student');
+            
+            if (studentId && chat.unreadCounts) {
+                const unreadCount = chat.unreadCounts.admin || 0;
+                if (unreadCount > 0) {
+                    adminChatSystem.unreadCounts[studentId] = unreadCount;
+                    updateContactUnreadBadge(studentId);
+                }
+            }
+        });
+        
+        updateGlobalUnreadCount();
+    } catch (error) {
+        console.error('Error loading unread counts for students:', error);
+    }
+}
+
+// Update Contact Unread Badge
+function updateContactUnreadBadge(userId) {
+    const contactElement = document.querySelector(`[data-user-id="${userId}"]`);
+    if (!contactElement) return;
+    
+    const unreadCount = adminChatSystem.unreadCounts[userId] || 0;
+    const statusElement = contactElement.querySelector('.contact-status');
+    
+    // Remove existing unread badge
+    const existingBadge = statusElement.querySelector('.unread-count');
+    if (existingBadge) {
+        existingBadge.remove();
+    }
+    
+    // Add new unread badge if needed
+    if (unreadCount > 0) {
+        const unreadBadge = document.createElement('div');
+        unreadBadge.className = 'unread-count';
+        unreadBadge.textContent = unreadCount;
+        statusElement.appendChild(unreadBadge);
+    }
+}
+
+// Update Global Unread Count
+function updateGlobalUnreadCount() {
+    const globalUnreadElement = document.getElementById('globalUnreadCount');
+    if (!globalUnreadElement) return;
+    
+    const totalUnread = Object.values(adminChatSystem.unreadCounts).reduce((sum, count) => sum + count, 0);
+    
+    if (totalUnread > 0) {
+        globalUnreadElement.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+        globalUnreadElement.style.display = 'flex';
+    } else {
+        globalUnreadElement.style.display = 'none';
+    }
+}
+
+// Setup Admin Realtime Listeners
+function setupAdminRealtimeListeners() {
+    // Listen for new messages in admin chats
+    db.collection('chats')
+        .where('participants', 'array-contains', 'admin')
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'modified') {
+                    const chat = change.doc.data();
+                    const userId = chat.participants.find(id => id !== 'admin');
+                    
+                    if (userId && chat.unreadCounts) {
+                        const unreadCount = chat.unreadCounts.admin || 0;
+                        adminChatSystem.unreadCounts[userId] = unreadCount;
+                        updateContactUnreadBadge(userId);
+                        updateGlobalUnreadCount();
+                    }
+                    
+                    // Show typing indicator
+                    if (chat.typing && chat.typing[userId] && adminChatSystem.currentChat?.userId === userId) {
+                        showTypingIndicator(chat.participantNames?.[userId] || 'User');
+                    } else {
+                        hideTypingIndicator();
+                    }
+                }
+            });
+        });
+}
+
+// Show Typing Indicator
+function showTypingIndicator(userName) {
+    const typingIndicator = document.getElementById('typingIndicator');
+    const typingUserName = document.getElementById('typingUserName');
+    
+    if (typingIndicator && typingUserName) {
+        typingUserName.textContent = userName;
+        typingIndicator.style.display = 'flex';
+        
+        // Scroll to bottom
+        const messagesContainer = document.getElementById('messagesContainer');
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    }
+}
+
+// Hide Typing Indicator
+function hideTypingIndicator() {
+    const typingIndicator = document.getElementById('typingIndicator');
+    if (typingIndicator) {
+        typingIndicator.style.display = 'none';
+    }
+}
+
+// Filter Admin Contacts
+function filterAdminContacts(searchTerm) {
+    const contactItems = document.querySelectorAll('.contact-item');
+    contactItems.forEach(item => {
+        const userName = item.querySelector('.contact-name').textContent.toLowerCase();
+        const userSubject = item.querySelector('.contact-subject').textContent.toLowerCase();
+        const searchLower = searchTerm.toLowerCase();
+        
+        if (userName.includes(searchLower) || userSubject.includes(searchLower)) {
+            item.style.display = 'flex';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
+
+// Insert Quick Message
+function insertQuickMessage(text) {
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+        messageInput.value = text;
+        messageInput.focus();
+    }
+}
+
+// Format Message Time
+function formatMessageTime(date) {
+    if (!date) return '';
+    
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    
+    return date.toLocaleDateString();
+}
+
+// Archive Current Chat
 async function archiveCurrentChat() {
     if (!adminChatSystem.currentChat) return;
-    // Implementation for archiving chat
     alert('Archive functionality would be implemented here');
 }
 
+// Clear Current Chat
 async function clearCurrentChat() {
     if (!adminChatSystem.currentChat || !confirm('Are you sure you want to clear this chat?')) return;
-    // Implementation for clearing chat
     alert('Clear chat functionality would be implemented here');
 }
-
-// Keep all your existing utility functions (sendAdminNotification, indicateAdminTyping, etc.)
-// They should work with the updated structure
 
 // Initialize when messages section is activated
 document.addEventListener('DOMContentLoaded', function() {
@@ -2916,6 +3149,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
 
