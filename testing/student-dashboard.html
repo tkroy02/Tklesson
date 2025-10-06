@@ -120,68 +120,6 @@ body {
   color: #4a5568;
 }
 
-/* Sidebar menu badge */
-.menu-badge {
-    background: var(--accent);
-    color: white;
-    border-radius: 10px;
-    padding: 2px 6px;
-    font-size: 0.7em;
-    font-weight: 600;
-    min-width: 18px;
-    height: 18px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    margin-left: auto;
-}
-
-/* Contact unread badge in chat list */
-.contact-unread-badge {
-    background: #ff6b6b;
-    color: white;
-    border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.7em;
-    font-weight: 600;
-    margin-left: auto;
-    order: 1; /* Ensure it appears before timestamp */
-}
-
-/* Status indicator adjustments */
-.contact-status {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
-}
-
-.status-online {
-    order: 2;
-}
-
-.last-message-time {
-    order: 3;
-    font-size: 0.75em;
-    color: var(--gray);
-}
-
-/* Pulse animation for new messages */
-@keyframes pulse-gentle {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-.menu-badge:not([style*="display: none"]),
-.contact-unread-badge:not([style*="display: none"]) {
-    animation: pulse-gentle 2s ease-in-out;
-}
-  
 /* Reviews Section Styles */
 .reviews-container {
   display: flex;
@@ -6960,7 +6898,7 @@ function cleanupChatSystem() {
     console.log('Chat system cleaned up');
 }
   
-// Create contact element with proper unread message handling
+// Create contact element
 function createContactElement(contact) {
     const contactDiv = document.createElement('div');
     contactDiv.className = `contact-item ${currentChat?.tutorId === contact.tutorId ? 'active' : ''}`;
@@ -6968,13 +6906,8 @@ function createContactElement(contact) {
     contactDiv.setAttribute('data-chat-id', contact.chatId);
     
     const lastMessageTime = contact.lastMessageAt ? formatMessageTime(contact.lastMessageAt.toDate()) : '';
-    
-    // Calculate unread count from Firestore data structure
-    const unreadCounts = contact.unreadCounts || {};
-    const userUnread = unreadCounts[auth.currentUser.uid] || 0;
-    
-    const unreadBadge = userUnread > 0 ? 
-        `<div class="contact-unread-badge">${userUnread > 99 ? '99+' : userUnread}</div>` : '';
+    const unreadBadge = contact.unreadCount > 0 ? 
+        `<div class="unread-count">${contact.unreadCount}</div>` : '';
     
     contactDiv.innerHTML = `
         <div class="contact-avatar">
@@ -6995,102 +6928,11 @@ function createContactElement(contact) {
         </div>
     `;
     
-    contactDiv.addEventListener('click', () => {
-        // Mark messages as read when opening chat
-        if (userUnread > 0) {
-            markChatAsRead(contact.chatId);
-        }
-        openChat(contact);
-    });
+    contactDiv.addEventListener('click', () => openChat(contact));
     
     return contactDiv;
 }
-  
-// Function to update sidebar unread message count
-function updateSidebarMessageBadge(totalUnread) {
-    const badge = document.getElementById('unreadMessagesCount');
-    if (!badge) return;
-    
-    if (totalUnread > 0) {
-        badge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-        badge.style.display = 'inline';
-        badge.setAttribute('aria-label', `${totalUnread} unread messages`);
-        
-        // Add pulse animation for new messages
-        badge.style.animation = 'pulse-gentle 2s ease-in-out';
-    } else {
-        badge.style.display = 'none';
-        badge.setAttribute('aria-label', 'No unread messages');
-    }
-}
 
-// Function to mark a chat as read
-function markChatAsRead(chatId) {
-    if (!auth.currentUser) return;
-    
-    const userId = auth.currentUser.uid;
-    
-    db.collection('chats').doc(chatId).update({
-        [`unreadCounts.${userId}`]: 0,
-        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-    }).catch((error) => {
-        console.error('Error marking chat as read:', error);
-    });
-}
-
-// Real-time listener for unread message counts
-function setupUnreadMessagesListener() {
-    if (!auth.currentUser) return;
-    
-    const userId = auth.currentUser.uid;
-    
-    return db.collection('chats')
-        .where('participants', 'array-contains', userId)
-        .onSnapshot((snapshot) => {
-            let totalUnread = 0;
-            
-            snapshot.forEach((doc) => {
-                const chatData = doc.data();
-                const unreadCounts = chatData.unreadCounts || {};
-                const userUnread = unreadCounts[userId] || 0;
-                
-                totalUnread += userUnread;
-                
-                // Update individual contact badge
-                updateContactUnreadBadge(doc.id, userUnread);
-            });
-            
-            // Update sidebar badge
-            updateSidebarMessageBadge(totalUnread);
-        }, (error) => {
-            console.error('Error listening to unread counts:', error);
-        });
-}
-
-// Update individual contact's unread badge
-function updateContactUnreadBadge(chatId, unreadCount) {
-    const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
-    if (!contactItem) return;
-    
-    let unreadBadge = contactItem.querySelector('.contact-unread-badge');
-    const contactStatus = contactItem.querySelector('.contact-status');
-    
-    if (unreadCount > 0) {
-        if (!unreadBadge) {
-            unreadBadge = document.createElement('div');
-            unreadBadge.className = 'contact-unread-badge';
-            contactStatus.insertBefore(unreadBadge, contactStatus.querySelector('.last-message-time'));
-        }
-        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-        unreadBadge.style.display = 'flex';
-        
-        // Add animation for new messages
-        unreadBadge.style.animation = 'pulse-gentle 2s ease-in-out';
-    } else if (unreadBadge) {
-        unreadBadge.style.display = 'none';
-    }
-}
-  
 // Open chat with tutor
 async function openChat(contact) {
     try {
@@ -7727,85 +7569,6 @@ document.addEventListener('DOMContentLoaded', function() {
     setupMobileChatFeatures();
     setupChatResponsiveBehavior();
 });
-
-// Function to update unread message counts
-function updateUnreadMessageCounts() {
-    if (!auth.currentUser) return;
-    
-    const userId = auth.currentUser.uid;
-    
-    // Listen for chats where user is a participant
-    db.collection('chats')
-        .where('participants', 'array-contains', userId)
-        .onSnapshot((snapshot) => {
-            let totalUnread = 0;
-            
-            snapshot.forEach((doc) => {
-                const chatData = doc.data();
-                const unreadCounts = chatData.unreadCounts || {};
-                const userUnread = unreadCounts[userId] || 0;
-                
-                totalUnread += userUnread;
-                
-                // Update individual contact in chat list
-                updateContactUnreadBadge(doc.id, userUnread);
-            });
-            
-            // Update sidebar badge
-            updateSidebarMessageBadge(totalUnread);
-        }, (error) => {
-            console.error('Error listening to unread counts:', error);
-        });
-}
-
-// Update sidebar message badge
-function updateSidebarMessageBadge(count) {
-    const badge = document.getElementById('unreadMessagesCount');
-    if (!badge) return;
-    
-    if (count > 0) {
-        badge.textContent = count > 99 ? '99+' : count.toString();
-        badge.style.display = 'inline';
-        badge.setAttribute('aria-label', `${count} unread messages`);
-    } else {
-        badge.style.display = 'none';
-        badge.setAttribute('aria-label', 'No unread messages');
-    }
-}
-
-// Update contact unread badge in chat list
-function updateContactUnreadBadge(chatId, unreadCount) {
-    const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
-    if (!contactItem) return;
-    
-    let unreadBadge = contactItem.querySelector('.contact-unread-badge');
-    
-    if (unreadCount > 0) {
-        if (!unreadBadge) {
-            unreadBadge = document.createElement('span');
-            unreadBadge.className = 'contact-unread-badge';
-            contactItem.querySelector('.contact-status').appendChild(unreadBadge);
-        }
-        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-        unreadBadge.style.display = 'flex';
-    } else if (unreadBadge) {
-        unreadBadge.style.display = 'none';
-    }
-}
-
-// Mark messages as read when opening a chat
-function markChatAsRead(chatId) {
-    if (!auth.currentUser) return;
-    
-    const userId = auth.currentUser.uid;
-    
-    db.collection('chats').doc(chatId).update({
-        [`unreadCounts.${userId}`]: 0,
-        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-    }).catch((error) => {
-        console.error('Error marking chat as read:', error);
-    });
-}  
   
 // =======================================================
 // CHATS SECTION/MESSAGES SECTION ENDS HERE
