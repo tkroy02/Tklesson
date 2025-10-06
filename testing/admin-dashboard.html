@@ -552,6 +552,43 @@
     color: var(--error);
 }
 
+/* Notification badges */
+.nav-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: #e74c3c;
+    color: white;
+    border-radius: 10px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 11px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    font-weight: bold;
+}
+
+.unread-count {
+    background: #e74c3c;
+    color: white;
+    border-radius: 10px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    font-weight: bold;
+}
+
+/* Make sure nav items have relative positioning */
+.nav-item {
+    position: relative;
+}
+        
 /* Responsive styles */
 @media (max-width: 768px) {
     .admin-chat-sidebar {
@@ -2475,10 +2512,34 @@ let adminChatSystem = {
 const SUPPORT_CONFIG = {
     senderId: 'support',
     senderName: 'Customer Support',
-    senderType: 'support'
+    senderType: 'support',
+    globalUnreadCount: 0 // Add this
+
 };
 
+// Initialize global unread count
+async function initGlobalUnreadCount() {
+    try {
+        const adminChatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', SUPPORT_CONFIG.senderId)
+            .get();
+        
+        let totalUnread = 0;
+        adminChatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const unreadCount = chat.unreadCounts?.[SUPPORT_CONFIG.senderId] || 0;
+            totalUnread += unreadCount;
+        });
+        
+        SUPPORT_CONFIG.globalUnreadCount = totalUnread;
+        updateGlobalUnreadBadges();
+    } catch (error) {
+        console.error('Error initializing global unread count:', error);
+    }
+}
+        
 // Initialize Admin Chat System
+// Enhanced initialization
 function initAdminChatSystem() {
     if (adminChatSystem.isInitialized) return;
     
@@ -2488,8 +2549,15 @@ function initAdminChatSystem() {
     setupAdminChatEventListeners();
     loadAdminChatContacts();
     setupAdminRealtimeListeners();
+    initGlobalUnreadCount(); // NEW: Initialize global count
+    createSidebarBadge();    // NEW: Ensure sidebar badge exists
+    
+    // Request notification permission on init
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+    }
 }
-
+        
 // Setup Admin Chat Event Listeners
 function setupAdminChatEventListeners() {
     // Send message functionality
@@ -2916,23 +2984,39 @@ function indicateAdminTyping(chatId) {
 // Mark Admin Chat as Read
 async function markAdminChatAsRead(chatId, userId, userType) {
     try {
+        // Reset unread count for this chat
         await db.collection('chats')
             .doc(chatId)
             .update({
-                [`unreadCounts.${SUPPORT_CONFIG.senderId}`]: 0 // Changed from 'admin'
+                [`unreadCounts.${SUPPORT_CONFIG.senderId}`]: 0
             });
+            
+        // Mark all messages as read
+        const messagesSnapshot = await db.collection('chats')
+            .doc(chatId)
+            .collection('messages')
+            .where('read', '==', false)
+            .where('senderId', '!=', SUPPORT_CONFIG.senderId)
+            .get();
+            
+        const batch = db.batch();
+        messagesSnapshot.forEach(doc => {
+            batch.update(doc.ref, { read: true });
+        });
+        await batch.commit();
             
         // Update local unread count
         if (adminChatSystem.unreadCounts[userId]) {
             adminChatSystem.unreadCounts[userId] = 0;
             updateContactUnreadBadge(userId);
             updateGlobalUnreadCount();
+            updateSidebarNotification();
         }
     } catch (error) {
         console.error('Error marking admin chat as read:', error);
     }
 }
-
+        
 // Load Unread Counts for Tutors
 async function loadUnreadCountsForTutors() {
     try {
@@ -3011,31 +3095,129 @@ function updateContactUnreadBadge(userId) {
 // Update Global Unread Count
 function updateGlobalUnreadCount() {
     const globalUnreadElement = document.getElementById('globalUnreadCount');
-    if (!globalUnreadElement) return;
+    const sidebarBadge = document.querySelector('[data-section="messages-and-chats"] .nav-badge');
     
+    // Calculate total unread
     const totalUnread = Object.values(adminChatSystem.unreadCounts).reduce((sum, count) => sum + count, 0);
+    SUPPORT_CONFIG.globalUnreadCount = totalUnread;
     
-    if (totalUnread > 0) {
-        globalUnreadElement.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-        globalUnreadElement.style.display = 'flex';
+    // Update main chat header badge
+    if (globalUnreadElement) {
+        if (totalUnread > 0) {
+            globalUnreadElement.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+            globalUnreadElement.style.display = 'flex';
+        } else {
+            globalUnreadElement.style.display = 'none';
+        }
+    }
+    
+    // Update sidebar badge
+    updateSidebarNotification();
+}
+
+// NEW: Update sidebar notification badge
+function updateSidebarNotification() {
+    const sidebarBadge = document.querySelector('[data-section="messages-and-chats"] .nav-badge');
+    const totalUnread = SUPPORT_CONFIG.globalUnreadCount;
+    
+    if (sidebarBadge) {
+        if (totalUnread > 0) {
+            sidebarBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+            sidebarBadge.style.display = 'flex';
+        } else {
+            sidebarBadge.style.display = 'none';
+        }
     } else {
-        globalUnreadElement.style.display = 'none';
+        // Create badge if it doesn't exist
+        createSidebarBadge();
     }
 }
 
+// NEW: Create sidebar badge element
+function createSidebarBadge() {
+    const messagesLink = document.querySelector('[data-section="messages-and-chats"]');
+    if (messagesLink && !messagesLink.querySelector('.nav-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'nav-badge';
+        badge.style.cssText = `
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #e74c3c;
+            color: white;
+            border-radius: 10px;
+            min-width: 18px;
+            height: 18px;
+            font-size: 11px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0 4px;
+        `;
+        messagesLink.style.position = 'relative';
+        messagesLink.appendChild(badge);
+        updateSidebarNotification();
+    }
+}
+
+// NEW: Show desktop notification
+function showDesktopNotification(senderName, message) {
+    // Check if browser supports notifications
+    if (!("Notification" in window)) {
+        return;
+    }
+    
+    // Check if permission is granted
+    if (Notification.permission === "granted") {
+        createNotification(senderName, message);
+    } 
+    // Otherwise, ask for permission
+    else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then(permission => {
+            if (permission === "granted") {
+                createNotification(senderName, message);
+            }
+        });
+    }
+}
+
+// NEW: Create notification
+function createNotification(senderName, message) {
+    const notification = new Notification(`New message from ${senderName}`, {
+        body: message.length > 100 ? message.substring(0, 100) + '...' : message,
+        icon: '/favicon.ico', // Add your icon path
+        tag: 'support-message'
+    });
+    
+    // Close notification after 5 seconds
+    setTimeout(() => {
+        notification.close();
+    }, 5000);
+    
+    // Focus window when notification is clicked
+    notification.onclick = function() {
+        window.focus();
+        // Optionally switch to messages section
+        const messagesLink = document.querySelector('[data-section="messages-and-chats"]');
+        if (messagesLink) messagesLink.click();
+    };
+}
+        
 // Setup Admin Realtime Listeners
+// Enhanced real-time listener for new messages
 function setupAdminRealtimeListeners() {
     // Listen for new messages in support chats
     db.collection('chats')
-        .where('participants', 'array-contains', SUPPORT_CONFIG.senderId) // Changed from 'admin'
+        .where('participants', 'array-contains', SUPPORT_CONFIG.senderId)
         .onSnapshot((snapshot) => {
             snapshot.docChanges().forEach(change => {
+                const chat = change.doc.data();
+                const userId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId);
+                
                 if (change.type === 'modified') {
-                    const chat = change.doc.data();
-                    const userId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId);
-                    
+                    // Handle unread counts
                     if (userId && chat.unreadCounts) {
-                        const unreadCount = chat.unreadCounts[SUPPORT_CONFIG.senderId] || 0; // Changed from 'admin'
+                        const unreadCount = chat.unreadCounts[SUPPORT_CONFIG.senderId] || 0;
                         adminChatSystem.unreadCounts[userId] = unreadCount;
                         updateContactUnreadBadge(userId);
                         updateGlobalUnreadCount();
@@ -3048,7 +3230,77 @@ function setupAdminRealtimeListeners() {
                         hideTypingIndicator();
                     }
                 }
+                
+                // NEW: Handle new messages that increase unread count
+                if (change.type === 'modified' && chat.lastMessageBy !== SUPPORT_CONFIG.senderId) {
+                    handleNewMessageNotification(chat, userId);
+                }
             });
+        });
+
+    // NEW: Specific listener for new messages in current chats
+    setupMessageListenersForAllChats();
+}
+
+// NEW: Listen for new messages in all support chats
+function setupMessageListenersForAllChats() {
+    // Get all chats where support is a participant
+    db.collection('chats')
+        .where('participants', 'array-contains', SUPPORT_CONFIG.senderId)
+        .get()
+        .then(snapshot => {
+            snapshot.forEach(doc => {
+                const chatId = doc.id;
+                setupChatMessageListener(chatId);
+            });
+        });
+}
+
+// NEW: Set up listener for individual chat messages
+function setupChatMessageListener(chatId) {
+    db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const message = change.doc.data();
+                    // If message is from user (not support) and not read
+                    if (message.senderId !== SUPPORT_CONFIG.senderId && !message.read) {
+                        handleNewIncomingMessage(chatId, message);
+                    }
+                }
+            });
+        });
+}
+
+// NEW: Handle new incoming message
+function handleNewIncomingMessage(chatId, message) {
+    // Update the specific chat's unread count
+    db.collection('chats').doc(chatId).get()
+        .then(doc => {
+            if (doc.exists) {
+                const chat = doc.data();
+                const userId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId);
+                
+                if (userId) {
+                    // Increment unread count for this user
+                    const currentUnread = adminChatSystem.unreadCounts[userId] || 0;
+                    adminChatSystem.unreadCounts[userId] = currentUnread + 1;
+                    
+                    // Update UI
+                    updateContactUnreadBadge(userId);
+                    updateGlobalUnreadCount();
+                    updateSidebarNotification();
+                    
+                    // Show desktop notification if not focused on this chat
+                    if (!adminChatSystem.currentChat || adminChatSystem.currentChat.userId !== userId) {
+                        showDesktopNotification(chat.participantNames[userId], message.text);
+                    }
+                }
+            }
         });
 }
 
@@ -3156,6 +3408,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
 
