@@ -437,6 +437,38 @@ body {
     justify-content: flex-end;
 }
 
+/* Notification badges */
+.unread-count {
+    background: #e74c3c;
+    color: white;
+    border-radius: 10px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+}
+
+.nav-badge {
+    background: #e74c3c;
+    color: white;
+    border-radius: 10px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 11px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+}
+
+/* Notification styles */
+.notification-sound {
+    display: none;
+}
+  
 /* Toast Notifications */
 .toast-notification {
     position: fixed;
@@ -6700,6 +6732,21 @@ let typingTimeout = null;
 let chatSystemInitialized = false;
 let chatListenersActive = false;
 
+  // Student Chat Notification System
+let studentNotificationSystem = {
+    unreadCounts: {},
+    globalUnreadCount: 0,
+    notificationListener: null,
+    messageListeners: new Map()
+};
+
+// Student notification configuration
+const STUDENT_NOTIFICATION_CONFIG = {
+    enabled: true,
+    soundEnabled: true,
+    desktopEnabled: true
+};
+
 // Initialize chat system
 function initChatSystem() {
     if (chatSystemInitialized) {
@@ -6713,8 +6760,15 @@ function initChatSystem() {
     setupChatEventListeners();
     loadChatContacts();
     setupRealtimeListeners();
+    setupStudentNotificationSystem(); // NEW
+    createStudentNotificationBadge(); // NEW
+    
+    // Request notification permission
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+    }
 }
-
+  
 // Setup chat event listeners
 function setupChatEventListeners() {
     // Send message on button click
@@ -6732,14 +6786,182 @@ function setupChatEventListeners() {
                 sendMessage();
             }
         });
-        
+
+// Setup student notification system
+function setupStudentNotificationSystem() {
+    const studentId = auth.currentUser.uid;
+    
+    // Listen for all chats where student is a participant
+    studentNotificationSystem.notificationListener = db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'modified') {
+                    const chat = change.doc.data();
+                    const otherParticipantId = chat.participants.find(id => id !== studentId);
+                    
+                    if (otherParticipantId && chat.unreadCounts) {
+                        const unreadCount = chat.unreadCounts[studentId] || 0;
+                        
+                        // Update local unread counts
+                        studentNotificationSystem.unreadCounts[otherParticipantId] = unreadCount;
+                        
+                        // Update contact badge
+                        updateStudentContactBadge(otherParticipantId, unreadCount);
+                        
+                        // Handle new message notifications
+                        if (unreadCount > 0 && chat.lastMessageBy !== studentId) {
+                            handleNewStudentMessage(chat, otherParticipantId);
+                        }
+                    }
+                }
+            });
+            
+            // Update global unread count
+            updateStudentGlobalUnreadCount();
+        });
+
+    // Setup individual message listeners for real-time notifications
+    setupStudentMessageListeners();
+}
+
+// Setup message listeners for all student chats
+function setupStudentMessageListeners() {
+    const studentId = auth.currentUser.uid;
+    
+    // Get all student chats
+    db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .get()
+        .then(snapshot => {
+            snapshot.forEach(doc => {
+                setupStudentChatMessageListener(doc.id);
+            });
+        });
+}
+
+// Setup message listener for specific chat
+function setupStudentChatMessageListener(chatId) {
+    const studentId = auth.currentUser.uid;
+    
+    // Skip if listener already exists
+    if (studentNotificationSystem.messageListeners.has(chatId)) return;
+    
+    const messageListener = db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const message = change.doc.data();
+                    
+                    // If message is from someone else and not read
+                    if (message.senderId !== studentId && !message.read) {
+                        handleNewIncomingStudentMessage(chatId, message);
+                    }
+                }
+            });
+        });
+    
+    // Store listener for cleanup
+    studentNotificationSystem.messageListeners.set(chatId, messageListener);
+}
+      
         // Auto-resize textarea
         messageInput.addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = (this.scrollHeight) + 'px';
         });
     }
+
+// Handle new incoming message for student
+async function handleNewIncomingStudentMessage(chatId, message) {
+    try {
+        const chatDoc = await db.collection('chats').doc(chatId).get();
+        if (!chatDoc.exists) return;
+        
+        const chat = chatDoc.data();
+        const senderId = message.senderId;
+        const senderName = chat.participantNames?.[senderId] || 'Someone';
+        
+        // Update unread count
+        const currentUnread = studentNotificationSystem.unreadCounts[senderId] || 0;
+        studentNotificationSystem.unreadCounts[senderId] = currentUnread + 1;
+        
+        // Update UI
+        updateStudentContactBadge(senderId, currentUnread + 1);
+        updateStudentGlobalUnreadCount();
+        updateStudentSidebarBadge();
+        
+        // Show notification if not viewing this chat
+        const isViewingThisChat = currentChat && 
+            ((currentChat.tutorId === senderId) || 
+             (currentChat.isAdmin && senderId === 'support'));
+        
+        if (!isViewingThisChat) {
+            showStudentDesktopNotification(senderName, message.text, senderId);
+            playNotificationSound();
+        }
+        
+    } catch (error) {
+        console.error('Error handling new student message:', error);
+    }
+}
+
+  // Show desktop notification for student
+function showStudentDesktopNotification(senderName, message, senderId) {
+    if (!("Notification" in window)) return;
     
+    if (Notification.permission === "granted") {
+        createStudentNotification(senderName, message, senderId);
+    } else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then(permission => {
+            if (permission === "granted") {
+                createStudentNotification(senderName, message, senderId);
+            }
+        });
+    }
+}
+
+// Create student notification
+function createStudentNotification(senderName, message, senderId) {
+    const notification = new Notification(`New message from ${senderName}`, {
+        body: message.length > 100 ? message.substring(0, 100) + '...' : message,
+        icon: '/favicon.ico',
+        tag: `student-message-${senderId}`
+    });
+    
+    // Close after 5 seconds
+    setTimeout(() => notification.close(), 5000);
+    
+    // Focus and open chat when clicked
+    notification.onclick = function() {
+        window.focus();
+        
+        // Find and open the chat
+        const contactElement = document.querySelector(`[data-tutor-id="${senderId}"]`);
+        if (contactElement) {
+            contactElement.click();
+        }
+        
+        // Switch to messages section if not already there
+        const messagesLink = document.querySelector('a[data-section="messages"]');
+        if (messagesLink) messagesLink.click();
+        
+        notification.close();
+    };
+}
+
+// Play notification sound
+function playNotificationSound() {
+    if (!STUDENT_NOTIFICATION_CONFIG.soundEnabled) return;
+    
+    // You can add a notification sound here
+    // Example: new Audio('/notification-sound.mp3').play().catch(() => {});
+}
+  
     // Contact search
     const contactSearch = document.getElementById('contactSearch');
     if (contactSearch) {
@@ -6749,6 +6971,117 @@ function setupChatEventListeners() {
     }
 }
 
+// Update student contact badge
+function updateStudentContactBadge(contactId, unreadCount) {
+    const contactElement = document.querySelector(`[data-tutor-id="${contactId}"]`);
+    if (!contactElement) return;
+    
+    const statusElement = contactElement.querySelector('.contact-status');
+    if (!statusElement) return;
+    
+    // Remove existing badge
+    const existingBadge = statusElement.querySelector('.unread-count');
+    if (existingBadge) existingBadge.remove();
+    
+    // Add new badge if needed
+    if (unreadCount > 0) {
+        const badge = document.createElement('div');
+        badge.className = 'unread-count';
+        badge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+        statusElement.appendChild(badge);
+    }
+}
+
+// Update student global unread count
+function updateStudentGlobalUnreadCount() {
+    const totalUnread = Object.values(studentNotificationSystem.unreadCounts)
+        .reduce((sum, count) => sum + count, 0);
+    
+    studentNotificationSystem.globalUnreadCount = totalUnread;
+    
+    // Update menu badge
+    const menuBadge = document.getElementById('unreadMessagesCount');
+    if (menuBadge) {
+        if (totalUnread > 0) {
+            menuBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+            menuBadge.style.display = 'inline';
+        } else {
+            menuBadge.style.display = 'none';
+        }
+    }
+    
+    updateStudentSidebarBadge();
+}
+
+// Update student sidebar badge
+function updateStudentSidebarBadge() {
+    const totalUnread = studentNotificationSystem.globalUnreadCount;
+    const sidebarBadge = document.querySelector('[data-section="messages"] .nav-badge');
+    
+    if (sidebarBadge) {
+        if (totalUnread > 0) {
+            sidebarBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+            sidebarBadge.style.display = 'flex';
+        } else {
+            sidebarBadge.style.display = 'none';
+        }
+    }
+}
+
+// Create student notification badge
+function createStudentNotificationBadge() {
+    const messagesLink = document.querySelector('[data-section="messages"]');
+    if (messagesLink && !messagesLink.querySelector('.nav-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'nav-badge';
+        badge.style.cssText = `
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #e74c3c;
+            color: white;
+            border-radius: 10px;
+            min-width: 18px;
+            height: 18px;
+            font-size: 11px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0 4px;
+        `;
+        messagesLink.style.position = 'relative';
+        messagesLink.appendChild(badge);
+        updateStudentSidebarBadge();
+    }
+}
+
+// Enhanced mark chat as read
+async function markChatAsRead(chatId) {
+    try {
+        const studentId = auth.currentUser.uid;
+        
+        await db.collection('chats')
+            .doc(chatId)
+            .update({
+                [`unreadCounts.${studentId}`]: 0
+            });
+            
+        // Update local unread counts
+        if (currentChat) {
+            const contactId = currentChat.isAdmin ? 'support' : currentChat.tutorId;
+            studentNotificationSystem.unreadCounts[contactId] = 0;
+            updateStudentContactBadge(contactId, 0);
+            updateStudentGlobalUnreadCount();
+            updateStudentSidebarBadge();
+        }
+        
+    } catch (error) {
+        console.error('Error marking chat as read:', error);
+    }
+}
+
+  
+  
 // Load chat contacts
 // Load chat contacts with permanent admin option
 function loadChatContacts() {
@@ -6879,8 +7212,7 @@ function loadChatContacts() {
         });
 }
   
-// Clean up chat system properly
-function cleanupChatSystem() {
+// Clean up chat system properlyfunction cleanupChatSystem() {
     if (contactsListener) {
         contactsListener();
         contactsListener = null;
@@ -6891,12 +7223,25 @@ function cleanupChatSystem() {
         chatMessagesListener = null;
     }
     
+    // Clean up notification listeners
+    if (studentNotificationSystem.notificationListener) {
+        studentNotificationSystem.notificationListener();
+        studentNotificationSystem.notificationListener = null;
+    }
+    
+    // Clean up message listeners
+    studentNotificationSystem.messageListeners.forEach((listener, chatId) => {
+        listener();
+    });
+    studentNotificationSystem.messageListeners.clear();
+    
     currentChat = null;
     chatSystemInitialized = false;
     chatListenersActive = false;
     
     console.log('Chat system cleaned up');
 }
+  
   
 // Create contact element
 function createContactElement(contact) {
