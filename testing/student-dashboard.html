@@ -1869,6 +1869,57 @@ button:disabled {
   animation: fadeIn 0.5s ease;
 }
 
+/* Unread badge in contacts list */
+.contact-item .unread-count {
+    background: #ff4757;
+    color: white;
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: bold;
+    min-width: 20px;
+    text-align: center;
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    z-index: 2;
+}
+
+/* Unread badge in chat header */
+.unread-badge-header {
+    background: #ff4757;
+    color: white;
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: bold;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+/* Unread badge in main menu */
+#unreadMessagesCount {
+    background: #ff4757;
+    color: white;
+    border-radius: 10px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: bold;
+    min-width: 18px;
+    text-align: center;
+    position: absolute;
+    top: -5px;
+    right: -5px;
+}
+
+.contact-status {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+  
 .section-header {
   display: flex;
   align-items: center;
@@ -6709,7 +6760,10 @@ function initChatSystem() {
     
     console.log('Initializing chat system...');
     chatSystemInitialized = true;
-    
+
+ // Inject notification styles
+    injectChatNotificationStyles();
+  
     setupChatEventListeners();
     loadChatContacts();
     setupRealtimeListeners();
@@ -6754,7 +6808,7 @@ function setupChatEventListeners() {
 function loadChatContacts() {
     const contactsList = document.getElementById('contactsList');
     if (!contactsList) return;
-    
+  
     // Clean up previous listener
     if (contactsListener) {
         contactsListener();
@@ -6847,6 +6901,8 @@ function loadChatContacts() {
                         const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
                         if (tutorDoc.exists) {
                             const tutor = tutorDoc.data();
+                            
+                            // Get unread count for current student - handle both number and undefined cases
                             const unreadCount = chat.unreadCounts?.[studentId] || 0;
                             totalUnread += unreadCount;
                             
@@ -6897,6 +6953,39 @@ function cleanupChatSystem() {
     
     console.log('Chat system cleaned up');
 }
+
+// Also check for admin chats and add their unread counts
+            const adminChatsSnapshot = await db.collection('chats')
+                .where('participants', 'array-contains', studentId)
+                .where('participants', 'array-contains', 'support')
+                .get();
+            
+            adminChatsSnapshot.forEach(doc => {
+                const chat = doc.data();
+                const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                totalUnread += unreadCount;
+                
+                // Update admin contact with unread count
+                const adminContact = contactsList.querySelector('.admin-contact');
+                if (adminContact && unreadCount > 0) {
+                    const existingBadge = adminContact.querySelector('.unread-count');
+                    if (existingBadge) {
+                        existingBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                    } else {
+                        const unreadBadge = document.createElement('div');
+                        unreadBadge.className = 'unread-count';
+                        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                        adminContact.querySelector('.contact-status').appendChild(unreadBadge);
+                    }
+                }
+            });
+            
+            updateUnreadMessagesCount(totalUnread);
+        }, (error) => {
+            console.error('Error loading contacts:', error);
+            contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
+        });
+}
   
 // Create contact element
 function createContactElement(contact) {
@@ -6906,8 +6995,10 @@ function createContactElement(contact) {
     contactDiv.setAttribute('data-chat-id', contact.chatId);
     
     const lastMessageTime = contact.lastMessageAt ? formatMessageTime(contact.lastMessageAt.toDate()) : '';
+    
+    // Create unread badge HTML if there are unread messages
     const unreadBadge = contact.unreadCount > 0 ? 
-        `<div class="unread-count">${contact.unreadCount}</div>` : '';
+        `<div class="unread-count">${contact.unreadCount > 99 ? '99+' : contact.unreadCount}</div>` : '';
     
     contactDiv.innerHTML = `
         <div class="contact-avatar">
@@ -6932,7 +7023,7 @@ function createContactElement(contact) {
     
     return contactDiv;
 }
-
+  
 // Open chat with tutor
 async function openChat(contact) {
     try {
@@ -6955,11 +7046,20 @@ async function openChat(contact) {
         document.getElementById('messagesContainer').style.display = 'flex';
         document.getElementById('messageInputContainer').style.display = 'block';
         
-        // Update header based on contact type
-        document.getElementById('currentContactName').textContent = contact.tutorName;
+        // Update header with unread count badge if there are unread messages
+        const contactNameElement = document.getElementById('currentContactName');
+        if (contact.unreadCount > 0) {
+            contactNameElement.innerHTML = `
+                ${contact.tutorName}
+                <span class="unread-badge-header">${contact.unreadCount}</span>
+            `;
+        } else {
+            contactNameElement.textContent = contact.tutorName;
+        }
+        
         document.getElementById('currentContactSubject').textContent = 
             contact.tutorSubjects.join(', ') || (contact.isAdmin ? 'TKLesson Support' : 'General');
-        
+      
         // Update avatar and UI based on contact type
         const avatar = document.querySelector('#chatHeader .contact-avatar');
         const chatActions = document.querySelector('.chat-actions');
@@ -7001,6 +7101,8 @@ async function openChat(contact) {
         // Mark as read if it's a real chat (not admin placeholder)
         if (contact.chatId && !contact.isAdmin) {
             await markChatAsRead(contact.chatId);
+            // Reset unread count in UI after marking as read
+            contactNameElement.textContent = contact.tutorName;
         }
         
     } catch (error) {
@@ -7238,16 +7340,64 @@ function formatMessageTime(date) {
 // Mark chat as read
 async function markChatAsRead(chatId) {
     try {
+        const studentId = auth.currentUser.uid;
         await db.collection('chats')
             .doc(chatId)
             .update({
-                [`unreadCounts.${auth.currentUser.uid}`]: 0
+                [`unreadCounts.${studentId}`]: 0
             });
+
+      // Update the contact list UI to remove the unread badge
+        const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
+        if (contactItem) {
+            const unreadBadge = contactItem.querySelector('.unread-count');
+            if (unreadBadge) {
+                unreadBadge.remove();
+            }
+        }
+
+
+      // Update total unread count
+        updateUnreadMessagesCount();
+        
     } catch (error) {
         console.error('Error marking chat as read:', error);
     }
 }
 
+// Update the updateUnreadMessagesCount function to calculate total dynamically
+async function updateUnreadMessagesCount() {
+    const studentId = auth.currentUser.uid;
+    let totalUnread = 0;
+    
+    try {
+        // Get all chats for this student
+        const chatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', studentId)
+            .get();
+        
+        chatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const unreadCount = chat.unreadCounts?.[studentId] || 0;
+            totalUnread += unreadCount;
+        });
+        
+        const unreadBadge = document.getElementById('unreadMessagesCount');
+        if (unreadBadge) {
+            if (totalUnread > 0) {
+                unreadBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+                unreadBadge.style.display = 'inline';
+            } else {
+                unreadBadge.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error calculating unread count:', error);
+    }
+}
+
+  
+  
 // Insert quick message
 function insertQuickMessage(text) {
     const messageInput = document.getElementById('messageInput');
@@ -7496,6 +7646,17 @@ async function cleanupDuplicateChats() {
         console.error('Error cleaning up duplicate chats:', error);
     }
 }
+
+function injectChatNotificationStyles() {
+    if (!document.getElementById('chat-notification-styles')) {
+        const styleSheet = document.createElement('style');
+        styleSheet.id = 'chat-notification-styles';
+        styleSheet.textContent = chatNotificationStyles;
+        document.head.appendChild(styleSheet);
+    }
+}
+
+  
   
 // =======================================================
 // MOBILE CHAT FUNCTIONALITY FOR STUDENT DASHBOARD
@@ -8161,5 +8322,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
