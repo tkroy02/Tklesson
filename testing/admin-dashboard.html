@@ -2471,6 +2471,13 @@ let adminChatSystem = {
     unreadCounts: {}
 };
 
+// Admin configuration for customer support
+const SUPPORT_CONFIG = {
+    senderId: 'support',
+    senderName: 'Customer Support',
+    senderType: 'support'
+};
+
 // Initialize Admin Chat System
 function initAdminChatSystem() {
     if (adminChatSystem.isInitialized) return;
@@ -2480,7 +2487,7 @@ function initAdminChatSystem() {
     
     setupAdminChatEventListeners();
     loadAdminChatContacts();
-    setupAdminRealtimeListeners(); // This function now exists below
+    setupAdminRealtimeListeners();
 }
 
 // Setup Admin Chat Event Listeners
@@ -2681,7 +2688,7 @@ async function openAdminChat(user, type) {
                 (user.subjects?.subjects?.join(', ') || 'No subjects') : 
                 (user.gradeLevel || 'No grade level'),
             userAvatar: user.photoURL,
-            chatId: `admin_${type}_${user.id}`
+            chatId: `support_${type}_${user.id}`  // Changed from admin_ to support_
         };
         
         adminChatSystem.currentChat = chatData;
@@ -2771,7 +2778,7 @@ function loadAdminChatMessages(chatId) {
 // Create Admin Message Element
 function createAdminMessageElement(message) {
     const messageDiv = document.createElement('div');
-    const isSent = message.senderId === 'admin';
+    const isSent = message.senderId === SUPPORT_CONFIG.senderId; // Changed from 'admin'
     
     messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
     messageDiv.innerHTML = `
@@ -2793,8 +2800,8 @@ async function sendAdminMessage() {
         const chatData = adminChatSystem.currentChat;
         const messageData = {
             text: messageText,
-            senderId: 'admin',
-            senderName: 'Admin',
+            senderId: SUPPORT_CONFIG.senderId,           // Changed to 'support'
+            senderName: SUPPORT_CONFIG.senderName,       // Changed to 'Customer Support'
             timestamp: new Date(),
             read: false,
             type: 'text'
@@ -2805,22 +2812,22 @@ async function sendAdminMessage() {
         const chatDoc = await chatRef.get();
         
         if (!chatDoc.exists) {
-            // Create new admin chat
+            // Create new support chat
             const chatInfo = {
-                participants: ['admin', chatData.userId],
+                participants: [SUPPORT_CONFIG.senderId, chatData.userId], // Changed from 'admin'
                 participantNames: {
-                    'admin': 'Admin',
+                    [SUPPORT_CONFIG.senderId]: SUPPORT_CONFIG.senderName, // Changed from 'Admin'
                     [chatData.userId]: chatData.userName
                 },
                 participantTypes: {
-                    'admin': 'admin',
+                    [SUPPORT_CONFIG.senderId]: SUPPORT_CONFIG.senderType, // Changed from 'admin'
                     [chatData.userId]: chatData.userType
                 },
                 lastMessage: messageText,
                 lastMessageAt: new Date(),
-                lastMessageBy: 'admin',
+                lastMessageBy: SUPPORT_CONFIG.senderId, // Changed from 'admin'
                 unreadCounts: {
-                    'admin': 0,
+                    [SUPPORT_CONFIG.senderId]: 0,       // Changed from 'admin'
                     [chatData.userId]: 1
                 },
                 createdAt: new Date(),
@@ -2833,7 +2840,7 @@ async function sendAdminMessage() {
             await chatRef.update({
                 lastMessage: messageText,
                 lastMessageAt: new Date(),
-                lastMessageBy: 'admin',
+                lastMessageBy: SUPPORT_CONFIG.senderId, // Changed from 'admin'
                 lastUpdated: new Date(),
                 [`unreadCounts.${chatData.userId}`]: firebase.firestore.FieldValue.increment(1)
             });
@@ -2864,10 +2871,10 @@ async function sendAdminMessage() {
 async function sendAdminNotification(userId, userType, message) {
     try {
         const notificationData = {
-            title: 'New message from Admin',
+            title: 'New message from Customer Support', // Changed from 'Admin'
             body: message.length > 50 ? message.substring(0, 50) + '...' : message,
-            type: 'admin_message',
-            sender: 'admin',
+            type: 'support_message', // Changed from 'admin_message'
+            sender: SUPPORT_CONFIG.senderId, // Changed from 'admin'
             recipient: userId,
             timestamp: new Date(),
             read: false,
@@ -2894,14 +2901,14 @@ function indicateAdminTyping(chatId) {
     
     // Set typing status
     db.collection('chats').doc(chatId).update({
-        'typing.admin': true,
+        [`typing.${SUPPORT_CONFIG.senderId}`]: true, // Changed from 'admin'
         'lastTyping': new Date()
     });
     
     // Clear typing status after 3 seconds
     adminChatSystem.typingTimeout = setTimeout(() => {
         db.collection('chats').doc(chatId).update({
-            'typing.admin': false
+            [`typing.${SUPPORT_CONFIG.senderId}`]: false // Changed from 'admin'
         });
     }, 3000);
 }
@@ -2912,7 +2919,7 @@ async function markAdminChatAsRead(chatId, userId, userType) {
         await db.collection('chats')
             .doc(chatId)
             .update({
-                [`unreadCounts.admin`]: 0
+                [`unreadCounts.${SUPPORT_CONFIG.senderId}`]: 0 // Changed from 'admin'
             });
             
         // Update local unread count
@@ -2930,15 +2937,15 @@ async function markAdminChatAsRead(chatId, userId, userType) {
 async function loadUnreadCountsForTutors() {
     try {
         const adminChatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', 'admin')
+            .where('participants', 'array-contains', SUPPORT_CONFIG.senderId) // Changed from 'admin'
             .get();
             
         adminChatsSnapshot.forEach(doc => {
             const chat = doc.data();
-            const tutorId = chat.participants.find(id => id !== 'admin' && chat.participantTypes?.[id] === 'tutor');
+            const tutorId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId && chat.participantTypes?.[id] === 'tutor');
             
             if (tutorId && chat.unreadCounts) {
-                const unreadCount = chat.unreadCounts.admin || 0;
+                const unreadCount = chat.unreadCounts[SUPPORT_CONFIG.senderId] || 0; // Changed from 'admin'
                 if (unreadCount > 0) {
                     adminChatSystem.unreadCounts[tutorId] = unreadCount;
                     updateContactUnreadBadge(tutorId);
@@ -2956,15 +2963,15 @@ async function loadUnreadCountsForTutors() {
 async function loadUnreadCountsForStudents() {
     try {
         const adminChatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', 'admin')
+            .where('participants', 'array-contains', SUPPORT_CONFIG.senderId) // Changed from 'admin'
             .get();
             
         adminChatsSnapshot.forEach(doc => {
             const chat = doc.data();
-            const studentId = chat.participants.find(id => id !== 'admin' && chat.participantTypes?.[id] === 'student');
+            const studentId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId && chat.participantTypes?.[id] === 'student');
             
             if (studentId && chat.unreadCounts) {
-                const unreadCount = chat.unreadCounts.admin || 0;
+                const unreadCount = chat.unreadCounts[SUPPORT_CONFIG.senderId] || 0; // Changed from 'admin'
                 if (unreadCount > 0) {
                     adminChatSystem.unreadCounts[studentId] = unreadCount;
                     updateContactUnreadBadge(studentId);
@@ -3018,17 +3025,17 @@ function updateGlobalUnreadCount() {
 
 // Setup Admin Realtime Listeners
 function setupAdminRealtimeListeners() {
-    // Listen for new messages in admin chats
+    // Listen for new messages in support chats
     db.collection('chats')
-        .where('participants', 'array-contains', 'admin')
+        .where('participants', 'array-contains', SUPPORT_CONFIG.senderId) // Changed from 'admin'
         .onSnapshot((snapshot) => {
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'modified') {
                     const chat = change.doc.data();
-                    const userId = chat.participants.find(id => id !== 'admin');
+                    const userId = chat.participants.find(id => id !== SUPPORT_CONFIG.senderId);
                     
                     if (userId && chat.unreadCounts) {
-                        const unreadCount = chat.unreadCounts.admin || 0;
+                        const unreadCount = chat.unreadCounts[SUPPORT_CONFIG.senderId] || 0; // Changed from 'admin'
                         adminChatSystem.unreadCounts[userId] = unreadCount;
                         updateContactUnreadBadge(userId);
                         updateGlobalUnreadCount();
@@ -3149,6 +3156,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
 
