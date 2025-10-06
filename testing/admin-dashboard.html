@@ -2452,9 +2452,649 @@
 
         // Call initDashboard after data is loaded
         setTimeout(initDashboard, 500);
+
+//..........................................................................................................//
+//.................. CHATS AND MESSAGES SECTION STARTS HERE.................................................//
+<script>
+// Admin Chat System Variables
+let adminChatSystem = {
+    currentChat: null,
+    contactsListener: null,
+    messagesListener: null,
+    typingTimeout: null,
+    isInitialized: false,
+    tutors: [],
+    students: [],
+    unreadCounts: {}
+};
+
+// Initialize Admin Chat System
+function initAdminChatSystem() {
+    if (adminChatSystem.isInitialized) return;
+    
+    console.log('Initializing Admin Chat System...');
+    adminChatSystem.isInitialized = true;
+    
+    setupAdminChatEventListeners();
+    loadAdminChatContacts();
+    setupAdminRealtimeListeners();
+}
+
+// Setup Admin Chat Event Listeners
+function setupAdminChatEventListeners() {
+    // Toggle chat sidebar
+    document.getElementById('chatToggleBtn').addEventListener('click', toggleAdminChatSidebar);
+    document.getElementById('chatOpenBtn').addEventListener('click', toggleAdminChatSidebar);
+    
+    // Send message functionality
+    document.getElementById('sendMessageBtn').addEventListener('click', sendAdminMessage);
+    
+    // Message input handling
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+        messageInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendAdminMessage();
+            }
+        });
+        
+        // Auto-resize textarea
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+        
+        // Typing indicator
+        messageInput.addEventListener('input', function() {
+            if (adminChatSystem.currentChat) {
+                indicateAdminTyping(adminChatSystem.currentChat.chatId);
+            }
+        });
+    }
+    
+    // Contact search
+    const contactSearch = document.getElementById('chatSearch');
+    if (contactSearch) {
+        contactSearch.addEventListener('input', function(e) {
+            filterAdminContacts(e.target.value);
+        });
+    }
+}
+
+// Toggle Admin Chat Sidebar
+function toggleAdminChatSidebar() {
+    const sidebar = document.getElementById('adminChatSidebar');
+    const openBtn = document.getElementById('chatOpenBtn');
+    
+    if (sidebar.classList.contains('active')) {
+        sidebar.classList.remove('active');
+        openBtn.style.display = 'flex';
+    } else {
+        sidebar.classList.add('active');
+        openBtn.style.display = 'none';
+        
+        // Initialize if not already done
+        if (!adminChatSystem.isInitialized) {
+            initAdminChatSystem();
+        }
+    }
+}
+
+// Load Admin Chat Contacts
+function loadAdminChatContacts() {
+    const tutorContacts = document.getElementById('tutorContacts');
+    const studentContacts = document.getElementById('studentContacts');
+    
+    tutorContacts.innerHTML = '<div class="loading-state">Loading tutors...</div>';
+    studentContacts.innerHTML = '<div class="loading-state">Loading students...</div>';
+    
+    // Load tutors
+    db.collection('tutors').where('approved', '==', true)
+        .get()
+        .then((snapshot) => {
+            tutorContacts.innerHTML = '';
+            adminChatSystem.tutors = [];
+            
+            if (snapshot.empty) {
+                tutorContacts.innerHTML = '<div class="empty-state">No tutors found</div>';
+                return;
+            }
+            
+            snapshot.forEach(doc => {
+                const tutor = doc.data();
+                tutor.id = doc.id;
+                adminChatSystem.tutors.push(tutor);
+                
+                const contactElement = createAdminContactElement(tutor, 'tutor');
+                tutorContacts.appendChild(contactElement);
+            });
+            
+            // Load unread counts for tutors
+            loadUnreadCountsForTutors();
+        })
+        .catch(error => {
+            console.error('Error loading tutors:', error);
+            tutorContacts.innerHTML = '<div class="error-state">Error loading tutors</div>';
+        });
+    
+    // Load students
+    db.collection('students').get()
+        .then((snapshot) => {
+            studentContacts.innerHTML = '';
+            adminChatSystem.students = [];
+            
+            if (snapshot.empty) {
+                studentContacts.innerHTML = '<div class="empty-state">No students found</div>';
+                return;
+            }
+            
+            snapshot.forEach(doc => {
+                const student = doc.data();
+                student.id = doc.id;
+                adminChatSystem.students.push(student);
+                
+                const contactElement = createAdminContactElement(student, 'student');
+                studentContacts.appendChild(contactElement);
+            });
+            
+            // Load unread counts for students
+            loadUnreadCountsForStudents();
+        })
+        .catch(error => {
+            console.error('Error loading students:', error);
+            studentContacts.innerHTML = '<div class="error-state">Error loading students</div>';
+        });
+}
+
+// Create Admin Contact Element
+function createAdminContactElement(user, type) {
+    const contactDiv = document.createElement('div');
+    contactDiv.className = 'contact-item';
+    contactDiv.setAttribute('data-user-id', user.id);
+    contactDiv.setAttribute('data-user-type', type);
+    
+    const userName = type === 'tutor' ? 
+        (user.personal?.fullName || 'Tutor') : 
+        (user.fullName || 'Student');
+    
+    const userInfo = type === 'tutor' ? 
+        (user.subjects?.subjects?.join(', ') || 'No subjects') : 
+        (user.gradeLevel || 'No grade level');
+    
+    const avatarClass = type === 'tutor' ? 'tutor' : 'student';
+    const avatarIcon = type === 'tutor' ? 'fa-user-tie' : 'fa-user-graduate';
+    
+    const unreadCount = adminChatSystem.unreadCounts[user.id] || 0;
+    const unreadBadge = unreadCount > 0 ? 
+        `<div class="unread-count">${unreadCount}</div>` : '';
+    
+    contactDiv.innerHTML = `
+        <div class="contact-avatar ${avatarClass}">
+            ${user.photoURL ? 
+                `<img src="${user.photoURL}" alt="${userName}">` : 
+                `<i class="fas ${avatarIcon}"></i>`
+            }
+        </div>
+        <div class="contact-info">
+            <div class="contact-name">${userName}</div>
+            <div class="contact-subject">${userInfo}</div>
+        </div>
+        <div class="contact-status">
+            <div class="status-indicator status-online"></div>
+            ${unreadBadge}
+        </div>
+    `;
+    
+    contactDiv.addEventListener('click', () => openAdminChat(user, type));
+    
+    return contactDiv;
+}
+
+// Open Admin Chat
+async function openAdminChat(user, type) {
+    try {
+        // Create chat data object
+        const chatData = {
+            userId: user.id,
+            userName: type === 'tutor' ? 
+                (user.personal?.fullName || 'Tutor') : 
+                (user.fullName || 'Student'),
+            userType: type,
+            userInfo: type === 'tutor' ? 
+                (user.subjects?.subjects?.join(', ') || 'No subjects') : 
+                (user.gradeLevel || 'No grade level'),
+            userAvatar: user.photoURL,
+            chatId: `admin_${type}_${user.id}`
+        };
+        
+        adminChatSystem.currentChat = chatData;
+        
+        // Update UI to show active chat
+        document.querySelectorAll('.contact-item').forEach(item => {
+            item.classList.remove('active');
+        });
+        
+        const activeContact = document.querySelector(`[data-user-id="${user.id}"]`);
+        if (activeContact) {
+            activeContact.classList.add('active');
+        }
+        
+        // Show chat interface
+        document.getElementById('emptyChatState').style.display = 'none';
+        document.getElementById('messagesContainer').style.display = 'block';
+        document.getElementById('messageInputContainer').style.display = 'block';
+        
+        // Update chat header (you might want to add a proper header)
+        document.querySelector('.admin-chat-header h3').textContent = `Chat with ${chatData.userName}`;
+        
+        // Load messages
+        loadAdminChatMessages(chatData.chatId);
+        
+        // Mark as read
+        await markAdminChatAsRead(chatData.chatId, user.id, type);
+        
+    } catch (error) {
+        console.error('Error opening admin chat:', error);
+    }
+}
+
+// Load Admin Chat Messages
+function loadAdminChatMessages(chatId) {
+    const messagesContainer = document.getElementById('messagesContainer');
+    if (!messagesContainer) return;
+    
+    messagesContainer.innerHTML = '<div class="loading-state">Loading messages...</div>';
+    
+    // Clean up previous listener
+    if (adminChatSystem.messagesListener) {
+        adminChatSystem.messagesListener();
+    }
+    
+    adminChatSystem.messagesListener = db.collection('adminChats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', 'asc')
+        .onSnapshot((snapshot) => {
+            if (snapshot.empty) {
+                messagesContainer.innerHTML = '<div class="empty-state">No messages yet. Start the conversation!</div>';
+                return;
+            }
+            
+            messagesContainer.innerHTML = '';
+            snapshot.forEach(doc => {
+                const message = doc.data();
+                const messageElement = createAdminMessageElement(message);
+                messagesContainer.appendChild(messageElement);
+            });
+            
+            // Scroll to bottom
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }, (error) => {
+            console.error('Error loading messages:', error);
+            messagesContainer.innerHTML = '<div class="error-state">Error loading messages</div>';
+        });
+}
+
+// Create Admin Message Element
+function createAdminMessageElement(message) {
+    const messageDiv = document.createElement('div');
+    const isSent = message.senderId === 'admin';
+    
+    messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
+    messageDiv.innerHTML = `
+        <div class="message-text">${message.text}</div>
+        <div class="message-time">${formatMessageTime(message.timestamp?.toDate())}</div>
+    `;
+    
+    return messageDiv;
+}
+
+// Send Admin Message
+async function sendAdminMessage() {
+    const messageInput = document.getElementById('messageInput');
+    const messageText = messageInput.value.trim();
+    
+    if (!messageText || !adminChatSystem.currentChat) return;
+    
+    try {
+        const chatData = adminChatSystem.currentChat;
+        const messageData = {
+            text: messageText,
+            senderId: 'admin',
+            senderName: 'Admin',
+            timestamp: new Date(),
+            read: false,
+            type: 'text'
+        };
+        
+        // Get or create admin chat document
+        const chatRef = db.collection('adminChats').doc(chatData.chatId);
+        const chatDoc = await chatRef.get();
+        
+        if (!chatDoc.exists) {
+            // Create new admin chat
+            const chatInfo = {
+                participants: ['admin', chatData.userId],
+                participantNames: {
+                    'admin': 'Admin',
+                    [chatData.userId]: chatData.userName
+                },
+                participantTypes: {
+                    'admin': 'admin',
+                    [chatData.userId]: chatData.userType
+                },
+                lastMessage: messageText,
+                lastMessageAt: new Date(),
+                lastMessageBy: 'admin',
+                unreadCounts: {
+                    'admin': 0,
+                    [chatData.userId]: 1
+                },
+                createdAt: new Date(),
+                lastUpdated: new Date()
+            };
+            
+            await chatRef.set(chatInfo);
+        } else {
+            // Update existing chat
+            await chatRef.update({
+                lastMessage: messageText,
+                lastMessageAt: new Date(),
+                lastMessageBy: 'admin',
+                lastUpdated: new Date(),
+                [`unreadCounts.${chatData.userId}`]: firebase.firestore.FieldValue.increment(1)
+            });
+        }
+        
+        // Add message to messages subcollection
+        await chatRef.collection('messages').add(messageData);
+        
+        // Send notification to the user
+        await sendAdminNotification(chatData.userId, chatData.userType, messageText);
+        
+        // Clear input
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
+        
+        // Reload messages to show the new message
+        loadAdminChatMessages(chatData.chatId);
+        
+    } catch (error) {
+        console.error('Error sending admin message:', error);
+        alert('Failed to send message. Please try again.');
+    }
+}
+
+// Send Admin Notification
+async function sendAdminNotification(userId, userType, message) {
+    try {
+        const notificationData = {
+            title: 'New message from Admin',
+            body: message.length > 50 ? message.substring(0, 50) + '...' : message,
+            type: 'admin_message',
+            sender: 'admin',
+            recipient: userId,
+            timestamp: new Date(),
+            read: false,
+            chatId: adminChatSystem.currentChat.chatId
+        };
+        
+        // Add to user's notifications collection
+        await db.collection(userType === 'tutor' ? 'tutors' : 'students')
+            .doc(userId)
+            .collection('notifications')
+            .add(notificationData);
+            
+    } catch (error) {
+        console.error('Error sending notification:', error);
+    }
+}
+
+// Indicate Admin Typing
+function indicateAdminTyping(chatId) {
+    // Clear previous timeout
+    if (adminChatSystem.typingTimeout) {
+        clearTimeout(adminChatSystem.typingTimeout);
+    }
+    
+    // Set typing status
+    db.collection('adminChats').doc(chatId).update({
+        'typing.admin': true,
+        'lastTyping': new Date()
+    });
+    
+    // Clear typing status after 3 seconds
+    adminChatSystem.typingTimeout = setTimeout(() => {
+        db.collection('adminChats').doc(chatId).update({
+            'typing.admin': false
+        });
+    }, 3000);
+}
+
+// Mark Admin Chat as Read
+async function markAdminChatAsRead(chatId, userId, userType) {
+    try {
+        await db.collection('adminChats')
+            .doc(chatId)
+            .update({
+                [`unreadCounts.admin`]: 0
+            });
+            
+        // Update local unread count
+        if (adminChatSystem.unreadCounts[userId]) {
+            adminChatSystem.unreadCounts[userId] = 0;
+            updateContactUnreadBadge(userId);
+            updateGlobalUnreadCount();
+        }
+    } catch (error) {
+        console.error('Error marking admin chat as read:', error);
+    }
+}
+
+// Load Unread Counts for Tutors
+async function loadUnreadCountsForTutors() {
+    try {
+        const adminChatsSnapshot = await db.collection('adminChats')
+            .where('participants', 'array-contains', 'admin')
+            .get();
+            
+        adminChatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const tutorId = chat.participants.find(id => id !== 'admin' && chat.participantTypes[id] === 'tutor');
+            
+            if (tutorId && chat.unreadCounts) {
+                const unreadCount = chat.unreadCounts.admin || 0;
+                if (unreadCount > 0) {
+                    adminChatSystem.unreadCounts[tutorId] = unreadCount;
+                    updateContactUnreadBadge(tutorId);
+                }
+            }
+        });
+        
+        updateGlobalUnreadCount();
+    } catch (error) {
+        console.error('Error loading unread counts for tutors:', error);
+    }
+}
+
+// Load Unread Counts for Students
+async function loadUnreadCountsForStudents() {
+    try {
+        const adminChatsSnapshot = await db.collection('adminChats')
+            .where('participants', 'array-contains', 'admin')
+            .get();
+            
+        adminChatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const studentId = chat.participants.find(id => id !== 'admin' && chat.participantTypes[id] === 'student');
+            
+            if (studentId && chat.unreadCounts) {
+                const unreadCount = chat.unreadCounts.admin || 0;
+                if (unreadCount > 0) {
+                    adminChatSystem.unreadCounts[studentId] = unreadCount;
+                    updateContactUnreadBadge(studentId);
+                }
+            }
+        });
+        
+        updateGlobalUnreadCount();
+    } catch (error) {
+        console.error('Error loading unread counts for students:', error);
+    }
+}
+
+// Update Contact Unread Badge
+function updateContactUnreadBadge(userId) {
+    const contactElement = document.querySelector(`[data-user-id="${userId}"]`);
+    if (!contactElement) return;
+    
+    const unreadCount = adminChatSystem.unreadCounts[userId] || 0;
+    const statusElement = contactElement.querySelector('.contact-status');
+    
+    // Remove existing unread badge
+    const existingBadge = statusElement.querySelector('.unread-count');
+    if (existingBadge) {
+        existingBadge.remove();
+    }
+    
+    // Add new unread badge if needed
+    if (unreadCount > 0) {
+        const unreadBadge = document.createElement('div');
+        unreadBadge.className = 'unread-count';
+        unreadBadge.textContent = unreadCount;
+        statusElement.appendChild(unreadBadge);
+    }
+}
+
+// Update Global Unread Count
+function updateGlobalUnreadCount() {
+    const globalUnreadElement = document.getElementById('globalUnreadCount');
+    if (!globalUnreadElement) return;
+    
+    const totalUnread = Object.values(adminChatSystem.unreadCounts).reduce((sum, count) => sum + count, 0);
+    
+    if (totalUnread > 0) {
+        globalUnreadElement.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+        globalUnreadElement.style.display = 'flex';
+    } else {
+        globalUnreadElement.style.display = 'none';
+    }
+}
+
+// Setup Admin Realtime Listeners
+function setupAdminRealtimeListeners() {
+    // Listen for new messages in admin chats
+    db.collection('adminChats')
+        .where('participants', 'array-contains', 'admin')
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'modified') {
+                    const chat = change.doc.data();
+                    const userId = chat.participants.find(id => id !== 'admin');
+                    
+                    if (userId && chat.unreadCounts) {
+                        const unreadCount = chat.unreadCounts.admin || 0;
+                        adminChatSystem.unreadCounts[userId] = unreadCount;
+                        updateContactUnreadBadge(userId);
+                        updateGlobalUnreadCount();
+                    }
+                    
+                    // Show typing indicator
+                    if (chat.typing && chat.typing[userId] && adminChatSystem.currentChat?.userId === userId) {
+                        showTypingIndicator(chat.participantNames[userId]);
+                    } else {
+                        hideTypingIndicator();
+                    }
+                }
+            });
+        });
+}
+
+// Show Typing Indicator
+function showTypingIndicator(userName) {
+    const typingIndicator = document.getElementById('typingIndicator');
+    const typingUserName = document.getElementById('typingUserName');
+    
+    if (typingIndicator && typingUserName) {
+        typingUserName.textContent = userName;
+        typingIndicator.style.display = 'flex';
+        
+        // Scroll to bottom
+        const messagesContainer = document.getElementById('messagesContainer');
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    }
+}
+
+// Hide Typing Indicator
+function hideTypingIndicator() {
+    const typingIndicator = document.getElementById('typingIndicator');
+    if (typingIndicator) {
+        typingIndicator.style.display = 'none';
+    }
+}
+
+// Filter Admin Contacts
+function filterAdminContacts(searchTerm) {
+    const contactItems = document.querySelectorAll('.contact-item');
+    contactItems.forEach(item => {
+        const userName = item.querySelector('.contact-name').textContent.toLowerCase();
+        const userSubject = item.querySelector('.contact-subject').textContent.toLowerCase();
+        const searchLower = searchTerm.toLowerCase();
+        
+        if (userName.includes(searchLower) || userSubject.includes(searchLower)) {
+            item.style.display = 'flex';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
+
+// Insert Quick Message
+function insertQuickMessage(text) {
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+        messageInput.value = text;
+        messageInput.focus();
+    }
+}
+
+// Format Message Time
+function formatMessageTime(date) {
+    if (!date) return '';
+    
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    
+    return date.toLocaleDateString();
+}
+
+// Initialize Admin Chat System when Admin Dashboard loads
+document.addEventListener('DOMContentLoaded', function() {
+    // Check if user is admin and initialize chat system
+    if (currentUser && currentUser.uid) {
+        // Add a small delay to ensure Firebase is fully initialized
+        setTimeout(() => {
+            initAdminChatSystem();
+        }, 2000);
+    }
+});
+//..........................................................................................................//
+//...................CHATS AND MESSAGES SECTION END HERE....................................................// 
+//.........................................................................................................//
+        
     </script>
 </body>
 </html>
+
 
 
 
