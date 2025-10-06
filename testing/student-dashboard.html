@@ -6747,7 +6747,7 @@ const STUDENT_NOTIFICATION_CONFIG = {
     desktopEnabled: true
 };
 
-// Initialize chat system
+// Initialize chat system - UPDATED
 function initChatSystem() {
     if (chatSystemInitialized) {
         console.log('Chat system already initialized');
@@ -6765,8 +6765,12 @@ function initChatSystem() {
     
     // Request notification permission
     if ("Notification" in window && Notification.permission === "default") {
-        Notification.requestPermission();
+        Notification.requestPermission().then(permission => {
+            console.log('Notification permission:', permission);
+        });
     }
+    
+    console.log('Student notification system initialized');
 }
   
 // Setup chat event listeners
@@ -6792,13 +6796,18 @@ function setupStudentNotificationSystem() {
     const studentId = auth.currentUser.uid;
     
     // Listen for all chats where student is a participant
-    studentNotificationSystem.notificationListener = db.collection('chats')
+studentNotificationSystem.notificationListener = db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .onSnapshot((snapshot) => {
+            console.log('Chat snapshot received, changes:', snapshot.docChanges().length);
+            
             snapshot.docChanges().forEach(change => {
-                if (change.type === 'modified') {
+                if (change.type === 'modified' || change.type === 'added') {
                     const chat = change.doc.data();
+                    const chatId = change.doc.id;
                     const otherParticipantId = chat.participants.find(id => id !== studentId);
+                    
+                    console.log('Chat updated:', chatId, 'other participant:', otherParticipantId);
                     
                     if (otherParticipantId && chat.unreadCounts) {
                         const unreadCount = chat.unreadCounts[studentId] || 0;
@@ -6809,9 +6818,10 @@ function setupStudentNotificationSystem() {
                         // Update contact badge
                         updateStudentContactBadge(otherParticipantId, unreadCount);
                         
-                        // Handle new message notifications
+                        // Handle new message notifications - FIXED CONDITION
                         if (unreadCount > 0 && chat.lastMessageBy !== studentId) {
-                            handleNewStudentMessage(chat, otherParticipantId);
+                            console.log('New unread message detected from:', otherParticipantId);
+                            handleNewStudentMessageNotification(chat, otherParticipantId);
                         }
                     }
                 }
@@ -6819,33 +6829,83 @@ function setupStudentNotificationSystem() {
             
             // Update global unread count
             updateStudentGlobalUnreadCount();
+        }, (error) => {
+            console.error('Error in student notification listener:', error);
         });
 
     // Setup individual message listeners for real-time notifications
     setupStudentMessageListeners();
 }
 
+// NEW: Handle new student message notification - THIS WAS MISSING!
+async function handleNewStudentMessageNotification(chat, senderId) {
+    try {
+        const studentId = auth.currentUser.uid;
+        const senderName = chat.participantNames?.[senderId] || 'Someone';
+        
+        console.log('Handling new message from:', senderName, 'chat ID:', chat.id);
+
+      // Get the latest message to show in notification
+        const messagesSnapshot = await db.collection('chats')
+            .doc(chat.id)
+            .collection('messages')
+            .orderBy('timestamp', 'desc')
+            .limit(1)
+            .get();
+            
+        if (!messagesSnapshot.empty) {
+            const latestMessage = messagesSnapshot.docs[0].data();
+            
+            // Show notification if not viewing this chat
+            const isViewingThisChat = currentChat && 
+                ((currentChat.tutorId === senderId) || 
+                 (currentChat.isAdmin && senderId === 'support')); // FIXED: 'support' not 'admin'
+            
+            console.log('Is viewing this chat:', isViewingThisChat, 'Current chat:', currentChat);
+            
+            if (!isViewingThisChat) {
+                showStudentDesktopNotification(senderName, latestMessage.text, senderId);
+                playNotificationSound();
+            }
+        }
+        
+    } catch (error) {
+        console.error('Error handling new student message notification:', error);
+    }
+}
+
+      
 // Setup message listeners for all student chats
 function setupStudentMessageListeners() {
     const studentId = auth.currentUser.uid;
+    console.log('Setting up message listeners for student:', studentId);
     
     // Get all student chats
     db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .get()
         .then(snapshot => {
+            console.log('Found', snapshot.size, 'chats for student');
             snapshot.forEach(doc => {
                 setupStudentChatMessageListener(doc.id);
             });
+        })
+        .catch(error => {
+            console.error('Error setting up message listeners:', error);
         });
 }
-
+      
 // Setup message listener for specific chat
 function setupStudentChatMessageListener(chatId) {
     const studentId = auth.currentUser.uid;
     
     // Skip if listener already exists
-    if (studentNotificationSystem.messageListeners.has(chatId)) return;
+    if (studentNotificationSystem.messageListeners.has(chatId)) {
+        console.log('Message listener already exists for chat:', chatId);
+        return;
+    }
+    
+    console.log('Setting up message listener for chat:', chatId);
     
     const messageListener = db.collection('chats')
         .doc(chatId)
@@ -6856,15 +6916,19 @@ function setupStudentChatMessageListener(chatId) {
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'added') {
                     const message = change.doc.data();
+                    console.log('New message detected in chat:', chatId, 'from:', message.senderId);
                     
                     // If message is from someone else and not read
                     if (message.senderId !== studentId && !message.read) {
+                        console.log('Unread message from other user, triggering notification');
                         handleNewIncomingStudentMessage(chatId, message);
                     }
                 }
             });
+        }, (error) => {
+            console.error('Error in message listener for chat', chatId, ':', error);
         });
-    
+  
     // Store listener for cleanup
     studentNotificationSystem.messageListeners.set(chatId, messageListener);
 }
@@ -6879,12 +6943,15 @@ function setupStudentChatMessageListener(chatId) {
 // Handle new incoming message for student
 async function handleNewIncomingStudentMessage(chatId, message) {
     try {
+        console.log('Processing new incoming message for student');
         const chatDoc = await db.collection('chats').doc(chatId).get();
         if (!chatDoc.exists) return;
         
         const chat = chatDoc.data();
         const senderId = message.senderId;
         const senderName = chat.participantNames?.[senderId] || 'Someone';
+        
+        console.log('New message from:', senderName, 'content:', message.text);
         
         // Update unread count
         const currentUnread = studentNotificationSystem.unreadCounts[senderId] || 0;
@@ -6898,9 +6965,12 @@ async function handleNewIncomingStudentMessage(chatId, message) {
         // Show notification if not viewing this chat
         const isViewingThisChat = currentChat && 
             ((currentChat.tutorId === senderId) || 
-             (currentChat.isAdmin && senderId === 'support'));
+             (currentChat.isAdmin && senderId === 'support')); // FIXED: 'support' not 'admin'
+        
+        console.log('Student is viewing this chat:', isViewingThisChat);
         
         if (!isViewingThisChat) {
+            console.log('Showing desktop notification');
             showStudentDesktopNotification(senderName, message.text, senderId);
             playNotificationSound();
         }
@@ -6909,57 +6979,104 @@ async function handleNewIncomingStudentMessage(chatId, message) {
         console.error('Error handling new student message:', error);
     }
 }
-
+  
   // Show desktop notification for student
 function showStudentDesktopNotification(senderName, message, senderId) {
-    if (!("Notification" in window)) return;
+    if (!("Notification" in window)) {
+        console.log('This browser does not support notifications');
+        return;
+    }
+    
+    console.log('Notification permission status:', Notification.permission);
     
     if (Notification.permission === "granted") {
         createStudentNotification(senderName, message, senderId);
     } else if (Notification.permission !== "denied") {
+        console.log('Requesting notification permission...');
         Notification.requestPermission().then(permission => {
+            console.log('Notification permission granted:', permission);
             if (permission === "granted") {
                 createStudentNotification(senderName, message, senderId);
             }
         });
+    } else {
+        console.log('Notification permission denied by user');
     }
 }
 
 // Create student notification
 function createStudentNotification(senderName, message, senderId) {
-    const notification = new Notification(`New message from ${senderName}`, {
-        body: message.length > 100 ? message.substring(0, 100) + '...' : message,
-        icon: '/favicon.ico',
-        tag: `student-message-${senderId}`
-    });
-    
-    // Close after 5 seconds
-    setTimeout(() => notification.close(), 5000);
-    
-    // Focus and open chat when clicked
-    notification.onclick = function() {
-        window.focus();
+    try {
+        console.log('Creating notification for:', senderName);
+        const notification = new Notification(`New message from ${senderName}`, {
+            body: message.length > 100 ? message.substring(0, 100) + '...' : message,
+            icon: '/favicon.ico',
+            tag: `student-message-${senderId}`,
+            requireInteraction: false
+        });
         
-        // Find and open the chat
-        const contactElement = document.querySelector(`[data-tutor-id="${senderId}"]`);
-        if (contactElement) {
-            contactElement.click();
-        }
+        console.log('Notification created successfully');
         
-        // Switch to messages section if not already there
-        const messagesLink = document.querySelector('a[data-section="messages"]');
-        if (messagesLink) messagesLink.click();
+        // Close after 5 seconds
+        setTimeout(() => {
+            notification.close();
+            console.log('Notification closed');
+        }, 5000);
         
-        notification.close();
-    };
+        // Focus and open chat when clicked
+        notification.onclick = function() {
+            console.log('Notification clicked, opening chat with:', senderId);
+            window.focus();
+            
+            // Find and open the chat
+            const contactElement = document.querySelector(`[data-tutor-id="${senderId}"]`);
+            if (contactElement) {
+                contactElement.click();
+            } else {
+                // If it's a support chat, find the admin contact
+                if (senderId === 'support') {
+                    const adminContact = document.querySelector('[data-tutor-id="admin"]');
+                    if (adminContact) adminContact.click();
+                }
+            }
+            
+            // Switch to messages section if not already there
+            const messagesLink = document.querySelector('a[data-section="messages"]');
+            if (messagesLink) messagesLink.click();
+            
+            notification.close();
+        };
+        
+    } catch (error) {
+        console.error('Error creating notification:', error);
+    }
 }
-
+  
 // Play notification sound
 function playNotificationSound() {
     if (!STUDENT_NOTIFICATION_CONFIG.soundEnabled) return;
     
-    // You can add a notification sound here
-    // Example: new Audio('/notification-sound.mp3').play().catch(() => {});
+    try {
+        // Simple beep sound using Web Audio API
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.value = 800;
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+        
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.5);
+        
+    } catch (error) {
+        console.log('Could not play notification sound:', error);
+    }
 }
   
     // Contact search
@@ -8507,6 +8624,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
