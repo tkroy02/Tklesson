@@ -3377,10 +3377,166 @@ async function archiveCurrentChat() {
 }
 
 // Clear Current Chat
+// Clear Current Chat - IMPLEMENTED FUNCTIONALITY
 async function clearCurrentChat() {
-    if (!adminChatSystem.currentChat || !confirm('Are you sure you want to clear this chat?')) return;
-    alert('Clear chat functionality would be implemented here');
+    if (!adminChatSystem.currentChat || !confirm('Are you sure you want to clear all messages in this chat? This action cannot be undone.')) {
+        return;
+    }
+
+    try {
+        const chatData = adminChatSystem.currentChat;
+        const chatId = chatData.chatId;
+        
+        // Show loading state
+        const messagesContainer = document.getElementById('messagesContainer');
+        if (messagesContainer) {
+            messagesContainer.innerHTML = '<div class="loading-state">Clearing messages...</div>';
+        }
+
+        // Get all messages in the chat
+        const messagesSnapshot = await db.collection('chats')
+            .doc(chatId)
+            .collection('messages')
+            .get();
+
+        // Delete all messages in batch
+        const batch = db.batch();
+        messagesSnapshot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        await batch.commit();
+
+        // Update chat document to reflect cleared state
+        await db.collection('chats').doc(chatId).update({
+            lastMessage: 'Chat cleared',
+            lastMessageAt: new Date(),
+            lastMessageBy: SUPPORT_CONFIG.senderId,
+            lastUpdated: new Date(),
+            // Reset unread counts but maintain the structure
+            [`unreadCounts.${SUPPORT_CONFIG.senderId}`]: 0,
+            [`unreadCounts.${chatData.userId}`]: 0
+        });
+
+        // Clear the messages container
+        if (messagesContainer) {
+            messagesContainer.innerHTML = '<div class="empty-state">No messages yet. Start the conversation!</div>';
+        }
+
+        // Clear the message input
+        const messageInput = document.getElementById('messageInput');
+        if (messageInput) {
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+        }
+
+        // Show success message
+        showNotification('Chat cleared successfully', 'success');
+
+        // Update unread counts locally
+        if (adminChatSystem.unreadCounts[chatData.userId]) {
+            adminChatSystem.unreadCounts[chatData.userId] = 0;
+            updateContactUnreadBadge(chatData.userId);
+            updateGlobalUnreadCount();
+        }
+
+    } catch (error) {
+        console.error('Error clearing chat:', error);
+        showNotification('Failed to clear chat. Please try again.', 'error');
+    }
 }
+
+        // Archive Current Chat - IMPLEMENTED FUNCTIONALITY
+async function archiveCurrentChat() {
+    if (!adminChatSystem.currentChat) return;
+    
+    try {
+        const chatData = adminChatSystem.currentChat;
+        const chatId = chatData.chatId;
+        
+        if (!confirm(`Are you sure you want to archive this chat with ${chatData.userName}?`)) {
+            return;
+        }
+
+        // Update chat document with archived status
+        await db.collection('chats').doc(chatId).update({
+            archived: true,
+            archivedAt: new Date(),
+            archivedBy: SUPPORT_CONFIG.senderId,
+            lastUpdated: new Date()
+        });
+
+        // Remove from current chat
+        adminChatSystem.currentChat = null;
+
+        // Update UI to show empty state
+        const emptyChatState = document.getElementById('emptyChatState');
+        const activeChat = document.getElementById('activeChat');
+        const messageInputContainer = document.querySelector('.message-input-container');
+        
+        if (emptyChatState) emptyChatState.style.display = 'flex';
+        if (activeChat) activeChat.style.display = 'none';
+        if (messageInputContainer) messageInputContainer.style.display = 'none';
+
+        // Remove active class from contact
+        document.querySelectorAll('.contact-item').forEach(item => {
+            item.classList.remove('active');
+        });
+
+        // Show success message
+        showNotification('Chat archived successfully', 'success');
+
+        // Reload contacts to reflect archived status
+        loadAdminChatContacts();
+
+    } catch (error) {
+        console.error('Error archiving chat:', error);
+        showNotification('Failed to archive chat. Please try again.', 'error');
+    }
+}
+
+        // Helper function to show notifications
+function showNotification(message, type = 'info') {
+    // You can use your existing notification system or create a simple one
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : '#2196F3'};
+        color: white;
+        border-radius: 4px;
+        z-index: 10000;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    `;
+    notification.textContent = message;
+    
+    document.body.appendChild(notification);
+    
+    // Remove notification after 3 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 3000);
+}
+
+// Also update the setupAdminChatEventListeners to ensure the clear button has the correct event listener
+function setupAdminChatEventListeners() {
+    // ... existing code ...
+    
+    // Archive and clear buttons
+    const archiveBtn = document.getElementById('archiveChatBtn');
+    const clearBtn = document.getElementById('clearChatBtn');
+    
+    if (archiveBtn) {
+        archiveBtn.addEventListener('click', archiveCurrentChat);
+    }
+    if (clearBtn) {
+        clearBtn.addEventListener('click', clearCurrentChat);
+    }
 
 // Initialize when messages section is activated
 document.addEventListener('DOMContentLoaded', function() {
@@ -3408,6 +3564,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
 
