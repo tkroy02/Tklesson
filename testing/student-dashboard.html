@@ -7574,14 +7574,15 @@ document.addEventListener('DOMContentLoaded', function() {
 // CHATS SECTION/MESSAGES SECTION ENDS HERE
 // =======================================================
 
-  // =======================================================
-// NOTIFICATION SYSTEM FOR CHAT MESSAGES
+ // =======================================================
+// FIXED NOTIFICATION SYSTEM FOR CHAT MESSAGES
 // =======================================================
 
 // Global notification variables
 let notificationSound = null;
 let desktopNotificationPermission = false;
 let unreadMessagesCount = 0;
+let notificationListener = null;
 
 // Initialize notification system
 function initNotificationSystem() {
@@ -7595,6 +7596,9 @@ function initNotificationSystem() {
     
     // Setup notification listeners
     setupNotificationListeners();
+    
+    // Initial load of unread counts
+    updateAllNotificationBadges();
 }
 
 // Request desktop notification permission
@@ -7629,10 +7633,31 @@ function loadNotificationSound() {
 function setupNotificationListeners() {
     const studentId = auth.currentUser.uid;
     
+    // Clean up previous listener if exists
+    if (notificationListener) {
+        notificationListener();
+    }
+    
+    console.log('Setting up notification listener for student:', studentId);
+    
     // Listen for new messages in all user's chats
-    db.collection('chats')
+    notificationListener = db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .onSnapshot((snapshot) => {
+            console.log('Notification snapshot update, changes:', snapshot.docChanges().length);
+            
+            let totalUnread = 0;
+            snapshot.forEach(doc => {
+                const chatData = doc.data();
+                const studentUnreadCount = chatData.unreadCounts?.[studentId] || 0;
+                totalUnread += studentUnreadCount;
+                
+                console.log(`Chat ${doc.id}: unreadCount = ${studentUnreadCount}`, chatData.unreadCounts);
+            });
+            
+            console.log('Total unread messages calculated:', totalUnread);
+            unreadMessagesCount = totalUnread;
+            
             snapshot.docChanges().forEach((change) => {
                 if (change.type === 'modified') {
                     const chatData = change.doc.data();
@@ -7640,10 +7665,16 @@ function setupNotificationListeners() {
                     
                     // Check if this is a new message for the student
                     if (studentUnreadCount > 0 && chatData.lastMessageBy !== studentId) {
+                        console.log('New message notification triggered for chat:', change.doc.id);
                         handleNewMessageNotification(chatData, change.doc.id);
                     }
                 }
             });
+            
+            // Update UI with correct counts
+            updateAllNotificationBadges();
+        }, (error) => {
+            console.error('Error in notification listener:', error);
         });
 }
 
@@ -7653,6 +7684,7 @@ function handleNewMessageNotification(chatData, chatId) {
     
     // Don't notify if user is currently viewing this chat
     if (currentChat && currentChat.chatId === chatId) {
+        console.log('Skipping notification - user is viewing this chat');
         return;
     }
     
@@ -7660,8 +7692,7 @@ function handleNewMessageNotification(chatData, chatId) {
     const senderId = chatData.lastMessageBy;
     const senderName = chatData.participantNames?.[senderId] || 'Someone';
     
-    // Update UI notifications
-    updateAllNotificationBadges();
+    console.log(`New message from ${senderName}: ${chatData.lastMessage}`);
     
     // Play notification sound
     playNotificationSound();
@@ -7701,9 +7732,15 @@ function playNotificationSound() {
 function showDesktopNotification(senderName, message) {
     if (!desktopNotificationPermission) return;
     
+    // Check if document is visible - don't notify if user is on the page
+    if (document.visibilityState === 'visible') {
+        console.log('Skipping desktop notification - page is visible');
+        return;
+    }
+    
     const notification = new Notification(`New message from ${senderName}`, {
         body: message.length > 50 ? message.substring(0, 50) + '...' : message,
-        icon: '/favicon.ico', // Add your app icon path
+        icon: '/favicon.ico',
         badge: '/favicon.ico',
         tag: 'chat-message',
         requireInteraction: false
@@ -7740,54 +7777,42 @@ function switchToChatSection() {
 
 // Update all notification badges in the UI
 function updateAllNotificationBadges() {
+    console.log('Updating all notification badges, total unread:', unreadMessagesCount);
     updateSidebarNotificationBadge();
     updateChatSectionNotificationBadge();
     updateContactListNotifications();
+    updateBrowserTabNotification();
 }
 
 // Update sidebar notification badge
 function updateSidebarNotificationBadge() {
-    const studentId = auth.currentUser.uid;
+    console.log('Updating sidebar badge with count:', unreadMessagesCount);
     
-    db.collection('chats')
-        .where('participants', 'array-contains', studentId)
-        .get()
-        .then((snapshot) => {
-            let totalUnread = 0;
-            
-            snapshot.forEach(doc => {
-                const chatData = doc.data();
-                const unreadCount = chatData.unreadCounts?.[studentId] || 0;
-                totalUnread += unreadCount;
-            });
-            
-            unreadMessagesCount = totalUnread;
-            
-            // Update sidebar badge
-            const sidebarBadge = document.getElementById('unreadMessagesCount');
-            if (sidebarBadge) {
-                if (totalUnread > 0) {
-                    sidebarBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-                    sidebarBadge.style.display = 'inline';
-                } else {
-                    sidebarBadge.style.display = 'none';
-                }
-            }
-            
-            // Update mobile sidebar badge if exists
-            const mobileSidebarBadge = document.getElementById('mobileUnreadMessagesCount');
-            if (mobileSidebarBadge) {
-                if (totalUnread > 0) {
-                    mobileSidebarBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-                    mobileSidebarBadge.style.display = 'inline';
-                } else {
-                    mobileSidebarBadge.style.display = 'none';
-                }
-            }
-        })
-        .catch(error => {
-            console.error('Error updating sidebar notification badge:', error);
-        });
+    // Update sidebar badge
+    const sidebarBadge = document.getElementById('unreadMessagesCount');
+    if (sidebarBadge) {
+        if (unreadMessagesCount > 0) {
+            sidebarBadge.textContent = unreadMessagesCount > 99 ? '99+' : unreadMessagesCount.toString();
+            sidebarBadge.style.display = 'inline';
+            console.log('Sidebar badge updated to:', sidebarBadge.textContent);
+        } else {
+            sidebarBadge.style.display = 'none';
+            console.log('Sidebar badge hidden - no unread messages');
+        }
+    } else {
+        console.log('Sidebar badge element not found');
+    }
+    
+    // Update mobile sidebar badge if exists
+    const mobileSidebarBadge = document.getElementById('mobileUnreadMessagesCount');
+    if (mobileSidebarBadge) {
+        if (unreadMessagesCount > 0) {
+            mobileSidebarBadge.textContent = unreadMessagesCount > 99 ? '99+' : unreadMessagesCount.toString();
+            mobileSidebarBadge.style.display = 'inline';
+        } else {
+            mobileSidebarBadge.style.display = 'none';
+        }
+    }
 }
 
 // Update chat section notification badge
@@ -7814,11 +7839,22 @@ function updateChatSectionNotificationBadge() {
 // Update notification badges on contact list
 function updateContactListNotifications() {
     const contactItems = document.querySelectorAll('.contact-item');
+    console.log('Updating notifications for', contactItems.length, 'contact items');
+    
     contactItems.forEach(item => {
         const tutorId = item.getAttribute('data-tutor-id');
         const chatId = item.getAttribute('data-chat-id');
         
-        if (chatId && tutorId !== 'admin') {
+        // Skip admin contacts for notification counting
+        if (tutorId === 'admin') {
+            const adminBadge = item.querySelector('.unread-count');
+            if (adminBadge) {
+                adminBadge.remove();
+            }
+            return;
+        }
+        
+        if (chatId) {
             // Update unread count for this specific contact
             db.collection('chats').doc(chatId).get()
                 .then(doc => {
@@ -7835,7 +7871,9 @@ function updateContactListNotifications() {
                                 const newBadge = document.createElement('div');
                                 newBadge.className = 'unread-count';
                                 newBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-                                statusElement.appendChild(newBadge);
+                                if (statusElement) {
+                                    statusElement.appendChild(newBadge);
+                                }
                             } else {
                                 unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
                             }
@@ -7865,12 +7903,67 @@ function updateBrowserTabNotification() {
 // Enhanced markChatAsRead function to update notifications
 const originalMarkChatAsRead = window.markChatAsRead;
 window.markChatAsRead = async function(chatId) {
+    console.log('Marking chat as read:', chatId);
     await originalMarkChatAsRead(chatId);
     
-    // Update all notifications after marking as read
-    updateAllNotificationBadges();
-    updateBrowserTabNotification();
+    // Force refresh of all notifications after marking as read
+    setTimeout(() => {
+        updateAllNotificationBadges();
+    }, 500);
 };
+
+// Force refresh notification counts
+function forceRefreshNotifications() {
+    console.log('Force refreshing notifications...');
+    const studentId = auth.currentUser.uid;
+    
+    db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .get()
+        .then((snapshot) => {
+            let totalUnread = 0;
+            console.log('Found', snapshot.size, 'chats for student');
+            
+            snapshot.forEach(doc => {
+                const chatData = doc.data();
+                const unreadCount = chatData.unreadCounts?.[studentId] || 0;
+                totalUnread += unreadCount;
+                console.log(`Chat ${doc.id}: unreadCount = ${unreadCount}`, chatData.unreadCounts);
+            });
+            
+            console.log('Final total unread count:', totalUnread);
+            unreadMessagesCount = totalUnread;
+            updateAllNotificationBadges();
+        })
+        .catch(error => {
+            console.error('Error force refreshing notifications:', error);
+        });
+}
+
+// Debug function to check current state
+function debugNotifications() {
+    console.log('=== NOTIFICATION DEBUG INFO ===');
+    console.log('Current unreadMessagesCount:', unreadMessagesCount);
+    console.log('Desktop notification permission:', desktopNotificationPermission);
+    console.log('Current chat:', currentChat);
+    
+    const studentId = auth.currentUser.uid;
+    db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .get()
+        .then((snapshot) => {
+            console.log('Total chats found:', snapshot.size);
+            snapshot.forEach(doc => {
+                const chatData = doc.data();
+                console.log(`Chat ${doc.id}:`, {
+                    participants: chatData.participants,
+                    unreadCounts: chatData.unreadCounts,
+                    lastMessage: chatData.lastMessage,
+                    lastMessageBy: chatData.lastMessageBy
+                });
+            });
+        });
+}
 
 // Enhanced loadChatContacts to include notification badges
 const originalLoadChatContacts = window.loadChatContacts;
@@ -7880,21 +7973,37 @@ window.loadChatContacts = function() {
     // Update notifications after contacts are loaded
     setTimeout(() => {
         updateAllNotificationBadges();
-    }, 1000);
+    }, 2000);
 };
 
 // Initialize notification system when chat system starts
 const originalInitChatSystem = window.initChatSystem;
 window.initChatSystem = function() {
     originalInitChatSystem();
-    initNotificationSystem();
+    setTimeout(() => {
+        initNotificationSystem();
+        
+        // Force refresh after 3 seconds to ensure accurate counts
+        setTimeout(() => {
+            forceRefreshNotifications();
+        }, 3000);
+    }, 1000);
 };
 
 // Reset notifications when user logs out
 function resetNotificationsOnLogout() {
     unreadMessagesCount = 0;
     updateBrowserTabNotification();
+    
+    if (notificationListener) {
+        notificationListener();
+        notificationListener = null;
+    }
 }
+
+// Add debug function to global scope for testing
+window.debugNotifications = debugNotifications;
+window.forceRefreshNotifications = forceRefreshNotifications;
 
 // Add to your existing auth state listener
 auth.onAuthStateChanged((user) => {
@@ -7963,17 +8072,6 @@ const notificationStyles = `
     right: -5px;
 }
 
-/* Pulse animation for new messages */
-@keyframes pulse-notification {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-.pulse-notification {
-    animation: pulse-notification 0.6s ease-in-out 3;
-}
-
 /* Make sure menu items have relative positioning for badge placement */
 .menu-item a {
     position: relative;
@@ -7989,34 +8087,11 @@ const styleSheet = document.createElement("style");
 styleSheet.textContent = notificationStyles;
 document.head.appendChild(styleSheet);
 
-// =======================================================
-// ENHANCED CONTACT ELEMENT WITH NOTIFICATIONS
-// =======================================================
+console.log('Fixed notification system loaded successfully');
 
-// Enhanced createContactElement function
-const originalCreateContactElement = window.createContactElement;
-window.createContactElement = function(contact) {
-    const contactDiv = originalCreateContactElement(contact);
-    
-    // Add notification badge if there are unread messages
-    if (contact.unreadCount > 0) {
-        const statusElement = contactDiv.querySelector('.contact-status');
-        if (statusElement) {
-            const unreadBadge = document.createElement('div');
-            unreadBadge.className = 'unread-count';
-            unreadBadge.textContent = contact.unreadCount > 99 ? '99+' : contact.unreadCount.toString();
-            statusElement.appendChild(unreadBadge);
-            
-            // Add pulse animation for new messages
-            contactDiv.classList.add('pulse-notification');
-        }
-    }
-    
-    return contactDiv;
-};
-
-console.log('Notification system loaded successfully');
-
+//-------------------------------------------------------------------------------------
+// CHAT NOTIFIER ENDS HERE
+//---------------------------------------------------------------------------------------
 // =========================================================
 // REVIEWS AND RATINGS START HERE
 // ==========================================================
@@ -8604,6 +8679,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
