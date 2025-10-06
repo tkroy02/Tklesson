@@ -686,6 +686,41 @@ body {
     }
 }
 
+.unread-count {
+    background: #ff4757;
+    color: white;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    animation: pulse 2s infinite;
+}
+
+.contact-status {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+.contact-item.has-unread {
+    background: rgba(255, 71, 87, 0.1);
+    border-left: 3px solid #ff4757;
+}
+  
 /* Small Mobile Devices */
 @media (max-width: 480px) {
     .chat-section {
@@ -7002,6 +7037,9 @@ async function openChat(contact) {
         if (contact.chatId && !contact.isAdmin) {
             await markChatAsRead(contact.chatId);
         }
+
+      // Update tab title
+updateTabTitle(await calculateTotalUnread());
         
     } catch (error) {
         console.error('Error opening chat:', error);
@@ -7238,16 +7276,44 @@ function formatMessageTime(date) {
 // Mark chat as read
 async function markChatAsRead(chatId) {
     try {
+        const studentId = auth.currentUser.uid;
+        
         await db.collection('chats')
             .doc(chatId)
             .update({
-                [`unreadCounts.${auth.currentUser.uid}`]: 0
+                [`unreadCounts.${studentId}`]: 0
             });
+            
+        // Update UI immediately
+        updateContactUnreadCount(chatId, 0);
+        updateUnreadMessagesCount(await calculateTotalUnread());
+        
     } catch (error) {
         console.error('Error marking chat as read:', error);
     }
 }
 
+// Calculate total unread messages across all chats
+async function calculateTotalUnread() {
+    const studentId = auth.currentUser.uid;
+    let totalUnread = 0;
+    
+    try {
+        const chatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', studentId)
+            .get();
+            
+        chatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            totalUnread += chat.unreadCounts?.[studentId] || 0;
+        });
+    } catch (error) {
+        console.error('Error calculating total unread:', error);
+    }
+    
+    return totalUnread;
+}
+  
 // Insert quick message
 function insertQuickMessage(text) {
     const messageInput = document.getElementById('messageInput');
@@ -7316,9 +7382,116 @@ function updateUnreadMessagesCount(count) {
 // Setup realtime listeners
 function setupRealtimeListeners() {
     console.log('Setting up realtime chat listeners...');
-    // Additional real-time features can be added here
+    
+    const studentId = auth.currentUser.uid;
+    
+    // Listen for real-time updates on all student's chats
+    db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .onSnapshot((snapshot) => {
+            let totalUnread = 0;
+            
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'modified') {
+                    const chat = change.doc.data();
+                    const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                    
+                    // Update the specific contact in the list
+                    updateContactUnreadCount(change.doc.id, unreadCount);
+                    
+                    // Add to total
+                    totalUnread += unreadCount;
+                    
+                    // If this is the current open chat, mark as read
+                    if (currentChat && currentChat.chatId === change.doc.id && document.getElementById('messagesContainer').style.display !== 'none') {
+                        markChatAsRead(change.doc.id);
+                        totalUnread -= unreadCount; // Subtract since we're marking as read
+                    }
+                }
+            });
+            
+            // Update global unread count
+            updateUnreadMessagesCount(totalUnread);
+            updateTabTitle(totalUnread); // Add this line
+            
+            // Show desktop notifications for new messages
+            showDesktopNotifications(snapshot);
+        });
 }
 
+// Update specific contact's unread count in the list
+function updateContactUnreadCount(chatId, unreadCount) {
+    const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
+    if (contactItem) {
+        let unreadBadge = contactItem.querySelector('.unread-count');
+        const statusContainer = contactItem.querySelector('.contact-status');
+        
+        if (unreadCount > 0) {
+            if (!unreadBadge) {
+                unreadBadge = document.createElement('div');
+                unreadBadge.className = 'unread-count';
+                statusContainer.appendChild(unreadBadge);
+            }
+            unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+        } else if (unreadBadge) {
+            unreadBadge.remove();
+        }
+    }
+}
+
+// Show desktop notifications for new messages
+function showDesktopNotifications(snapshot) {
+    // Check if notifications are supported and permitted
+    if (!("Notification" in window)) return;
+    
+    snapshot.docChanges().forEach((change) => {
+        if (change.type === 'modified') {
+            const chat = change.doc.data();
+            const studentId = auth.currentUser.uid;
+            const unreadCount = chat.unreadCounts?.[studentId] || 0;
+            
+            // Only notify if there are unread messages AND chat is not currently open
+            if (unreadCount > 0 && 
+                (!currentChat || currentChat.chatId !== change.doc.id || 
+                 document.getElementById('messagesContainer').style.display === 'none')) {
+                
+                const senderName = chat.participantNames?.[chat.lastMessageBy] || 'Someone';
+                const messagePreview = chat.lastMessage || 'New message';
+                
+                // Request permission if needed
+                if (Notification.permission === "default") {
+                    Notification.requestPermission();
+                }
+                
+                // Show notification
+                if (Notification.permission === "granted") {
+                    new Notification(`New message from ${senderName}`, {
+                        body: messagePreview.length > 50 ? 
+                            messagePreview.substring(0, 50) + '...' : messagePreview,
+                        icon: '/favicon.ico',
+                        tag: 'chat-message'
+                    });
+                }
+                
+                // Also update browser tab title with unread count
+                updateTabTitle(unreadCount);
+            }
+        }
+    });
+}
+
+  // Update browser tab title with unread count
+let originalTitle = document.title;
+function updateTabTitle(unreadCount) {
+    if (unreadCount > 0) {
+        document.title = `(${unreadCount}) ${originalTitle}`;
+    } else {
+        document.title = originalTitle;
+    }
+}
+
+  
+  
 // Start new chat with tutor (called from tutors list)
 async function startNewChat(tutorId) {
     try {
@@ -8161,5 +8334,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
