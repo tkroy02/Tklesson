@@ -6810,122 +6810,74 @@ function loadChatContacts() {
 
     const studentId = auth.currentUser.uid;
     
-contactsListener = db.collection('chats')
-    .where('participants', 'array-contains', studentId)
-    .orderBy('lastMessageAt', 'desc')
-    .onSnapshot(async (snapshot) => {
-        contactsList.innerHTML = '';
-        
-        // Always add admin contact first
-        createAdminContact();
-        
-        if (snapshot.empty) {
-            contactsList.innerHTML += `
-                <div class="empty-state">
-                    <i class="fas fa-comments"></i>
-                    <h4>No Conversations Yet</h4>
-                    <p>Start chatting with your tutors or customer support</p>
-                </div>
-            `;
-            updateUnreadMessagesCount(0);
-            return;
-        }
-        
-        const contacts = [];
-        let totalUnread = 0;
-        
-        for (const doc of snapshot.docs) {
-            const chat = doc.data();
-            const otherParticipantId = chat.participants.find(id => id !== studentId);
+    contactsListener = db.collection('chats')
+        .where('participants', 'array-contains', studentId)
+        .orderBy('lastMessageAt', 'desc')
+        .onSnapshot(async (snapshot) => {
+            contactsList.innerHTML = '';
             
-            // Skip if no other participant found
-            if (!otherParticipantId) continue;
+            // Always add admin contact first
+            createAdminContact();
             
-            // Handle admin chats separately (they're already added via createAdminContact)
-            if (otherParticipantId === 'admin') {
-                // Update unread count for admin chat
-                const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                totalUnread += unreadCount;
-                continue;
+            if (snapshot.empty) {
+                contactsList.innerHTML += `
+                    <div class="empty-state">
+                        <i class="fas fa-comments"></i>
+                        <h4>No Tutor Conversations</h4>
+                        <p>Start a conversation with your tutors from the Tutors section</p>
+                    </div>
+                `;
+                updateUnreadMessagesCount(0);
+                return;
             }
             
-            // Handle tutor chats
-            try {
-                const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
-                if (tutorDoc.exists) {
-                    const tutor = tutorDoc.data();
-                    const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                    totalUnread += unreadCount;
-                    
-                    const contact = {
-                        chatId: doc.id,
-                        tutorId: otherParticipantId,
-                        tutorName: tutor.personal?.fullName || 'Tutor',
-                        tutorSubjects: tutor.subjects?.subjects || [],
-                        tutorAvatar: tutor.photoURL,
-                        lastMessage: chat.lastMessage,
-                        lastMessageAt: chat.lastMessageAt,
-                        unreadCount: unreadCount,
-                        isAdmin: false
-                    };
-                    contacts.push(contact);
-                    
-                    const contactElement = createContactElement(contact);
-                    contactsList.appendChild(contactElement);
-                }
-            } catch (error) {
-                console.error('Error loading tutor details:', error);
-            }
-        }
-        
-        updateUnreadMessagesCount(totalUnread);
-    }, (error) => {
-        console.error('Error loading contacts:', error);
-        contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
-    });
-
-  // Add this function to update admin contact with real chat data
-async function updateAdminContactWithRealData() {
-    const studentId = auth.currentUser.uid;
-    const adminChatId = `admin_support_${studentId}`;
-    
-    try {
-        const adminChatDoc = await db.collection('chats').doc(adminChatId).get();
-        if (adminChatDoc.exists) {
-            const adminChat = adminChatDoc.data();
-            const unreadCount = adminChat.unreadCounts?.[studentId] || 0;
+            const contacts = [];
+            let totalUnread = 0;
             
-            // Update the admin contact in the UI
-            const adminContact = document.querySelector('.admin-contact');
-            if (adminContact) {
-                const unreadBadge = adminContact.querySelector('.unread-count');
-                const lastMessage = adminContact.querySelector('.last-message');
+            for (const doc of snapshot.docs) {
+                const chat = doc.data();
+                const otherParticipantId = chat.participants.find(id => id !== studentId);
                 
-                if (unreadCount > 0 && !unreadBadge) {
-                    const badge = document.createElement('div');
-                    badge.className = 'unread-count';
-                    badge.textContent = unreadCount;
-                    adminContact.querySelector('.contact-status').appendChild(badge);
-                } else if (unreadBadge) {
-                    unreadBadge.textContent = unreadCount;
-                }
+                // Skip admin chats in the main list (they're handled separately)
+                if (otherParticipantId === 'admin') continue;
                 
-                if (lastMessage && adminChat.lastMessage) {
-                    lastMessage.textContent = adminChat.lastMessage;
+                if (otherParticipantId) {
+                    try {
+                        // Get tutor details
+                        const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
+                        if (tutorDoc.exists) {
+                            const tutor = tutorDoc.data();
+                            const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                            totalUnread += unreadCount;
+                            
+                            const contact = {
+                                chatId: doc.id,
+                                tutorId: otherParticipantId,
+                                tutorName: tutor.personal?.fullName || 'Tutor',
+                                tutorSubjects: tutor.subjects?.subjects || [],
+                                tutorAvatar: tutor.photoURL,
+                                lastMessage: chat.lastMessage,
+                                lastMessageAt: chat.lastMessageAt,
+                                unreadCount: unreadCount,
+                                isAdmin: false
+                            };
+                            contacts.push(contact);
+                            
+                            const contactElement = createContactElement(contact);
+                            contactsList.appendChild(contactElement);
+                        }
+                    } catch (error) {
+                        console.error('Error loading tutor details:', error);
+                    }
                 }
             }
             
-            return unreadCount;
-        }
-    } catch (error) {
-        console.error('Error updating admin contact:', error);
-    }
-    return 0;
+            updateUnreadMessagesCount(totalUnread);
+        }, (error) => {
+            console.error('Error loading contacts:', error);
+            contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
+        });
 }
-
-// Call this function after loading contacts
-// Add this line in your loadChatContacts function after the contactsListener setup:
-updateAdminContactWithRealData();
   
 // Clean up chat system properly
 function cleanupChatSystem() {
@@ -7061,37 +7013,31 @@ async function handleAdminChatWelcome(chatId) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
     
-    // Check if admin chat exists and has messages
+    // Check if admin chat exists
     const adminChatRef = db.collection('chats').doc(chatId);
-    const messagesRef = adminChatRef.collection('messages');
+    const chatDoc = await adminChatRef.get();
     
-    const [chatDoc, messagesSnapshot] = await Promise.all([
-        adminChatRef.get(),
-        messagesRef.orderBy('timestamp', 'asc').get()
-    ]);
-    
-    if (!chatDoc.exists || messagesSnapshot.empty) {
-        // No messages yet - show welcome
+    if (!chatDoc.exists) {
+        // No admin chat exists yet - show welcome message
         messagesContainer.innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-headset" style="font-size: 3rem; color: #ff6b6b; margin-bottom: 1rem;"></i>
                 <h4>Welcome to Customer Support!</h4>
-                <p>We're here to help you with any questions about TKLesson.</p>
+                <p>We're here to help you find the perfect tutor and answer any questions.</p>
                 <p><strong>How can we help you today?</strong></p>
                 <div class="quick-messages" style="margin-top: 1rem;">
-                    <div class="quick-message" onclick="insertQuickMessage('Hello, I need help finding a tutor')">Help finding a tutor</div>
-                    <div class="quick-message" onclick="insertQuickMessage('I have questions about scheduling')">Scheduling questions</div>
-                    <div class="quick-message" onclick="insertQuickMessage('I need help with my account or payments')">Account/Payment help</div>
+                    <div class="quick-message" onclick="insertQuickMessage('Hello, I need help finding a tutor for my subject')">Help finding a tutor</div>
+                    <div class="quick-message" onclick="insertQuickMessage('I have questions about scheduling sessions')">Scheduling questions</div>
+                    <div class="quick-message" onclick="insertQuickMessage('Can you help me with payment or account issues?')">Payment/Account help</div>
                 </div>
             </div>
         `;
     } else {
-        // Load existing messages
+        // Admin chat exists - load messages normally
         loadChatMessages(chatId);
     }
-}
-  
-  // Load chat messages
+}  
+// Load chat messages
 function loadChatMessages(chatId) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
@@ -7145,25 +7091,27 @@ async function sendMessage() {
     const messageText = messageInput.value.trim();
     
     if (!messageText || !currentChat) return;
-
+    
     try {
         const studentId = auth.currentUser.uid;
         const studentName = userData?.name || 'Student';
+        
+        // Check if this is an admin chat
         const isAdminChat = currentChat.isAdmin;
         
-        // Determine chat ID and receiver
-        let chatId, receiverId, receiverName;
+        let chatId;
+        let receiverId;
         
         if (isAdminChat) {
+            // Admin chat - use consistent naming
             chatId = `admin_support_${studentId}`;
-            receiverId = 'support';
-            receiverName = 'Customer Support';
+            receiverId = 'admin';
         } else {
+            // Tutor chat - use existing logic
             chatId = currentChat.chatId;
             receiverId = currentChat.tutorId;
-            receiverName = currentChat.tutorName;
         }
-
+        
         const messageData = {
             text: messageText,
             senderId: studentId,
@@ -7172,69 +7120,77 @@ async function sendMessage() {
             read: false,
             type: 'text'
         };
-
-        // Get or create chat with consistent structure
+        
+        // Get chat reference
         const chatRef = db.collection('chats').doc(chatId);
         const chatDoc = await chatRef.get();
-
+        
+        // Create chat if it doesn't exist
         if (!chatDoc.exists) {
-            // Create new chat with proper structure
-            const chatData = {
-                chatType: isAdminChat ? "admin_support" : "tutor_session",
-                createdAt: new Date(),
-                isAdminChat: isAdminChat,
+            let chatData = {
+                participants: [studentId, receiverId],
+                participantNames: {
+                    [studentId]: studentName,
+                    [receiverId]: isAdminChat ? 'Customer Support' : 'Tutor'
+                },
+                status: 'active',
                 lastMessage: messageText,
                 lastMessageAt: new Date(),
                 lastMessageBy: studentId,
-                lastUpdated: new Date(),
-                participantNames: {
-                    [studentId]: studentName,
-                    [receiverId]: receiverName
-                },
-                participants: [studentId, receiverId],
-                status: "active",
-                subject: isAdminChat ? "Customer Support" : "Tutoring Session",
                 unreadCounts: {
                     [studentId]: 0,
                     [receiverId]: 1
-                }
+                },
+                createdAt: new Date(),
+                lastUpdated: new Date()
             };
-
-            // Add student-specific fields for admin chats
+            
+            // Add admin-specific fields
             if (isAdminChat) {
+                chatData.chatType = 'admin_support';
+                chatData.subject = 'Customer Support';
+                chatData.isAdminChat = true;
                 chatData.studentId = studentId;
                 chatData.studentName = studentName;
+            } else {
+                chatData.chatType = 'tutor_session';
+                chatData.subject = 'Tutoring Session';
             }
-
+            
             await chatRef.set(chatData);
-            console.log('Created new chat:', chatId);
         } else {
             // Update existing chat
-            await chatRef.update({
+            const updateData = {
                 lastMessage: messageText,
                 lastMessageAt: new Date(),
                 lastMessageBy: studentId,
-                lastUpdated: new Date(),
-                [`unreadCounts.${receiverId}`]: firebase.firestore.FieldValue.increment(1)
-            });
+                lastUpdated: new Date()
+            };
+            
+            // Only increment unread count for the receiver
+            if (chatDoc.data().lastMessageBy !== studentId) {
+                updateData[`unreadCounts.${receiverId}`] = firebase.firestore.FieldValue.increment(1);
+            }
+            
+            await chatRef.update(updateData);
         }
-
+        
         // Add message to messages subcollection
         await chatRef.collection('messages').add(messageData);
-
+        
         // Clear input
         messageInput.value = '';
         messageInput.style.height = 'auto';
-
-        // Reload messages
+        
+        // Reload messages to show the new message
         loadChatMessages(chatId);
-
+        
     } catch (error) {
         console.error('Error sending message:', error);
         alert('Failed to send message. Please try again.');
     }
-}
-  
+}        
+
 // Setup admin-specific quick messages
 function setupAdminQuickMessages() {
     const quickMessagesContainer = document.getElementById('quickMessages');
@@ -8205,8 +8161,5 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
-
-
-
 
 
