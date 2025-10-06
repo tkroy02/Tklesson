@@ -3983,10 +3983,635 @@ document.addEventListener('DOMContentLoaded', function() {
 //..........................................................................................................//
 //...................CHATS AND MESSAGES SECTION END HERE....................................................// 
 //.........................................................................................................//
+
+//..........................................................................................................//
+//...................NOTIFICATION SECTION STARTS HERE....................................................// 
+//.........................................................................................................//
+// Add this to the existing JavaScript, preferably after the existing code
+
+// Notifications System
+let notificationsSystem = {
+    notifications: [],
+    filteredNotifications: [],
+    listeners: [],
+    isInitialized: false
+};
+
+// Initialize Notifications System
+function initNotificationsSystem() {
+    if (notificationsSystem.isInitialized) return;
+    
+    console.log('Initializing Notifications System...');
+    notificationsSystem.isInitialized = true;
+    
+    setupNotificationsEventListeners();
+    loadNotifications();
+    setupNotificationsRealtimeListener();
+}
+
+// Setup Notifications Event Listeners
+function setupNotificationsEventListeners() {
+    // Filter event listeners
+    document.getElementById('notificationTypeFilter')?.addEventListener('change', filterNotifications);
+    document.getElementById('notificationPriorityFilter')?.addEventListener('change', filterNotifications);
+    document.getElementById('notificationStatusFilter')?.addEventListener('change', filterNotifications);
+    document.getElementById('notificationDateFilter')?.addEventListener('change', filterNotifications);
+    
+    // Action buttons
+    document.getElementById('markAllReadBtn')?.addEventListener('click', markAllAsRead);
+    document.getElementById('clearAllBtn')?.addEventListener('click', clearAllNotifications);
+}
+
+// Load Notifications
+async function loadNotifications() {
+    try {
+        const notificationsSnapshot = await db.collection('notifications')
+            .orderBy('createdAt', 'desc')
+            .limit(100)
+            .get();
+        
+        notificationsSystem.notifications = [];
+        
+        notificationsSnapshot.forEach(doc => {
+            const notification = doc.data();
+            notification.id = doc.id;
+            notificationsSystem.notifications.push(notification);
+        });
+        
+        updateNotificationsDisplay();
+        updateNotificationsStats();
+        
+    } catch (error) {
+        console.error('Error loading notifications:', error);
+        showNotification('Error loading notifications', 'error');
+    }
+}
+
+// Setup Real-time Listener for Notifications
+function setupNotificationsRealtimeListener() {
+    const listener = db.collection('notifications')
+        .orderBy('createdAt', 'desc')
+        .limit(50)
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added') {
+                    // New notification added
+                    const notification = change.doc.data();
+                    notification.id = change.doc.id;
+                    
+                    // Add to beginning of array
+                    notificationsSystem.notifications.unshift(notification);
+                    
+                    // Show desktop notification for new unread notifications
+                    if (!notification.isRead) {
+                        showDesktopNotification(notification.title, notification.message);
+                    }
+                }
+                
+                if (change.type === 'modified') {
+                    // Notification updated
+                    const updatedNotification = change.doc.data();
+                    updatedNotification.id = change.doc.id;
+                    
+                    // Update in array
+                    const index = notificationsSystem.notifications.findIndex(n => n.id === updatedNotification.id);
+                    if (index !== -1) {
+                        notificationsSystem.notifications[index] = updatedNotification;
+                    }
+                }
+                
+                if (change.type === 'removed') {
+                    // Notification removed
+                    const removedId = change.doc.id;
+                    notificationsSystem.notifications = notificationsSystem.notifications.filter(n => n.id !== removedId);
+                }
+            });
+            
+            updateNotificationsDisplay();
+            updateNotificationsStats();
+            updateSidebarNotificationBadge();
+        }, (error) => {
+            console.error('Error in notifications listener:', error);
+        });
+    
+    notificationsSystem.listeners.push(listener);
+}
+
+// Update Notifications Display
+function updateNotificationsDisplay() {
+    const notificationList = document.getElementById('notificationList');
+    if (!notificationList) return;
+    
+    filterNotifications(); // This will update filteredNotifications and display them
+}
+
+// Filter Notifications
+function filterNotifications() {
+    const typeFilter = document.getElementById('notificationTypeFilter')?.value || 'all';
+    const priorityFilter = document.getElementById('notificationPriorityFilter')?.value || 'all';
+    const statusFilter = document.getElementById('notificationStatusFilter')?.value || 'all';
+    const dateFilter = document.getElementById('notificationDateFilter')?.value;
+    
+    let filtered = [...notificationsSystem.notifications];
+    
+    // Apply type filter
+    if (typeFilter !== 'all') {
+        filtered = filtered.filter(notification => notification.type === typeFilter);
+    }
+    
+    // Apply priority filter
+    if (priorityFilter !== 'all') {
+        filtered = filtered.filter(notification => notification.priority === priorityFilter);
+    }
+    
+    // Apply status filter
+    if (statusFilter !== 'all') {
+        const isReadFilter = statusFilter === 'read';
+        filtered = filtered.filter(notification => notification.isRead === isReadFilter);
+    }
+    
+    // Apply date filter
+    if (dateFilter) {
+        filtered = filtered.filter(notification => {
+            const notificationDate = notification.createdAt?.toDate().toISOString().split('T')[0];
+            return notificationDate === dateFilter;
+        });
+    }
+    
+    notificationsSystem.filteredNotifications = filtered;
+    renderNotificationsList();
+}
+
+// Render Notifications List
+function renderNotificationsList() {
+    const notificationList = document.getElementById('notificationList');
+    if (!notificationList) return;
+    
+    if (notificationsSystem.filteredNotifications.length === 0) {
+        notificationList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-bell-slash"></i>
+                <h4>No Notifications Found</h4>
+                <p>No notifications match your current filters.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    notificationList.innerHTML = '';
+    
+    notificationsSystem.filteredNotifications.forEach(notification => {
+        const notificationElement = createNotificationElement(notification);
+        notificationList.appendChild(notificationElement);
+    });
+}
+
+// Create Notification Element
+function createNotificationElement(notification) {
+    const notificationDiv = document.createElement('div');
+    notificationDiv.className = `notification-item ${notification.isRead ? 'read' : 'unread'}`;
+    notificationDiv.setAttribute('data-notification-id', notification.id);
+    
+    const timeAgo = formatTimeAgo(notification.createdAt?.toDate());
+    const priorityBadge = getPriorityBadge(notification.priority);
+    const typeBadge = getTypeBadge(notification.type);
+    
+    let detailsHtml = '';
+    if (notification.details) {
+        detailsHtml = `
+            <div class="notification-details">
+                ${notification.details.sessionId ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Session ID:</span>
+                        <span class="detail-value">${notification.details.sessionId}</span>
+                    </div>
+                ` : ''}
+                ${notification.details.tutorName ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Tutor:</span>
+                        <span class="detail-value">${notification.details.tutorName}</span>
+                    </div>
+                ` : ''}
+                ${notification.details.subject ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Subject:</span>
+                        <span class="detail-value">${notification.details.subject}</span>
+                    </div>
+                ` : ''}
+                ${notification.details.date && notification.details.time ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Schedule:</span>
+                        <span class="detail-value">${notification.details.date} at ${notification.details.time}</span>
+                    </div>
+                ` : ''}
+                ${notification.details.duration ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Duration:</span>
+                        <span class="detail-value">${notification.details.duration} hour(s)</span>
+                    </div>
+                ` : ''}
+                ${notification.details.meetLink ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Meeting Link:</span>
+                        <span class="detail-value">
+                            <a href="${notification.details.meetLink}" target="_blank" onclick="event.stopPropagation();">
+                                Join Session
+                            </a>
+                        </span>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+    
+    notificationDiv.innerHTML = `
+        <div class="notification-header">
+            <div class="notification-title">
+                ${notification.title}
+                ${priorityBadge}
+                ${typeBadge}
+            </div>
+            <div class="notification-time">${timeAgo}</div>
+        </div>
+        <div class="notification-message">${notification.message}</div>
+        ${detailsHtml}
+        <div class="notification-actions">
+            ${!notification.isRead ? `
+                <button class="mark-read-btn" onclick="markAsRead('${notification.id}', event)">
+                    <i class="fas fa-check"></i> Mark as Read
+                </button>
+            ` : ''}
+            <button class="btn-outline" onclick="viewNotificationDetails('${notification.id}', event)" style="font-size: 12px; padding: 4px 12px;">
+                <i class="fas fa-eye"></i> View Details
+            </button>
+        </div>
+    `;
+    
+    // Add click event to mark as read when clicking anywhere on the notification
+    if (!notification.isRead) {
+        notificationDiv.addEventListener('click', (e) => {
+            if (!e.target.closest('.notification-actions')) {
+                markAsRead(notification.id);
+            }
+        });
+    }
+    
+    return notificationDiv;
+}
+
+// Get Priority Badge
+function getPriorityBadge(priority) {
+    const badges = {
+        high: '<span class="notification-badge badge-high">High</span>',
+        medium: '<span class="notification-badge badge-medium">Medium</span>',
+        low: '<span class="notification-badge badge-low">Low</span>'
+    };
+    return badges[priority] || '';
+}
+
+// Get Type Badge
+function getTypeBadge(type) {
+    const badges = {
+        session_confirmed: '<span class="notification-badge badge-session">Session</span>',
+        session_cancelled: '<span class="notification-badge badge-session">Session</span>',
+        payment_processed: '<span class="notification-badge badge-payment">Payment</span>',
+        system_alert: '<span class="notification-badge badge-system">System</span>',
+        user_activity: '<span class="notification-badge badge-system">User</span>'
+    };
+    return badges[type] || '';
+}
+
+// Format Time Ago
+function formatTimeAgo(date) {
+    if (!date) return '';
+    
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    
+    return date.toLocaleDateString();
+}
+
+// Mark as Read
+async function markAsRead(notificationId, event = null) {
+    if (event) {
+        event.stopPropagation();
+    }
+    
+    try {
+        await db.collection('notifications').doc(notificationId).update({
+            isRead: true
+        });
+        
+        // Update local state immediately for better UX
+        const notification = notificationsSystem.notifications.find(n => n.id === notificationId);
+        if (notification) {
+            notification.isRead = true;
+        }
+        
+        updateNotificationsDisplay();
+        updateNotificationsStats();
+        updateSidebarNotificationBadge();
+        
+    } catch (error) {
+        console.error('Error marking notification as read:', error);
+        showNotification('Error marking notification as read', 'error');
+    }
+}
+
+// Mark All as Read
+async function markAllAsRead() {
+    if (!notificationsSystem.notifications.some(n => !n.isRead)) {
+        showNotification('All notifications are already read', 'info');
+        return;
+    }
+    
+    if (!confirm('Mark all notifications as read?')) return;
+    
+    try {
+        const batch = db.batch();
+        const unreadNotifications = notificationsSystem.notifications.filter(n => !n.isRead);
+        
+        unreadNotifications.forEach(notification => {
+            const notificationRef = db.collection('notifications').doc(notification.id);
+            batch.update(notificationRef, { isRead: true });
+        });
+        
+        await batch.commit();
+        
+        // Update local state
+        notificationsSystem.notifications.forEach(notification => {
+            notification.isRead = true;
+        });
+        
+        updateNotificationsDisplay();
+        updateNotificationsStats();
+        updateSidebarNotificationBadge();
+        
+        showNotification('All notifications marked as read', 'success');
+        
+    } catch (error) {
+        console.error('Error marking all notifications as read:', error);
+        showNotification('Error marking notifications as read', 'error');
+    }
+}
+
+// Clear All Notifications
+async function clearAllNotifications() {
+    if (notificationsSystem.notifications.length === 0) {
+        showNotification('No notifications to clear', 'info');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) return;
+    
+    try {
+        const batch = db.batch();
+        notificationsSystem.notifications.forEach(notification => {
+            const notificationRef = db.collection('notifications').doc(notification.id);
+            batch.delete(notificationRef);
+        });
+        
+        await batch.commit();
+        
+        // Clear local state
+        notificationsSystem.notifications = [];
+        notificationsSystem.filteredNotifications = [];
+        
+        updateNotificationsDisplay();
+        updateNotificationsStats();
+        updateSidebarNotificationBadge();
+        
+        showNotification('All notifications cleared', 'success');
+        
+    } catch (error) {
+        console.error('Error clearing notifications:', error);
+        showNotification('Error clearing notifications', 'error');
+    }
+}
+
+// View Notification Details
+function viewNotificationDetails(notificationId, event = null) {
+    if (event) {
+        event.stopPropagation();
+    }
+    
+    const notification = notificationsSystem.notifications.find(n => n.id === notificationId);
+    if (!notification) return;
+    
+    // Create modal or show detailed view
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+    `;
+    
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 600px; width: 90%;">
+            <div class="modal-header">
+                <h3>Notification Details</h3>
+                <span class="close-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="student-card">
+                    <div class="student-header">
+                        <div class="student-title">${notification.title}</div>
+                        <div>
+                            ${getPriorityBadge(notification.priority)}
+                            ${getTypeBadge(notification.type)}
+                            <span class="status-badge ${notification.isRead ? 'status-active' : 'status-pending'}">
+                                ${notification.isRead ? 'Read' : 'Unread'}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="student-details">
+                        <div class="student-detail">
+                            <i class="fas fa-clock"></i>
+                            <span>Created: ${notification.createdAt?.toDate().toLocaleString() || 'N/A'}</span>
+                        </div>
+                        <div class="student-detail">
+                            <i class="fas fa-tag"></i>
+                            <span>Type: ${notification.type || 'N/A'}</span>
+                        </div>
+                        <div class="student-detail">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <span>Priority: ${notification.priority || 'N/A'}</span>
+                        </div>
+                    </div>
+                    <div class="student-details">
+                        <div class="student-detail">
+                            <i class="fas fa-envelope"></i>
+                            <span>Message: ${notification.message || 'N/A'}</span>
+                        </div>
+                    </div>
+                    ${notification.details ? `
+                        <div class="student-details">
+                            <h4>Additional Details</h4>
+                            ${Object.entries(notification.details).map(([key, value]) => `
+                                <div class="student-detail">
+                                    <i class="fas fa-info-circle"></i>
+                                    <span>${key}: ${value || 'N/A'}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-outline" id="closeModalBtn">Close</button>
+                ${!notification.isRead ? `
+                    <button class="btn-primary" onclick="markAsRead('${notification.id}'); this.closest('.modal').remove();">
+                        Mark as Read
+                    </button>
+                ` : ''}
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Close modal events
+    modal.querySelector('.close-modal').addEventListener('click', () => modal.remove());
+    modal.querySelector('#closeModalBtn').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+    });
+}
+
+// Update Notifications Stats
+function updateNotificationsStats() {
+    const total = notificationsSystem.notifications.length;
+    const unread = notificationsSystem.notifications.filter(n => !n.isRead).length;
+    const today = notificationsSystem.notifications.filter(n => {
+        const today = new Date().toDateString();
+        const notificationDate = n.createdAt?.toDate().toDateString();
+        return notificationDate === today;
+    }).length;
+    const highPriority = notificationsSystem.notifications.filter(n => n.priority === 'high').length;
+    
+    document.getElementById('totalNotifications').textContent = total;
+    document.getElementById('unreadNotifications').textContent = unread;
+    document.getElementById('todayNotifications').textContent = today;
+    document.getElementById('highPriorityNotifications').textContent = highPriority;
+}
+
+// Update Sidebar Notification Badge
+function updateSidebarNotificationBadge() {
+    const sidebarBadge = document.querySelector('[data-section="notifications"] .nav-badge');
+    const unreadCount = notificationsSystem.notifications.filter(n => !n.isRead).length;
+    
+    if (sidebarBadge) {
+        if (unreadCount > 0) {
+            sidebarBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+            sidebarBadge.style.display = 'flex';
+        } else {
+            sidebarBadge.style.display = 'none';
+        }
+    } else {
+        // Create badge if it doesn't exist
+        createNotificationsSidebarBadge();
+    }
+}
+
+// Create Notifications Sidebar Badge
+function createNotificationsSidebarBadge() {
+    const notificationsLink = document.querySelector('[data-section="notifications"]');
+    if (notificationsLink && !notificationsLink.querySelector('.nav-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'nav-badge';
+        badge.style.cssText = `
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #e74c3c;
+            color: white;
+            border-radius: 10px;
+            min-width: 18px;
+            height: 18px;
+            font-size: 11px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0 4px;
+        `;
+        notificationsLink.style.position = 'relative';
+        notificationsLink.appendChild(badge);
+        updateSidebarNotificationBadge();
+    }
+}
+
+// Initialize notifications system when section is activated
+document.addEventListener('DOMContentLoaded', function() {
+    const notificationsLink = document.querySelector('a[data-section="notifications"]');
+    if (notificationsLink) {
+        notificationsLink.addEventListener('click', function() {
+            setTimeout(() => {
+                if (!notificationsSystem.isInitialized) {
+                    initNotificationsSystem();
+                }
+            }, 500);
+        });
+    }
+    
+    // Also initialize if user navigates directly to notifications section
+    if (window.location.hash === '#notifications') {
+        setTimeout(initNotificationsSystem, 1000);
+    }
+});
+
+// Add this helper function if it doesn't exist
+function showNotification(message, type = 'info') {
+    // Use existing notification system or create simple one
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : '#2196F3'};
+        color: white;
+        border-radius: 4px;
+        z-index: 10000;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    `;
+    notification.textContent = message;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 3000);
+}
+
+//..........................................................................................................//
+//...................NOTIFICATION SECTION ENDS HERE....................................................// 
+//.........................................................................................................//
+       
+        
         
     </script>
 </body>
 </html>
+
 
 
 
