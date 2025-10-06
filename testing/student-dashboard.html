@@ -120,31 +120,6 @@ body {
   color: #4a5568;
 }
 
-.unread-count {
-    background: #ff4757;
-    color: white;
-    border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: bold;
-    position: absolute;
-    top: -5px;
-    right: -5px;
-}
-
-.contact-status {
-    position: relative;
-}
-
-.contact-item.has-unread {
-    background: rgba(255, 71, 87, 0.05);
-    border-left: 3px solid #ff4757;
-}
-  
 /* Reviews Section Styles */
 .reviews-container {
   display: flex;
@@ -4817,66 +4792,59 @@ function resetInactivityTimer() {
     console.log('resetInactivityTimer function called - placeholder implementation');
 }
 
+// Event listeners for page lifecycle
+document.addEventListener('DOMContentLoaded', function() {
+    if (auth.currentUser) {
+        setupSessionListeners();
+        setupActivityListeners(); // Now this function exists
+    }
+});
+
 window.addEventListener('beforeunload', cleanupSessionListeners);
         
         // Initialize session listeners when dashboard loads
 auth.onAuthStateChanged((user) => {
-    if (user) {
-        currentUser = user;
-        
-        // Initialize dashboard (only once)
-        if (!dashboardInitialized) {
-            initializeDashboard();
-            dashboardInitialized = true;
-        }
-        
-        // Initialize chat system (only once)
-        initializeChatOnAuth();
-        
-        // ... any other initialization
-    }
-});
+  if (user) {
+    currentUser = user;
     
-auth.onAuthStateChanged((user) => {
-    if (user) {
-        currentUser = user;
-        
-        // Try to initialize Cloud Functions with error handling
-        try {
-            if (typeof firebase.functions !== 'undefined') {
-                const functions = firebase.functions();
-                window.createPackageCheckout = functions.httpsCallable('createPackageCheckout');
-                console.log('Cloud Functions initialized successfully');
-            } else {
-                throw new Error('Functions SDK not loaded');
-            }
-        } catch (error) {
-            console.error('Cloud Functions initialization failed:', error);
-            // Provide fallback
-            window.createPackageCheckout = () => {
-                alert('Package purchasing is temporarily unavailable. Please contact support.');
-                return Promise.reject('Functions not available');
-            };
-        }
-        
-        loadDashboardData().then(() => {
-            setupSessionListeners();
-            setupActivityListeners();
-            
-            // SPECIFIC INITIALIZATION CODE THAT SHOULD BE HERE:
-            initDashboard(); // Your main dashboard initialization
-            loadPackageBalance(); // Load package balance
-            setupProfileEditing(); // Profile editing handlers
-            resetInactivityTimer(); // Activity tracking
-            
-            // REMOVED: setTimeout(() => { initChatSystem(); }, 2000);
-            // Chat system will be initialized by initializeChatOnAuth() instead
-            
-            console.log('Dashboard fully initialized');
-        });
-    } else {
-        window.location.href = 'student-login.html';
+    // Try to initialize Cloud Functions with error handling
+    try {
+      if (typeof firebase.functions !== 'undefined') {
+        const functions = firebase.functions();
+        window.createPackageCheckout = functions.httpsCallable('createPackageCheckout');
+        console.log('Cloud Functions initialized successfully');
+      } else {
+        throw new Error('Functions SDK not loaded');
+      }
+    } catch (error) {
+      console.error('Cloud Functions initialization failed:', error);
+      // Provide fallback
+      window.createPackageCheckout = () => {
+        alert('Package purchasing is temporarily unavailable. Please contact support.');
+        return Promise.reject('Functions not available');
+      };
     }
+    
+    loadDashboardData().then(() => {
+      setupSessionListeners();
+      setupActivityListeners();
+      
+      // SPECIFIC INITIALIZATION CODE THAT SHOULD BE HERE:
+      initDashboard(); // Your main dashboard initialization
+      loadPackageBalance(); // Load package balance
+      setupProfileEditing(); // Profile editing handlers
+      resetInactivityTimer(); // Activity tracking
+      // INITIALIZE CHAT SYSTEM
+      setTimeout(() => {
+        initChatSystem();
+      }, 2000);
+      // Add any other specific initialization functions you have
+      
+      console.log('Dashboard fully initialized');
+    });
+  } else {
+    window.location.href = 'student-login.html';
+  }
 });
   
 //...............................................................................................
@@ -6534,188 +6502,6 @@ document.addEventListener('DOMContentLoaded', function() {
 // PACKAGE STORE FUNCTIONS - ADD THESE AT THE END OF YOUR EXISTING JAVASCRIPT
 // ============================================================================
 
-async function purchasePackage(packageType) {
-  const purchaseBtn = event.target;
-  const originalText = purchaseBtn.innerHTML;
-  
-  try {
-    // Show loading state
-    purchaseBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-    purchaseBtn.classList.add('btn-loading');
-    
-    const result = await createPackageCheckout({ 
-      studentId: auth.currentUser.uid,
-      packageType: packageType
-    });
-    
-    // Redirect to Stripe Checkout
-    window.location.href = result.data.url;
-    
-  } catch (error) {
-    console.error('Failed to start package purchase:', error);
-    alert('Failed to start purchase. Please try again.');
-    
-    // Reset button
-    purchaseBtn.innerHTML = originalText;
-    purchaseBtn.classList.remove('btn-loading');
-  }
-}
-
-// Load and display package balance
-async function loadPackageBalance() {
-  try {
-    // Check if user is authenticated
-    if (!auth.currentUser) {
-      console.log('User not authenticated, skipping package balance load');
-      return;
-    }
-    
-    const studentDoc = await db.collection('students').doc(auth.currentUser.uid).get();
-    
-    if (studentDoc.exists) {
-      const studentData = studentDoc.data();
-      const packageBalances = studentData.packageBalances || {};
-      
-      // Get balances for each package type
-      const taiwoBalance = packageBalances.taiwo || 0;
-      const hourlyBalance = packageBalances.hourly || 0;
-      const bronzeBalance = packageBalances.bronze || 0;
-      const silverBalance = packageBalances.silver || 0;
-      const goldBalance = packageBalances.gold || 0;
-      
-      // Calculate total sessions
-      const totalSessions = taiwoBalance + hourlyBalance + bronzeBalance + silverBalance + goldBalance;
-      
-      // Update the display - you can choose one of these options:
-      
-      // OPTION 1: Show total sessions (simplest)
-      document.getElementById('taiwoBalance').innerHTML = `
-        <strong>Total Available Sessions: ${totalSessions}</strong>
-        ${taiwoBalance > 0 ? `<br>Taiwo: ${taiwoBalance} session${taiwoBalance !== 1 ? 's' : ''}` : ''}
-        ${hourlyBalance > 0 ? `<br>Hourly: ${hourlyBalance} session${hourlyBalance !== 1 ? 's' : ''}` : ''}
-        ${bronzeBalance > 0 ? `<br>Bronze: ${bronzeBalance} session${bronzeBalance !== 1 ? 's' : ''}` : ''}
-        ${silverBalance > 0 ? `<br>Silver: ${silverBalance} session${silverBalance !== 1 ? 's' : ''}` : ''}
-        ${goldBalance > 0 ? `<br>Gold: ${goldBalance} session${goldBalance !== 1 ? 's' : ''}` : ''}
-      `;
-      
-      // OPTION 2: Or if you prefer separate displays, you'd need to add more HTML elements
-    }
-  } catch (error) {
-    console.error('Error loading package balance:', error);
-  }
-}  
-// Check for successful return from Stripe
-function checkPurchaseSuccess() {
-  const urlParams = new URLSearchParams(window.location.search);
-  
-if (urlParams.get('success') === 'true') {
-    showPurchaseSuccessMessage();
-    // Clean URL
-    window.history.replaceState({}, '', '/testing/student-dashboard.html');
-  }
-  
-  if (urlParams.get('canceled') === 'true') {
-    // Optional: Show canceled message
-    window.history.replaceState({}, '', '/testing/student-dashboard.html');
-  }
-}
-
-function showPurchaseSuccessMessage() {
-  // You can use a toast notification or alert
-  alert('🎉 Package purchased successfully! Your balance has been updated. You can now book sessions using your package credits.');
-  
-  // Refresh balance display
-  loadPackageBalance();
-}
-
-// Load purchase history (optional enhancement)
-async function loadPurchaseHistory() {
-  try {
-    const container = document.getElementById('purchaseHistoryContainer');
-    container.innerHTML = '<div class="spinner"></div>';
-    
-    const purchasesSnapshot = await db.collection('packagePurchases')
-      .where('studentId', '==', auth.currentUser.uid)
-      .orderBy('purchasedAt', 'desc')
-      .get();
-    
-    if (purchasesSnapshot.empty) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <i class="fas fa-receipt"></i>
-          <h3>No Purchase History</h3>
-          <p>Your package purchases will appear here</p>
-        </div>
-      `;
-      return;
-    }
-    
-    let html = '<div class="purchases-list">';
-    
-    purchasesSnapshot.forEach(doc => {
-      const purchase = doc.data();
-      const purchaseDate = purchase.purchasedAt?.toDate() || new Date();
-      const formattedDate = purchaseDate.toLocaleDateString();
-      const formattedTime = purchaseDate.toLocaleTimeString();
-      
-      // Map package types to display names
-      const packageNames = {
-        'taiwo': 'Taiwo Package',
-        'hourly': 'Hourly Session', 
-        'bronze': 'Bronze Package (4 Sessions)',
-        'silver': 'Silver Package (8 Sessions)',
-        'gold': 'Gold Package (12 Sessions)'
-      };
-      
-      html += `
-        <div class="purchase-item">
-          <div class="purchase-header">
-            <div class="purchase-title">${packageNames[purchase.packageType] || purchase.packageType}</div>
-            <div class="purchase-amount">$${purchase.amount}</div>
-          </div>
-          <div class="purchase-details">
-            <div class="purchase-date">
-              <i class="fas fa-calendar"></i>
-              ${formattedDate} at ${formattedTime}
-            </div>
-            <div class="purchase-sessions">
-              <i class="fas fa-ticket-alt"></i>
-              ${purchase.sessions} session${purchase.sessions !== 1 ? 's' : ''}
-            </div>
-            <div class="purchase-id">
-              <i class="fas fa-receipt"></i>
-              ${purchase.stripeSessionId || 'No receipt'}
-            </div>
-          </div>
-        </div>
-      `;
-    });
-    
-    html += '</div>';
-    container.innerHTML = html;
-    
-  } catch (error) {
-    console.error('Error loading purchase history:', error);
-    document.getElementById('purchaseHistoryContainer').innerHTML = `
-      <div class="error-state">
-        <i class="fas fa-exclamation-circle"></i>
-        <h3>Error Loading History</h3>
-        <p>Failed to load purchase history. Please try again.</p>
-      </div>
-    `;
-  }
-}
-  
-// Initialize package store when page loads
-function initPackageStore() {
-  checkPurchaseSuccess();
-  loadPackageBalance();
-}
-
-// ============================================================================
-// END PACKAGE STORE FUNCTIONS
-// ============================================================================  
-
 // =======================================================
 // STUDENT CHAT SYSTEM WITH AUTO-CREATION STARTS HERE
 // =======================================================
@@ -6781,7 +6567,6 @@ function setupChatEventListeners() {
     }
 }
 
-// Load chat contacts
 // Load chat contacts with permanent admin option
 function loadChatContacts() {
     const contactsList = document.getElementById('contactsList');
@@ -7103,7 +6888,7 @@ function loadChatMessages(chatId) {
         });
 }
 
-// Create message element - YOUR EXISTING FUNCTION (no changes needed)
+// Create message element
 function createMessageElement(message) {
     const messageDiv = document.createElement('div');
     const isSent = message.senderId === auth.currentUser.uid;
@@ -7157,55 +6942,54 @@ async function sendMessage() {
         const chatRef = db.collection('chats').doc(chatId);
         const chatDoc = await chatRef.get();
         
-        // Create chat if it doesn't exist
+        // Create chat if it doesn't exist using getOrCreateChat for consistency
         if (!chatDoc.exists) {
-            let chatData = {
-                participants: [studentId, receiverId],
-                participantNames: {
-                    [studentId]: studentName,
-                    [receiverId]: isAdminChat ? 'Customer Support' : 'Tutor'
-                },
-                status: 'active',
-                lastMessage: messageText,
-                lastMessageAt: new Date(),
-                lastMessageBy: studentId,
-                unreadCounts: {
-                    [studentId]: 0,
-                    [receiverId]: 1
-                },
-                createdAt: new Date(),
-                lastUpdated: new Date()
-            };
-            
-            // Add admin-specific fields
             if (isAdminChat) {
-                chatData.chatType = 'support_student';
-                chatData.subject = 'Customer Support';
-                chatData.isAdminChat = true;
-                chatData.studentId = studentId;
-                chatData.studentName = studentName;
+                // For admin chats, create directly
+                const chatData = {
+                    participants: [studentId, receiverId],
+                    participantNames: {
+                        [studentId]: studentName,
+                        [receiverId]: 'Customer Support'
+                    },
+                    status: 'active',
+                    lastMessage: messageText,
+                    lastMessageAt: new Date(),
+                    lastMessageBy: studentId,
+                    unreadCounts: {
+                        [studentId]: 0,
+                        [receiverId]: 1
+                    },
+                    createdAt: new Date(),
+                    lastUpdated: new Date(),
+                    chatType: 'support_student',
+                    subject: 'Customer Support',
+                    isAdminChat: true,
+                    studentId: studentId,
+                    studentName: studentName
+                };
+                
+                await chatRef.set(chatData);
             } else {
-                chatData.chatType = 'tutor_session';
-                chatData.subject = 'Tutoring Session';
+                // For tutor chats, use the existing getOrCreateChat function
+                await getOrCreateChat(currentChat.tutorId);
             }
-            
-            await chatRef.set(chatData);
-        } else {
-            // Update existing chat
-            const updateData = {
-                lastMessage: messageText,
-                lastMessageAt: new Date(),
-                lastMessageBy: studentId,
-                lastUpdated: new Date()
-            };
-            
-            // Only increment unread count for the receiver
-            if (chatDoc.data().lastMessageBy !== studentId) {
-                updateData[`unreadCounts.${receiverId}`] = firebase.firestore.FieldValue.increment(1);
-            }
-            
-            await chatRef.update(updateData);
         }
+        
+        // Update existing chat
+        const updateData = {
+            lastMessage: messageText,
+            lastMessageAt: new Date(),
+            lastMessageBy: studentId,
+            lastUpdated: new Date()
+        };
+        
+        // Only increment unread count for the receiver
+        if (chatDoc.exists && chatDoc.data().lastMessageBy !== studentId) {
+            updateData[`unreadCounts.${receiverId}`] = firebase.firestore.FieldValue.increment(1);
+        }
+        
+        await chatRef.update(updateData);
         
         // Add message to messages subcollection
         await chatRef.collection('messages').add(messageData);
@@ -7270,13 +7054,11 @@ function formatMessageTime(date) {
 // Mark chat as read
 async function markChatAsRead(chatId) {
     try {
-        const studentId = auth.currentUser.uid;
-        await db.collection('chats').doc(chatId).update({
-            [`unreadCounts.${studentId}`]: 0
-        });
-        
-        // Update UI immediately
-        updateContactBadge(chatId, 0);
+        await db.collection('chats')
+            .doc(chatId)
+            .update({
+                [`unreadCounts.${auth.currentUser.uid}`]: 0
+            });
     } catch (error) {
         console.error('Error marking chat as read:', error);
     }
@@ -7350,113 +7132,9 @@ function updateUnreadMessagesCount(count) {
 // Setup realtime listeners
 function setupRealtimeListeners() {
     console.log('Setting up realtime chat listeners...');
-    
-    const studentId = auth.currentUser.uid;
-
-    // Request notification permission
-    if ("Notification" in window && Notification.permission === "default") {
-        Notification.requestPermission();
-    }
-    
-    // Listen for ALL student chats in real-time
-    db.collection('chats')
-        .where('participants', 'array-contains', studentId)
-        .onSnapshot((snapshot) => {
-            let totalUnread = 0;
-            const currentChatId = currentChat?.chatId;
-            
-            snapshot.forEach((doc) => {
-                const chat = doc.data();
-                const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                totalUnread += unreadCount;
-                
-                // Update contact badge
-                updateContactBadge(doc.id, unreadCount);
-                
-                // Show notification for new messages in non-active chats
-                if (unreadCount > 0 && doc.id !== currentChatId) {
-                    showMessageNotification(chat);
-                }
-            });
-            
-            updateUnreadMessagesCount(totalUnread);
-        }, (error) => {
-            console.error('Error in realtime listener:', error);
-        });
+    // Additional real-time features can be added here
 }
 
-function updateContactBadge(chatId, unreadCount) {
-    const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
-    if (!contactItem) return;
-    
-    let unreadBadge = contactItem.querySelector('.unread-count');
-    const statusContainer = contactItem.querySelector('.contact-status');
-    
-    if (unreadCount > 0) {
-        if (!unreadBadge) {
-            unreadBadge = document.createElement('div');
-            unreadBadge.className = 'unread-count';
-            statusContainer.appendChild(unreadBadge);
-        }
-        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-        contactItem.classList.add('has-unread');
-    } else if (unreadBadge) {
-        unreadBadge.remove();
-        contactItem.classList.remove('has-unread');
-    }
-}
-
-function showMessageNotification(chat) {
-    if (!("Notification" in window)) return;
-    
-    if (Notification.permission === "granted") {
-        const senderId = chat.participants.find(id => id !== auth.currentUser.uid);
-        const senderName = chat.participantNames?.[senderId] || 'Someone';
-        
-        new Notification(`New message from ${senderName}`, {
-            body: chat.lastMessage?.substring(0, 100) || 'New message',
-            icon: '/favicon.ico',
-            tag: 'chat-message'
-        });
-    }
-}
-
-function updateContactBadge(chatId, unreadCount) {
-    const contactItem = document.querySelector(`[data-chat-id="${chatId}"]`);
-    if (!contactItem) return;
-    
-    let unreadBadge = contactItem.querySelector('.unread-count');
-    const statusContainer = contactItem.querySelector('.contact-status');
-    
-    if (unreadCount > 0) {
-        if (!unreadBadge) {
-            unreadBadge = document.createElement('div');
-            unreadBadge.className = 'unread-count';
-            statusContainer.appendChild(unreadBadge);
-        }
-        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-        contactItem.classList.add('has-unread');
-    } else if (unreadBadge) {
-        unreadBadge.remove();
-        contactItem.classList.remove('has-unread');
-    }
-}
-
-function showMessageNotification(chat) {
-    if (!("Notification" in window)) return;
-    
-    if (Notification.permission === "granted") {
-        const senderId = chat.participants.find(id => id !== auth.currentUser.uid);
-        const senderName = chat.participantNames?.[senderId] || 'Someone';
-        
-        new Notification(`New message from ${senderName}`, {
-            body: chat.lastMessage?.substring(0, 100) || 'New message',
-            icon: '/favicon.ico',
-            tag: 'chat-message'
-        });
-    }
-}
-  
 // Start new chat with tutor (called from tutors list)
 async function startNewChat(tutorId) {
     try {
@@ -7559,13 +7237,24 @@ async function getOrCreateChat(tutorId) {
   
 // Initialize chat system when dashboard loads
 function initializeChatOnAuth() {
-    if (auth.currentUser && !chatSystemInitialized) {
+    if (auth.currentUser) {
         setTimeout(() => {
             initChatSystem();
         }, 2000);
     }
 }
 
+// Add chat initialization to your existing auth state listener
+// In your existing auth.onAuthStateChanged, add:
+auth.onAuthStateChanged((user) => {
+    if (user) {
+        currentUser = user;
+        // ... your existing code ...
+        
+        // Initialize chat system
+        initializeChatOnAuth();
+    }
+});
 
 // One-time function to clean up duplicate chats
 async function cleanupDuplicateChats() {
@@ -7623,6 +7312,7 @@ async function cleanupDuplicateChats() {
         console.error('Error cleaning up duplicate chats:', error);
     }
 }
+  
   
 // =======================================================
 // MOBILE CHAT FUNCTIONALITY FOR STUDENT DASHBOARD
@@ -8288,8 +7978,5 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
-
-
-
 
 
