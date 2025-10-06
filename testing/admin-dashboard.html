@@ -3987,10 +3987,11 @@ document.addEventListener('DOMContentLoaded', function() {
 //..........................................................................................................//
 //...................NOTIFICATION SECTION STARTS HERE....................................................// 
 //.........................................................................................................//
-// Add this to the existing JavaScript, preferably after the existing code
+// Replace the entire notifications system with this:
 
-// Notifications System
+// Notifications System using bookedSessions
 let notificationsSystem = {
+    sessions: [],
     notifications: [],
     filteredNotifications: [],
     listeners: [],
@@ -4001,18 +4002,232 @@ let notificationsSystem = {
 function initNotificationsSystem() {
     if (notificationsSystem.isInitialized) return;
     
-    console.log('Initializing Notifications System...');
+    console.log('Initializing Notifications System from bookedSessions...');
     notificationsSystem.isInitialized = true;
     
     setupNotificationsEventListeners();
-    loadNotifications();
-    setupNotificationsRealtimeListener();
+    loadSessionsForNotifications();
+    setupSessionsRealtimeListener();
 }
 
-// Setup Notifications Event Listeners
+// Load sessions and convert to notifications
+async function loadSessionsForNotifications() {
+    try {
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .orderBy('date', 'desc')
+            .limit(100)
+            .get();
+        
+        notificationsSystem.sessions = [];
+        notificationsSystem.notifications = [];
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            session.id = doc.id;
+            notificationsSystem.sessions.push(session);
+            
+            // Convert session to notification
+            const notification = convertSessionToNotification(session);
+            if (notification) {
+                notificationsSystem.notifications.push(notification);
+            }
+        });
+        
+        updateNotificationsDisplay();
+        updateNotificationsStats();
+        
+    } catch (error) {
+        console.error('Error loading sessions for notifications:', error);
+        showNotification('Error loading notifications', 'error');
+    }
+}
+
+// Convert session data to notification format
+function convertSessionToNotification(session) {
+    if (!session) return null;
+    
+    const sessionDate = session.date?.toDate();
+    const now = new Date();
+    const timeDiff = sessionDate - now;
+    const hoursUntilSession = timeDiff / (1000 * 60 * 60);
+    
+    // Determine notification type and priority based on session data
+    let type, priority, title, message;
+    
+    switch (session.status) {
+        case 'confirmed':
+            type = 'session_confirmed';
+            priority = 'high';
+            title = 'Session Confirmed! 🎯';
+            message = `Your ${session.subject} session with ${session.tutorName} has been confirmed`;
+            break;
+            
+        case 'pending':
+            type = 'session_pending';
+            priority = 'medium';
+            title = 'Session Request Pending ⏳';
+            message = `New session request for ${session.subject} from ${session.studentName}`;
+            break;
+            
+        case 'cancelled':
+            type = 'session_cancelled';
+            priority = 'high';
+            title = 'Session Cancelled ❌';
+            message = `Session for ${session.subject} has been cancelled`;
+            break;
+            
+        case 'completed':
+            type = 'session_completed';
+            priority = 'low';
+            title = 'Session Completed ✅';
+            message = `Session for ${session.subject} has been completed`;
+            break;
+            
+        default:
+            type = 'session_updated';
+            priority = 'medium';
+            title = 'Session Updated 📝';
+            message = `Session for ${session.subject} has been updated`;
+    }
+    
+    // Add reminder for upcoming sessions
+    if (session.status === 'confirmed' && hoursUntilSession > 0 && hoursUntilSession <= 24) {
+        notificationsSystem.notifications.push(createUpcomingSessionNotification(session));
+    }
+    
+    return {
+        id: session.id,
+        title: title,
+        message: message,
+        type: type,
+        priority: priority,
+        createdAt: session.date || session.createdAt || new Date(),
+        isRead: false,
+        details: {
+            sessionId: session.id,
+            tutorName: session.tutorName,
+            studentName: session.studentName,
+            subject: session.subject,
+            date: sessionDate?.toISOString().split('T')[0],
+            time: session.time,
+            duration: session.duration,
+            meetLink: session.meetLink,
+            meetPlatform: session.meetPlatform,
+            status: session.status,
+            rate: session.rate
+        }
+    };
+}
+
+// Create upcoming session reminder notification
+function createUpcomingSessionNotification(session) {
+    const sessionDate = session.date?.toDate();
+    const hoursUntilSession = (sessionDate - new Date()) / (1000 * 60 * 60);
+    
+    let reminderMessage;
+    if (hoursUntilSession <= 1) {
+        reminderMessage = `starts in less than 1 hour`;
+    } else if (hoursUntilSession <= 24) {
+        reminderMessage = `starts in ${Math.round(hoursUntilSession)} hours`;
+    }
+    
+    return {
+        id: session.id + '_reminder',
+        title: 'Upcoming Session Reminder ⏰',
+        message: `Your ${session.subject} session with ${session.tutorName} ${reminderMessage}`,
+        type: 'session_reminder',
+        priority: 'high',
+        createdAt: new Date(),
+        isRead: false,
+        details: {
+            sessionId: session.id,
+            tutorName: session.tutorName,
+            studentName: session.studentName,
+            subject: session.subject,
+            date: sessionDate?.toISOString().split('T')[0],
+            time: session.time,
+            duration: session.duration,
+            meetLink: session.meetLink,
+            meetPlatform: session.meetPlatform
+        }
+    };
+}
+
+// Setup real-time listener for session changes
+function setupSessionsRealtimeListener() {
+    const listener = db.collection('bookedSessions')
+        .orderBy('date', 'desc')
+        .limit(50)
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                const session = change.doc.data();
+                session.id = change.doc.id;
+                
+                if (change.type === 'added' || change.type === 'modified') {
+                    // Update or add session
+                    const existingIndex = notificationsSystem.sessions.findIndex(s => s.id === session.id);
+                    if (existingIndex !== -1) {
+                        notificationsSystem.sessions[existingIndex] = session;
+                    } else {
+                        notificationsSystem.sessions.push(session);
+                    }
+                    
+                    // Convert to notification
+                    const notification = convertSessionToNotification(session);
+                    if (notification) {
+                        const existingNotifIndex = notificationsSystem.notifications.findIndex(n => n.id === notification.id);
+                        if (existingNotifIndex !== -1) {
+                            notificationsSystem.notifications[existingNotifIndex] = notification;
+                        } else {
+                            notificationsSystem.notifications.unshift(notification);
+                            
+                            // Show desktop notification for new important notifications
+                            if (notification.priority === 'high' && !notification.isRead) {
+                                showDesktopNotification(notification.title, notification.message);
+                            }
+                        }
+                    }
+                }
+                
+                if (change.type === 'removed') {
+                    // Remove session and its notifications
+                    const sessionId = change.doc.id;
+                    notificationsSystem.sessions = notificationsSystem.sessions.filter(s => s.id !== sessionId);
+                    notificationsSystem.notifications = notificationsSystem.notifications.filter(n => 
+                        n.details?.sessionId !== sessionId && !n.id.includes(sessionId)
+                    );
+                }
+            });
+            
+            updateNotificationsDisplay();
+            updateNotificationsStats();
+            updateSidebarNotificationBadge();
+        }, (error) => {
+            console.error('Error in sessions listener:', error);
+        });
+    
+    notificationsSystem.listeners.push(listener);
+}
+
+// Update the filter options to match session types
 function setupNotificationsEventListeners() {
-    // Filter event listeners
-    document.getElementById('notificationTypeFilter')?.addEventListener('change', filterNotifications);
+    // Update filter options for session types
+    const typeFilter = document.getElementById('notificationTypeFilter');
+    if (typeFilter) {
+        typeFilter.innerHTML = `
+            <option value="all">All Session Types</option>
+            <option value="session_confirmed">Confirmed Sessions</option>
+            <option value="session_pending">Pending Sessions</option>
+            <option value="session_cancelled">Cancelled Sessions</option>
+            <option value="session_completed">Completed Sessions</option>
+            <option value="session_reminder">Session Reminders</option>
+            <option value="session_updated">Session Updates</option>
+        `;
+        
+        typeFilter.addEventListener('change', filterNotifications);
+    }
+    
+    // Keep other filter listeners
     document.getElementById('notificationPriorityFilter')?.addEventListener('change', filterNotifications);
     document.getElementById('notificationStatusFilter')?.addEventListener('change', filterNotifications);
     document.getElementById('notificationDateFilter')?.addEventListener('change', filterNotifications);
@@ -4022,151 +4237,20 @@ function setupNotificationsEventListeners() {
     document.getElementById('clearAllBtn')?.addEventListener('click', clearAllNotifications);
 }
 
-// Load Notifications
-async function loadNotifications() {
-    try {
-        const notificationsSnapshot = await db.collection('notifications')
-            .orderBy('createdAt', 'desc')
-            .limit(100)
-            .get();
-        
-        notificationsSystem.notifications = [];
-        
-        notificationsSnapshot.forEach(doc => {
-            const notification = doc.data();
-            notification.id = doc.id;
-            notificationsSystem.notifications.push(notification);
-        });
-        
-        updateNotificationsDisplay();
-        updateNotificationsStats();
-        
-    } catch (error) {
-        console.error('Error loading notifications:', error);
-        showNotification('Error loading notifications', 'error');
-    }
+// Update the badge types for sessions
+function getTypeBadge(type) {
+    const badges = {
+        session_confirmed: '<span class="notification-badge badge-session">Confirmed</span>',
+        session_pending: '<span class="notification-badge badge-session">Pending</span>',
+        session_cancelled: '<span class="notification-badge badge-session">Cancelled</span>',
+        session_completed: '<span class="notification-badge badge-session">Completed</span>',
+        session_reminder: '<span class="notification-badge badge-session">Reminder</span>',
+        session_updated: '<span class="notification-badge badge-session">Updated</span>'
+    };
+    return badges[type] || '';
 }
 
-// Setup Real-time Listener for Notifications
-function setupNotificationsRealtimeListener() {
-    const listener = db.collection('notifications')
-        .orderBy('createdAt', 'desc')
-        .limit(50)
-        .onSnapshot((snapshot) => {
-            snapshot.docChanges().forEach((change) => {
-                if (change.type === 'added') {
-                    // New notification added
-                    const notification = change.doc.data();
-                    notification.id = change.doc.id;
-                    
-                    // Add to beginning of array
-                    notificationsSystem.notifications.unshift(notification);
-                    
-                    // Show desktop notification for new unread notifications
-                    if (!notification.isRead) {
-                        showDesktopNotification(notification.title, notification.message);
-                    }
-                }
-                
-                if (change.type === 'modified') {
-                    // Notification updated
-                    const updatedNotification = change.doc.data();
-                    updatedNotification.id = change.doc.id;
-                    
-                    // Update in array
-                    const index = notificationsSystem.notifications.findIndex(n => n.id === updatedNotification.id);
-                    if (index !== -1) {
-                        notificationsSystem.notifications[index] = updatedNotification;
-                    }
-                }
-                
-                if (change.type === 'removed') {
-                    // Notification removed
-                    const removedId = change.doc.id;
-                    notificationsSystem.notifications = notificationsSystem.notifications.filter(n => n.id !== removedId);
-                }
-            });
-            
-            updateNotificationsDisplay();
-            updateNotificationsStats();
-            updateSidebarNotificationBadge();
-        }, (error) => {
-            console.error('Error in notifications listener:', error);
-        });
-    
-    notificationsSystem.listeners.push(listener);
-}
-
-// Update Notifications Display
-function updateNotificationsDisplay() {
-    const notificationList = document.getElementById('notificationList');
-    if (!notificationList) return;
-    
-    filterNotifications(); // This will update filteredNotifications and display them
-}
-
-// Filter Notifications
-function filterNotifications() {
-    const typeFilter = document.getElementById('notificationTypeFilter')?.value || 'all';
-    const priorityFilter = document.getElementById('notificationPriorityFilter')?.value || 'all';
-    const statusFilter = document.getElementById('notificationStatusFilter')?.value || 'all';
-    const dateFilter = document.getElementById('notificationDateFilter')?.value;
-    
-    let filtered = [...notificationsSystem.notifications];
-    
-    // Apply type filter
-    if (typeFilter !== 'all') {
-        filtered = filtered.filter(notification => notification.type === typeFilter);
-    }
-    
-    // Apply priority filter
-    if (priorityFilter !== 'all') {
-        filtered = filtered.filter(notification => notification.priority === priorityFilter);
-    }
-    
-    // Apply status filter
-    if (statusFilter !== 'all') {
-        const isReadFilter = statusFilter === 'read';
-        filtered = filtered.filter(notification => notification.isRead === isReadFilter);
-    }
-    
-    // Apply date filter
-    if (dateFilter) {
-        filtered = filtered.filter(notification => {
-            const notificationDate = notification.createdAt?.toDate().toISOString().split('T')[0];
-            return notificationDate === dateFilter;
-        });
-    }
-    
-    notificationsSystem.filteredNotifications = filtered;
-    renderNotificationsList();
-}
-
-// Render Notifications List
-function renderNotificationsList() {
-    const notificationList = document.getElementById('notificationList');
-    if (!notificationList) return;
-    
-    if (notificationsSystem.filteredNotifications.length === 0) {
-        notificationList.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-bell-slash"></i>
-                <h4>No Notifications Found</h4>
-                <p>No notifications match your current filters.</p>
-            </div>
-        `;
-        return;
-    }
-    
-    notificationList.innerHTML = '';
-    
-    notificationsSystem.filteredNotifications.forEach(notification => {
-        const notificationElement = createNotificationElement(notification);
-        notificationList.appendChild(notificationElement);
-    });
-}
-
-// Create Notification Element
+// Enhanced notification details display for sessions
 function createNotificationElement(notification) {
     const notificationDiv = document.createElement('div');
     notificationDiv.className = `notification-item ${notification.isRead ? 'read' : 'unread'}`;
@@ -4178,45 +4262,69 @@ function createNotificationElement(notification) {
     
     let detailsHtml = '';
     if (notification.details) {
+        const details = notification.details;
         detailsHtml = `
             <div class="notification-details">
-                ${notification.details.sessionId ? `
+                ${details.sessionId ? `
                     <div class="detail-row">
                         <span class="detail-label">Session ID:</span>
-                        <span class="detail-value">${notification.details.sessionId}</span>
+                        <span class="detail-value">${details.sessionId}</span>
                     </div>
                 ` : ''}
-                ${notification.details.tutorName ? `
+                ${details.tutorName ? `
                     <div class="detail-row">
                         <span class="detail-label">Tutor:</span>
-                        <span class="detail-value">${notification.details.tutorName}</span>
+                        <span class="detail-value">${details.tutorName}</span>
                     </div>
                 ` : ''}
-                ${notification.details.subject ? `
+                ${details.studentName ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Student:</span>
+                        <span class="detail-value">${details.studentName}</span>
+                    </div>
+                ` : ''}
+                ${details.subject ? `
                     <div class="detail-row">
                         <span class="detail-label">Subject:</span>
-                        <span class="detail-value">${notification.details.subject}</span>
+                        <span class="detail-value">${details.subject}</span>
                     </div>
                 ` : ''}
-                ${notification.details.date && notification.details.time ? `
+                ${details.date && details.time ? `
                     <div class="detail-row">
                         <span class="detail-label">Schedule:</span>
-                        <span class="detail-value">${notification.details.date} at ${notification.details.time}</span>
+                        <span class="detail-value">${details.date} at ${details.time}</span>
                     </div>
                 ` : ''}
-                ${notification.details.duration ? `
+                ${details.duration ? `
                     <div class="detail-row">
                         <span class="detail-label">Duration:</span>
-                        <span class="detail-value">${notification.details.duration} hour(s)</span>
+                        <span class="detail-value">${details.duration} hour(s)</span>
                     </div>
                 ` : ''}
-                ${notification.details.meetLink ? `
+                ${details.rate ? `
                     <div class="detail-row">
-                        <span class="detail-label">Meeting Link:</span>
+                        <span class="detail-label">Rate:</span>
+                        <span class="detail-value">$${details.rate}/hour</span>
+                    </div>
+                ` : ''}
+                ${details.status ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Status:</span>
                         <span class="detail-value">
-                            <a href="${notification.details.meetLink}" target="_blank" onclick="event.stopPropagation();">
-                                Join Session
+                            <span class="status-badge status-${details.status}">
+                                ${details.status.charAt(0).toUpperCase() + details.status.slice(1)}
+                            </span>
+                        </span>
+                    </div>
+                ` : ''}
+                ${details.meetLink ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Meeting:</span>
+                        <span class="detail-value">
+                            <a href="${details.meetLink}" target="_blank" onclick="event.stopPropagation();">
+                                <i class="fas fa-video"></i> Join Session
                             </a>
+                            (${details.meetPlatform || 'Jitsi Meet'})
                         </span>
                     </div>
                 ` : ''}
@@ -4244,6 +4352,11 @@ function createNotificationElement(notification) {
             <button class="btn-outline" onclick="viewNotificationDetails('${notification.id}', event)" style="font-size: 12px; padding: 4px 12px;">
                 <i class="fas fa-eye"></i> View Details
             </button>
+            ${notification.details?.meetLink ? `
+                <button class="btn-primary" onclick="joinSessionFromNotification('${notification.details.sessionId}', event)" style="font-size: 12px; padding: 4px 12px;">
+                    <i class="fas fa-video"></i> Join
+                </button>
+            ` : ''}
         </div>
     `;
     
@@ -4259,58 +4372,30 @@ function createNotificationElement(notification) {
     return notificationDiv;
 }
 
-// Get Priority Badge
-function getPriorityBadge(priority) {
-    const badges = {
-        high: '<span class="notification-badge badge-high">High</span>',
-        medium: '<span class="notification-badge badge-medium">Medium</span>',
-        low: '<span class="notification-badge badge-low">Low</span>'
-    };
-    return badges[priority] || '';
+// Join session from notification
+function joinSessionFromNotification(sessionId, event) {
+    if (event) {
+        event.stopPropagation();
+    }
+    
+    const session = notificationsSystem.sessions.find(s => s.id === sessionId);
+    if (session && session.meetLink) {
+        window.open(session.meetLink, '_blank');
+    } else {
+        showNotification('No meeting link available for this session', 'error');
+    }
 }
 
-// Get Type Badge
-function getTypeBadge(type) {
-    const badges = {
-        session_confirmed: '<span class="notification-badge badge-session">Session</span>',
-        session_cancelled: '<span class="notification-badge badge-session">Session</span>',
-        payment_processed: '<span class="notification-badge badge-payment">Payment</span>',
-        system_alert: '<span class="notification-badge badge-system">System</span>',
-        user_activity: '<span class="notification-badge badge-system">User</span>'
-    };
-    return badges[type] || '';
-}
-
-// Format Time Ago
-function formatTimeAgo(date) {
-    if (!date) return '';
-    
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-    
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    
-    return date.toLocaleDateString();
-}
-
-// Mark as Read
+// Update mark as read to work with session-based notifications
 async function markAsRead(notificationId, event = null) {
     if (event) {
         event.stopPropagation();
     }
     
     try {
-        await db.collection('notifications').doc(notificationId).update({
-            isRead: true
-        });
+        // Since we're using sessions as notifications, we'll just update local state
+        // In a real app, you might want to store read status in user preferences
         
-        // Update local state immediately for better UX
         const notification = notificationsSystem.notifications.find(n => n.id === notificationId);
         if (notification) {
             notification.isRead = true;
@@ -4326,7 +4411,7 @@ async function markAsRead(notificationId, event = null) {
     }
 }
 
-// Mark All as Read
+// Update mark all as read
 async function markAllAsRead() {
     if (!notificationsSystem.notifications.some(n => !n.isRead)) {
         showNotification('All notifications are already read', 'info');
@@ -4336,17 +4421,7 @@ async function markAllAsRead() {
     if (!confirm('Mark all notifications as read?')) return;
     
     try {
-        const batch = db.batch();
-        const unreadNotifications = notificationsSystem.notifications.filter(n => !n.isRead);
-        
-        unreadNotifications.forEach(notification => {
-            const notificationRef = db.collection('notifications').doc(notification.id);
-            batch.update(notificationRef, { isRead: true });
-        });
-        
-        await batch.commit();
-        
-        // Update local state
+        // Mark all notifications as read locally
         notificationsSystem.notifications.forEach(notification => {
             notification.isRead = true;
         });
@@ -4363,39 +4438,31 @@ async function markAllAsRead() {
     }
 }
 
-// Clear All Notifications
+// Clear all notifications (just clear from local display)
 async function clearAllNotifications() {
     if (notificationsSystem.notifications.length === 0) {
         showNotification('No notifications to clear', 'info');
         return;
     }
     
-    if (!confirm('Are you sure you want to clear all notifications? This action cannot be undone.')) return;
+    if (!confirm('Are you sure you want to clear all notifications from view?')) return;
     
     try {
-        const batch = db.batch();
-        notificationsSystem.notifications.forEach(notification => {
-            const notificationRef = db.collection('notifications').doc(notification.id);
-            batch.delete(notificationRef);
-        });
-        
-        await batch.commit();
-        
-        // Clear local state
+        // Just clear the notifications array (they'll repopulate from sessions)
         notificationsSystem.notifications = [];
-        notificationsSystem.filteredNotifications = [];
         
         updateNotificationsDisplay();
         updateNotificationsStats();
         updateSidebarNotificationBadge();
         
-        showNotification('All notifications cleared', 'success');
+        showNotification('All notifications cleared from view', 'success');
         
     } catch (error) {
         console.error('Error clearing notifications:', error);
         showNotification('Error clearing notifications', 'error');
     }
 }
+
 
 // View Notification Details
 function viewNotificationDetails(notificationId, event = null) {
@@ -4611,6 +4678,7 @@ function showNotification(message, type = 'info') {
     </script>
 </body>
 </html>
+
 
 
 
