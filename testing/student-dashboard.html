@@ -6814,41 +6814,61 @@ function loadChatContacts() {
         .where('participants', 'array-contains', studentId)
         .orderBy('lastMessageAt', 'desc')
         .onSnapshot(async (snapshot) => {
-            contactsList.innerHTML = '';
-            
-            // Always add admin contact first
-            createAdminContact();
-            
-            if (snapshot.empty) {
-                contactsList.innerHTML += `
-                    <div class="empty-state">
-                        <i class="fas fa-comments"></i>
-                        <h4>No Tutor Conversations</h4>
-                        <p>Start a conversation with your tutors from the Tutors section</p>
-                    </div>
-                `;
-                updateUnreadMessagesCount(0);
-                return;
-            }
-            
-            const contacts = [];
-            let totalUnread = 0;
-            
-            for (const doc of snapshot.docs) {
-                const chat = doc.data();
-                const otherParticipantId = chat.participants.find(id => id !== studentId);
+            try {
+                contactsList.innerHTML = '';
                 
-                // Skip admin chats in the main list (they're handled separately)
-                if (otherParticipantId === 'support') continue;
+                // Always add admin contact first
+                createAdminContact();
                 
-                if (otherParticipantId) {
+                if (snapshot.empty) {
+                    contactsList.innerHTML += `
+                        <div class="empty-state">
+                            <i class="fas fa-comments"></i>
+                            <h4>No Tutor Conversations</h4>
+                            <p>Start a conversation with your tutors from the Tutors section</p>
+                        </div>
+                    `;
+                    updateUnreadMessagesCount(0);
+                    return;
+                }
+                
+                const contacts = [];
+                let totalUnread = 0;
+                
+                // Process all chats including admin chats
+                for (const doc of snapshot.docs) {
+                    const chat = doc.data();
+                    const otherParticipantId = chat.participants.find(id => id !== studentId);
+                    
+                    if (!otherParticipantId) continue;
+                    
+                    const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                    totalUnread += unreadCount;
+                    
+                    // Skip admin chats in the main tutor list (already have admin contact)
+                    if (otherParticipantId === 'support') {
+                        // Update admin contact with unread count if needed
+                        const adminContact = contactsList.querySelector('.admin-contact');
+                        if (adminContact && unreadCount > 0) {
+                            const existingBadge = adminContact.querySelector('.unread-count');
+                            if (existingBadge) {
+                                existingBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                            } else {
+                                const unreadBadge = document.createElement('div');
+                                unreadBadge.className = 'unread-count';
+                                unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                                adminContact.querySelector('.contact-status').appendChild(unreadBadge);
+                            }
+                        }
+                        continue;
+                    }
+                    
+                    // Process tutor chats
                     try {
                         // Get tutor details
                         const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
                         if (tutorDoc.exists) {
                             const tutor = tutorDoc.data();
-                            const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                            totalUnread += unreadCount;
                             
                             const contact = {
                                 chatId: doc.id,
@@ -6870,9 +6890,13 @@ function loadChatContacts() {
                         console.error('Error loading tutor details:', error);
                     }
                 }
+                
+                updateUnreadMessagesCount(totalUnread);
+                
+            } catch (error) {
+                console.error('Error in chat snapshot:', error);
+                contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
             }
-            
-            updateUnreadMessagesCount(totalUnread);
         }, (error) => {
             console.error('Error loading contacts:', error);
             contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
@@ -8161,5 +8185,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
