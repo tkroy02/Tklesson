@@ -1600,23 +1600,67 @@
         }
 
         // Load tutors data
-        async function loadTutorsData() {
-            try {
-                const tutorsSnapshot = await db.collection('tutors').get();
-                tutorsData = [];
-                
-                tutorsSnapshot.forEach(doc => {
-                    const tutor = doc.data();
-                    tutor.id = doc.id;
-                    tutorsData.push(tutor);
-                });
-                
-                displayTutorsTable();
-            } catch (error) {
-                console.error("Error loading tutors data:", error);
-            }
-        }
+async function loadTutorsData() {
+    try {
+        const tutorsSnapshot = await db.collection('tutors').get();
+        tutorsData = [];
+        
+        tutorsSnapshot.forEach(doc => {
+            const tutor = doc.data();
+            tutor.id = doc.id;
+            tutorsData.push(tutor);
+        });
+        
+        // Load ratings and reviews for all tutors
+        await loadTutorsRatingsData();
+        displayTutorsTable();
+    } catch (error) {
+        console.error("Error loading tutors data:", error);
+    }
+}
 
+// Load tutors ratings and reviews data
+async function loadTutorsRatingsData() {
+    try {
+        // Create a map to store ratings by tutor ID
+        const ratingsMap = {};
+        
+        // Get all ratings and reviews
+        const ratingsSnapshot = await db.collection('ratings_reviews').get();
+        
+        ratingsSnapshot.forEach(doc => {
+            const rating = doc.data();
+            const tutorId = rating.tutorId;
+            
+            if (!ratingsMap[tutorId]) {
+                ratingsMap[tutorId] = {
+                    ratings: [],
+                    totalRating: 0,
+                    averageRating: 0,
+                    reviewCount: 0
+                };
+            }
+            
+            ratingsMap[tutorId].ratings.push(rating);
+            ratingsMap[tutorId].totalRating += rating.rating || 0;
+            ratingsMap[tutorId].reviewCount++;
+        });
+        
+        // Calculate average ratings
+        Object.keys(ratingsMap).forEach(tutorId => {
+            const tutorRatings = ratingsMap[tutorId];
+            if (tutorRatings.reviewCount > 0) {
+                tutorRatings.averageRating = tutorRatings.totalRating / tutorRatings.reviewCount;
+            }
+        });
+        
+        // Store the ratings data globally
+        adminChatSystem.tutorRatings = ratingsMap;
+        
+    } catch (error) {
+        console.error("Error loading tutors ratings data:", error);
+    }
+}
         // Load students data
         async function loadStudentsData() {
             try {
@@ -1700,88 +1744,94 @@
         }
 
         // Display tutors table
-        function displayTutorsTable() {
-            const container = document.getElementById('tutorManagementContent');
-            const statusFilter = document.getElementById('tutorStatusFilter').value;
-            const searchTerm = document.getElementById('tutorSearch').value.toLowerCase();
-            
-            let filteredTutors = tutorsData;
-            
-            // Apply status filter
-            if (statusFilter !== 'all') {
-                filteredTutors = filteredTutors.filter(tutor => {
-                    if (statusFilter === 'active') return tutor.approved === true;
-                    if (statusFilter === 'pending') return tutor.approved === false || tutor.approved === undefined;
-                    if (statusFilter === 'suspended') return tutor.suspended === true;
-                    return true;
-                });
-            }
-            
-            // Apply search filter
-            if (searchTerm) {
-                filteredTutors = filteredTutors.filter(tutor => {
-                    const name = tutor.personal?.fullName || '';
-                    const email = tutor.personal?.email || '';
-                    return name.toLowerCase().includes(searchTerm) || 
-                           email.toLowerCase().includes(searchTerm);
-                });
-            }
-            
-            if (filteredTutors.length === 0) {
-                container.innerHTML = '<p>No tutors found matching your criteria.</p>';
-                return;
-            }
-            
-            let tableHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Email</th>
-                            <th>Status</th>
-                            <th>Subjects</th>
-                            <th>Sessions</th>
-                            <th>Rating</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-            
-            filteredTutors.forEach(tutor => {
-                const name = tutor.personal?.fullName || 'N/A';
-                const email = tutor.personal?.email || 'N/A';
-                const status = getTutorStatus(tutor);
-                const subjects = tutor.subjects?.subjects?.join(', ') || 'N/A';
-                const sessions = tutor.totalSessions || 0;
-                const rating = tutor.rating || 'N/A';
-                
-                tableHTML += `
-                    <tr>
-                        <td>${name}</td>
-                        <td>${email}</td>
-                        <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
-                        <td>${subjects}</td>
-                        <td>${sessions}</td>
-                        <td>${rating}</td>
-                        <td>
-                            <button class="btn-outline view-tutor-btn" data-tutor-id="${tutor.id}">View</button>
-                            ${tutor.approved ? 
-                                `<button class="btn-danger suspend-tutor-btn" data-tutor-id="${tutor.id}">Suspend</button>` :
-                                `<button class="btn-success approve-tutor-btn" data-tutor-id="${tutor.id}">Approve</button>`
-                            }
-                        </td>
-                    </tr>
-                `;
-            });
-            
-            tableHTML += '</tbody></table>';
-            container.innerHTML = tableHTML;
-            
-            // Add event listeners to buttons
-            addTutorActionListeners();
-        }
-
+function displayTutorsTable() {
+    const container = document.getElementById('tutorManagementContent');
+    const statusFilter = document.getElementById('tutorStatusFilter').value;
+    const searchTerm = document.getElementById('tutorSearch').value.toLowerCase();
+    
+    let filteredTutors = tutorsData;
+    
+    // Apply status filter
+    if (statusFilter !== 'all') {
+        filteredTutors = filteredTutors.filter(tutor => {
+            if (statusFilter === 'active') return tutor.approved === true;
+            if (statusFilter === 'pending') return tutor.approved === false || tutor.approved === undefined;
+            if (statusFilter === 'suspended') return tutor.suspended === true;
+            return true;
+        });
+    }
+    
+    // Apply search filter
+    if (searchTerm) {
+        filteredTutors = filteredTutors.filter(tutor => {
+            const name = tutor.personal?.fullName || '';
+            const email = tutor.personal?.email || '';
+            return name.toLowerCase().includes(searchTerm) || 
+                   email.toLowerCase().includes(searchTerm);
+        });
+    }
+    
+    if (filteredTutors.length === 0) {
+        container.innerHTML = '<p>No tutors found matching your criteria.</p>';
+        return;
+    }
+    
+    let tableHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Status</th>
+                    <th>Subjects</th>
+                    <th>Sessions</th>
+                    <th>Rating</th>
+                    <th>Reviews</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    filteredTutors.forEach(tutor => {
+        const name = tutor.personal?.fullName || 'N/A';
+        const email = tutor.personal?.email || 'N/A';
+        const status = getTutorStatus(tutor);
+        const subjects = tutor.subjects?.subjects?.join(', ') || 'N/A';
+        const sessions = tutor.totalSessions || 0;
+        
+        // Get ratings from ratings_reviews collection
+        const tutorRatings = adminChatSystem.tutorRatings?.[tutor.id] || {};
+        const rating = tutorRatings.averageRating ? tutorRatings.averageRating.toFixed(1) : 'N/A';
+        const reviews = tutorRatings.reviewCount || 0;
+        
+        tableHTML += `
+            <tr>
+                <td>${name}</td>
+                <td>${email}</td>
+                <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
+                <td>${subjects}</td>
+                <td>${sessions}</td>
+                <td>${rating}</td>
+                <td>${reviews}</td>
+                <td>
+                    <button class="btn-outline view-tutor-btn" data-tutor-id="${tutor.id}">View</button>
+                    ${tutor.approved ? 
+                        `<button class="btn-danger suspend-tutor-btn" data-tutor-id="${tutor.id}">Suspend</button>` :
+                        `<button class="btn-success approve-tutor-btn" data-tutor-id="${tutor.id}">Approve</button>`
+                    }
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody></table>';
+    container.innerHTML = tableHTML;
+    
+    // Add event listeners to buttons
+    addTutorActionListeners();
+}
+        
         // Display students table
         function displayStudentsTable() {
             const container = document.getElementById('studentManagementContent');
@@ -2097,55 +2147,102 @@
         }
 
         // View tutor details
-        function viewTutorDetails(tutorId) {
-            const tutor = tutorsData.find(t => t.id === tutorId);
-            if (!tutor) return;
-            
-            const modalBody = document.getElementById('tutorModalBody');
-            modalBody.innerHTML = `
-                <div class="student-card">
-                    <div class="student-header">
-                        <div class="student-title">${tutor.personal?.fullName || 'N/A'}</div>
-                        <span class="status-badge status-${getTutorStatus(tutor)}">${getTutorStatus(tutor).charAt(0).toUpperCase() + getTutorStatus(tutor).slice(1)}</span>
-                    </div>
-                    <div class="student-details">
-                        <div class="student-detail">
-                            <i class="fas fa-envelope"></i>
-                            <span>${tutor.personal?.email || 'N/A'}</span>
-                        </div>
-                        <div class="student-detail">
-                            <i class="fas fa-phone"></i>
-                            <span>${tutor.personal?.phone || 'N/A'}</span>
-                        </div>
-                        <div class="student-detail">
-                            <i class="fas fa-graduation-cap"></i>
-                            <span>${tutor.education?.degree || 'N/A'}</span>
-                        </div>
-                        <div class="student-detail">
-                            <i class="fas fa-book"></i>
-                            <span>${tutor.subjects?.subjects?.join(', ') || 'N/A'}</span>
-                        </div>
-                    </div>
-                    <div class="student-details">
-                        <div class="student-detail">
-                            <i class="fas fa-calendar"></i>
-                            <span>Joined: ${tutor.createdAt?.toDate().toLocaleDateString() || 'N/A'}</span>
-                        </div>
-                        <div class="student-detail">
-                            <i class="fas fa-star"></i>
-                            <span>Rating: ${tutor.rating || 'N/A'}</span>
-                        </div>
-                        <div class="student-detail">
-                            <i class="fas fa-chalkboard-teacher"></i>
-                            <span>Total Sessions: ${tutor.totalSessions || 0}</span>
-                        </div>
-                    </div>
+function viewTutorDetails(tutorId) {
+    const tutor = tutorsData.find(t => t.id === tutorId);
+    if (!tutor) return;
+    
+    // Get ratings from ratings_reviews collection
+    const tutorRatings = adminChatSystem.tutorRatings?.[tutorId] || {};
+    const averageRating = tutorRatings.averageRating ? tutorRatings.averageRating.toFixed(1) : 'N/A';
+    const reviewCount = tutorRatings.reviewCount || 0;
+    
+    const modalBody = document.getElementById('tutorModalBody');
+    modalBody.innerHTML = `
+        <div class="student-card">
+            <div class="student-header">
+                <div class="student-title">${tutor.personal?.fullName || 'N/A'}</div>
+                <span class="status-badge status-${getTutorStatus(tutor)}">${getTutorStatus(tutor).charAt(0).toUpperCase() + getTutorStatus(tutor).slice(1)}</span>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-envelope"></i>
+                    <span>${tutor.personal?.email || 'N/A'}</span>
                 </div>
-            `;
-            
-            document.getElementById('tutorModal').style.display = 'flex';
-        }
+                <div class="student-detail">
+                    <i class="fas fa-phone"></i>
+                    <span>${tutor.personal?.phone || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-graduation-cap"></i>
+                    <span>${tutor.professional?.qualifications || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-book"></i>
+                    <span>${tutor.subjects?.subjects?.join(', ') || 'N/A'}</span>
+                </div>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-calendar"></i>
+                    <span>Joined: ${tutor.createdAt?.toDate().toLocaleDateString() || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-star"></i>
+                    <span>Average Rating: ${averageRating} (${reviewCount} reviews)</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-chalkboard-teacher"></i>
+                    <span>Total Sessions: ${tutor.totalSessions || 0}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-dollar-sign"></i>
+                    <span>Hourly Rate: $${tutor.professional?.hourlyRate || 'N/A'}</span>
+                </div>
+            </div>
+            ${reviewCount > 0 ? `
+            <div class="ratings-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-light);">
+                <h4 style="margin-bottom: 15px;">Recent Reviews</h4>
+                ${getRecentReviews(tutorRatings.ratings)}
+            </div>
+            ` : ''}
+        </div>
+    `;
+    
+    document.getElementById('tutorModal').style.display = 'flex';
+}
 
+// Helper function to display recent reviews
+function getRecentReviews(ratings = []) {
+    if (!ratings.length) return '<p>No reviews yet.</p>';
+    
+    // Sort by timestamp (newest first) and take up to 3
+    const recentRatings = ratings
+        .sort((a, b) => (b.timestamp?.toDate() || 0) - (a.timestamp?.toDate() || 0))
+        .slice(0, 3);
+    
+    let reviewsHTML = '';
+    recentRatings.forEach((rating, index) => {
+        const stars = '★'.repeat(Math.round(rating.rating)) + '☆'.repeat(5 - Math.round(rating.rating));
+        const date = rating.timestamp?.toDate().toLocaleDateString() || 'Unknown date';
+        const reviewer = rating.studentName || 'Anonymous';
+        
+        reviewsHTML += `
+            <div class="review-item" style="margin-bottom: 15px; padding: 12px; background: var(--gray-light); border-radius: var(--border-radius-sm);">
+                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                    <div>
+                        <strong>${stars}</strong>
+                        <span style="margin-left: 10px; font-weight: 500;">${reviewer}</span>
+                    </div>
+                    <span style="font-size: 12px; color: var(--gray);">${date}</span>
+                </div>
+                <div style="font-size: 14px;">${rating.review || 'No review text provided.'}</div>
+            </div>
+        `;
+    });
+    
+    return reviewsHTML;
+}
+        
         // View student details
         function viewStudentDetails(studentId) {
             const student = studentsData.find(s => s.id === studentId);
@@ -2508,7 +2605,8 @@ let adminChatSystem = {
     isInitialized: false,
     tutors: [],
     students: [],
-    unreadCounts: {}
+    unreadCounts: {},
+    tutorRatings: {} // Add this line
 };
 
 // Admin configuration for customer support
@@ -3545,5 +3643,6 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
