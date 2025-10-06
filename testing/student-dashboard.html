@@ -6808,7 +6808,7 @@ function setupChatEventListeners() {
 function loadChatContacts() {
     const contactsList = document.getElementById('contactsList');
     if (!contactsList) return;
-  
+    
     // Clean up previous listener
     if (contactsListener) {
         contactsListener();
@@ -6867,72 +6867,136 @@ function loadChatContacts() {
     contactsListener = db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .orderBy('lastMessageAt', 'desc')
-        .onSnapshot(async (snapshot) => {
-            contactsList.innerHTML = '';
-            
-            // Always add admin contact first
-            createAdminContact();
-            
-            if (snapshot.empty) {
-                contactsList.innerHTML += `
-                    <div class="empty-state">
-                        <i class="fas fa-comments"></i>
-                        <h4>No Tutor Conversations</h4>
-                        <p>Start a conversation with your tutors from the Tutors section</p>
-                    </div>
-                `;
-                updateUnreadMessagesCount(0);
-                return;
-            }
+        .onSnapshot(async (snapshot) => { // Make this callback async
+            try {
+                contactsList.innerHTML = '';
+                
+                // Always add admin contact first
+                createAdminContact();
+                
+                if (snapshot.empty) {
+                    contactsList.innerHTML += `
+                        <div class="empty-state">
+                            <i class="fas fa-comments"></i>
+                            <h4>No Tutor Conversations</h4>
+                            <p>Start a conversation with your tutors from the Tutors section</p>
+                        </div>
+                    `;
+                    await updateUnreadMessagesCount(); // Make this async call
+                    return;
+                }
             
             const contacts = [];
-            let totalUnread = 0;
-            
-            for (const doc of snapshot.docs) {
-                const chat = doc.data();
-                const otherParticipantId = chat.participants.find(id => id !== studentId);
+                let totalUnread = 0;
                 
-                // Skip admin chats in the main list (they're handled separately)
-                if (otherParticipantId === 'support') continue;
-                
-                if (otherParticipantId) {
-                    try {
-                        // Get tutor details
-                        const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
-                        if (tutorDoc.exists) {
-                            const tutor = tutorDoc.data();
-                            
-                            // Get unread count for current student - handle both number and undefined cases
-                            const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                            totalUnread += unreadCount;
-                            
-                            const contact = {
-                                chatId: doc.id,
-                                tutorId: otherParticipantId,
-                                tutorName: tutor.personal?.fullName || 'Tutor',
-                                tutorSubjects: tutor.subjects?.subjects || [],
-                                tutorAvatar: tutor.photoURL,
-                                lastMessage: chat.lastMessage,
-                                lastMessageAt: chat.lastMessageAt,
-                                unreadCount: unreadCount,
-                                isAdmin: false
-                            };
-                            contacts.push(contact);
-                            
-                            const contactElement = createContactElement(contact);
-                            contactsList.appendChild(contactElement);
+                // Process regular tutor chats
+                for (const doc of snapshot.docs) {
+                    const chat = doc.data();
+                    const otherParticipantId = chat.participants.find(id => id !== studentId);
+                    
+                    // Skip admin chats in the main list (they're handled separately)
+                    if (otherParticipantId === 'support') continue;
+                    
+                    if (otherParticipantId) {
+                        try {
+                            // Get tutor details
+                            const tutorDoc = await db.collection('tutors').doc(otherParticipantId).get();
+                            if (tutorDoc.exists) {
+                                const tutor = tutorDoc.data();
+                                
+                                // Get unread count for current student
+                                const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                                totalUnread += unreadCount;
+                                
+                                const contact = {
+                                    chatId: doc.id,
+                                    tutorId: otherParticipantId,
+                                    tutorName: tutor.personal?.fullName || 'Tutor',
+                                    tutorSubjects: tutor.subjects?.subjects || [],
+                                    tutorAvatar: tutor.photoURL,
+                                    lastMessage: chat.lastMessage,
+                                    lastMessageAt: chat.lastMessageAt,
+                                    unreadCount: unreadCount,
+                                    isAdmin: false
+                                };
+                                contacts.push(contact);
+                                
+                                const contactElement = createContactElement(contact);
+                                contactsList.appendChild(contactElement);
+                            }
+                        } catch (error) {
+                            console.error('Error loading tutor details:', error);
                         }
-                    } catch (error) {
-                        console.error('Error loading tutor details:', error);
                     }
                 }
-            }
             
-            updateUnreadMessagesCount(totalUnread);
+            // Also check for admin chats and add their unread counts
+                const adminChatsSnapshot = await db.collection('chats')
+                    .where('participants', 'array-contains', studentId)
+                    .where('participants', 'array-contains', 'support')
+                    .get();
+                
+                adminChatsSnapshot.forEach(doc => {
+                    const chat = doc.data();
+                    const unreadCount = chat.unreadCounts?.[studentId] || 0;
+                    totalUnread += unreadCount;
+                    
+                    // Update admin contact with unread count
+                    const adminContact = contactsList.querySelector('.admin-contact');
+                    if (adminContact && unreadCount > 0) {
+                        const existingBadge = adminContact.querySelector('.unread-count');
+                        if (existingBadge) {
+                            existingBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                        } else {
+                            const unreadBadge = document.createElement('div');
+                            unreadBadge.className = 'unread-count';
+                            unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+                            adminContact.querySelector('.contact-status').appendChild(unreadBadge);
+                        }
+                    }
+                });
+                
+                await updateUnreadMessagesCount(); // Make this async call
+                
+            } catch (error) {
+                console.error('Error in chat snapshot:', error);
+                contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
+            }
         }, (error) => {
             console.error('Error loading contacts:', error);
             contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
         });
+}
+
+// Update the updateUnreadMessagesCount function to be async and not require parameters
+async function updateUnreadMessagesCount() {
+    const studentId = auth.currentUser.uid;
+    let totalUnread = 0;
+    
+    try {
+        // Get all chats for this student
+        const chatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', studentId)
+            .get();
+        
+        chatsSnapshot.forEach(doc => {
+            const chat = doc.data();
+            const unreadCount = chat.unreadCounts?.[studentId] || 0;
+            totalUnread += unreadCount;
+        });
+        
+        const unreadBadge = document.getElementById('unreadMessagesCount');
+        if (unreadBadge) {
+            if (totalUnread > 0) {
+                unreadBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+                unreadBadge.style.display = 'inline';
+            } else {
+                unreadBadge.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error calculating unread count:', error);
+    }
 }
   
 // Clean up chat system properly
@@ -6952,39 +7016,6 @@ function cleanupChatSystem() {
     chatListenersActive = false;
     
     console.log('Chat system cleaned up');
-}
-
-// Also check for admin chats and add their unread counts
-            const adminChatsSnapshot = await db.collection('chats')
-                .where('participants', 'array-contains', studentId)
-                .where('participants', 'array-contains', 'support')
-                .get();
-            
-            adminChatsSnapshot.forEach(doc => {
-                const chat = doc.data();
-                const unreadCount = chat.unreadCounts?.[studentId] || 0;
-                totalUnread += unreadCount;
-                
-                // Update admin contact with unread count
-                const adminContact = contactsList.querySelector('.admin-contact');
-                if (adminContact && unreadCount > 0) {
-                    const existingBadge = adminContact.querySelector('.unread-count');
-                    if (existingBadge) {
-                        existingBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-                    } else {
-                        const unreadBadge = document.createElement('div');
-                        unreadBadge.className = 'unread-count';
-                        unreadBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-                        adminContact.querySelector('.contact-status').appendChild(unreadBadge);
-                    }
-                }
-            });
-            
-            updateUnreadMessagesCount(totalUnread);
-        }, (error) => {
-            console.error('Error loading contacts:', error);
-            contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
-        });
 }
   
 // Create contact element
@@ -7363,40 +7394,7 @@ async function markChatAsRead(chatId) {
     } catch (error) {
         console.error('Error marking chat as read:', error);
     }
-}
-
-// Update the updateUnreadMessagesCount function to calculate total dynamically
-async function updateUnreadMessagesCount() {
-    const studentId = auth.currentUser.uid;
-    let totalUnread = 0;
-    
-    try {
-        // Get all chats for this student
-        const chatsSnapshot = await db.collection('chats')
-            .where('participants', 'array-contains', studentId)
-            .get();
-        
-        chatsSnapshot.forEach(doc => {
-            const chat = doc.data();
-            const unreadCount = chat.unreadCounts?.[studentId] || 0;
-            totalUnread += unreadCount;
-        });
-        
-        const unreadBadge = document.getElementById('unreadMessagesCount');
-        if (unreadBadge) {
-            if (totalUnread > 0) {
-                unreadBadge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-                unreadBadge.style.display = 'inline';
-            } else {
-                unreadBadge.style.display = 'none';
-            }
-        }
-    } catch (error) {
-        console.error('Error calculating unread count:', error);
-    }
-}
-
-  
+}  
   
 // Insert quick message
 function insertQuickMessage(text) {
@@ -8322,6 +8320,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
