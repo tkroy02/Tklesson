@@ -4476,6 +4476,16 @@ function cancelBooking(bookingId) {
             // Now we have access to both the notification result and the cancellation result
             if (!result) return; // User cancelled confirmation
 
+          // Send cancellation email to tutor
+  emailNotificationSystem.sendCancellationEmail(
+    session.tutorId, 
+    'tutor', // Specify this is a tutor
+    session, 
+    'student', 
+    reason
+  );
+});
+
             // Success handling
             alert(result.data.message);
             
@@ -8882,11 +8892,173 @@ document.addEventListener('DOMContentLoaded', function() {
  // =========================================================
 // REVIEWS AND RATINGS END HERE
 // ========================================================== 
+
+// ================================================================================
+// ============EMAIL NOTIFICATIONS SYSTEM STARTS HERE==============================
+// ================================================================================
+// Updated EmailNotificationSystem class
+class EmailNotificationSystem {
+  constructor() {
+    this.sendEmailFunction = firebase.functions().httpsCallable('sendEmailNotification');
+  }
+
+  // Send email notification
+  async sendEmail(to, template, templateData) {
+    try {
+      const result = await this.sendEmailFunction({
+        to: to,
+        template: template,
+        templateData: templateData
+      });
+      
+      console.log('Email sent successfully:', template);
+      return result.data;
+    } catch (error) {
+      console.error('Failed to send email:', error);
+      throw error;
+    }
+  }
+
+  // Session request email to tutor (uses tutors collection)
+  async sendSessionRequestEmail(tutorId, sessionData) {
+    try {
+      // Get tutor email from tutors collection
+      const tutorDoc = await db.collection('tutors').doc(tutorId).get();
+      const tutorData = tutorDoc.data();
+      
+      if (!tutorData || !tutorData.email) {
+        console.warn('Tutor email not found in tutors collection for ID:', tutorId);
+        return;
+      }
+
+      const date = sessionData.date.toDate();
+      const templateData = [
+        sessionData.studentName,
+        tutorData.displayName || tutorData.name || 'Tutor',
+        sessionData.subject,
+        date.toLocaleDateString(),
+        date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      ];
+
+      await this.sendEmail(tutorData.email, 'sessionRequest', templateData);
+    } catch (error) {
+      console.error('Failed to send session request email:', error);
+    }
+  }
+
+  // Session confirmed email to student (uses users collection)
+  async sendSessionConfirmedEmail(studentId, sessionData) {
+    try {
+      // Get student email from users collection
+      const studentDoc = await db.collection('users').doc(studentId).get();
+      const studentData = studentDoc.data();
+      
+      if (!studentData || !studentData.email) {
+        console.warn('Student email not found in users collection for ID:', studentId);
+        return;
+      }
+
+      const date = sessionData.date.toDate();
+      const templateData = [
+        studentData.displayName || studentData.name || 'Student',
+        sessionData.tutorName || 'Tutor',
+        sessionData.subject,
+        date.toLocaleDateString(),
+        date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      ];
+
+      await this.sendEmail(studentData.email, 'sessionConfirmed', templateData);
+    } catch (error) {
+      console.error('Failed to send session confirmed email:', error);
+    }
+  }
+
+  // Session cancellation email - handles both student and tutor
+  async sendCancellationEmail(userId, userType, sessionData, cancelledBy, reason) {
+    try {
+      let userDoc, userData, userEmail;
+      
+      if (userType === 'student') {
+        // Get from users collection
+        userDoc = await db.collection('users').doc(userId).get();
+        userData = userDoc.data();
+        userEmail = userData?.email;
+      } else if (userType === 'tutor') {
+        // Get from tutors collection  
+        userDoc = await db.collection('tutors').doc(userId).get();
+        userData = userDoc.data();
+        userEmail = userData?.email;
+      }
+      
+      if (!userEmail) {
+        console.warn(`${userType} email not found for ID:`, userId);
+        return;
+      }
+
+      const date = sessionData.date.toDate();
+      const templateData = [
+        userData.displayName || userData.name || userType,
+        cancelledBy === 'student' ? sessionData.tutorName : sessionData.studentName,
+        sessionData.subject,
+        date.toLocaleDateString(),
+        date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        cancelledBy === 'student' ? 'Student' : 'Tutor',
+        reason || 'No reason provided'
+      ];
+
+      await this.sendEmail(userEmail, 'sessionCancelled', templateData);
+    } catch (error) {
+      console.error('Failed to send cancellation email:', error);
+    }
+  }
+
+  // Reschedule request email - handles both student and tutor
+  async sendRescheduleEmail(userId, userType, sessionData, requestedBy, newDate, reason) {
+    try {
+      let userDoc, userData, userEmail;
+      
+      if (userType === 'student') {
+        userDoc = await db.collection('users').doc(userId).get();
+        userData = userDoc.data();
+        userEmail = userData?.email;
+      } else if (userType === 'tutor') {
+        userDoc = await db.collection('tutors').doc(userId).get();
+        userData = userDoc.data();
+        userEmail = userData?.email;
+      }
+      
+      if (!userEmail) {
+        console.warn(`${userType} email not found for ID:`, userId);
+        return;
+      }
+
+      const originalDate = sessionData.date.toDate();
+      const proposedDate = newDate.toDate();
+      const templateData = [
+        userData.displayName || userData.name || userType,
+        requestedBy === 'student' ? sessionData.studentName : sessionData.tutorName,
+        sessionData.subject,
+        originalDate.toLocaleDateString(),
+        proposedDate.toLocaleDateString() + ' ' + proposedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        reason || 'No reason provided'
+      ];
+
+      await this.sendEmail(userEmail, 'rescheduleRequest', templateData);
+    } catch (error) {
+      console.error('Failed to send reschedule email:', error);
+    }
+  }
+}
+
+// ================================================================================
+// ============EMAIL NOTIFICATIONS SYSTEM ENDS HERE==============================
+// ================================================================================
   
   
 </script>    
 </body>
 </html>
+
 
 
 
