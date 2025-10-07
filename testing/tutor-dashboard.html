@@ -5266,6 +5266,40 @@ function createBookingCard(booking) {
     const isCurrentSession = sessionStartTime <= now && sessionEndTime > now;
     const isUpcomingSession = sessionStartTime > now;
     
+    // Calculate cancellation policy status
+    const timeDiff = sessionStartTime.getTime() - now.getTime();
+    const hoursUntilSession = timeDiff / (1000 * 60 * 60);
+    const isWithin24Hours = hoursUntilSession <= 24;
+    const canCancelWithRefund = isUpcomingSession && !isWithin24Hours;
+    const canCancelWithoutRefund = isUpcomingSession && isWithin24Hours && hoursUntilSession > 1; // Allow cancellation up to 1 hour before
+    
+    // Add cancellation policy indicator
+    let cancellationIndicator = '';
+    if (isUpcomingSession) {
+        if (canCancelWithRefund) {
+            cancellationIndicator = `
+                <div class="cancellation-indicator refund-available">
+                    <i class="fas fa-check-circle"></i>
+                    <span>Student will receive credit refund if cancelled</span>
+                </div>
+            `;
+        } else if (canCancelWithoutRefund) {
+            cancellationIndicator = `
+                <div class="cancellation-indicator no-refund">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <span>Student will lose credits if cancelled (within 24h)</span>
+                </div>
+            `;
+        } else if (hoursUntilSession <= 1) {
+            cancellationIndicator = `
+                <div class="cancellation-indicator too-late">
+                    <i class="fas fa-ban"></i>
+                    <span>Cannot cancel (less than 1 hour until session)</span>
+                </div>
+            `;
+        }
+    }
+    
     // Calculate if join button should be active (30 minutes before session starts)
     const thirtyMinutesBefore = new Date(sessionStartTime.getTime() - (30 * 60 * 1000));
     const canJoinSession = now >= thirtyMinutesBefore && now <= sessionEndTime;
@@ -5274,14 +5308,17 @@ function createBookingCard(booking) {
     const sessionType = booking.sessionType === 'online' ? 'Online' : 'In-Person';
     
     return `
-        <div class="session-card booking-card ${isPastSession ? 'past-session' : ''} ${isCurrentSession ? 'current-session' : ''}" id="booking-${booking.id}">
+        <div class="session-card booking-card ${isPastSession ? 'past-session' : ''} ${isCurrentSession ? 'current-session' : ''} ${isWithin24Hours ? 'within-24h-window' : ''}" id="booking-${booking.id}">
             <div class="session-header">
                 <div class="session-title">${booking.subject || 'General Tutoring'} Session</div>
                 <div class="session-date">
                     ${formattedDate}, ${formattedTime}
                     ${isCurrentSession ? '<span class="live-badge">LIVE</span>' : ''}
+                    ${isWithin24Hours ? '<span class="warning-badge">WITHIN 24H</span>' : ''}
                 </div>
             </div>
+            
+            ${cancellationIndicator}
             
             <div class="session-details">
                 <div class="session-detail">
@@ -5322,15 +5359,21 @@ function createBookingCard(booking) {
                     </button>
                 ` : ''}
                 
-                ${!isPastSession && booking.status !== 'pending' ? `
+                ${!isPastSession && booking.status !== 'pending' && hoursUntilSession > 1 ? `
                     <button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
                         <i class="fas fa-clock"></i> Reschedule
                     </button>
                 ` : ''}
                 
-                ${!isPastSession ? `
+                ${!isPastSession && hoursUntilSession > 1 ? `
                     <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
                         <i class="fas fa-times"></i> Cancel
+                    </button>
+                ` : ''}
+                
+                ${hoursUntilSession <= 1 && isUpcomingSession ? `
+                    <button class="btn-danger disabled" disabled title="Cannot cancel within 1 hour of session">
+                        <i class="fas fa-ban"></i> Cannot Cancel
                     </button>
                 ` : ''}
                 
@@ -5711,16 +5754,47 @@ async function openCancelModal(sessionId) {
         
         const session = sessionDoc.data();
         const sessionDate = session.date.toDate();
+        const now = new Date();
+        const timeDiff = sessionDate.getTime() - now.getTime();
+        const hoursUntilSession = timeDiff / (1000 * 60 * 60);
+        
+        // Determine cancellation policy status
+        const isWithin24Hours = hoursUntilSession <= 24;
+        const canRefundCredits = !isWithin24Hours;
+        
+        let policyMessage = '';
+        let policyClass = '';
+        
+        if (canRefundCredits) {
+            policyMessage = `✅ Student will receive their credits back`;
+            policyClass = 'policy-refund';
+        } else {
+            policyMessage = `⚠️ Student will lose their credits (within 24-hour window)`;
+            policyClass = 'policy-no-refund';
+        }
         
         const modalContent = `
             <h3>Cancel Session</h3>
             <p>Are you sure you want to cancel your session with ${session.studentName || 'the student'}?</p>
             
+            <div class="cancellation-policy ${policyClass}">
+                <div class="policy-header">
+                    <i class="fas ${canRefundCredits ? 'fa-check-circle' : 'fa-exclamation-triangle'}"></i>
+                    <strong>Cancellation Policy</strong>
+                </div>
+                <div class="policy-message">${policyMessage}</div>
+                <div class="policy-details">
+                    <strong>Session Time:</strong> ${sessionDate.toLocaleString()}<br>
+                    <strong>Time Until Session:</strong> ${Math.max(0, hoursUntilSession).toFixed(1)} hours<br>
+                    <strong>24-hour Cutoff:</strong> ${canRefundCredits ? 'After' : 'Before'} session start
+                </div>
+            </div>
+            
             <div class="session-info">
                 <h4>Session Details</h4>
+                <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
                 <p><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</p>
                 <p><strong>Time:</strong> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
                 <p><strong>Subject:</strong> ${session.subject || 'General'}</p>
                 <p><strong>Duration:</strong> ${session.duration || '1.5'} hours</p>
             </div>
@@ -5739,7 +5813,7 @@ async function openCancelModal(sessionId) {
             </div>
         `;
         
-        showCancelModal(modalContent, sessionId);
+        showCancelModal(modalContent, sessionId, isWithin24Hours);
         
     } catch (error) {
         console.error("Error opening cancel modal:", error);
@@ -5747,8 +5821,8 @@ async function openCancelModal(sessionId) {
     }
 }
 
-// Show cancel modal
-function showCancelModal(content, sessionId) {
+// Show cancel modal with policy indicators
+function showCancelModal(content, sessionId, isWithin24Hours) {
     let modal = document.getElementById('bookingsCancelModal');
     
     if (!modal) {
@@ -5757,17 +5831,17 @@ function showCancelModal(content, sessionId) {
         modal.className = 'modal';
         modal.style.display = 'none';
         modal.innerHTML = `
-            <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-content" style="max-width: 550px;">
                 <div class="modal-header">
                     <h3>Cancel Session</h3>
                     <span class="close-modal">&times;</span>
                 </div>
-                <div class="modal-body" id="bookingsCancelModalBody">
-                    <!-- Content will be inserted here -->
-                </div>
+                <div class="modal-body" id="bookingsCancelModalBody"></div>
                 <div class="modal-actions">
                     <button class="btn-outline" id="cancelCancelBtn">Keep Session</button>
-                    <button class="btn-danger" id="confirmCancelBtn">Confirm Cancellation</button>
+                    <button class="btn-danger" id="confirmCancelBtn">
+                        <i class="fas fa-exclamation-triangle"></i> Confirm Cancellation
+                    </button>
                 </div>
             </div>
         `;
@@ -5781,11 +5855,6 @@ function showCancelModal(content, sessionId) {
         closeBtn.addEventListener('click', () => modal.style.display = 'none');
         cancelBtn.addEventListener('click', () => modal.style.display = 'none');
         
-        // FIX: Properly bind the sessionId to the confirm button
-        confirmBtn.addEventListener('click', () => {
-            confirmCancellation(sessionId);
-        });
-        
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
                 modal.style.display = 'none';
@@ -5793,12 +5862,26 @@ function showCancelModal(content, sessionId) {
         });
     }
     
-    // Set the content and store sessionId in data attribute
+    // Update confirm button based on policy
+    const confirmBtn = modal.querySelector('#confirmCancelBtn');
+    if (isWithin24Hours) {
+        confirmBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Confirm (Student Loses Credits)';
+        confirmBtn.style.background = '#dc3545';
+    } else {
+        confirmBtn.innerHTML = '<i class="fas fa-check-circle"></i> Confirm (Student Gets Refund)';
+        confirmBtn.style.background = '#fd7e14';
+    }
+    
+    // Set the content and store sessionId
     document.getElementById('bookingsCancelModalBody').innerHTML = content;
-    modal.dataset.sessionId = sessionId; // Store sessionId on modal
+    modal.dataset.sessionId = sessionId;
     modal.style.display = 'flex';
     
-    // Focus on reason textarea for better UX
+    // Update confirm button event listener
+    const newConfirmBtn = modal.querySelector('#confirmCancelBtn');
+    newConfirmBtn.onclick = () => confirmCancellation(sessionId);
+    
+    // Focus on reason textarea
     setTimeout(() => {
         const reasonInput = modal.querySelector('#cancelReason');
         if (reasonInput) {
@@ -5807,16 +5890,14 @@ function showCancelModal(content, sessionId) {
     }, 100);
 }
 
-// Confirm cancellation
+// Confirm cancellation - Call Cloud Function
 async function confirmCancellation(sessionId) {
-    // Get the modal first
     const modal = document.getElementById('bookingsCancelModal');
     if (!modal) {
         alert('Error: Cancel modal not found.');
         return;
     }
     
-    // Get the reason from within the modal
     const reasonInput = modal.querySelector('#cancelReason');
     if (!reasonInput) {
         alert('Error: Reason input field not found.');
@@ -5832,33 +5913,56 @@ async function confirmCancellation(sessionId) {
     }
 
     try {
-        // Update session in bookedSessions
-        await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'cancelled',
+        // Show loading state
+        const confirmBtn = modal.querySelector('#confirmCancelBtn');
+        const originalText = confirmBtn.innerHTML;
+        confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+        confirmBtn.disabled = true;
+
+        // Call the same Cloud Function used by student dashboard
+        const cancelSessionFunction = firebase.functions().httpsCallable('cancelSession');
+        const result = await cancelSessionFunction({
+            sessionId: sessionId,
             cancelledBy: 'tutor',
-            cancelledAt: new Date(),
-            cancelReason: reason,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+            reason: reason
         });
-        
-        // Create notification for student
-        await createCancellationNotification(sessionId, reason);
-        
+
         // Close modal
         modal.style.display = 'none';
         
-        // Show success message
-        showBookingActionSuccess('Session cancelled successfully!');
+        // Show appropriate success message based on credit handling
+        if (result.data.refunded) {
+            showBookingActionSuccess('Session cancelled! Student credits have been refunded.');
+        } else {
+            showBookingActionSuccess('Session cancelled. Student credits were not refunded (within 24-hour window).');
+        }
         
         // Reload bookings to reflect changes
         loadMyBookings();
         
     } catch (error) {
         console.error('Error cancelling session:', error);
-        alert('Error cancelling session. Please try again.');
+        
+        // Restore button
+        const confirmBtn = modal.querySelector('#confirmCancelBtn');
+        confirmBtn.innerHTML = originalText;
+        confirmBtn.disabled = false;
+        
+        // Show appropriate error message
+        let errorMessage = 'Error cancelling session. Please try again.';
+        
+        if (error.message.includes('cancellation window')) {
+            errorMessage = 'Cannot cancel: This session is too close to start time.';
+        } else if (error.message.includes('not found')) {
+            errorMessage = 'Session not found or already cancelled.';
+        } else if (error.message.includes('permission')) {
+            errorMessage = 'You do not have permission to cancel this session.';
+        }
+        
+        alert(errorMessage);
     }
 }
-
+       
 // Create cancellation notification for student
 async function createCancellationNotification(sessionId, reason) {
     try {
@@ -10817,6 +10921,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
