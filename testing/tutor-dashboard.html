@@ -8462,44 +8462,38 @@ class TutorNotificationSystem {
     }
 
     // Load notifications with efficient batch operations
-    async loadNotifications() {
-        if (this.isLoading) return;
-        
-        this.isLoading = true;
-        this.showLoadingState();
-        
-        // Add timeout protection
-        const loadTimeout = setTimeout(() => {
-            if (this.isLoading) {
-                console.warn('Notification load timeout');
-                this.isLoading = false;
-                this.handleLoadError(new Error('Load timeout after 10 seconds'));
-            }
-        }, 10000);
+async loadNotifications() {
+    if (this.isLoading) return;
+    
+    this.isLoading = true;
+    this.showLoadingState();
+    
+    console.log('🔔 LOAD NOTIFICATIONS CALLED');
 
-        try {
-            const notificationsSnapshot = await this.fetchNotifications();
-            clearTimeout(loadTimeout);
-            
-            if (notificationsSnapshot.empty) {
-                this.notifications = [];
-                this.unreadCount = 0;
-                this.updateUI();
-                return;
-            }
-
-            const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
-            this.processNotifications(notificationsSnapshot, sessionsMap);
+    try {
+        const notificationsSnapshot = await this.fetchNotifications();
+        console.log('📨 Fetch completed, processing...');
+        
+        if (notificationsSnapshot.empty) {
+            console.log('📭 No notifications found');
+            this.notifications = [];
+            this.unreadCount = 0;
             this.updateUI();
-            
-        } catch (error) {
-            clearTimeout(loadTimeout);
-            this.handleLoadError(error);
-        } finally {
-            this.isLoading = false;
-            clearTimeout(loadTimeout);
+            return;
         }
+
+        const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
+        console.log('🔄 Calling processNotifications...');
+        this.processNotifications(notificationsSnapshot, sessionsMap);
+        this.updateUI();
+        
+    } catch (error) {
+        console.error('❌ Load notifications error:', error);
+        this.handleLoadError(error);
+    } finally {
+        this.isLoading = false;
     }
+}
     
     // Fetch notifications from tutorNotifications collection
     async fetchNotifications() {
@@ -8596,38 +8590,50 @@ processNotifications(snapshot, sessionsMap) {
     this.notifications = [];
 
     if (!snapshot || snapshot.empty) {
+        console.log('🚨 No notifications found');
         return;
     }
 
     const docs = snapshot.docs || [];
     
+    console.log('🔄 PROCESSING NOTIFICATIONS - fixing order');
+    console.log('📥 Raw docs from Firestore:', docs.length);
+    
     // Convert all docs to notifications first
     const tempNotifications = [];
-    docs.forEach(doc => {
+    docs.forEach((doc, index) => {
         const notification = this.enrichNotificationData(doc, sessionsMap);
         tempNotifications.push(notification);
+        
+        // Debug each notification as we get it
+        const time = notification.createdAt?.toDate ? notification.createdAt.toDate().toLocaleTimeString() : 'no time';
+        console.log(`  Firestore doc ${index}: ${notification.title} - ${time}`);
     });
 
-    // DEBUG: Check what order we got from Firestore
-    console.log('Before sorting:');
-    tempNotifications.forEach((notif, index) => {
-        console.log(`${index}: ${notif.title} - ${notif.createdAt?.toDate?.()}`);
-    });
-
-    // Force sort by timestamp (newest first)
+    // Force correct order: newest first
     this.notifications = tempNotifications.sort((a, b) => {
-        const aTime = a.createdAt?.toDate?.() || new Date(0);
-        const bTime = b.createdAt?.toDate?.() || new Date(0);
-        return bTime - aTime; // Newest first
+        try {
+            const aTime = a.createdAt?.toDate?.() || new Date(0);
+            const bTime = b.createdAt?.toDate?.() || new Date(0);
+            const result = bTime.getTime() - aTime.getTime(); // Newest first
+            return result;
+        } catch (error) {
+            console.error('Error sorting notifications:', error);
+            return 0;
+        }
     });
 
-    console.log('After sorting:');
+    // DEBUG: Show final order
+    console.log('✅ Final sorted order (newest first):');
     this.notifications.forEach((notif, index) => {
-        console.log(`${index}: ${notif.title} - ${notif.createdAt?.toDate?.()}`);
+        const time = notif.createdAt?.toDate ? notif.createdAt.toDate().toLocaleTimeString() : 'no time';
+        console.log(`  Array ${index}: ${notif.title} - ${time}`);
     });
 
     this.unreadCount = this.notifications.filter(n => !n.isRead).length;
+    console.log('📊 Unread count:', this.unreadCount);
 }
+    
 
     // Enrich notification with related data
     enrichNotificationData(doc, sessionsMap) {
@@ -11087,6 +11093,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
