@@ -4440,7 +4440,30 @@ function cancelBooking(bookingId) {
         })
         .then((result) => {
             if (!result) return; // User cancelled confirmation
-            
+
+            // Create tutor notification for cancellation
+    db.collection('tutorNotifications').add({
+        tutorId: session.tutorId,
+        type: 'session_cancelled',
+        title: 'Session Cancelled by Student',
+        message: `${session.studentName} cancelled your ${session.subject} session`,
+        details: {
+            studentName: session.studentName,
+            studentId: session.studentId,
+            sessionId: bookingId,
+            subject: session.subject,
+            date: session.date.toDate().toLocaleDateString(),
+            time: session.date.toDate().toLocaleTimeString(),
+            duration: session.duration,
+            meetLink: session.meetLink || '',
+            meetPlatform: session.meetPlatform || ''
+        },
+        relatedSessionId: bookingId,
+        isRead: false,
+        priority: 'high',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+          
             // Success handling
             alert(result.data.message);
             
@@ -4602,39 +4625,109 @@ function respondToReschedule(bookingId, response) {
 
             const booking = doc.data();
             
+// Function for reschedule response - UPDATED for your actual data structure
+function respondToReschedule(bookingId, response) {
+    if (!confirm(`Are you sure you want to ${response} this reschedule request?`)) {
+        return;
+    }
+
+    // Get the current booking to access the proposed new date
+    db.collection('bookedSessions').doc(bookingId).get()
+        .then((doc) => {
+            if (!doc.exists) {
+                alert('Booking not found.');
+                return;
+            }
+
+            const booking = doc.data();
+            
             // Verify there's a reschedule request
             if (!booking.rescheduleRequested || !booking.proposedNewDate) {
                 alert('No reschedule request found for this booking.');
                 return;
             }
 
+            let updateData;
+            let notificationData;
+
             if (response === 'accept') {
-                // Accept the reschedule - update with the proposed new date
-                return db.collection('bookedSessions').doc(bookingId).update({
-                    date: booking.proposedNewDate, // Use the proposed new date
+                updateData = {
+                    date: booking.proposedNewDate,
                     status: 'confirmed',
                     rescheduleStatus: 'accepted',
                     rescheduleRespondedAt: new Date(),
                     rescheduleRespondedBy: 'student',
-                    previousDate: booking.date, // Store original date
-                    // Clear reschedule request fields
+                    previousDate: booking.date,
                     rescheduleRequested: false,
                     proposedNewDate: null,
                     rescheduleReason: null
-                });
+                };
+
+                notificationData = {
+                    tutorId: booking.tutorId,
+                    type: 'reschedule_accepted',
+                    title: 'Reschedule Accepted by Student',
+                    message: `${booking.studentName} accepted your reschedule request for ${booking.subject}`,
+                    details: {
+                        studentName: booking.studentName,
+                        studentId: booking.studentId,
+                        sessionId: bookingId,
+                        subject: booking.subject,
+                        date: booking.proposedNewDate.toDate().toLocaleDateString(),
+                        time: booking.proposedNewDate.toDate().toLocaleTimeString(),
+                        duration: booking.duration,
+                        meetLink: booking.meetLink || '',
+                        meetPlatform: booking.meetPlatform || '',
+                        originalDate: booking.date.toDate().toLocaleDateString(),
+                        originalTime: booking.date.toDate().toLocaleTimeString()
+                    },
+                    relatedSessionId: bookingId,
+                    isRead: false,
+                    priority: 'medium',
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+
             } else {
-                // Decline the reschedule - keep original date but update status
-                return db.collection('bookedSessions').doc(bookingId).update({
-                    status: 'confirmed', // Return to confirmed status
+                updateData = {
+                    status: 'confirmed',
                     rescheduleStatus: 'declined',
                     rescheduleRespondedAt: new Date(),
                     rescheduleRespondedBy: 'student',
-                    // Clear reschedule request fields
                     rescheduleRequested: false,
                     proposedNewDate: null,
                     rescheduleReason: null
-                });
+                };
+
+                notificationData = {
+                    tutorId: booking.tutorId,
+                    type: 'reschedule_rejected',
+                    title: 'Reschedule Rejected by Student',
+                    message: `${booking.studentName} rejected your reschedule request for ${booking.subject}`,
+                    details: {
+                        studentName: booking.studentName,
+                        studentId: booking.studentId,
+                        sessionId: bookingId,
+                        subject: booking.subject,
+                        date: booking.date.toDate().toLocaleDateString(),
+                        time: booking.date.toDate().toLocaleTimeString(),
+                        duration: booking.duration,
+                        meetLink: booking.meetLink || '',
+                        meetPlatform: booking.meetPlatform || '',
+                        originalDate: booking.date.toDate().toLocaleDateString(),
+                        originalTime: booking.date.toDate().toLocaleTimeString()
+                    },
+                    relatedSessionId: bookingId,
+                    isRead: false,
+                    priority: 'medium',
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
             }
+
+            // Update the booking AND create notification in parallel
+            return Promise.all([
+                db.collection('bookedSessions').doc(bookingId).update(updateData),
+                db.collection('tutorNotifications').add(notificationData)
+            ]);
         })
         .then(() => {
             alert(`Reschedule request ${response}ed successfully.`);
@@ -4646,7 +4739,7 @@ function respondToReschedule(bookingId, response) {
             alert('Failed to respond to reschedule request. Please try again.');
         });
 }
-
+          
 // Global event listener for bookings container
 let bookingsContainerListener = null;
 
@@ -8798,6 +8891,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
