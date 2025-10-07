@@ -19,7 +19,6 @@
     <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-functions.js"></script> <!-- T
 
     <!-- Add this to the <head> section of your tutor dashboard HTML -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
@@ -165,84 +164,6 @@ const style = document.createElement('style');
 style.textContent = paginationCSS;
 document.head.appendChild(style);
 
-/* Cancellation Policy Styles */
-.cancellation-policy {
-    padding: 15px;
-    border-radius: 8px;
-    margin: 15px 0;
-    border-left: 4px solid;
-}
-
-.cancellation-policy.policy-refund {
-    background: #e8f5e8;
-    border-left-color: #4CAF50;
-}
-
-.cancellation-policy.policy-no-refund {
-    background: #fff3cd;
-    border-left-color: #ffc107;
-}
-
-.policy-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-    font-size: 1.1em;
-}
-
-.policy-message {
-    font-weight: 600;
-    margin-bottom: 8px;
-}
-
-.policy-details {
-    font-size: 0.9em;
-    color: #666;
-}
-
-.cancellation-indicator {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-radius: 4px;
-    margin: 10px 0;
-    font-size: 0.9em;
-}
-
-.cancellation-indicator.refund-available {
-    background: #e8f5e8;
-    color: #2e7d32;
-    border-left: 3px solid #4CAF50;
-}
-
-.cancellation-indicator.no-refund {
-    background: #fff3cd;
-    color: #856404;
-    border-left: 3px solid #ffc107;
-}
-
-.cancellation-indicator.too-late {
-    background: #f8d7da;
-    color: #721c24;
-    border-left: 3px solid #dc3545;
-}
-
-.warning-badge {
-    background: #ffc107;
-    color: #856404;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 0.7em;
-    font-weight: bold;
-    margin-left: 8px;
-}
-
-.within-24h-window {
-    border-left: 4px solid #ffc107;
-}
-        
 
 /* ============================================= */
 /* RATINGS & REVIEWS SECTION STYLES */
@@ -4353,6 +4274,7 @@ function generateJitsiMeetLink() {
 }
 
 // Main confirm session function - Tutor creates the Jitsi meeting
+// Main confirm session function - Tutor creates the Jitsi meeting
 async function confirmSession(sessionId) {
     // Immediately remove any existing overlays
     forceRemoveOverlays();
@@ -4380,15 +4302,6 @@ async function confirmSession(sessionId) {
             confirmedBy: 'tutor',
             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
-
-        // ✅ ADD EMAIL NOTIFICATION HERE
-        if (emailNotificationSystem) {
-            emailNotificationSystem.sendSessionConfirmedEmail(
-                session.studentId,  // Student ID
-                'student',          // Specify this is a student
-                session             // Session data
-            );
-        }
         
         // Send notification to student with the new Jitsi meeting link
         await createSessionNotification(session, jitsiMeetingData.meetLink);
@@ -4588,74 +4501,37 @@ function showCustomModal(title, content) {
 
 // Reject a session
 async function rejectSession(sessionId) {
-    if (!confirm('Are you sure you want to reject this session request? The student will receive their credits back.')) return;
+    if (!confirm('Are you sure you want to reject this session?')) return;
     
     try {
-        // Show loading state
-        const rejectBtn = document.querySelector(`.reject-btn[data-session-id="${sessionId}"]`);
-        if (rejectBtn) {
-            const originalText = rejectBtn.innerHTML;
-            rejectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rejecting...';
-            rejectBtn.disabled = true;
-        }
-
-        // Call the cancelSession Cloud Function to handle credit refund
-        const cancelSessionFunction = firebase.app().functions('us-central1').httpsCallable('cancelSession');
-        const result = await cancelSessionFunction({
-            sessionId: sessionId,
-            cancelledBy: 'tutor_rejection',
-            reason: 'Tutor rejected session request'
+        // Update session status to rejected
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'rejected',
+            rejectedAt: new Date(),
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
-
-        // Show success message with credit refund info
-        if (result.data.refunded) {
-            showNotification('Session rejected! Student credits have been refunded.', 'success');
-        } else {
-            showNotification('Session rejected. Student credits refunded.', 'success');
-        }
         
-        // Update UI - remove the session card
+        // Update UI
         const sessionCard = document.getElementById(`session-${sessionId}`);
         if (sessionCard) {
-            sessionCard.style.opacity = '0.5';
+            sessionCard.classList.add('rejected');
             sessionCard.querySelector('.session-actions').innerHTML = `
-                <span class="status-badge status-rejected">Rejected - Credits Refunded</span>
+                <span class="status-badge status-rejected">Rejected</span>
             `;
-            
-            // Remove after animation
-            setTimeout(() => {
-                sessionCard.remove();
-            }, 1000);
         }
         
         // Update counts
         const pendingCount = parseInt(document.getElementById('pendingCount').textContent) - 1;
         updatePendingCount(pendingCount);
         
+        showNotification('Session rejected successfully!', 'success');
+        
     } catch (error) {
         console.error("Error rejecting session:", error);
-        
-        // Restore button if it exists
-        const rejectBtn = document.querySelector(`.reject-btn[data-session-id="${sessionId}"]`);
-        if (rejectBtn) {
-            rejectBtn.innerHTML = '<i class="fas fa-times"></i> Reject';
-            rejectBtn.disabled = false;
-        }
-        
-        let errorMessage = 'Error rejecting session. Please try again.';
-        
-        if (error.message && error.message.includes('not found')) {
-            errorMessage = 'Session not found or already processed.';
-        } else if (error.message && error.message.includes('permission')) {
-            errorMessage = 'You do not have permission to reject this session.';
-        } else if (error.details) {
-            errorMessage = error.details;
-        }
-        
-        showNotification(errorMessage, 'error');
+        showNotification('Error rejecting session. Please try again.', 'error');
     }
 }
-       
+
 // Update pending count in sidebar, top bar, and stats card
 function updatePendingCount(count) {
     const pendingCountElement = document.getElementById('pendingCount');
@@ -5390,40 +5266,6 @@ function createBookingCard(booking) {
     const isCurrentSession = sessionStartTime <= now && sessionEndTime > now;
     const isUpcomingSession = sessionStartTime > now;
     
-    // Calculate cancellation policy status
-    const timeDiff = sessionStartTime.getTime() - now.getTime();
-    const hoursUntilSession = timeDiff / (1000 * 60 * 60);
-    const isWithin24Hours = hoursUntilSession <= 24;
-    const canCancelWithRefund = isUpcomingSession && !isWithin24Hours;
-    const canCancelWithoutRefund = isUpcomingSession && isWithin24Hours && hoursUntilSession > 1; // Allow cancellation up to 1 hour before
-    
-    // Add cancellation policy indicator
-    let cancellationIndicator = '';
-    if (isUpcomingSession) {
-        if (canCancelWithRefund) {
-            cancellationIndicator = `
-                <div class="cancellation-indicator refund-available">
-                    <i class="fas fa-check-circle"></i>
-                    <span>Student will receive credit refund if cancelled</span>
-                </div>
-            `;
-        } else if (canCancelWithoutRefund) {
-            cancellationIndicator = `
-                <div class="cancellation-indicator no-refund">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <span>Student will lose credits if cancelled (within 24h)</span>
-                </div>
-            `;
-        } else if (hoursUntilSession <= 1) {
-            cancellationIndicator = `
-                <div class="cancellation-indicator too-late">
-                    <i class="fas fa-ban"></i>
-                    <span>Cannot cancel (less than 1 hour until session)</span>
-                </div>
-            `;
-        }
-    }
-    
     // Calculate if join button should be active (30 minutes before session starts)
     const thirtyMinutesBefore = new Date(sessionStartTime.getTime() - (30 * 60 * 1000));
     const canJoinSession = now >= thirtyMinutesBefore && now <= sessionEndTime;
@@ -5432,17 +5274,14 @@ function createBookingCard(booking) {
     const sessionType = booking.sessionType === 'online' ? 'Online' : 'In-Person';
     
     return `
-        <div class="session-card booking-card ${isPastSession ? 'past-session' : ''} ${isCurrentSession ? 'current-session' : ''} ${isWithin24Hours ? 'within-24h-window' : ''}" id="booking-${booking.id}">
+        <div class="session-card booking-card ${isPastSession ? 'past-session' : ''} ${isCurrentSession ? 'current-session' : ''}" id="booking-${booking.id}">
             <div class="session-header">
                 <div class="session-title">${booking.subject || 'General Tutoring'} Session</div>
                 <div class="session-date">
                     ${formattedDate}, ${formattedTime}
                     ${isCurrentSession ? '<span class="live-badge">LIVE</span>' : ''}
-                    ${isWithin24Hours ? '<span class="warning-badge">WITHIN 24H</span>' : ''}
                 </div>
             </div>
-            
-            ${cancellationIndicator}
             
             <div class="session-details">
                 <div class="session-detail">
@@ -5483,21 +5322,15 @@ function createBookingCard(booking) {
                     </button>
                 ` : ''}
                 
-                ${!isPastSession && booking.status !== 'pending' && hoursUntilSession > 1 ? `
+                ${!isPastSession && booking.status !== 'pending' ? `
                     <button class="btn-warning reschedule-btn" data-session-id="${booking.id}">
                         <i class="fas fa-clock"></i> Reschedule
                     </button>
                 ` : ''}
                 
-                ${!isPastSession && hoursUntilSession > 1 ? `
+                ${!isPastSession ? `
                     <button class="btn-danger cancel-btn" data-session-id="${booking.id}">
                         <i class="fas fa-times"></i> Cancel
-                    </button>
-                ` : ''}
-                
-                ${hoursUntilSession <= 1 && isUpcomingSession ? `
-                    <button class="btn-danger disabled" disabled title="Cannot cancel within 1 hour of session">
-                        <i class="fas fa-ban"></i> Cannot Cancel
                     </button>
                 ` : ''}
                 
@@ -5783,6 +5616,7 @@ function showRescheduleModal(content, sessionId) {
     modal.style.display = 'flex';
 }
 
+// Submit reschedule request
 async function submitRescheduleRequest(sessionId) {
     const modal = document.getElementById('bookingsRescheduleModal');
     const newDate = modal.querySelector('#newSessionDate').value;
@@ -5806,10 +5640,6 @@ async function submitRescheduleRequest(sessionId) {
     }
     
     try {
-        // Get session data first for the email
-        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
-        const session = sessionDoc.data();
-        
         // Update session in bookedSessions
         await db.collection('bookedSessions').doc(sessionId).update({
             rescheduleRequested: true,
@@ -5820,23 +5650,6 @@ async function submitRescheduleRequest(sessionId) {
             status: 'reschedule_requested',
             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
-        
-        // ✅ ADD EMAIL NOTIFICATION HERE
-        if (emailNotificationSystem) {
-            console.log('Sending reschedule request email to student:', session.studentId);
-            emailNotificationSystem.sendRescheduleEmail(
-                session.studentId,  // Student ID
-                'student',          // This is going to a student
-                session,            // Session data
-                'tutor',            // Requested by tutor
-                newDateTime,        // Proposed new date
-                reason              // Reschedule reason
-            ).then(() => {
-                console.log('Reschedule email sent successfully');
-            }).catch(emailError => {
-                console.warn('Failed to send reschedule email (non-critical):', emailError);
-            });
-        }
         
         // Create notification for student
         await createRescheduleNotification(sessionId, reason, newDateTime);
@@ -5898,47 +5711,16 @@ async function openCancelModal(sessionId) {
         
         const session = sessionDoc.data();
         const sessionDate = session.date.toDate();
-        const now = new Date();
-        const timeDiff = sessionDate.getTime() - now.getTime();
-        const hoursUntilSession = timeDiff / (1000 * 60 * 60);
-        
-        // Determine cancellation policy status
-        const isWithin24Hours = hoursUntilSession <= 24;
-        const canRefundCredits = !isWithin24Hours;
-        
-        let policyMessage = '';
-        let policyClass = '';
-        
-        if (canRefundCredits) {
-            policyMessage = `✅ Student will receive their credits back`;
-            policyClass = 'policy-refund';
-        } else {
-            policyMessage = `⚠️ Student will lose their credits (within 24-hour window)`;
-            policyClass = 'policy-no-refund';
-        }
         
         const modalContent = `
             <h3>Cancel Session</h3>
             <p>Are you sure you want to cancel your session with ${session.studentName || 'the student'}?</p>
             
-            <div class="cancellation-policy ${policyClass}">
-                <div class="policy-header">
-                    <i class="fas ${canRefundCredits ? 'fa-check-circle' : 'fa-exclamation-triangle'}"></i>
-                    <strong>Cancellation Policy</strong>
-                </div>
-                <div class="policy-message">${policyMessage}</div>
-                <div class="policy-details">
-                    <strong>Session Time:</strong> ${sessionDate.toLocaleString()}<br>
-                    <strong>Time Until Session:</strong> ${Math.max(0, hoursUntilSession).toFixed(1)} hours<br>
-                    <strong>24-hour Cutoff:</strong> ${canRefundCredits ? 'After' : 'Before'} session start
-                </div>
-            </div>
-            
             <div class="session-info">
                 <h4>Session Details</h4>
-                <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
                 <p><strong>Date:</strong> ${sessionDate.toLocaleDateString()}</p>
                 <p><strong>Time:</strong> ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                <p><strong>Student:</strong> ${session.studentName || 'Unknown'}</p>
                 <p><strong>Subject:</strong> ${session.subject || 'General'}</p>
                 <p><strong>Duration:</strong> ${session.duration || '1.5'} hours</p>
             </div>
@@ -5957,7 +5739,7 @@ async function openCancelModal(sessionId) {
             </div>
         `;
         
-        showCancelModal(modalContent, sessionId, isWithin24Hours);
+        showCancelModal(modalContent, sessionId);
         
     } catch (error) {
         console.error("Error opening cancel modal:", error);
@@ -5965,8 +5747,8 @@ async function openCancelModal(sessionId) {
     }
 }
 
-// Show cancel modal with policy indicators
-function showCancelModal(content, sessionId, isWithin24Hours) {
+// Show cancel modal
+function showCancelModal(content, sessionId) {
     let modal = document.getElementById('bookingsCancelModal');
     
     if (!modal) {
@@ -5975,17 +5757,17 @@ function showCancelModal(content, sessionId, isWithin24Hours) {
         modal.className = 'modal';
         modal.style.display = 'none';
         modal.innerHTML = `
-            <div class="modal-content" style="max-width: 550px;">
+            <div class="modal-content" style="max-width: 500px;">
                 <div class="modal-header">
                     <h3>Cancel Session</h3>
                     <span class="close-modal">&times;</span>
                 </div>
-                <div class="modal-body" id="bookingsCancelModalBody"></div>
+                <div class="modal-body" id="bookingsCancelModalBody">
+                    <!-- Content will be inserted here -->
+                </div>
                 <div class="modal-actions">
                     <button class="btn-outline" id="cancelCancelBtn">Keep Session</button>
-                    <button class="btn-danger" id="confirmCancelBtn">
-                        <i class="fas fa-exclamation-triangle"></i> Confirm Cancellation
-                    </button>
+                    <button class="btn-danger" id="confirmCancelBtn">Confirm Cancellation</button>
                 </div>
             </div>
         `;
@@ -5999,6 +5781,11 @@ function showCancelModal(content, sessionId, isWithin24Hours) {
         closeBtn.addEventListener('click', () => modal.style.display = 'none');
         cancelBtn.addEventListener('click', () => modal.style.display = 'none');
         
+        // FIX: Properly bind the sessionId to the confirm button
+        confirmBtn.addEventListener('click', () => {
+            confirmCancellation(sessionId);
+        });
+        
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
                 modal.style.display = 'none';
@@ -6006,26 +5793,12 @@ function showCancelModal(content, sessionId, isWithin24Hours) {
         });
     }
     
-    // Update confirm button based on policy
-    const confirmBtn = modal.querySelector('#confirmCancelBtn');
-    if (isWithin24Hours) {
-        confirmBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Confirm (Student Loses Credits)';
-        confirmBtn.style.background = '#dc3545';
-    } else {
-        confirmBtn.innerHTML = '<i class="fas fa-check-circle"></i> Confirm (Student Gets Refund)';
-        confirmBtn.style.background = '#fd7e14';
-    }
-    
-    // Set the content and store sessionId
+    // Set the content and store sessionId in data attribute
     document.getElementById('bookingsCancelModalBody').innerHTML = content;
-    modal.dataset.sessionId = sessionId;
+    modal.dataset.sessionId = sessionId; // Store sessionId on modal
     modal.style.display = 'flex';
     
-    // Update confirm button event listener
-    const newConfirmBtn = modal.querySelector('#confirmCancelBtn');
-    newConfirmBtn.onclick = () => confirmCancellation(sessionId);
-    
-    // Focus on reason textarea
+    // Focus on reason textarea for better UX
     setTimeout(() => {
         const reasonInput = modal.querySelector('#cancelReason');
         if (reasonInput) {
@@ -6034,14 +5807,16 @@ function showCancelModal(content, sessionId, isWithin24Hours) {
     }, 100);
 }
 
-// Confirm cancellation - Call Cloud Function
+// Confirm cancellation
 async function confirmCancellation(sessionId) {
+    // Get the modal first
     const modal = document.getElementById('bookingsCancelModal');
     if (!modal) {
         alert('Error: Cancel modal not found.');
         return;
     }
     
+    // Get the reason from within the modal
     const reasonInput = modal.querySelector('#cancelReason');
     if (!reasonInput) {
         alert('Error: Reason input field not found.');
@@ -6057,59 +5832,33 @@ async function confirmCancellation(sessionId) {
     }
 
     try {
-        // Show loading state
-        const confirmBtn = modal.querySelector('#confirmCancelBtn');
-        const originalText = confirmBtn.innerHTML; // Define originalText here
-        confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-        confirmBtn.disabled = true;
-
-        // Call the same Cloud Function used by student dashboard
-        // Use the correct Firebase Functions reference
-        const cancelSessionFunction = firebase.app().functions('us-central1').httpsCallable('cancelSession');
-        const result = await cancelSessionFunction({
-            sessionId: sessionId,
+        // Update session in bookedSessions
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'cancelled',
             cancelledBy: 'tutor',
-            reason: reason
+            cancelledAt: new Date(),
+            cancelReason: reason,
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
-
+        
+        // Create notification for student
+        await createCancellationNotification(sessionId, reason);
+        
         // Close modal
         modal.style.display = 'none';
         
-        // Show appropriate success message based on credit handling
-        if (result.data.refunded) {
-            showBookingActionSuccess('Session cancelled! Student credits have been refunded.');
-        } else {
-            showBookingActionSuccess('Session cancelled. Student credits were not refunded (within 24-hour window).');
-        }
+        // Show success message
+        showBookingActionSuccess('Session cancelled successfully!');
         
         // Reload bookings to reflect changes
         loadMyBookings();
         
     } catch (error) {
         console.error('Error cancelling session:', error);
-        
-        // Restore button - now originalText is in scope
-        const confirmBtn = modal.querySelector('#confirmCancelBtn');
-        confirmBtn.innerHTML = originalText;
-        confirmBtn.disabled = false;
-        
-        // Show appropriate error message
-        let errorMessage = 'Error cancelling session. Please try again.';
-        
-        if (error.message && error.message.includes('cancellation window')) {
-            errorMessage = 'Cannot cancel: This session is too close to start time.';
-        } else if (error.message && error.message.includes('not found')) {
-            errorMessage = 'Session not found or already cancelled.';
-        } else if (error.message && error.message.includes('permission')) {
-            errorMessage = 'You do not have permission to cancel this session.';
-        } else if (error.details) {
-            errorMessage = error.details;
-        }
-        
-        alert(errorMessage);
+        alert('Error cancelling session. Please try again.');
     }
 }
-       
+
 // Create cancellation notification for student
 async function createCancellationNotification(sessionId, reason) {
     try {
@@ -7556,7 +7305,6 @@ async function loadCompletedSessions() {
        
 // =============================================
 // SESSIONS HISTORY SECTION ENDS HERE
-// =============================================
 
 // =============================================
 // INVOICE SESSION SECTION STARTS HERE
@@ -8165,8 +7913,6 @@ function displayEarningsErrorState() {
 // =============================================
 // YOUR EARNINGS SECTION ENDS HERE
 // =============================================
-
-
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
 // =============================================
@@ -8660,32 +8406,19 @@ class TutorNotificationSystem {
     }
 
     // Update notification badge
-updateBadge() {
-    console.log('Updating badge - unread count:', this.unreadCount);
-    
-    let badge = document.getElementById('tutorNotificationCount');
-    if (!badge) {
-        console.error('Badge element not found!');
-        return;
-    }
+    updateBadge() {
+        const badge = document.getElementById('tutorNotificationCount');
+        if (!badge) return;
 
-    if (this.unreadCount > 0) {
-        const displayCount = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
-        badge.textContent = displayCount;
-        badge.style.display = 'flex'; // Use your inline style approach
-        badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
-        
-        // Add pulse animation
-        badge.classList.add('pulse');
-        setTimeout(() => badge.classList.remove('pulse'), 1000);
-        
-        console.log('Badge updated with count:', displayCount);
-    } else {
-        badge.style.display = 'none'; // Use your inline style approach
-        badge.setAttribute('aria-label', 'No unread notifications');
-        console.log('Badge hidden - no unread notifications');
+        if (this.unreadCount > 0) {
+            badge.textContent = this.unreadCount > 99 ? '99+' : this.unreadCount.toString();
+            badge.classList.remove('hidden');
+            badge.setAttribute('aria-label', `${this.unreadCount} unread notifications`);
+        } else {
+            badge.classList.add('hidden');
+            badge.setAttribute('aria-label', 'No unread notifications');
+        }
     }
-}
 
     // Update dropdown content
     updateDropdownContent() {
@@ -11084,6 +10817,14 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
+
+
+
+
+
+
+
 
 
 
