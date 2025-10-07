@@ -2426,7 +2426,10 @@ const mobileSessionsCSS = `
 }
 
 .notification-item {
-    order: 0 !important;
+  padding: 12px;
+  border-bottom: 1px solid var(--gray-light);
+  cursor: pointer;
+  transition: background 0.2s;
 }
 
 .notification-item:hover {
@@ -8311,14 +8314,10 @@ class TutorNotificationSystem {
             }
             
             .notification-list {
-            flex: 1;
-            overflow-y: auto;
-            max-height: 300px;
-            display: flex;
-            flex-direction: column;
-            /* Force correct order */
-            flex-direction: column !important;
-        }
+                flex: 1;
+                overflow-y: auto;
+                max-height: 300px;
+            }
             
             .notification-loading {
                 padding: 2rem;
@@ -8462,38 +8461,44 @@ class TutorNotificationSystem {
     }
 
     // Load notifications with efficient batch operations
-async loadNotifications() {
-    if (this.isLoading) return;
-    
-    this.isLoading = true;
-    this.showLoadingState();
-    
-    console.log('🔔 LOAD NOTIFICATIONS CALLED');
-
-    try {
-        const notificationsSnapshot = await this.fetchNotifications();
-        console.log('📨 Fetch completed, processing...');
+    async loadNotifications() {
+        if (this.isLoading) return;
         
-        if (notificationsSnapshot.empty) {
-            console.log('📭 No notifications found');
-            this.notifications = [];
-            this.unreadCount = 0;
+        this.isLoading = true;
+        this.showLoadingState();
+        
+        // Add timeout protection
+        const loadTimeout = setTimeout(() => {
+            if (this.isLoading) {
+                console.warn('Notification load timeout');
+                this.isLoading = false;
+                this.handleLoadError(new Error('Load timeout after 10 seconds'));
+            }
+        }, 10000);
+
+        try {
+            const notificationsSnapshot = await this.fetchNotifications();
+            clearTimeout(loadTimeout);
+            
+            if (notificationsSnapshot.empty) {
+                this.notifications = [];
+                this.unreadCount = 0;
+                this.updateUI();
+                return;
+            }
+
+            const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
+            this.processNotifications(notificationsSnapshot, sessionsMap);
             this.updateUI();
-            return;
+            
+        } catch (error) {
+            clearTimeout(loadTimeout);
+            this.handleLoadError(error);
+        } finally {
+            this.isLoading = false;
+            clearTimeout(loadTimeout);
         }
-
-        const sessionsMap = await this.preloadSessionData(notificationsSnapshot);
-        console.log('🔄 Calling processNotifications...');
-        this.processNotifications(notificationsSnapshot, sessionsMap);
-        this.updateUI();
-        
-    } catch (error) {
-        console.error('❌ Load notifications error:', error);
-        this.handleLoadError(error);
-    } finally {
-        this.isLoading = false;
     }
-}
     
     // Fetch notifications from tutorNotifications collection
     async fetchNotifications() {
@@ -8586,29 +8591,21 @@ async loadNotifications() {
     }
 
     // Process notifications with enriched data
-processNotifications(snapshot, sessionsMap) {
-    this.notifications = [];
+    processNotifications(snapshot, sessionsMap) {
+        this.notifications = [];
 
-    if (!snapshot || snapshot.empty) {
-        return;
+        if (!snapshot || snapshot.empty) {
+            return;
+        }
+
+        const docs = snapshot.docs || [];
+        docs.forEach(doc => {
+            const notification = this.enrichNotificationData(doc, sessionsMap);
+            this.notifications.push(notification);
+        });
+
+        this.unreadCount = this.notifications.filter(n => !n.isRead).length;
     }
-
-    const docs = snapshot.docs || [];
-    docs.forEach(doc => {
-        const newNotification = this.enrichNotificationData(doc, sessionsMap);
-        this.notifications.push(newNotification);
-    });
-
-    // **ADD THIS LINE** - Sort by createdAt descending (newest first)
-    this.notifications.sort((a, b) => {
-        const aTime = a.createdAt?.toDate?.() || new Date(0);
-        const bTime = b.createdAt?.toDate?.() || new Date(0);
-        return bTime - aTime;  // Newest first
-    });
-
-    this.unreadCount = this.notifications.filter(n => !n.isRead).length;
-}
-    
 
     // Enrich notification with related data
     enrichNotificationData(doc, sessionsMap) {
@@ -8664,30 +8661,21 @@ updateBadge() {
 
     // Update dropdown content
     updateDropdownContent() {
-    const list = document.getElementById('tutorNotificationList');
-    if (!list) return;
+        const list = document.getElementById('tutorNotificationList');
+        if (!list) return;
 
-    console.log('🔄 RENDERING NOTIFICATIONS TO DOM');
-    console.log('Array length:', this.notifications.length);
-    
-    // Log what we're about to render
-    this.notifications.forEach((notif, index) => {
-        const time = notif.createdAt?.toDate ? notif.createdAt.toDate().toLocaleTimeString() : 'no time';
-        console.log(`Rendering ${index}: "${notif.title}" at ${time}`);
-    });
+        if (this.notifications.length === 0) {
+            list.innerHTML = this.getEmptyStateHTML();
+            return;
+        }
 
-    if (this.notifications.length === 0) {
-        list.innerHTML = this.getEmptyStateHTML();
-        return;
+        list.innerHTML = this.notifications.map(notification => 
+            this.getNotificationHTML(notification)
+        ).join('');
+
+        this.attachNotificationHandlers();
     }
 
-    list.innerHTML = this.notifications.map(notification => 
-        this.getNotificationHTML(notification)
-    ).join('');
-
-    this.attachNotificationHandlers();
-}
-    
     // Get notification HTML template
     getNotificationHTML(notification) {
         const timeAgo = this.getTimeAgo(notification.createdAt);
@@ -11068,11 +11056,4 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
-
-
-
-
-
-
-
 
