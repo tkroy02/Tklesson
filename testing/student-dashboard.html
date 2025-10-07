@@ -4354,21 +4354,121 @@ function updateUpcomingSessionsCount(count) {
 
 // Cancel a booking function
 function cancelBooking(bookingId) {
-    if (confirm('Are you sure you want to cancel this booking?')) {
-        // Update the booking status to cancelled
-        db.collection('bookedSessions').doc(bookingId).update({
-            status: 'cancelled',
-            cancelledAt: new Date()
+    // First confirm cancellation
+    if (!confirm('Are you sure you want to cancel this booking?')) {
+        return;
+    }
+
+    // Show loading state on the button
+    const cancelBtn = document.querySelector(`[data-session-id="${bookingId}"][data-action="cancel"]`);
+    if (cancelBtn) {
+        const originalText = cancelBtn.innerHTML;
+        cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling...';
+        cancelBtn.disabled = true;
+    }
+
+    // Get session details first to check 24-hour policy
+    db.collection('bookedSessions').doc(bookingId).get()
+        .then((doc) => {
+            if (!doc.exists) {
+                alert('Booking not found.');
+                resetCancelButton(cancelBtn);
+                return;
+            }
+
+            const session = doc.data();
+            const sessionTime = session.date.toDate();
+            const now = new Date();
+            const twentyFourHoursBefore = new Date(sessionTime.getTime() - 24 * 60 * 60 * 1000);
+            
+            const isWithin24Hours = now >= twentyFourHoursBefore;
+            
+            // Show appropriate warning based on timing
+            let confirmMessage;
+            if (isWithin24Hours) {
+                confirmMessage = 
+                    '⚠️ CANCELLATION WITHIN 24 HOURS\n\n' +
+                    'Cancelling this session will result in losing your session credit.\n\n' +
+                    'Credit Policy:\n' +
+                    '• Within 24 hours: Credit is NOT refunded\n' +
+                    '• Outside 24 hours: Credit is refunded\n\n' +
+                    'Do you still want to cancel this session?';
+            } else {
+                confirmMessage = 
+                    'Are you sure you want to cancel this booking?\n\n' +
+                    '✅ Your session credit will be refunded to your account.';
+            }
+
+            // Double confirmation with policy information
+            if (!confirm(confirmMessage)) {
+                resetCancelButton(cancelBtn);
+                return;
+            }
+
+            // Proceed with cancellation via Firebase function
+            const cancelSession = firebase.functions().httpsCallable('cancelSession');
+            return cancelSession({ sessionId: bookingId });
+
         })
-        .then(() => {
-            alert('Booking cancelled successfully.');
-            // Reload the bookings
+        .then((result) => {
+            if (!result) return; // User cancelled confirmation
+            
+            // Success handling
+            alert(result.data.message);
+            
+            // Refresh UI components
             loadUserBookings();
+            loadPackageBalance(); // Refresh credit balance
+            
+            // Show success message with credit info
+            if (result.data.creditRefunded) {
+                showToast('Session cancelled successfully. Credit has been refunded!', 'success');
+            } else {
+                showToast('Session cancelled. Credit was not refunded due to 24-hour policy.', 'warning');
+            }
         })
         .catch((error) => {
-            console.error('Error cancelling booking:', error);
-            alert('Failed to cancel booking. Please try again.');
+            console.error('Cancellation error:', error);
+            handleCancellationError(error, bookingId);
+        })
+        .finally(() => {
+            resetCancelButton(cancelBtn);
         });
+}
+
+// Helper function to reset cancel button
+function resetCancelButton(button) {
+    if (button) {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-times"></i> Cancel';
+    }
+}
+
+// Enhanced error handling function
+function handleCancellationError(error, sessionId) {
+    console.error('Cancellation error:', error);
+    
+    // Handle specific 24-hour policy error
+    if (error.code === 'failed-precondition' || 
+        error.message?.includes('24 hours') || 
+        error.details?.includes('24 hours')) {
+        
+        alert(
+            '❌ CANCELLATION NOT POSSIBLE\n\n' +
+            'You cannot cancel this session because it starts within 24 hours.\n\n' +
+            'Credit Policy:\n' +
+            '• Cancellations within 24 hours of session time result in credit loss\n' +
+            '• Credits are only refunded for cancellations made more than 24 hours in advance\n\n' +
+            'Please contact support if you have exceptional circumstances.'
+        );
+    } 
+    // Handle other common errors
+    else if (error.code === 'permission-denied') {
+        alert('❌ Permission denied. You cannot cancel this session.');
+    } else if (error.code === 'not-found') {
+        alert('❌ Session not found. It may have already been cancelled.');
+    } else {
+        alert('❌ Failed to cancel session: ' + (error.message || 'Please try again.'));
     }
 }
   
@@ -8669,6 +8769,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
