@@ -4409,15 +4409,19 @@ function cancelBooking(bookingId) {
     }
 
     // Get session details first to check 24-hour policy
+    let sessionData; // Store session data for later use
+    
     db.collection('bookedSessions').doc(bookingId).get()
         .then((doc) => {
             if (!doc.exists) {
                 alert('Booking not found.');
                 resetCancelButton(cancelBtn);
-                return;
+                throw new Error('Booking not found'); // Break the chain
             }
 
             const session = doc.data();
+            sessionData = session; // Store for later use
+            
             const sessionTime = session.date.toDate();
             const now = new Date();
             const twentyFourHoursBefore = new Date(sessionTime.getTime() - 24 * 60 * 60 * 1000);
@@ -4443,50 +4447,43 @@ function cancelBooking(bookingId) {
             // Double confirmation with policy information
             if (!confirm(confirmMessage)) {
                 resetCancelButton(cancelBtn);
-                return;
+                throw new Error('User cancelled confirmation'); // Break the chain
             }
 
-            // Proceed with cancellation via Firebase function AND create tutor notification
+            // Proceed with cancellation via Firebase function
             const cancelSession = firebase.functions().httpsCallable('cancelSession');
-            return Promise.all([
-                cancelSession({ sessionId: bookingId }),
-                session // Pass session data along for notification
-            ]);
+            return cancelSession({ sessionId: bookingId });
         })
-        .then(([result, session]) => { // Destructure the result to get both the cancellation result and session data
-            if (!result) return; // User cancelled confirmation
+        .then((result) => {
+            if (!result) {
+                resetCancelButton(cancelBtn);
+                return; // User cancelled confirmation
+            }
 
-            // Store result for use in the next then block
-            const cancellationResult = result;
-            
-            // Create tutor notification for cancellation and return both
-            return Promise.all([
-                db.collection('tutorNotifications').add({
-                    tutorId: session.tutorId,
-                    type: 'session_cancelled',
-                    title: 'Session Cancelled by Student',
-                    message: `${session.studentName} cancelled your ${session.subject} session`,
-                    details: {
-                        studentName: session.studentName,
-                        studentId: session.studentId,
-                        sessionId: bookingId,
-                        subject: session.subject,
-                        date: session.date.toDate().toLocaleDateString(),
-                        time: session.date.toDate().toLocaleTimeString(),
-                        duration: session.duration,
-                        meetLink: session.meetLink || '',
-                        meetPlatform: session.meetPlatform || ''
-                    },
-                    relatedSessionId: bookingId,
-                    isRead: false,
-                    priority: 'high',
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                }),
-                cancellationResult // Pass the result along
-            ]);
+            // Create tutor notification for cancellation
+            return db.collection('tutorNotifications').add({
+                tutorId: sessionData.tutorId,
+                type: 'session_cancelled',
+                title: 'Session Cancelled by Student',
+                message: `${sessionData.studentName} cancelled your ${sessionData.subject} session`,
+                details: {
+                    studentName: sessionData.studentName,
+                    studentId: sessionData.studentId,
+                    sessionId: bookingId,
+                    subject: sessionData.subject,
+                    date: sessionData.date.toDate().toLocaleDateString(),
+                    time: sessionData.date.toDate().toLocaleTimeString(),
+                    duration: sessionData.duration,
+                    meetLink: sessionData.meetLink || '',
+                    meetPlatform: sessionData.meetPlatform || ''
+                },
+                relatedSessionId: bookingId,
+                isRead: false,
+                priority: 'high',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(() => result); // Return the original result along with notification
         })
-        .then(([notificationResult, result]) => {
-            // Now we have access to both the notification result and the cancellation result
+        .then((result) => {
             if (!result) return; // User cancelled confirmation
 
             // Success handling
@@ -4505,13 +4502,14 @@ function cancelBooking(bookingId) {
         })
         .catch((error) => {
             console.error('Cancellation error:', error);
-            handleCancellationError(error, bookingId);
+            if (error.message !== 'User cancelled confirmation') {
+                handleCancellationError(error, bookingId);
+            }
         })
         .finally(() => {
             resetCancelButton(cancelBtn);
         });
-}
-  
+}  
 // Helper function to reset cancel button
 function resetCancelButton(button) {
     if (button) {
@@ -8900,5 +8898,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
