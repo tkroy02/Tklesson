@@ -4580,37 +4580,74 @@ function showCustomModal(title, content) {
 
 // Reject a session
 async function rejectSession(sessionId) {
-    if (!confirm('Are you sure you want to reject this session?')) return;
+    if (!confirm('Are you sure you want to reject this session request? The student will receive their credits back.')) return;
     
     try {
-        // Update session status to rejected
-        await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'rejected',
-            rejectedAt: new Date(),
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        // Show loading state
+        const rejectBtn = document.querySelector(`.reject-btn[data-session-id="${sessionId}"]`);
+        if (rejectBtn) {
+            const originalText = rejectBtn.innerHTML;
+            rejectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rejecting...';
+            rejectBtn.disabled = true;
+        }
+
+        // Call the cancelSession Cloud Function to handle credit refund
+        const cancelSessionFunction = firebase.app().functions('us-central1').httpsCallable('cancelSession');
+        const result = await cancelSessionFunction({
+            sessionId: sessionId,
+            cancelledBy: 'tutor_rejection',
+            reason: 'Tutor rejected session request'
         });
+
+        // Show success message with credit refund info
+        if (result.data.refunded) {
+            showNotification('Session rejected! Student credits have been refunded.', 'success');
+        } else {
+            showNotification('Session rejected. Student credits refunded.', 'success');
+        }
         
-        // Update UI
+        // Update UI - remove the session card
         const sessionCard = document.getElementById(`session-${sessionId}`);
         if (sessionCard) {
-            sessionCard.classList.add('rejected');
+            sessionCard.style.opacity = '0.5';
             sessionCard.querySelector('.session-actions').innerHTML = `
-                <span class="status-badge status-rejected">Rejected</span>
+                <span class="status-badge status-rejected">Rejected - Credits Refunded</span>
             `;
+            
+            // Remove after animation
+            setTimeout(() => {
+                sessionCard.remove();
+            }, 1000);
         }
         
         // Update counts
         const pendingCount = parseInt(document.getElementById('pendingCount').textContent) - 1;
         updatePendingCount(pendingCount);
         
-        showNotification('Session rejected successfully!', 'success');
-        
     } catch (error) {
         console.error("Error rejecting session:", error);
-        showNotification('Error rejecting session. Please try again.', 'error');
+        
+        // Restore button if it exists
+        const rejectBtn = document.querySelector(`.reject-btn[data-session-id="${sessionId}"]`);
+        if (rejectBtn) {
+            rejectBtn.innerHTML = '<i class="fas fa-times"></i> Reject';
+            rejectBtn.disabled = false;
+        }
+        
+        let errorMessage = 'Error rejecting session. Please try again.';
+        
+        if (error.message && error.message.includes('not found')) {
+            errorMessage = 'Session not found or already processed.';
+        } else if (error.message && error.message.includes('permission')) {
+            errorMessage = 'You do not have permission to reject this session.';
+        } else if (error.details) {
+            errorMessage = error.details;
+        }
+        
+        showNotification(errorMessage, 'error');
     }
 }
-
+       
 // Update pending count in sidebar, top bar, and stats card
 function updatePendingCount(count) {
     const pendingCountElement = document.getElementById('pendingCount');
@@ -11003,6 +11040,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
