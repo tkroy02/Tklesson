@@ -8334,25 +8334,30 @@ function loadPendingReviews() {
     const now = new Date();
     const cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
 
-
-    // Get completed sessions from last 30 days without reviews
+    // Get all sessions from last 30 days that have ended
     db.collection('bookedSessions')
         .where('studentId', '==', studentId)
         .where('date', '<', now) // Past sessions only
         .where('date', '>=', cutoffTime) // Last 30 days only
-        .where('reviewStatus', '==', 'pending') // Not reviewed yet
         .orderBy('date', 'desc')
         .get()
         .then(snapshot => {
             allPendingSessions = [];
             snapshot.forEach(doc => {
-                allPendingSessions.push({
+                const session = {
                     id: doc.id,
                     ...doc.data()
-                });
+                };
+                
+                // Check if this session should be available for review
+                const isReviewable = isSessionReviewable(session);
+                
+                if (isReviewable) {
+                    allPendingSessions.push(session);
+                }
             });
 
-            // AUTO-CLEANUP: Only show most recent 20 total, remove older ones from display
+            // AUTO-CLEANUP: Only show most recent 20 total
             if (allPendingSessions.length > 20) {
                 allPendingSessions = allPendingSessions.slice(0, 20);
             }
@@ -8366,6 +8371,70 @@ function loadPendingReviews() {
         });
 }
 
+// Helper function to determine if session is reviewable
+function isSessionReviewable(session) {
+    const now = new Date();
+    const sessionEndTime = new Date(session.date.toDate().getTime() + (session.duration * 60 * 60 * 1000));
+    
+    // Session must be in the past (ended)
+    if (sessionEndTime > now) {
+        return false;
+    }
+    
+    // If reviewStatus exists, only include if it's pending
+    if (session.reviewStatus) {
+        return session.reviewStatus === 'pending';
+    }
+    
+    // If no reviewStatus field exists, check if we should create it
+    // Include sessions that are confirmed/completed and past their end time
+    const validStatuses = ['confirmed', 'completed', 'rescheduled'];
+    return validStatuses.includes(session.status);
+}
+
+// Function to initialize reviewStatus for existing sessions
+async function initializeReviewStatus() {
+    const studentId = auth.currentUser.uid;
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+
+    try {
+        const snapshot = await db.collection('bookedSessions')
+            .where('studentId', '==', studentId)
+            .where('date', '>=', thirtyDaysAgo)
+            .where('date', '<', now)
+            .get();
+
+        const batch = db.batch();
+        let updateCount = 0;
+
+        snapshot.forEach(doc => {
+            const session = doc.data();
+            
+            // Only update if reviewStatus doesn't exist and session is in a reviewable state
+            if (!session.reviewStatus && 
+                ['confirmed', 'completed', 'rescheduled'].includes(session.status)) {
+                
+                batch.update(doc.ref, {
+                    reviewStatus: 'pending',
+                    lastUpdated: new Date()
+                });
+                updateCount++;
+            }
+        });
+
+        if (updateCount > 0) {
+            await batch.commit();
+            console.log(`Initialized reviewStatus for ${updateCount} sessions`);
+        }
+        
+        return updateCount;
+    } catch (error) {
+        console.error('Error initializing reviewStatus:', error);
+        return 0;
+    }
+}
+  
 // Update display with pagination
 function updatePendingReviewsDisplay() {
     const container = document.getElementById('pendingReviewsContainer');
@@ -8700,7 +8769,7 @@ async function submitReview(sessionId, tutorId) {
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
         submitBtn.disabled = true;
         
-        // Get session data to include subject
+        // Get session data
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
         const sessionData = sessionDoc.data();
         
@@ -8710,26 +8779,27 @@ async function submitReview(sessionId, tutorId) {
             tutorId: tutorId,
             studentId: auth.currentUser.uid,
             studentName: userData?.name || 'Student',
+            tutorName: sessionData.tutorName,
             rating: rating,
             reviewText: reviewText,
             createdAt: new Date(),
             subject: sessionData?.subject || 'General Tutoring'
         });
         
-        // Update session review status
+        // Update session review status (create field if it doesn't exist)
         await db.collection('bookedSessions').doc(sessionId).update({
             reviewStatus: 'completed',
-            reviewedAt: new Date()
+            reviewedAt: new Date(),
+            lastUpdated: new Date()
         });
         
-        // Update tutor's average rating - MAKE SURE THIS IS ASYNC
+        // Update tutor's average rating
         await updateTutorRating(tutorId);
         
-        // Close modal and refresh reviews section
+        // Close modal and refresh
         closeReviewModal();
         loadReviewsSection();
         
-        // Show success message
         showToast('Review submitted successfully!', 'success');
         
     } catch (error) {
@@ -8739,7 +8809,7 @@ async function submitReview(sessionId, tutorId) {
         submitBtn.disabled = false;
     }
 }
-
+  
 // MAKE SURE updateTutorRating is async!
 async function updateTutorRating(tutorId) {
     try {
@@ -8882,13 +8952,56 @@ function showToast(message, type = 'info') {
 
 // Initialize reviews when section is opened
 document.addEventListener('DOMContentLoaded', function() {
-    // Add click handler for reviews section
     document.addEventListener('click', function(e) {
         if (e.target.closest('a[data-section="reviews"]')) {
-            loadReviewsSection();
+            // Initialize missing reviewStatus fields first, then load reviews
+            initializeReviewStatus().then(() => {
+                loadReviewsSection();
+            }).catch(() => {
+                // If initialization fails, still try to load reviews
+                loadReviewsSection();
+            });
         }
     });
 });
+
+  async function debugReviewSessions() {
+    const studentId = auth.currentUser.uid;
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+
+    const snapshot = await db.collection('bookedSessions')
+        .where('studentId', '==', studentId)
+        .where('date', '<', now)
+        .where('date', '>=', cutoffTime)
+        .orderBy('date', 'desc')
+        .get();
+
+    console.log('=== REVIEW DEBUG INFO ===');
+    console.log(`Found ${snapshot.size} sessions in date range`);
+    
+    snapshot.forEach(doc => {
+        const session = doc.data();
+        const sessionDate = session.date.toDate();
+        const sessionEnd = new Date(sessionDate.getTime() + (parseInt(session.duration) * 60 * 60 * 1000));
+        const isEnded = sessionEnd < now;
+        
+        console.log(`Session: ${doc.id}`, {
+            date: sessionDate.toLocaleString(),
+            endTime: sessionEnd.toLocaleString(),
+            subject: session.subject,
+            status: session.status,
+            reviewStatus: session.reviewStatus || 'MISSING',
+            isPast: sessionDate < now,
+            isEnded: isEnded,
+            duration: session.duration,
+            isReviewable: isSessionReviewable(session)
+        });
+    });
+}
+
+// Call this to see what sessions should be reviewable
+// debugReviewSessions();
   
  // =========================================================
 // REVIEWS AND RATINGS END HERE
@@ -8898,6 +9011,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
