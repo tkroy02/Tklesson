@@ -8440,6 +8440,189 @@ async function initializeReviewStatus() {
         return 0;
     }
 }
+
+function editReview(reviewId) {
+    // Find the review in submitted reviews
+    const review = allSubmittedReviews.find(r => r.id === reviewId);
+    if (!review) {
+        console.error('Review not found:', reviewId);
+        return;
+    }
+
+    // Create edit modal
+    const modalHTML = `
+        <div class="review-modal-overlay" id="editReviewModalOverlay">
+            <div class="review-modal">
+                <div class="modal-header">
+                    <h3>Edit Your Review</h3>
+                    <button class="close-btn" onclick="closeEditReviewModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="session-info">
+                        <h4>${review.subject || 'Tutoring Session'}</h4>
+                        <p>with ${review.tutorName || 'Your Tutor'}</p>
+                        <p class="session-date">Originally reviewed on ${review.createdAt.toDate().toLocaleDateString()}</p>
+                    </div>
+                    
+                    <div class="rating-section">
+                        <label>Overall Rating:</label>
+                        <div class="star-rating" id="editStarRating">
+                            ${[1,2,3,4,5].map(star => `
+                                <span class="star ${star <= review.rating ? 'active' : ''}" 
+                                      data-rating="${star}" 
+                                      onclick="setEditRating(${star})">★</span>
+                            `).join('')}
+                        </div>
+                        <div class="rating-text" id="editRatingText">
+                            ${getRatingText(review.rating)}
+                        </div>
+                    </div>
+                    
+                    <div class="review-text-section">
+                        <label for="editReviewText">Your Review:</label>
+                        <textarea 
+                            id="editReviewText" 
+                            placeholder="Share details about your experience. What went well? What could be improved?"
+                            rows="4"
+                        >${review.reviewText || ''}</textarea>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-primary" onclick="updateReview('${reviewId}', '${review.tutorId}')" id="updateReviewBtn">
+                        Update Review
+                    </button>
+                    <button class="btn-danger" onclick="deleteReview('${reviewId}')">
+                        <i class="fas fa-trash"></i> Delete Review
+                    </button>
+                    <button class="btn-outline" onclick="closeEditReviewModal()">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+    window.currentEditRating = review.rating;
+}
+
+function setEditRating(rating) {
+    const stars = document.querySelectorAll('#editStarRating .star');
+    const ratingText = document.getElementById('editRatingText');
+    
+    stars.forEach((star, index) => {
+        if (index < rating) {
+            star.classList.add('active');
+        } else {
+            star.classList.remove('active');
+        }
+    });
+    
+    ratingText.textContent = getRatingText(rating);
+    window.currentEditRating = rating;
+}
+
+function getRatingText(rating) {
+    const ratingTexts = {
+        1: 'Poor',
+        2: 'Fair', 
+        3: 'Good',
+        4: 'Very Good',
+        5: 'Excellent'
+    };
+    return ratingTexts[rating] || 'Tap stars to rate';
+}
+
+  async function updateReview(reviewId, tutorId) {
+    const rating = window.currentEditRating;
+    const reviewText = document.getElementById('editReviewText').value.trim();
+    const updateBtn = document.getElementById('updateReviewBtn');
+    
+    if (!rating) {
+        alert('Please select a rating');
+        return;
+    }
+    
+    try {
+        updateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
+        updateBtn.disabled = true;
+        
+        // Update the review
+        await db.collection('ratings_reviews').doc(reviewId).update({
+            rating: rating,
+            reviewText: reviewText,
+            updatedAt: new Date()
+        });
+        
+        // Update tutor's average rating
+        await updateTutorRating(tutorId);
+        
+        // Close modal and refresh reviews
+        closeEditReviewModal();
+        loadReviewsSection();
+        
+        showToast('Review updated successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error updating review:', error);
+        alert('Failed to update review. Please try again.');
+        updateBtn.innerHTML = 'Update Review';
+        updateBtn.disabled = false;
+    }
+}
+
+async function deleteReview(reviewId) {
+    if (!confirm('Are you sure you want to delete this review? This action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        // Get review data first to update tutor rating later
+        const reviewDoc = await db.collection('ratings_reviews').doc(reviewId).get();
+        const reviewData = reviewDoc.data();
+        
+        // Delete the review
+        await db.collection('ratings_reviews').doc(reviewId).delete();
+        
+        // Also update the session's review status back to pending
+        if (reviewData.sessionId) {
+            await db.collection('bookedSessions').doc(reviewData.sessionId).update({
+                reviewStatus: 'pending',
+                reviewedAt: null
+            });
+        }
+        
+        // Update tutor's average rating
+        await updateTutorRating(reviewData.tutorId);
+        
+        // Close modal and refresh
+        closeEditReviewModal();
+        loadReviewsSection();
+        
+        showToast('Review deleted successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error deleting review:', error);
+        alert('Failed to delete review. Please try again.');
+    }
+}
+
+  function closeEditReviewModal() {
+    const modal = document.getElementById('editReviewModalOverlay');
+    if (modal) {
+        modal.remove();
+    }
+    window.currentEditRating = null;
+}
+
+// Also update your existing close function for consistency
+function closeReviewModal() {
+    const modal = document.getElementById('reviewModalOverlay');
+    if (modal) {
+        modal.remove();
+    }
+    window.currentRating = null;
+}
   
 // Update display with pagination
 function updatePendingReviewsDisplay() {
@@ -9017,6 +9200,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
 
 
 
