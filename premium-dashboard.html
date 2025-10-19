@@ -3264,6 +3264,7 @@ body {
     deleteDoc,
     updateDoc
   } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
   // Your Firebase config
   const firebaseConfig = {
@@ -3472,20 +3473,35 @@ body {
     }
   }
 
-  async function updateCourseProgress(courseId, progress) {
+  async function updateCourseProgress(courseId, progress, activityType = 'study') {
     const user = auth.currentUser;
     if (!user) return;
     
     try {
         const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
-        await updateDoc(courseRef, {
+        const updateData = {
             progress: progress,
             lastAccessed: new Date().toISOString()
-        });
+        };
+        
+        // Track specific activities
+        if (activityType === 'quiz') {
+            updateData.completedQuizzes = increment(1);
+        } else if (activityType === 'study') {
+            updateData.studyHours = increment(0.5); // Estimate 30 min per session
+        }
+        
+        await updateDoc(courseRef, updateData);
+        console.log(`Progress updated for ${courseId}: ${progress}%`);
+        
+        // Refresh progress display if on progress page
+        if (document.getElementById('progress').classList.contains('active')) {
+            updateProgressDisplay();
+        }
     } catch (error) {
         console.error("Error updating progress:", error);
     }
-  }
+}
 
   // Run this once to migrate your courses to Firestore
   async function migrateCoursesToFirestore() {
@@ -3548,9 +3564,139 @@ body {
   window.enrollCourseInFirestore = enrollCourseInFirestore;
   window.unenrollCourseFromFirestore = unenrollCourseFromFirestore;
   window.updateUserProfileDisplay = updateUserProfileDisplay;
+  window.updateProgressDisplay = updateProgressDisplay;
+  window.updateCourseProgress = updateCourseProgress;
 
-</script>
+// Add this function to your Firebase module
+async function updateProgressDisplay() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+        // Get enrolled courses with progress data
+        const enrolledCourses = await getEnrolledCourses(user);
+        
+        // Calculate overall statistics
+        const totalCourses = enrolledCourses.length;
+        const totalProgress = enrolledCourses.reduce((sum, course) => sum + (course.progress || 0), 0);
+        const averageGrade = enrolledCourses.length > 0 ? Math.round(totalProgress / enrolledCourses.length) : 0;
+        const completedQuizzes = enrolledCourses.reduce((sum, course) => sum + (course.completedQuizzes || 0), 0);
+        const studyHours = enrolledCourses.reduce((sum, course) => sum + (course.studyHours || 0), 0);
+        
+        // Update the progress page
+        updateProgressPage(enrolledCourses, {
+            totalCourses,
+            averageGrade,
+            completedQuizzes,
+            studyHours
+        });
+        
+    } catch (error) {
+        console.error("Error updating progress display:", error);
+    }
+}
+
+function updateProgressPage(courses, stats) {
+    const progressGrid = document.querySelector('#progress .dashboard-grid');
+    if (!progressGrid) return;
     
+    progressGrid.innerHTML = `
+        <div class="course-card">
+            <h3 class="section-title">Course Progress</h3>
+            ${courses.map(course => `
+                <div style="margin-bottom: 25px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span>${course.title}</span>
+                        <span style="font-weight: 600; color: var(--primary);">
+                            ${course.progress || 0}% • ${getGradeFromProgress(course.progress || 0)}
+                        </span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${course.progress || 0}%"></div>
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--gray); margin-top: 5px;">
+                        Last accessed: ${course.lastAccessed ? new Date(course.lastAccessed).toLocaleDateString() : 'Never'}
+                    </div>
+                </div>
+            `).join('')}
+            
+            ${courses.length === 0 ? `
+                <div style="text-align: center; padding: 40px; color: var(--gray);">
+                    <i class="fas fa-chart-line" style="font-size: 3rem; margin-bottom: 20px;"></i>
+                    <h4>No Progress Data</h4>
+                    <p>Start learning to track your progress!</p>
+                </div>
+            ` : ''}
+        </div>
+        
+        <div class="course-card">
+            <h3 class="section-title">Overall Performance</h3>
+            <div style="text-align: center; padding: 30px 20px;">
+                <div style="font-size: 4rem; font-weight: 800; color: var(--primary); margin-bottom: 10px;">
+                    ${stats.averageGrade}%
+                </div>
+                <div style="color: var(--gray); font-size: 1.1rem; margin-bottom: 30px;">Average Grade</div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left;">
+                    <div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Enrolled Courses</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.totalCourses}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Quizzes Completed</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.completedQuizzes}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Study Hours</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.studyHours}h</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Current Streak</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${calculateCurrentStreak(courses)} days</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Animate progress bars
+    setTimeout(() => {
+        document.querySelectorAll('.progress-fill').forEach(bar => {
+            const width = bar.style.width;
+            bar.style.width = '0';
+            setTimeout(() => {
+                bar.style.width = width;
+            }, 100);
+        });
+    }, 500);
+}
+
+// Helper functions
+function getGradeFromProgress(progress) {
+    if (progress >= 90) return 'A';
+    if (progress >= 80) return 'B';
+    if (progress >= 70) return 'C';
+    if (progress >= 60) return 'D';
+    return 'F';
+}
+
+function calculateCurrentStreak(courses) {
+    // Simple streak calculation - you can enhance this
+    const today = new Date();
+    const recentActivity = courses.some(course => {
+        if (!course.lastAccessed) return false;
+        const lastAccess = new Date(course.lastAccessed);
+        const diffTime = Math.abs(today - lastAccess);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays <= 1;
+    });
+    return recentActivity ? 5 : 0; // Placeholder
+}
+
+
+    
+</script>
+
     <script>
         
         // Complete CourseData object
@@ -3943,12 +4089,14 @@ const courseData = {
             }
             
             // Refresh My Courses display when navigating to that page
-            if (pageId === 'my-courses') {
-                updateMyCoursesDisplay();
-            } else if (pageId === 'all-courses') {
-                updateAllCoursesDisplay();
-            }
-        }
+             if (pageId === 'my-courses') {
+        updateMyCoursesDisplay();
+    } else if (pageId === 'all-courses') {
+        updateAllCoursesDisplay();
+    } else if (pageId === 'progress') {
+        updateProgressDisplay(); // Add this line
+    }
+}
 
         // Course detail navigation
         let currentCourseId = null;
@@ -4004,36 +4152,38 @@ const courseData = {
             }
         }
 
-        function showChapter(index, courseId) {
-            const course = courseData[courseId];
-            if (!course || !course.chapters[index]) return;
-            
-            const chapter = course.chapters[index];
-            const chapterContent = document.getElementById('chapter-content');
-            chapterContent.innerHTML = `
-                <h4 style="color: var(--primary); margin-bottom: 15px;">${chapter.title}</h4>
-                <p style="color: var(--gray); line-height: 1.6;">${chapter.content}</p>
-                <div style="margin-top: 30px; display: flex; gap: 15px;">
-                    <button class="btn btn-outline" onclick="markAsRead('${courseId}', ${index})">
-                        <i class="fas fa-check"></i> Mark as Read
-                    </button>
-                    <button class="btn" onclick="showCourseSection('quizzes')">
-                        <i class="fas fa-question-circle"></i> Take Quiz
-                    </button>
-                </div>
-            `;
-        }
+function showChapter(index, courseId) {
+    const course = courseData[courseId];
+    if (!course || !course.chapters[index]) return;
+    
+    const chapter = course.chapters[index];
+    const chapterContent = document.getElementById('chapter-content');
+    chapterContent.innerHTML = `
+        <h4 style="color: var(--primary); margin-bottom: 15px;">${chapter.title}</h4>
+        <p style="color: var(--gray); line-height: 1.6;">${chapter.content}</p>
+        <div style="margin-top: 30px; display: flex; gap: 15px;">
+            <button class="btn btn-outline" onclick="markAsRead('${courseId}', ${index})">
+                <i class="fas fa-check"></i> Mark as Read
+            </button>
+            <button class="btn" onclick="showCourseSection('quizzes')">
+                <i class="fas fa-question-circle"></i> Take Quiz
+            </button>
+        </div>
+    `;
+}
 
-        function markAsRead(courseId, chapterIndex) {
-            // In a real app, this would save progress to the server
-            alert(`Chapter ${chapterIndex + 1} marked as read!`);
-        }
+function markAsRead(courseId, chapterIndex) {
+    // Update progress for reading
+    const progressIncrease = 5; // 5% per chapter read
+    updateCourseProgress(courseId, progressIncrease, 'study');
+    alert(`Chapter ${chapterIndex + 1} marked as read! Progress updated.`);
+}
 
-        // Quiz functionality
-        let currentQuiz = null;
-        let currentQuestionIndex = 0;
-        let userAnswers = [];
-
+// Quiz functionality
+let currentQuiz = null;
+let currentQuestionIndex = 0;
+let userAnswers = [];
+        
         function startQuiz() {
             if (!currentCourseId) return;
             
@@ -4146,6 +4296,10 @@ const courseData = {
             `;
         }
 
+// Update progress
+    const progressIncrease = Math.round((correctAnswers / currentQuiz.questions.length) * 25); // Max 25% per quiz
+    updateCourseProgress(currentCourseId, progressIncrease, 'quiz');
+        
         // Enrollment System
         async function enrollCourse(courseId, courseTitle, courseDescription) {
     const user = auth.currentUser;
