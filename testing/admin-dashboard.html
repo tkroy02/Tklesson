@@ -1719,6 +1719,8 @@
         let studentsData = [];
         let sessionsData = [];
         let paymentsData = [];
+        let vacanciesData = [];
+        let currentEditingVacancyId = null;
 
         // Authentication state listener
         auth.onAuthStateChanged((user) => {
@@ -1753,6 +1755,7 @@
             await loadTutorsData();
             await loadStudentsData();
             await loadSessionsData();
+            await loadVacanciesData();
             await loadPaymentsData();
             updateDashboardStats();
             initDashboard(); // This updates the dashboard overview section
@@ -1989,6 +1992,230 @@ function displayTutorsTable() {
     
     // Add event listeners to buttons
     addTutorActionListeners();
+}
+
+// Load vacancies data
+async function loadVacanciesData() {
+    try {
+        const vacanciesSnapshot = await db.collection('vacancies').get();
+        vacanciesData = [];
+        
+        vacanciesSnapshot.forEach(doc => {
+            const vacancy = doc.data();
+            vacancy.id = doc.id;
+            vacanciesData.push(vacancy);
+        });
+        
+        displayVacanciesTable();
+    } catch (error) {
+        console.error("Error loading vacancies data:", error);
+    }
+}
+
+        // Display vacancies table
+function displayVacanciesTable() {
+    const container = document.getElementById('vacanciesManagementContent');
+    const statusFilter = document.getElementById('vacancyStatusFilter').value;
+    const searchTerm = document.getElementById('vacancySearch').value.toLowerCase();
+    
+    let filteredVacancies = vacanciesData;
+    
+    // Apply status filter
+    if (statusFilter !== 'all') {
+        filteredVacancies = filteredVacancies.filter(vacancy => {
+            return vacancy.status === statusFilter;
+        });
+    }
+    
+    // Apply search filter
+    if (searchTerm) {
+        filteredVacancies = filteredVacancies.filter(vacancy => {
+            const title = vacancy.title || '';
+            const subjects = vacancy.subjects || '';
+            return title.toLowerCase().includes(searchTerm) || 
+                   subjects.toLowerCase().includes(searchTerm);
+        });
+    }
+    
+    if (filteredVacancies.length === 0) {
+        container.innerHTML = '<p>No vacancies found matching your criteria.</p>';
+        return;
+    }
+    
+    let tableHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Subjects</th>
+                    <th>Positions</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    filteredVacancies.forEach(vacancy => {
+        const title = vacancy.title || 'N/A';
+        const subjects = vacancy.subjects || 'N/A';
+        const positions = vacancy.positions || 'Multiple';
+        const status = vacancy.status || 'active';
+        const createdDate = vacancy.createdAt ? 
+            vacancy.createdAt.toDate().toLocaleDateString() : 'N/A';
+        
+        tableHTML += `
+            <tr>
+                <td>${title}</td>
+                <td>${subjects}</td>
+                <td>${positions}</td>
+                <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
+                <td>${createdDate}</td>
+                <td>
+                    <button class="btn-outline edit-vacancy-btn" data-vacancy-id="${vacancy.id}">Edit</button>
+                    <button class="btn-danger delete-vacancy-btn" data-vacancy-id="${vacancy.id}">Delete</button>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody></table>';
+    container.innerHTML = tableHTML;
+    
+    // Add event listeners
+    addVacancyActionListeners();
+}
+
+        // Add event listeners for vacancy actions
+function addVacancyActionListeners() {
+    document.querySelectorAll('.edit-vacancy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const vacancyId = btn.getAttribute('data-vacancy-id');
+            editVacancy(vacancyId);
+        });
+    });
+    
+    document.querySelectorAll('.delete-vacancy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const vacancyId = btn.getAttribute('data-vacancy-id');
+            deleteVacancy(vacancyId);
+        });
+    });
+}
+
+        // Open vacancy modal for creating new vacancy
+function openCreateVacancyModal() {
+    currentEditingVacancyId = null;
+    document.getElementById('vacancyModalTitle').textContent = 'Add New Vacancy';
+    document.getElementById('vacancyForm').reset();
+    document.getElementById('vacancyModal').style.display = 'flex';
+}
+
+// Edit vacancy
+function editVacancy(vacancyId) {
+    const vacancy = vacanciesData.find(v => v.id === vacancyId);
+    if (!vacancy) return;
+    
+    currentEditingVacancyId = vacancyId;
+    document.getElementById('vacancyModalTitle').textContent = 'Edit Vacancy';
+    document.getElementById('vacancyTitle').value = vacancy.title || '';
+    document.getElementById('vacancySubjects').value = vacancy.subjects || '';
+    document.getElementById('vacancyDescription').value = vacancy.description || '';
+    document.getElementById('vacancyPositions').value = vacancy.positions || '';
+    document.getElementById('vacancyStatus').value = vacancy.status || 'active';
+    
+    document.getElementById('vacancyModal').style.display = 'flex';
+}
+
+        // Save vacancy (create or update)
+async function saveVacancy() {
+    const title = document.getElementById('vacancyTitle').value.trim();
+    const subjects = document.getElementById('vacancySubjects').value.trim();
+    const description = document.getElementById('vacancyDescription').value.trim();
+    const positions = document.getElementById('vacancyPositions').value || 'Multiple';
+    const status = document.getElementById('vacancyStatus').value;
+    
+    if (!title || !subjects || !description) {
+        alert('Please fill in all required fields');
+        return;
+    }
+    
+    try {
+        const vacancyData = {
+            title,
+            subjects,
+            description,
+            positions,
+            status,
+            lastUpdated: new Date()
+        };
+        
+        if (currentEditingVacancyId) {
+            // Update existing vacancy
+            await db.collection('vacancies').doc(currentEditingVacancyId).update(vacancyData);
+            alert('Vacancy updated successfully!');
+        } else {
+            // Create new vacancy
+            vacancyData.createdAt = new Date();
+            await db.collection('vacancies').add(vacancyData);
+            alert('Vacancy created successfully!');
+        }
+        
+        document.getElementById('vacancyModal').style.display = 'none';
+        await loadVacanciesData();
+        
+    } catch (error) {
+        console.error("Error saving vacancy:", error);
+        alert('Error saving vacancy. Please try again.');
+    }
+}
+
+        // Delete vacancy
+async function deleteVacancy(vacancyId) {
+    if (!confirm('Are you sure you want to delete this vacancy? This action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        await db.collection('vacancies').doc(vacancyId).delete();
+        alert('Vacancy deleted successfully!');
+        await loadVacanciesData();
+    } catch (error) {
+        console.error("Error deleting vacancy:", error);
+        alert('Error deleting vacancy. Please try again.');
+    }
+}
+
+        // Setup Vacancies UI
+function setupVacanciesUI() {
+    const addVacancyBtn = document.getElementById('addVacancyBtn');
+    const saveVacancyBtn = document.getElementById('saveVacancyBtn');
+    const closeVacancyModalBtn = document.getElementById('closeVacancyModalBtn');
+    const closeModal = document.getElementById('vacancyModal').querySelector('.close-modal');
+    
+    if (addVacancyBtn) {
+        addVacancyBtn.addEventListener('click', openCreateVacancyModal);
+    }
+    
+    if (saveVacancyBtn) {
+        saveVacancyBtn.addEventListener('click', saveVacancy);
+    }
+    
+    if (closeVacancyModalBtn) {
+        closeVacancyModalBtn.addEventListener('click', () => {
+            document.getElementById('vacancyModal').style.display = 'none';
+        });
+    }
+    
+    if (closeModal) {
+        closeModal.addEventListener('click', () => {
+            document.getElementById('vacancyModal').style.display = 'none';
+        });
+    }
+    
+    document.getElementById('vacancyStatusFilter').addEventListener('change', displayVacanciesTable);
+    document.getElementById('vacancySearch').addEventListener('input', displayVacanciesTable);
 }
         
         // Display students table
@@ -2651,6 +2878,8 @@ function getRecentReviews(ratings = []) {
                     document.getElementById(sectionId).classList.add('active');
                 });
             });
+
+setupVacanciesUI(); 
             
             // Logout button
             document.getElementById('logoutBtn').addEventListener('click', () => {
@@ -3815,6 +4044,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
 
 
 
