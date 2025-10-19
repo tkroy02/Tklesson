@@ -3295,6 +3295,7 @@ onAuthStateChanged(auth, async (user) => {
         setTimeout(async () => {
             showPage('dashboard');
             await updateMyCoursesDisplay(); // Now async!
+            await updateAllCoursesDisplay(); // Now async!
             updateAllCoursesDisplay();
             setupCourseSearch();
             
@@ -3314,6 +3315,16 @@ onAuthStateChanged(auth, async (user) => {
         showPage('dashboard');
     }
 });
+
+// Run this once to migrate your courses to Firestore
+async function migrateCoursesToFirestore() {
+    if (confirm('This will initialize all courses in Firestore. Continue?')) {
+        await initializeCoursesInFirestore();
+        alert('Courses migrated to Firestore!');
+    }
+}
+
+// You can call this from browser console: migrateCoursesToFirestore()
 
 async function updateCourseProgress(courseId, progress) {
     const user = auth.currentUser;
@@ -4217,35 +4228,110 @@ async function unenrollCourse(courseId) {
     }
 }
 
- async function updateAllCoursesDisplay() {
+async function updateAllCoursesDisplay() {
     const allCoursesGrid = document.getElementById('all-courses-grid');
     if (!allCoursesGrid) return;
     
-    const user = auth.currentUser;
-    let enrolledCourses = [];
+    // Show loading state
+    allCoursesGrid.innerHTML = `
+        <div style="text-align: center; padding: 40px;">
+            <div class="tool-icon" style="margin: 0 auto 20px;">
+                <i class="fas fa-spinner fa-spin"></i>
+            </div>
+            <p>Loading available courses...</p>
+        </div>
+    `;
     
-    if (user) {
-        enrolledCourses = await getEnrolledCourses(user);
-    }
-    
-    allCoursesGrid.innerHTML = allCourses.map(course => {
-        const isEnrolled = enrolledCourses.some(ec => ec.id === course.id);
-        return `
-            <div class="course-card">
-                <h3>${course.title}</h3>
-                <p>${course.description}</p>
-                <div style="margin-top: 20px;">
-                    ${isEnrolled ? 
-                        `<button class="btn" onclick="showCourseDetail('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">Open Course</button>` :
-                        `<button class="btn" onclick="enrollCourse('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">Enroll Now</button>`
-                    }
+    try {
+        const user = auth.currentUser;
+        const [allCourses, enrolledCourses] = await Promise.all([
+            getAllCoursesFromFirestore(),
+            user ? getEnrolledCourses(user) : []
+        ]);
+        
+        // Update course count
+        document.getElementById('courseCount').textContent = allCourses.length;
+        
+        if (allCourses.length === 0) {
+            allCoursesGrid.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: var(--gray); grid-column: 1 / -1;">
+                    <i class="fas fa-book" style="font-size: 3rem; margin-bottom: 20px;"></i>
+                    <h3>No Courses Available</h3>
+                    <p>Courses will be available soon!</p>
                 </div>
+            `;
+            return;
+        }
+        
+        allCoursesGrid.innerHTML = allCourses.map(course => {
+            const isEnrolled = enrolledCourses.some(ec => ec.id === course.id);
+            const categoryIcon = getCategoryIcon(course.category);
+            const levelBadge = getLevelBadge(course.level);
+            
+            return `
+                <div class="course-card">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                        <h3>${course.title}</h3>
+                        <div style="display: flex; gap: 5px; align-items: center;">
+                            <span style="font-size: 1.2rem;">${categoryIcon}</span>
+                            ${levelBadge}
+                        </div>
+                    </div>
+                    <p style="color: var(--gray); margin-bottom: 15px;">${course.description}</p>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: auto;">
+                        <div style="font-size: 0.8rem; color: var(--gray);">
+                            <i class="fas fa-layer-group"></i> ${course.category} • ${course.level}
+                        </div>
+                        ${isEnrolled ? 
+                            `<button class="btn" onclick="showCourseDetail('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">
+                                <i class="fas fa-play"></i> Continue
+                            </button>` :
+                            `<button class="btn" onclick="enrollCourse('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">
+                                <i class="fas fa-plus"></i> Enroll
+                            </button>`
+                        }
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+    } catch (error) {
+        console.error("Error displaying courses:", error);
+        allCoursesGrid.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--accent); grid-column: 1 / -1;">
+                <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 20px;"></i>
+                <h3>Error Loading Courses</h3>
+                <p>Please try refreshing the page.</p>
+                <button class="btn" onclick="updateAllCoursesDisplay()">
+                    <i class="fas fa-redo"></i> Try Again
+                </button>
             </div>
         `;
-    }).join('');
-    
-    // Update course count
-    document.getElementById('courseCount').textContent = allCourses.length;
+    }
+}
+
+// Helper functions for icons and badges
+function getCategoryIcon(category) {
+    const icons = {
+        'physics': '⚛️',
+        'math': '🧮',
+        'chemistry': '🧪',
+        'biology': '🧬',
+        'economics': '💹'
+    };
+    return icons[category] || '📚';
+}
+
+function getLevelBadge(level) {
+    const badges = {
+        'ap': '<span style="background: var(--primary); color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600;">AP</span>',
+        'grade-9': '<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600;">9</span>',
+        'grade-10': '<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600;">10</span>',
+        'grade-11': '<span style="background: var(--warning); color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600;">11</span>',
+        'grade-12': '<span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600;">12</span>'
+    };
+    return badges[level] || '';
 }
 
         function showEnrollmentSuccess(courseTitle) {
@@ -4274,24 +4360,39 @@ async function unenrollCourse(courseId) {
 
         // Course search functionality
         function setupCourseSearch() {
-            const searchInput = document.getElementById('courseSearch');
+    const searchInput = document.getElementById('courseSearch');
+    if (!searchInput) return;
+    
+    let allCoursesCache = [];
+    
+    // Load courses for search functionality
+    getAllCoursesFromFirestore().then(courses => {
+        allCoursesCache = courses;
+    });
+    
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase().trim();
+        const courseCards = document.querySelectorAll('#all-courses .course-card');
+        
+        courseCards.forEach(card => {
+            const courseName = card.querySelector('h3').textContent.toLowerCase();
+            const courseDescription = card.querySelector('p').textContent.toLowerCase();
+            const courseCategory = card.querySelector('.fa-layer-group')?.parentElement?.textContent.toLowerCase() || '';
             
-            searchInput.addEventListener('input', function() {
-                const searchTerm = this.value.toLowerCase().trim();
-                const courseCards = document.querySelectorAll('#all-courses .course-card');
-                
-                courseCards.forEach(card => {
-                    const courseName = card.querySelector('h3').textContent.toLowerCase();
-                    const courseDescription = card.querySelector('p').textContent.toLowerCase();
-                    
-                    if (courseName.includes(searchTerm) || courseDescription.includes(searchTerm)) {
-                        card.style.display = 'block';
-                    } else {
-                        card.style.display = 'none';
-                    }
-                });
-            });
-        }
+            if (courseName.includes(searchTerm) || courseDescription.includes(searchTerm) || courseCategory.includes(searchTerm)) {
+                card.style.display = 'block';
+            } else {
+                card.style.display = 'none';
+            }
+        });
+        
+        // Update visible course count
+        const visibleCount = document.querySelectorAll('#all-courses .course-card[style="display: block"]').length;
+        const totalCount = allCoursesCache.length;
+        document.getElementById('courseCount').textContent = searchTerm ? 
+            `${visibleCount} of ${totalCount}` : totalCount;
+    });
+}
 
 //...........................................................................................................................//
 //.............................................STUDY MATERIALS SECTION STARTS HERE...........................................//
