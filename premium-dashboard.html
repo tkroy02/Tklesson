@@ -3341,6 +3341,160 @@ body {
     });
   }
 
+async function updateDashboardStats() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+        // Get enrolled courses with progress data
+        const enrolledCourses = await getEnrolledCourses(user);
+        
+        // Calculate real statistics
+        const enrolledCount = enrolledCourses.length;
+        const totalProgress = enrolledCourses.reduce((sum, course) => sum + (course.progress || 0), 0);
+        const averageGrade = enrolledCount > 0 ? Math.round(totalProgress / enrolledCount) : 0;
+        
+        // Calculate quizzes completed and study hours
+        const quizzesCompleted = enrolledCourses.reduce((sum, course) => sum + (course.completedQuizzes || 0), 0);
+        const studyHours = enrolledCourses.reduce((sum, course) => sum + (course.studyHours || 0), 0);
+        
+        // Calculate study days streak (simplified)
+        const studyDays = calculateStudyDays(enrolledCourses);
+        
+        // Update dashboard stats
+        updateDashboardDisplay({
+            enrolledCourses: enrolledCount,
+            averageGrade: averageGrade,
+            quizzesCompleted: quizzesCompleted,
+            studyDays: studyDays,
+            studyHours: Math.round(studyHours)
+        });
+
+        updateRecentActivity(enrolledCourses);
+        
+    } catch (error) {
+        console.error("Error updating dashboard stats:", error);
+    }
+}
+
+function calculateStudyDays(courses) {
+    // Simple streak calculation - count days with recent activity
+    const today = new Date();
+    const recentDays = new Set();
+    
+    courses.forEach(course => {
+        if (course.lastAccessed) {
+            const lastAccess = new Date(course.lastAccessed);
+            const diffTime = Math.abs(today - lastAccess);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (diffDays <= 7) { // Activity in last 7 days
+                recentDays.add(lastAccess.toDateString());
+            }
+        }
+    });
+    
+    return recentDays.size;
+}
+
+function updateDashboardDisplay(stats) {
+    // Update stat cards
+    const statCards = document.querySelectorAll('.stat-card .stat-value');
+    if (statCards.length >= 4) {
+        statCards[0].textContent = stats.enrolledCourses;
+        statCards[1].textContent = stats.averageGrade + '%';
+        statCards[2].textContent = stats.quizzesCompleted;
+        statCards[3].textContent = stats.studyDays;
+    }
+    
+    // Update welcome message with personalized stats
+    const welcomeMessage = document.querySelector('.welcome-section p');
+    if (welcomeMessage && stats.enrolledCourses > 0) {
+        const performanceText = stats.averageGrade >= 80 ? 'Great' : stats.averageGrade >= 60 ? 'Good' : 'Keep going';
+        welcomeMessage.innerHTML = `You're making progress! <strong>${stats.averageGrade}% average</strong> across ${stats.enrolledCourses} courses. ${performanceText} work!`;
+    }
+}
+
+function updateRecentActivity(courses) {
+    const activityList = document.querySelector('.activity-list');
+    if (!activityList) return;
+    
+    // Get recent activities from course data
+    const recentActivities = [];
+    
+    courses.forEach(course => {
+        if (course.lastAccessed) {
+            recentActivities.push({
+                type: 'accessed',
+                course: course.title,
+                timestamp: new Date(course.lastAccessed),
+                icon: 'fas fa-book'
+            });
+        }
+        
+        if (course.completedQuizzes > 0) {
+            recentActivities.push({
+                type: 'quiz',
+                course: course.title,
+                timestamp: new Date(course.lastAccessed),
+                icon: 'fas fa-check-circle',
+                description: `Completed quiz in ${course.title}`
+            });
+        }
+    });
+    
+    // Sort by timestamp (newest first) and take top 3
+    const sortedActivities = recentActivities
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 3);
+    
+    if (sortedActivities.length > 0) {
+        activityList.innerHTML = sortedActivities.map(activity => `
+            <li class="activity-item">
+                <div class="activity-icon"><i class="${activity.icon}"></i></div>
+                <div>
+                    <div><strong>${getActivityDescription(activity)}</strong></div>
+                    <small>${getTimeAgo(activity.timestamp)}</small>
+                </div>
+            </li>
+        `).join('');
+    } else {
+        activityList.innerHTML = `
+            <li class="activity-item">
+                <div class="activity-icon"><i class="fas fa-info-circle"></i></div>
+                <div>
+                    <div><strong>No recent activity</strong></div>
+                    <small>Start learning to see your activity here</small>
+                </div>
+            </li>
+        `;
+    }
+}
+
+function getActivityDescription(activity) {
+    switch(activity.type) {
+        case 'accessed':
+            return `Studied ${activity.course}`;
+        case 'quiz':
+            return `Completed quiz in ${activity.course}`;
+        default:
+            return `Activity in ${activity.course}`;
+    }
+}
+
+function getTimeAgo(timestamp) {
+    const now = new Date();
+    const diffMs = now - timestamp;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffMins < 60) return `${diffMins} minutes ago`;
+    if (diffHours < 24) return `${diffHours} hours ago`;
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    return timestamp.toLocaleDateString();
+}
+    
   // Add these Firestore functions:
   async function getEnrolledCourses(user) {
     try {
@@ -3534,11 +3688,12 @@ body {
         // Update profile display immediately
         updateUserProfileDisplay(user);
         
-        // Initialize dashboard with Firestore data
+        // Initialize dashboard with real data
         setTimeout(async () => {
             showPage('dashboard');
-            await updateMyCoursesDisplay(); // Now async!
-            await updateAllCoursesDisplay(); // Now async!
+            await updateDashboardStats(); // Add this
+            await updateMyCoursesDisplay();
+            await updateAllCoursesDisplay();
             setupCourseSearch();
             
             // Animate progress bars
@@ -3554,10 +3709,10 @@ body {
         }, 100);
     } else {
         console.log("No user signed in.");
-        showPage('dashboard');
+        window.location.href = "premium.html";
     }
-  });
-
+});
+    
   // Make functions globally available
   window.getEnrolledCourses = getEnrolledCourses;
   window.getAllCoursesFromFirestore = getAllCoursesFromFirestore;
@@ -3566,6 +3721,7 @@ body {
   window.updateUserProfileDisplay = updateUserProfileDisplay;
   window.updateProgressDisplay = updateProgressDisplay;
   window.updateCourseProgress = updateCourseProgress;
+  window.updateDashboardStats = updateDashboardStats;
 
 // Add this function to your Firebase module
 async function updateProgressDisplay() {
@@ -4088,16 +4244,18 @@ const courseData = {
                 element.classList.add('active');
             }
             
-            // Refresh My Courses display when navigating to that page
-             if (pageId === 'my-courses') {
+            // Refresh displays when navigating to those pages
+    if (pageId === 'my-courses') {
         updateMyCoursesDisplay();
     } else if (pageId === 'all-courses') {
         updateAllCoursesDisplay();
     } else if (pageId === 'progress') {
-        updateProgressDisplay(); // Add this line
+        updateProgressDisplay();
+    } else if (pageId === 'dashboard') {
+        updateDashboardStats(); // Add this line
     }
 }
-
+        
         // Course detail navigation
         let currentCourseId = null;
 
@@ -5085,6 +5243,10 @@ function clearQuizData() {
 
 // Textbook functionality
 let currentTextbookUnit = 'unit1';
+let currentFlashcardData = null;
+let currentTopicIndex = 0;
+let currentCardIndex = 0;
+let currentDeck = [];
         
 function loadTextbookContent() {
     const resourceContent = document.getElementById('resource-content');
@@ -25137,12 +25299,6 @@ function getCourseDisplayName(courseId) {
     };
     return displayNames[courseId] || courseId;
 }
-
-
-let currentFlashcardData = null;
-let currentTopicIndex = 0;
-let currentCardIndex = 0;
-let currentDeck = [];
 
 function renderMarkdown(text) {
     if (!text) return ''; // This will handle undefined, null, empty string
