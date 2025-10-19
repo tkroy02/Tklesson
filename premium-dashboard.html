@@ -3248,7 +3248,7 @@ body {
 <!-- Firebase SDK and Main App Logic -->
 <script type="module">
   // Import Firebase SDKs
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
   import { 
     getAuth, 
     onAuthStateChanged, 
@@ -3299,66 +3299,123 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
     }
   };
 
-// Track login state - ONLY ONE onAuthStateChanged!
-// In your onAuthStateChanged, replace the initialization part:
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        console.log("User signed in:", user.email);
-        
-        // Update profile display immediately
-        updateUserProfileDisplay(user);
-        
-        // Initialize dashboard with Firestore data
-        setTimeout(async () => {
-            showPage('dashboard');
-            await updateMyCoursesDisplay(); // Now async!
-            await updateAllCoursesDisplay(); // Now async!
-            updateAllCoursesDisplay();
-            setupCourseSearch();
-            
-            // Animate progress bars
-            setTimeout(() => {
-                document.querySelectorAll('.progress-fill').forEach(bar => {
-                    const width = bar.style.width;
-                    bar.style.width = '0';
-                    setTimeout(() => {
-                        bar.style.width = width;
-                    }, 100);
-                });
-            }, 500);
-        }, 100);
-    } else {
-        console.log("No user signed in.");
-        showPage('dashboard');
-    }
-});
-
-// Run this once to migrate your courses to Firestore
-async function migrateCoursesToFirestore() {
-    if (confirm('This will initialize all courses in Firestore. Continue?')) {
-        await initializeCoursesInFirestore();
-        alert('Courses migrated to Firestore!');
-    }
-}
-
-// You can call this from browser console: migrateCoursesToFirestore()
-
-async function updateCourseProgress(courseId, progress) {
-    const user = auth.currentUser;
+  // Add this function to update user profile display
+  function updateUserProfileDisplay(user) {
     if (!user) return;
     
+    // Get user data
+    const displayName = user.displayName || user.email.split('@')[0];
+    const avatar = user.displayName ? 
+        user.displayName.split(' ').map(n => n[0]).join('').toUpperCase() : 
+        user.email[0].toUpperCase();
+    const firstName = displayName.split(' ')[0];
+    
+    console.log("Updating profile for:", displayName, "Avatar:", avatar);
+    
+    // Update avatar element
+    const avatarElement = document.getElementById('user-avatar');
+    if (avatarElement) {
+        avatarElement.textContent = avatar;
+    }
+    
+    // Update name element
+    const nameElement = document.getElementById('user-name');
+    if (nameElement) {
+        nameElement.textContent = displayName;
+    }
+    
+    // Update welcome message
+    const welcomeMessage = document.getElementById('welcome-message');
+    if (welcomeMessage) {
+        welcomeMessage.textContent = `Welcome back, ${firstName}! 👋`;
+    }
+    
+    // Also update other instances of user info throughout the app
+    document.querySelectorAll('.user-avatar:not(#user-avatar)').forEach(el => {
+        el.textContent = avatar;
+    });
+    
+    document.querySelectorAll('.user-info span:not(#user-name)').forEach(el => {
+        el.textContent = displayName;
+    });
+  }
+
+  // Add these Firestore functions:
+  async function getEnrolledCourses(user) {
+    try {
+        const enrolledRef = collection(db, 'users', user.uid, 'enrolledCourses');
+        const snapshot = await getDocs(enrolledRef);
+        const courses = [];
+        
+        snapshot.forEach(doc => {
+            courses.push({
+                id: doc.id,
+                ...doc.data()
+            });
+        });
+        
+        console.log("Loaded enrolled courses:", courses);
+        return courses;
+    } catch (error) {
+        console.error("Error loading enrolled courses:", error);
+        return [];
+    }
+  }
+
+  async function enrollCourseInFirestore(user, courseId, courseTitle, courseDescription) {
     try {
         const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
-        await updateDoc(courseRef, {
-            progress: progress,
+        await setDoc(courseRef, {
+            title: courseTitle,
+            description: courseDescription,
+            enrolledAt: new Date().toISOString(),
+            progress: 0,
             lastAccessed: new Date().toISOString()
         });
+        console.log("Course enrolled in Firestore:", courseId);
+        return true;
     } catch (error) {
-        console.error("Error updating progress:", error);
+        console.error("Error enrolling course:", error);
+        return false;
     }
-}
+  }
 
-// Function to initialize courses in Firestore (run once)async function initializeCoursesInFirestore() {
+  async function unenrollCourseFromFirestore(user, courseId) {
+    try {
+        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        await deleteDoc(courseRef);
+        console.log("Course unenrolled from Firestore:", courseId);
+        return true;
+    } catch (error) {
+        console.error("Error unenrolling course:", error);
+        return false;
+    }
+  }
+
+  // Function to get all courses from Firestore
+  async function getAllCoursesFromFirestore() {
+    try {
+        const coursesRef = collection(db, 'courses');
+        const snapshot = await getDocs(coursesRef);
+        const courses = [];
+        
+        snapshot.forEach(doc => {
+            courses.push({
+                id: doc.id,
+                ...doc.data()
+            });
+        });
+        
+        console.log("Loaded courses from Firestore:", courses.length);
+        return courses;
+    } catch (error) {
+        console.error("Error loading courses from Firestore:", error);
+        return [];
+    }
+  }
+
+  // Function to initialize courses in Firestore (run once)
+  async function initializeCoursesInFirestore() {
     try {
         const coursesRef = collection(db, 'courses');
         
@@ -3398,8 +3455,6 @@ async function updateCourseProgress(courseId, progress) {
             { id: 'ap-microeconomics', title: 'AP Microeconomics', description: 'Focus on individual markets, consumer behavior, and firm decision-making.', category: 'economics', level: 'ap' }
         ];
 
-        // ... rest of your Firestore initialization logic
-
         for (const course of courses) {
             const courseRef = doc(coursesRef, course.id);
             await setDoc(courseRef, {
@@ -3415,73 +3470,34 @@ async function updateCourseProgress(courseId, progress) {
     } catch (error) {
         console.error("Error initializing courses:", error);
     }
+  }
 
-// Function to get all courses from Firestore
-async function getAllCoursesFromFirestore() {
-    try {
-        const coursesRef = collection(db, 'courses');
-        const snapshot = await getDocs(coursesRef);
-        const courses = [];
-        
-        snapshot.forEach(doc => {
-            courses.push({
-                id: doc.id,
-                ...doc.data()
-            });
-        });
-        
-        console.log("Loaded courses from Firestore:", courses.length);
-        return courses;
-    } catch (error) {
-        console.error("Error loading courses from Firestore:", error);
-        return [];
-    }
-}
-
-// Add this function to update user profile display
-function updateUserProfileDisplay(user) {
+  async function updateCourseProgress(courseId, progress) {
+    const user = auth.currentUser;
     if (!user) return;
     
-    // Get user data
-    const displayName = user.displayName || user.email.split('@')[0];
-    const avatar = user.displayName ? 
-        user.displayName.split(' ').map(n => n[0]).join('').toUpperCase() : 
-        user.email[0].toUpperCase();
-    const firstName = displayName.split(' ')[0];
-    
-    console.log("Updating profile for:", displayName, "Avatar:", avatar);
-    
-    // Update avatar element
-    const avatarElement = document.getElementById('user-avatar');
-    if (avatarElement) {
-        avatarElement.textContent = avatar;
+    try {
+        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        await updateDoc(courseRef, {
+            progress: progress,
+            lastAccessed: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Error updating progress:", error);
     }
-    
-    // Update name element
-    const nameElement = document.getElementById('user-name');
-    if (nameElement) {
-        nameElement.textContent = displayName;
-    }
-    
-    // Update welcome message
-    const welcomeMessage = document.getElementById('welcome-message');
-    if (welcomeMessage) {
-        welcomeMessage.textContent = `Welcome back, ${firstName}! 👋`;
-    }
-    
-    // Also update other instances of user info throughout the app
-    document.querySelectorAll('.user-avatar:not(#user-avatar)').forEach(el => {
-        el.textContent = avatar;
-    });
-    
-    document.querySelectorAll('.user-info span:not(#user-name)').forEach(el => {
-        el.textContent = displayName;
-    });
-}
+  }
 
-// Also update when the dashboard page is shown
-const originalShowPage = window.showPage;
-window.showPage = function(pageId, element = null) {
+  // Run this once to migrate your courses to Firestore
+  async function migrateCoursesToFirestore() {
+    if (confirm('This will initialize all courses in Firestore. Continue?')) {
+        await initializeCoursesInFirestore();
+        alert('Courses migrated to Firestore!');
+    }
+  }
+
+  // Also update when the dashboard page is shown
+  const originalShowPage = window.showPage;
+  window.showPage = function(pageId, element = null) {
     // Call original function
     originalShowPage.call(this, pageId, element);
     
@@ -3492,62 +3508,49 @@ window.showPage = function(pageId, element = null) {
             setTimeout(() => updateUserProfileDisplay(user), 50);
         }
     }
-};
-  
-// Add these Firestore functions:
-async function getEnrolledCourses(user) {
-    try {
-        const enrolledRef = collection(db, 'users', user.uid, 'enrolledCourses');
-        const snapshot = await getDocs(enrolledRef);
-        const courses = [];
-        
-        snapshot.forEach(doc => {
-            courses.push({
-                id: doc.id,
-                ...doc.data()
-            });
-        });
-        
-        console.log("Loaded enrolled courses:", courses);
-        return courses;
-    } catch (error) {
-        console.error("Error loading enrolled courses:", error);
-        return [];
-    }
-}
+  };
 
-async function enrollCourseInFirestore(user, courseId, courseTitle, courseDescription) {
-    try {
-        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
-        await setDoc(courseRef, {
-            title: courseTitle,
-            description: courseDescription,
-            enrolledAt: new Date().toISOString(),
-            progress: 0,
-            lastAccessed: new Date().toISOString()
-        });
-        console.log("Course enrolled in Firestore:", courseId);
-        return true;
-    } catch (error) {
-        console.error("Error enrolling course:", error);
-        return false;
+  // Track login state
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        console.log("User signed in:", user.email);
+        
+        // Update profile display immediately
+        updateUserProfileDisplay(user);
+        
+        // Initialize dashboard with Firestore data
+        setTimeout(async () => {
+            showPage('dashboard');
+            await updateMyCoursesDisplay(); // Now async!
+            await updateAllCoursesDisplay(); // Now async!
+            setupCourseSearch();
+            
+            // Animate progress bars
+            setTimeout(() => {
+                document.querySelectorAll('.progress-fill').forEach(bar => {
+                    const width = bar.style.width;
+                    bar.style.width = '0';
+                    setTimeout(() => {
+                        bar.style.width = width;
+                    }, 100);
+                });
+            }, 500);
+        }, 100);
+    } else {
+        console.log("No user signed in.");
+        showPage('dashboard');
     }
-}
+  });
 
-async function unenrollCourseFromFirestore(user, courseId) {
-    try {
-        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
-        await deleteDoc(courseRef);
-        console.log("Course unenrolled from Firestore:", courseId);
-        return true;
-    } catch (error) {
-        console.error("Error unenrolling course:", error);
-        return false;
-    }
-}
+  // Make functions globally available
+  window.getEnrolledCourses = getEnrolledCourses;
+  window.getAllCoursesFromFirestore = getAllCoursesFromFirestore;
+  window.enrollCourseInFirestore = enrollCourseInFirestore;
+  window.unenrollCourseFromFirestore = unenrollCourseFromFirestore;
+  window.updateUserProfileDisplay = updateUserProfileDisplay;
 
 </script>
-
+    
     <script>
         
         // Complete CourseData object
