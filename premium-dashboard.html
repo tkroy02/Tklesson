@@ -3283,6 +3283,7 @@ body {
   };
 
 // Track login state - ONLY ONE onAuthStateChanged!
+// In your onAuthStateChanged, replace the initialization part:
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         console.log("User signed in:", user.email);
@@ -3290,10 +3291,10 @@ onAuthStateChanged(auth, async (user) => {
         // Update profile display immediately
         updateUserProfileDisplay(user);
         
-        // Initialize dashboard after user data is loaded
-        setTimeout(() => {
+        // Initialize dashboard with Firestore data
+        setTimeout(async () => {
             showPage('dashboard');
-            updateMyCoursesDisplay();
+            await updateMyCoursesDisplay(); // Now async!
             updateAllCoursesDisplay();
             setupCourseSearch();
             
@@ -3310,10 +3311,24 @@ onAuthStateChanged(auth, async (user) => {
         }, 100);
     } else {
         console.log("No user signed in.");
-        // Show default view if no user
         showPage('dashboard');
     }
 });
+
+async function updateCourseProgress(courseId, progress) {
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    try {
+        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        await updateDoc(courseRef, {
+            progress: progress,
+            lastAccessed: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Error updating progress:", error);
+    }
+}
 
 // Add this function to update user profile display
 function updateUserProfileDisplay(user) {
@@ -3371,6 +3386,58 @@ window.showPage = function(pageId, element = null) {
     }
 };
   
+// Add these Firestore functions:
+async function getEnrolledCourses(user) {
+    try {
+        const enrolledRef = collection(db, 'users', user.uid, 'enrolledCourses');
+        const snapshot = await getDocs(enrolledRef);
+        const courses = [];
+        
+        snapshot.forEach(doc => {
+            courses.push({
+                id: doc.id,
+                ...doc.data()
+            });
+        });
+        
+        console.log("Loaded enrolled courses:", courses);
+        return courses;
+    } catch (error) {
+        console.error("Error loading enrolled courses:", error);
+        return [];
+    }
+}
+
+async function enrollCourseInFirestore(user, courseId, courseTitle, courseDescription) {
+    try {
+        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        await setDoc(courseRef, {
+            title: courseTitle,
+            description: courseDescription,
+            enrolledAt: new Date().toISOString(),
+            progress: 0,
+            lastAccessed: new Date().toISOString()
+        });
+        console.log("Course enrolled in Firestore:", courseId);
+        return true;
+    } catch (error) {
+        console.error("Error enrolling course:", error);
+        return false;
+    }
+}
+
+async function unenrollCourseFromFirestore(user, courseId) {
+    try {
+        const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        await deleteDoc(courseRef);
+        console.log("Course unenrolled from Firestore:", courseId);
+        return true;
+    } catch (error) {
+        console.error("Error unenrolling course:", error);
+        return false;
+    }
+}
+
 </script>
 
     <script>
@@ -3969,66 +4036,137 @@ const courseData = {
         }
 
         // Enrollment System
-        function enrollCourse(courseId, courseTitle, courseDescription) {
-            if (!enrolledCourses.find(course => course.id === courseId)) {
-                enrolledCourses.push({
-                    id: courseId,
-                    title: courseTitle,
-                    description: courseDescription
-                });
-                localStorage.setItem('enrolledCourses', JSON.stringify(enrolledCourses));
-                updateMyCoursesDisplay();
-                showEnrollmentSuccess(courseTitle);
-            }
-        }
+        async function enrollCourse(courseId, courseTitle, courseDescription) {
+    const user = auth.currentUser;
+    if (!user) {
+        alert('Please log in to enroll in courses');
+        return;
+    }
+    
+    // Check if already enrolled
+    const currentEnrolled = await getEnrolledCourses(user);
+    if (currentEnrolled.find(course => course.id === courseId)) {
+        alert('You are already enrolled in this course!');
+        return;
+    }
+    
+    const success = await enrollCourseInFirestore(user, courseId, courseTitle, courseDescription);
+    if (success) {
+        updateMyCoursesDisplay();
+        showEnrollmentSuccess(courseTitle);
+    } else {
+        alert('Failed to enroll in course. Please try again.');
+    }
+}
 
-        function unenrollCourse(courseId) {
-            enrolledCourses = enrolledCourses.filter(course => course.id !== courseId);
-            localStorage.setItem('enrolledCourses', JSON.stringify(enrolledCourses));
+async function unenrollCourse(courseId) {
+    const user = auth.currentUser;
+    if (!user) {
+        alert('Please log in to manage courses');
+        return;
+    }
+    
+    if (confirm('Are you sure you want to unenroll from this course?')) {
+        const success = await unenrollCourseFromFirestore(user, courseId);
+        if (success) {
             updateMyCoursesDisplay();
+        } else {
+            alert('Failed to unenroll from course. Please try again.');
         }
+    }
+}
 
-        function updateMyCoursesDisplay() {
-            const myCoursesGrid = document.getElementById('my-courses-grid');
-            if (!myCoursesGrid) return;
-            
-            myCoursesGrid.innerHTML = enrolledCourses.map(course => `
-                <div class="course-card">
-                    <h3>${course.title}</h3>
-                    <p>${course.description}</p>
-                    <div style="display: flex; gap: 10px; margin-top: 20px;">
-                        <button class="btn" onclick="showCourseDetail('${course.id}', '${course.title}', '${course.description}')">Open Course</button>
-                        <button class="btn btn-outline" onclick="unenrollCourse('${course.id}')" style="padding: 16px 20px;">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
+        async function updateMyCoursesDisplay() {
+    const myCoursesGrid = document.getElementById('my-courses-grid');
+    if (!myCoursesGrid) return;
+    
+    const user = auth.currentUser;
+    if (!user) {
+        myCoursesGrid.innerHTML = '<p>Please log in to view your courses</p>';
+        return;
+    }
+    
+    // Show loading state
+    myCoursesGrid.innerHTML = `
+        <div style="text-align: center; padding: 40px;">
+            <div class="tool-icon" style="margin: 0 auto 20px;">
+                <i class="fas fa-spinner fa-spin"></i>
+            </div>
+            <p>Loading your courses...</p>
+        </div>
+    `;
+    
+    try {
+        const enrolledCourses = await getEnrolledCourses(user);
+        
+        if (enrolledCourses.length === 0) {
+            myCoursesGrid.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: var(--gray);">
+                    <i class="fas fa-book" style="font-size: 3rem; margin-bottom: 20px;"></i>
+                    <h3>No Courses Enrolled</h3>
+                    <p>Browse available courses and enroll to get started!</p>
+                    <button class="btn" onclick="showPage('all-courses')">
+                        <i class="fas fa-search"></i> Browse Courses
+                    </button>
                 </div>
-            `).join('');
+            `;
+            return;
         }
+        
+        myCoursesGrid.innerHTML = enrolledCourses.map(course => `
+            <div class="course-card">
+                <h3>${course.title}</h3>
+                <p>${course.description}</p>
+                <div style="margin-top: 15px; font-size: 0.9rem; color: var(--gray);">
+                    <i class="fas fa-calendar"></i> Enrolled: ${new Date(course.enrolledAt).toLocaleDateString()}
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn" onclick="showCourseDetail('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">
+                        Open Course
+                    </button>
+                    <button class="btn btn-outline" onclick="unenrollCourse('${course.id}')" style="padding: 16px 20px;">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+        
+    } catch (error) {
+        console.error("Error displaying courses:", error);
+        myCoursesGrid.innerHTML = '<p>Error loading courses. Please try again.</p>';
+    }
+}
 
-        function updateAllCoursesDisplay() {
-            const allCoursesGrid = document.getElementById('all-courses-grid');
-            if (!allCoursesGrid) return;
-            
-            allCoursesGrid.innerHTML = allCourses.map(course => {
-                const isEnrolled = enrolledCourses.some(ec => ec.id === course.id);
-                return `
-                    <div class="course-card">
-                        <h3>${course.title}</h3>
-                        <p>${course.description}</p>
-                        <div style="margin-top: 20px;">
-                            ${isEnrolled ? 
-                                `<button class="btn" onclick="showCourseDetail('${course.id}', '${course.title}', '${course.description}')">Open Course</button>` :
-                                `<button class="btn" onclick="enrollCourse('${course.id}', '${course.title}', '${course.description}')">Enroll Now</button>`
-                            }
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-            // Update course count
-            document.getElementById('courseCount').textContent = allCourses.length;
-        }
+ async function updateAllCoursesDisplay() {
+    const allCoursesGrid = document.getElementById('all-courses-grid');
+    if (!allCoursesGrid) return;
+    
+    const user = auth.currentUser;
+    let enrolledCourses = [];
+    
+    if (user) {
+        enrolledCourses = await getEnrolledCourses(user);
+    }
+    
+    allCoursesGrid.innerHTML = allCourses.map(course => {
+        const isEnrolled = enrolledCourses.some(ec => ec.id === course.id);
+        return `
+            <div class="course-card">
+                <h3>${course.title}</h3>
+                <p>${course.description}</p>
+                <div style="margin-top: 20px;">
+                    ${isEnrolled ? 
+                        `<button class="btn" onclick="showCourseDetail('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">Open Course</button>` :
+                        `<button class="btn" onclick="enrollCourse('${course.id}', '${course.title.replace(/'/g, "\\'")}', '${course.description.replace(/'/g, "\\'")}')">Enroll Now</button>`
+                    }
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    // Update course count
+    document.getElementById('courseCount').textContent = allCourses.length;
+}
 
         function showEnrollmentSuccess(courseTitle) {
             const successMsg = document.createElement('div');
