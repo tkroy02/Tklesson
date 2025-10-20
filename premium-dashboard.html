@@ -3635,80 +3635,36 @@ function getTimeAgo(timestamp) {
     }
   }
 
-  async function updateCourseProgress(courseId, progressIncrease, activityType = 'study', quizScore = null, studyMinutes = 0) {
+  async function updateCourseProgress(courseId, progress, activityType = 'study') {
     const user = auth.currentUser;
     if (!user) return;
     
     try {
         const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
-        const courseDoc = await getDoc(courseRef);
-        const currentData = courseDoc.exists() ? courseDoc.data() : {};
-        
         const updateData = {
+            progress: progress,
             lastAccessed: new Date().toISOString()
         };
         
-        // Progress calculation (capped at 100%)
-        const currentProgress = currentData.progress || 0;
-        updateData.progress = Math.min(100, currentProgress + progressIncrease);
-        
+        // Track specific activities
         if (activityType === 'quiz') {
-            // Quiz tracking
-            const currentQuizzes = currentData.completedQuizzes || 0;
-            const currentScores = currentData.quizScores || [];
-            const currentTotalScore = currentData.totalQuizScore || 0;
-            
-            updateData.completedQuizzes = currentQuizzes + 1;
-            updateData.quizScores = [...currentScores, quizScore];
-            updateData.totalQuizScore = currentTotalScore + quizScore;
-            updateData.averageQuizScore = Math.round((currentTotalScore + quizScore) / (currentQuizzes + 1));
-            updateData.lastQuizScore = quizScore;
-            
+            updateData.completedQuizzes = increment(1);
         } else if (activityType === 'study') {
-            // Study time tracking
-            const currentStudyHours = currentData.totalStudyHours || 0;
-            updateData.totalStudyHours = currentStudyHours + (studyMinutes / 60);
+            updateData.studyHours = increment(0.5); // Estimate 30 min per session
         }
         
         await updateDoc(courseRef, updateData);
-        console.log(`✅ ${courseId}: +${progressIncrease}% progress, Total: ${updateData.progress}%`);
+        console.log(`Progress updated for ${courseId}: ${progress}%`);
         
+        // Refresh progress display if on progress page
+        if (document.getElementById('progress').classList.contains('active')) {
+            updateProgressDisplay();
+        }
     } catch (error) {
         console.error("Error updating progress:", error);
     }
 }
 
-    let studySessionStartTime = null;
-function startStudySession() {
-    studySessionStartTime = new Date();
-    console.log("📚 Study session started");
-}
-
-function endStudySession(courseId) {
-    if (!studySessionStartTime) return;
-    
-    const endTime = new Date();
-    const minutesStudied = Math.round((endTime - studySessionStartTime) / (1000 * 60));
-    
-    if (minutesStudied >= 10) { // Only track sessions > 10 minutes
-        const progressIncrease = minutesStudied * 0.0167; // 1% per hour
-        updateCourseProgress(courseId, progressIncrease, 'study', null, minutesStudied);
-        console.log(`📚 Studied ${minutesStudied} minutes: +${progressIncrease.toFixed(2)}% progress`);
-    }
-    
-    studySessionStartTime = null;
-}
-
-// Call these when textbook opens/closes
-function openTextbook() {
-    startStudySession();
-}
-
-function closeTextbook(courseId) {
-    endStudySession(courseId);
-}
-    
-    
   // Run this once to migrate your courses to Firestore
   async function migrateCoursesToFirestore() {
     if (confirm('This will initialize all courses in Firestore. Continue?')) {
@@ -3812,102 +3768,62 @@ function updateProgressPage(courses, stats) {
     
     progressGrid.innerHTML = `
         <div class="course-card">
-            <h3 class="section-title">Course Progress & Performance</h3>
+            <h3 class="section-title">Course Progress</h3>
             ${courses.map(course => `
-                <div style="margin-bottom: 25px; padding: 15px; background: var(--light-bg); border-radius: var(--border-radius-sm);">
+                <div style="margin-bottom: 25px;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span><strong>${course.title}</strong></span>
+                        <span>${course.title}</span>
                         <span style="font-weight: 600; color: var(--primary);">
-                            ${course.progress || 0}% Complete
+                            ${course.progress || 0}% • ${getGradeFromProgress(course.progress || 0)}
                         </span>
                     </div>
-                    
-                    <!-- Progress Bar -->
                     <div class="progress-bar">
                         <div class="progress-fill" style="width: ${course.progress || 0}%"></div>
                     </div>
-                    
-                    <!-- Performance Metrics -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; font-size: 0.8rem;">
-                        <div>
-                            <span style="color: var(--gray);">Avg Quiz Score:</span><br>
-                            <strong style="color: ${(course.averageQuizScore || 0) >= 70 ? 'var(--success)' : 'var(--accent)'}">
-                                ${course.averageQuizScore || 'N/A'}%
-                            </strong>
-                        </div>
-                        <div>
-                            <span style="color: var(--gray);">Quizzes Completed:</span><br>
-                            <strong>${course.completedQuizzes || 0}/120</strong>
-                        </div>
-                        <div>
-                            <span style="color: var(--gray);">Study Hours:</span><br>
-                            <strong>${(course.totalStudyHours || 0).toFixed(1)}h</strong>
-                        </div>
-                        <div>
-                            <span style="color: var(--gray);">Last Quiz:</span><br>
-                            <strong>${course.lastQuizScore || 'N/A'}%</strong>
-                        </div>
+                    <div style="font-size: 0.8rem; color: var(--gray); margin-top: 5px;">
+                        Last accessed: ${course.lastAccessed ? new Date(course.lastAccessed).toLocaleDateString() : 'Never'}
                     </div>
                 </div>
             `).join('')}
+            
+            ${courses.length === 0 ? `
+                <div style="text-align: center; padding: 40px; color: var(--gray);">
+                    <i class="fas fa-chart-line" style="font-size: 3rem; margin-bottom: 20px;"></i>
+                    <h4>No Progress Data</h4>
+                    <p>Start learning to track your progress!</p>
+                </div>
+            ` : ''}
         </div>
         
         <div class="course-card">
-            <h3 class="section-title">Overall Learning Analytics</h3>
-            <div style="text-align: center; padding: 20px;">
-                <!-- Your existing stats display enhanced with new metrics -->
+            <h3 class="section-title">Overall Performance</h3>
+            <div style="text-align: center; padding: 30px 20px;">
+                <div style="font-size: 4rem; font-weight: 800; color: var(--primary); margin-bottom: 10px;">
+                    ${stats.averageGrade}%
+                </div>
+                <div style="color: var(--gray); font-size: 1.1rem; margin-bottom: 30px;">Average Grade</div>
+                
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left;">
                     <div>
-                        <div style="font-size: 0.9rem; color: var(--gray);">Average Performance</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
-                            ${calculateOverallAverage(courses)}%
-                        </div>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.9rem; color: var(--gray);">Total Study Time</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
-                            ${stats.totalStudyHours}h
-                        </div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Enrolled Courses</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.totalCourses}</div>
                     </div>
                     <div>
                         <div style="font-size: 0.9rem; color: var(--gray);">Quizzes Completed</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
-                            ${stats.quizzesCompleted}
-                        </div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.completedQuizzes}</div>
                     </div>
                     <div>
-                        <div style="font-size: 0.9rem; color: var(--gray);">Course Progress</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
-                            ${stats.averageProgress}%
-                        </div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Study Hours</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.studyHours}h</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Current Streak</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${calculateCurrentStreak(courses)} days</div>
                     </div>
                 </div>
             </div>
         </div>
     `;
-}
-
-function calculateProgressStats(courses) {
-    const totalCourses = courses.length;
-    const totalProgress = courses.reduce((sum, course) => sum + (course.progress || 0), 0);
-    const quizzesCompleted = courses.reduce((sum, course) => sum + (course.completedQuizzes || 0), 0);
-    const totalStudyHours = courses.reduce((sum, course) => sum + (course.totalStudyHours || 0), 0);
-    
-    // Calculate weighted average of quiz scores
-    const coursesWithQuizzes = courses.filter(course => course.completedQuizzes > 0);
-    const overallAverage = coursesWithQuizzes.length > 0 
-        ? Math.round(coursesWithQuizzes.reduce((sum, course) => sum + (course.averageQuizScore || 0), 0) / coursesWithQuizzes.length)
-        : 0;
-
-    return {
-        totalCourses,
-        averageProgress: totalCourses > 0 ? Math.round(totalProgress / totalCourses) : 0,
-        quizzesCompleted,
-        totalStudyHours: Math.round(totalStudyHours * 10) / 10,
-        overallAverage,
-        studyDays: calculateStudyDays(courses)
-    };
-}
     
     // Animate progress bars
     setTimeout(() => {
