@@ -3641,28 +3641,51 @@ function getTimeAgo(timestamp) {
     
     try {
         const courseRef = doc(db, 'users', user.uid, 'enrolledCourses', courseId);
+        
+        // Get current progress data
+        const courseDoc = await getDoc(courseRef);
+        const currentData = courseDoc.exists() ? courseDoc.data() : {};
+        
         const updateData = {
             progress: progress,
             lastAccessed: new Date().toISOString()
         };
         
-        // Track specific activities
+        // Track specific activities with our new logic
         if (activityType === 'quiz') {
-            updateData.completedQuizzes = increment(1);
+            // Use our quiz-based progress calculation
+            const newCompletedQuizzes = (currentData.completedQuizzes || 0) + 1;
+            const quizBasedProgress = Math.min(newCompletedQuizzes * 0.5, 100);
+            
+            updateData.completedQuizzes = newCompletedQuizzes;
+            updateData.progress = quizBasedProgress;
+            
+            // Store individual quiz scores for average calculation
+            const currentScores = currentData.quizScores || [];
+            // Note: We'll need to pass the actual score from the quiz function
+            currentScores.push(progress); // Using progress as score for now
+            updateData.quizScores = currentScores;
+            updateData.averageScore = calculateAverage(currentScores);
+            
         } else if (activityType === 'study') {
-            updateData.studyHours = increment(0.5); // Estimate 30 min per session
+            updateData.studyHours = (currentData.studyHours || 0) + 0.5;
         }
         
         await updateDoc(courseRef, updateData);
-        console.log(`Progress updated for ${courseId}: ${progress}%`);
+        console.log(`Progress updated for ${courseId}: ${updateData.progress}%`);
         
-        // Refresh progress display if on progress page
-        if (document.getElementById('progress').classList.contains('active')) {
+        // Refresh progress display
+        if (document.getElementById('progress')?.classList.contains('active')) {
             updateProgressDisplay();
         }
     } catch (error) {
         console.error("Error updating progress:", error);
     }
+}
+
+function calculateAverage(scores) {
+    if (scores.length === 0) return 0;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
   // Run this once to migrate your courses to Firestore
@@ -3739,20 +3762,26 @@ async function updateProgressDisplay() {
     if (!user) return;
 
     try {
-        // Get enrolled courses with progress data
         const enrolledCourses = await getEnrolledCourses(user);
         
-        // Calculate overall statistics
+        // Calculate enhanced statistics
         const totalCourses = enrolledCourses.length;
         const totalProgress = enrolledCourses.reduce((sum, course) => sum + (course.progress || 0), 0);
-        const averageGrade = enrolledCourses.length > 0 ? Math.round(totalProgress / enrolledCourses.length) : 0;
+        const averageProgress = totalCourses > 0 ? Math.round(totalProgress / totalCourses) : 0;
+        
         const completedQuizzes = enrolledCourses.reduce((sum, course) => sum + (course.completedQuizzes || 0), 0);
+        
+        // Calculate overall average score
+        const coursesWithScores = enrolledCourses.filter(course => course.averageScore);
+        const totalAverageScore = coursesWithScores.reduce((sum, course) => sum + course.averageScore, 0);
+        const averageScore = coursesWithScores.length > 0 ? Math.round(totalAverageScore / coursesWithScores.length) : 0;
+        
         const studyHours = enrolledCourses.reduce((sum, course) => sum + (course.studyHours || 0), 0);
         
-        // Update the progress page
         updateProgressPage(enrolledCourses, {
             totalCourses,
-            averageGrade,
+            averageProgress,
+            averageScore,
             completedQuizzes,
             studyHours
         });
@@ -3769,22 +3798,29 @@ function updateProgressPage(courses, stats) {
     progressGrid.innerHTML = `
         <div class="course-card">
             <h3 class="section-title">Course Progress</h3>
-            ${courses.map(course => `
+            ${courses.map(course => {
+                const progress = course.progress || 0;
+                const averageScore = course.averageScore || 0;
+                const completedQuizzes = course.completedQuizzes || 0;
+                const totalQuizzes = 120; // Your fixed number
+                
+                return `
                 <div style="margin-bottom: 25px;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                         <span>${course.title}</span>
                         <span style="font-weight: 600; color: var(--primary);">
-                            ${course.progress || 0}% • ${getGradeFromProgress(course.progress || 0)}
+                            ${progress}% • ${averageScore}% • ${getGradeFromScore(averageScore)}
                         </span>
                     </div>
                     <div class="progress-bar">
-                        <div class="progress-fill" style="width: ${course.progress || 0}%"></div>
+                        <div class="progress-fill" style="width: ${progress}%"></div>
                     </div>
                     <div style="font-size: 0.8rem; color: var(--gray); margin-top: 5px;">
-                        Last accessed: ${course.lastAccessed ? new Date(course.lastAccessed).toLocaleDateString() : 'Never'}
+                        ${completedQuizzes}/${totalQuizzes} quizzes completed • Last: ${course.lastAccessed ? new Date(course.lastAccessed).toLocaleDateString() : 'Never'}
                     </div>
                 </div>
-            `).join('')}
+                `;
+            }).join('')}
             
             ${courses.length === 0 ? `
                 <div style="text-align: center; padding: 40px; color: var(--gray);">
@@ -3799,9 +3835,9 @@ function updateProgressPage(courses, stats) {
             <h3 class="section-title">Overall Performance</h3>
             <div style="text-align: center; padding: 30px 20px;">
                 <div style="font-size: 4rem; font-weight: 800; color: var(--primary); margin-bottom: 10px;">
-                    ${stats.averageGrade}%
+                    ${stats.averageScore || 0}%
                 </div>
-                <div style="color: var(--gray); font-size: 1.1rem; margin-bottom: 30px;">Average Grade</div>
+                <div style="color: var(--gray); font-size: 1.1rem; margin-bottom: 30px;">Average Score</div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left;">
                     <div>
@@ -3813,8 +3849,8 @@ function updateProgressPage(courses, stats) {
                         <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.completedQuizzes}</div>
                     </div>
                     <div>
-                        <div style="font-size: 0.9rem; color: var(--gray);">Study Hours</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.studyHours}h</div>
+                        <div style="font-size: 0.9rem; color: var(--gray);">Overall Progress</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.averageProgress || 0}%</div>
                     </div>
                     <div>
                         <div style="font-size: 0.9rem; color: var(--gray);">Current Streak</div>
@@ -3837,12 +3873,12 @@ function updateProgressPage(courses, stats) {
     }, 500);
 }
 
-// Helper functions
-function getGradeFromProgress(progress) {
-    if (progress >= 90) return 'A';
-    if (progress >= 80) return 'B';
-    if (progress >= 70) return 'C';
-    if (progress >= 60) return 'D';
+// Updated grade calculation based on average score
+function getGradeFromScore(score) {
+    if (score >= 90) return 'A';
+    if (score >= 80) return 'B';
+    if (score >= 70) return 'C';
+    if (score >= 60) return 'D';
     return 'F';
 }
 
