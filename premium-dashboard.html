@@ -25710,17 +25710,34 @@ function displayQuizWithData(quizData, unitId, quizNumber, difficulty) {
         // Shuffle the options
         const shuffledOptions = shuffleArray(optionsWithIndices);
         
-        // Find the new index of the correct answer
-        const correctAnswerLetter = question.answer; // "A", "B", "C", "D"
-        const originalCorrectIndex = correctAnswerLetter ? correctAnswerLetter.charCodeAt(0) - 65 : -1;
-        const newCorrectIndex = shuffledOptions.findIndex(opt => opt.originalIndex === originalCorrectIndex);
+        // VERSATILE: Handle both single answers and multiple response answers
+        let correctAnswerIndices = [];
+
+        if (question.type === 'multiple_response' && Array.isArray(question.answer)) {
+            // Multiple response: Convert array of letters to indices ["A", "D"] → [0, 3]
+            correctAnswerIndices = question.answer.map(letter => {
+                return typeof letter === 'string' ? letter.charCodeAt(0) - 65 : -1;
+            }).filter(index => index >= 0);
+        } else {
+            // Single answer: Convert single letter to array for consistency "C" → [2]
+            const answerLetter = question.answer;
+            if (answerLetter && typeof answerLetter === 'string') {
+                correctAnswerIndices = [answerLetter.charCodeAt(0) - 65];
+            }
+        }
+
+        // Find new indices in shuffled array for ALL correct answers
+        const newCorrectIndices = correctAnswerIndices.map(originalIndex => {
+            return shuffledOptions.findIndex(opt => opt.originalIndex === originalIndex);
+        }).filter(index => index >= 0);
         
         return {
             ...question,
             options: shuffledOptions.map(opt => opt.text),
-            originalOptions: question.options, // Keep original for reference
-            correctAnswerIndex: newCorrectIndex, // Store the new shuffled index
-            originalCorrectIndex: originalCorrectIndex // Keep original for debugging
+            originalOptions: question.options,
+            correctAnswerIndices: newCorrectIndices,
+            originalCorrectIndices: correctAnswerIndices,
+            isMultipleResponse: question.type === 'multiple_response'
         };
     });
     
@@ -25832,28 +25849,66 @@ function displayQuizQuestions(questions) {
 function selectQuizOption(questionIndex, optionIndex) {
     console.log(`📝 Selecting option ${optionIndex} for question ${questionIndex}`);
     
-    // Store the user's answer
-    quizState.userAnswers[questionIndex] = optionIndex;
+    const question = quizState.currentQuestions[questionIndex];
     
+    if (question.isMultipleResponse) {
+        // MULTIPLE RESPONSE: Toggle selection
+        if (!quizState.userAnswers[questionIndex]) {
+            quizState.userAnswers[questionIndex] = [];
+        }
+        
+        const currentAnswers = quizState.userAnswers[questionIndex];
+        const answerIndex = currentAnswers.indexOf(optionIndex);
+        
+        if (answerIndex === -1) {
+            // Add to selection
+            currentAnswers.push(optionIndex);
+        } else {
+            // Remove from selection
+            currentAnswers.splice(answerIndex, 1);
+        }
+    } else {
+        // SINGLE ANSWER: Replace selection
+        quizState.userAnswers[questionIndex] = optionIndex;
+    }
+    
+    // Update UI
     const questionElement = document.querySelectorAll('.question')[questionIndex];
     const options = questionElement.querySelectorAll('.option');
     const statusElement = document.getElementById(`status-${questionIndex}`);
     
-    // Remove selected class from all options in this question
-    options.forEach(opt => {
-        opt.classList.remove('selected');
-        opt.style.borderColor = 'var(--light-gray)';
-        opt.style.background = 'white';
-    });
-    
-    // Add selected class to clicked option
-    options[optionIndex].classList.add('selected');
-    options[optionIndex].style.borderColor = 'var(--primary)';
-    options[optionIndex].style.background = 'var(--light-bg)';
-    
-    // Show selection status
-    if (statusElement) {
-        statusElement.style.display = 'block';
+    if (question.isMultipleResponse) {
+        // Multiple response: toggle visual selection for this specific option
+        const optionElement = document.getElementById(`option-${questionIndex}-${optionIndex}`);
+        const isSelected = Array.isArray(quizState.userAnswers[questionIndex]) && 
+                          quizState.userAnswers[questionIndex].includes(optionIndex);
+        
+        optionElement.classList.toggle('selected', isSelected);
+        optionElement.style.borderColor = isSelected ? 'var(--primary)' : 'var(--light-gray)';
+        optionElement.style.background = isSelected ? 'var(--light-bg)' : 'white';
+        
+        // Update status
+        if (statusElement) {
+            const selectedCount = Array.isArray(quizState.userAnswers[questionIndex]) ? quizState.userAnswers[questionIndex].length : 0;
+            statusElement.textContent = selectedCount > 0 ? `Selected: ${selectedCount}` : '';
+            statusElement.style.display = selectedCount > 0 ? 'block' : 'none';
+        }
+    } else {
+        // Single answer: replace selection (clear all others)
+        options.forEach(opt => {
+            opt.classList.remove('selected');
+            opt.style.borderColor = 'var(--light-gray)';
+            opt.style.background = 'white';
+        });
+        
+        options[optionIndex].classList.add('selected');
+        options[optionIndex].style.borderColor = 'var(--primary)';
+        options[optionIndex].style.background = 'var(--light-bg)';
+        
+        // Show selection status
+        if (statusElement) {
+            statusElement.style.display = 'block';
+        }
     }
     
     console.log('📝 Current answers:', quizState.userAnswers);
@@ -25871,8 +25926,14 @@ function submitTopicQuiz() {
     }
     
     // Check if all questions are answered
-    const unansweredQuestions = quizState.userAnswers.map((answer, index) => answer === null ? index + 1 : null)
-        .filter(index => index !== null);
+    const unansweredQuestions = quizState.userAnswers.map((answer, index) => {
+        const question = quizState.currentQuestions[index];
+        if (question.isMultipleResponse) {
+            return (!Array.isArray(answer) || answer.length === 0) ? index + 1 : null;
+        } else {
+            return answer === null ? index + 1 : null;
+        }
+    }).filter(index => index !== null);
     
     if (unansweredQuestions.length > 0) {
         const confirmSubmit = confirm(`You haven't answered questions: ${unansweredQuestions.join(', ')}. Submit anyway?`);
@@ -25881,38 +25942,53 @@ function submitTopicQuiz() {
         }
     }
     
-    // Calculate score with letter-to-index conversion
-    let correctAnswers = 0; // ADD THIS - missing variable declaration!
+    // Calculate score with proper multiple response handling
+    let correctAnswers = 0;
     const results = [];
-    
+
     quizState.currentQuestions.forEach((question, index) => {
         const userAnswer = quizState.userAnswers[index];
-        const correctAnswerIndex = question.correctAnswerIndex;
-        const isCorrect = userAnswer === correctAnswerIndex;
+        
+        let isCorrect = false;
+        let wasAnswered = false;
+
+        if (question.isMultipleResponse) {
+            // MULTIPLE RESPONSE: Check if arrays match (order doesn't matter)
+            wasAnswered = Array.isArray(userAnswer) && userAnswer.length > 0;
+            if (wasAnswered) {
+                const userAnswersSorted = [...userAnswer].sort().join(',');
+                const correctAnswersSorted = question.correctAnswerIndices.sort().join(',');
+                isCorrect = userAnswersSorted === correctAnswersSorted;
+            }
+        } else {
+            // SINGLE ANSWER: Direct comparison
+            wasAnswered = userAnswer !== null;
+            isCorrect = wasAnswered && userAnswer === question.correctAnswerIndices[0];
+        }
         
         console.log(`🔍 Question ${index}:`, {
             userAnswer: userAnswer,
-            correctAnswerIndex: correctAnswerIndex,
+            correctAnswerIndices: question.correctAnswerIndices,
             isCorrect: isCorrect,
-            shuffledOptions: question.options,
-            originalCorrect: question.originalCorrectIndex
+            wasAnswered: wasAnswered,
+            isMultipleResponse: question.isMultipleResponse
         });
         
-        if (isCorrect && userAnswer !== null) {
+        if (isCorrect && wasAnswered) {
             correctAnswers++;
         }
         
         results.push({
             question: question.question,
             userAnswer: userAnswer,
-            correctAnswer: correctAnswerIndex,
-            correctAnswerLetter: String.fromCharCode(65 + correctAnswerIndex), // Use SHUFFLED position
-            originalCorrectIndex: question.originalCorrectIndex,
+            correctAnswerIndices: question.correctAnswerIndices,
+            correctAnswerLetters: question.correctAnswerIndices.map(idx => String.fromCharCode(65 + idx)),
+            isMultipleResponse: question.isMultipleResponse,
             isCorrect: isCorrect,
             explanation: question.explanation,
             options: question.options,
             originalOptions: question.originalOptions,
-            wasAnswered: userAnswer !== null
+            wasAnswered: wasAnswered
         });
     });
     
@@ -25927,16 +26003,14 @@ function submitTopicQuiz() {
         detailed: results 
     });
     
-    // ✅ ADD THIS LINE - Save progress to Firebase
+    // Save progress to Firebase
     updateCourseProgress(currentCourseId, score, 'quiz');
-
-    // ✅ ADD THIS: Update dashboard stats immediately
     updateDashboardStats();
     
     // Display results
     displayQuizResults(score, correctAnswers, results);
 }
-
+        
 // Optional: Refresh dashboard every 30 seconds when on dashboard page
 setInterval(() => {
     if (document.getElementById('dashboard')?.classList.contains('active')) {
