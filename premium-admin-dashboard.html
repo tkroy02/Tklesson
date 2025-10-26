@@ -1028,10 +1028,11 @@
 
             async loadDashboardData() {
     try {
-        console.time('DashboardLoad');
-        
-        // Use the optimized bulk loading instead of separate calls
-        await this.loadUsersAndEnrollments(); // This replaces both loadUsers() and loadEnrollments()
+        // Load users and enrollments FIRST, then courses
+        await Promise.all([
+            this.loadUsers(),
+            this.loadEnrollments()  // Move this before loadCourses()
+        ]);
         
         // THEN load courses (which depends on enrollments)
         await this.loadCourses();
@@ -1043,131 +1044,138 @@
         this.displayCourses();
         this.displayTopCourses();
         this.displayRecentActivity();
-        
-        console.timeEnd('DashboardLoad');
     } catch (error) {
         console.error('Error loading dashboard data:', error);
         alert('Failed to load dashboard data. Please refresh the page.');
     }
 }
 
-// Replace both loadUsers() and loadEnrollments() with this:
-async loadUsersAndEnrollments() {
+            async loadUsers() {
+                const { getDocs, collection } = window.firebaseModules;
+                const usersSnapshot = await getDocs(collection(window.db, "users"));
+                this.users = [];
+                
+                console.log(`Found ${usersSnapshot.docs.length} users in database`);
+                
+                for (const userDoc of usersSnapshot.docs) {
+                    const userData = userDoc.data();
+                    console.log(`Processing user: ${userData.email || userDoc.id}`);
+                    
+                    const enrolledCourses = await this.getUserEnrollments(userDoc.id);
+                    const userPerformance = await this.calculateUserPerformance(userDoc.id, enrolledCourses);
+                    
+                    this.users.push({
+                        id: userDoc.id,
+                        email: userData.email || 'No email',
+                        displayName: userData.displayName || 'Unknown User',
+                        enrolledCount: enrolledCourses.length,
+                        averageScore: userPerformance.averageScore,
+                        lastActive: userData.lastUpdated || userData.createdAt || new Date().toISOString(),
+                        createdAt: userData.createdAt || new Date().toISOString()
+                    });
+                }
+                
+                console.log(`Loaded ${this.users.length} users into dashboard`);
+            }
+
+            async loadCourses() {
+                const { getDocs, collection } = window.firebaseModules;
+                const coursesSnapshot = await getDocs(collection(window.db, "courses"));
+                this.courses = [];
+                for (const courseDoc of coursesSnapshot.docs) {
+                    const courseData = courseDoc.data();
+                    const courseStats = await this.getCourseStatistics(courseDoc.id);
+                    this.courses.push({
+                        id: courseDoc.id,
+                        ...courseData,
+                        ...courseStats
+                    });
+                }
+            }
+
+            async loadEnrollments() {
     const { getDocs, collection } = window.firebaseModules;
-    
-    // Get all users in one query
     const usersSnapshot = await getDocs(collection(window.db, "users"));
-    this.users = [];
     this.enrollments = [];
     
-    console.log(`Found ${usersSnapshot.docs.length} users, loading enrollments in parallel...`);
-    
-    // Load all users and their enrollments in parallel
-    const userPromises = usersSnapshot.docs.map(async (userDoc) => {
-        const userData = userDoc.data();
-        
-        // Get user's enrollments in one query per user
-        let userEnrollments = [];
+    // Load all enrollments in parallel
+    const enrollmentPromises = usersSnapshot.docs.map(async (userDoc) => {
         try {
-            const enrollmentsSnapshot = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
-            userEnrollments = enrollmentsSnapshot.docs.map(enrollmentDoc => ({
+            const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
+            return userEnrollments.docs.map(enrollmentDoc => ({
                 userId: userDoc.id,
                 courseId: enrollmentDoc.id,
                 ...enrollmentDoc.data()
             }));
-            
-            // Add to global enrollments array
-            this.enrollments.push(...userEnrollments);
         } catch (error) {
-            console.log(`No enrollments for user ${userDoc.id}`);
+            return [];
         }
-        
-        // Calculate user performance
-        const userPerformance = await this.calculateUserPerformance(userDoc.id, userEnrollments);
-        
-        return {
-            id: userDoc.id,
-            email: userData.email || 'No email',
-            displayName: userData.displayName || 'Unknown User',
-            enrolledCount: userEnrollments.length,
-            averageScore: userPerformance.averageScore,
-            lastActive: userData.lastUpdated || userData.createdAt || new Date().toISOString(),
-            createdAt: userData.createdAt || new Date().toISOString()
-        };
     });
     
-    this.users = await Promise.all(userPromises);
-    console.log(`Loaded ${this.users.length} users and ${this.enrollments.length} enrollments`);
+    const results = await Promise.all(enrollmentPromises);
+    this.enrollments = results.flat();
 }
-
-// THIS SHOULD BE OUTSIDE loadUsersAndEnrollments!
-async loadCourses() {
-    const { getDocs, collection } = window.firebaseModules;
-    const coursesSnapshot = await getDocs(collection(window.db, "courses"));
-    this.courses = [];
-    for (const courseDoc of coursesSnapshot.docs) {
-        const courseData = courseDoc.data();
-        const courseStats = await this.getCourseStatistics(courseDoc.id);
-        this.courses.push({
-            id: courseDoc.id,
-            ...courseData,
-            ...courseStats
-        });
-    }
-}
-
-// KEEP ALL THESE METHODS SEPARATE AND OUTSIDE:
-async loadPerformanceAnalytics() {
-    this.studentPerformances = [];
-    for (const user of this.users) {
-        if (user.averageScore > 0) {
-            this.studentPerformances.push({
-                userId: user.id,
-                email: user.email,
-                displayName: user.displayName,
-                averageScore: user.averageScore,
-                enrolledCount: user.enrolledCount
-            });
-        }
-    }
-}
-
-// Remove this method - it's no longer needed since we're using loadUsersAndEnrollments
-// async getUserEnrollments(userId) { ... }
-
-async calculateUserPerformance(userId, enrollments) {
-    let totalScore = 0;
-    let scoreCount = 0;
-    
-    // Check if user has any quiz scores
-    try {
-        const { getDocs, collection } = window.firebaseModules;
-        const quizScoresSnapshot = await getDocs(collection(window.db, "users", userId, "quizScores"));
-        
-        quizScoresSnapshot.docs.forEach(scoreDoc => {
-            const scoreData = scoreDoc.data();
-            if (scoreData.score) {
-                totalScore += scoreData.score;
-                scoreCount++;
+                
+            async loadPerformanceAnalytics() {
+                this.studentPerformances = [];
+                for (const user of this.users) {
+                    if (user.averageScore > 0) {
+                        this.studentPerformances.push({
+                            userId: user.id,
+                            email: user.email,
+                            displayName: user.displayName,
+                            averageScore: user.averageScore,
+                            enrolledCount: user.enrolledCount
+                        });
+                    }
+                }
             }
-        });
-    } catch (error) {
-        console.log(`No quiz scores found for user ${userId}`);
-    }
-    
-    // Also check enrollments for scores
-    for (const enrollment of enrollments) {
-        if (enrollment.averageScore) {
-            totalScore += enrollment.averageScore;
-            scoreCount++;
-        }
-    }
-    
-    return {
-        averageScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
-        coursesWithScores: scoreCount
-    };
-}
+
+            async getUserEnrollments(userId) {
+                try {
+                    const { getDocs, collection } = window.firebaseModules;
+                    const enrollmentsSnapshot = await getDocs(collection(window.db, "users", userId, "enrolledCourses"));
+                    return enrollmentsSnapshot.docs.map(doc => doc.data());
+                } catch (error) {
+                    console.log(`No enrollments found for user ${userId}`);
+                    return [];
+                }
+            }
+
+            async calculateUserPerformance(userId, enrollments) {
+                let totalScore = 0;
+                let scoreCount = 0;
+                
+                // Check if user has any quiz scores
+                try {
+                    const { getDocs, collection } = window.firebaseModules;
+                    const quizScoresSnapshot = await getDocs(collection(window.db, "users", userId, "quizScores"));
+                    
+                    quizScoresSnapshot.docs.forEach(scoreDoc => {
+                        const scoreData = scoreDoc.data();
+                        if (scoreData.score) {
+                            totalScore += scoreData.score;
+                            scoreCount++;
+                        }
+                    });
+                } catch (error) {
+                    console.log(`No quiz scores found for user ${userId}`);
+                }
+                
+                // Also check enrollments for scores
+                for (const enrollment of enrollments) {
+                    if (enrollment.averageScore) {
+                        totalScore += enrollment.averageScore;
+                        scoreCount++;
+                    }
+                }
+                
+                return {
+                    averageScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
+                    coursesWithScores: scoreCount
+                };
+            }
+
             async getCourseStatistics(courseId) {
     let totalScore = 0;
     let scoreCount = 0;
