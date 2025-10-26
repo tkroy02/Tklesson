@@ -884,7 +884,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
@@ -902,7 +902,7 @@
 
         window.auth = auth;
         window.db = db;
-        window.firebaseModules = { getDocs, getDoc, addDoc, updateDoc, deleteDoc, collection, doc, signOut };
+        window.firebaseModules = { getDocs, getDoc, addDoc, updateDoc, deleteDoc, collection, doc, signOut, query, where };
 
         onAuthStateChanged(auth, async (user) => {
             if (user) {
@@ -1050,18 +1050,28 @@
                 const { getDocs, collection } = window.firebaseModules;
                 const usersSnapshot = await getDocs(collection(window.db, "users"));
                 this.users = [];
+                
+                console.log(`Found ${usersSnapshot.docs.length} users in database`);
+                
                 for (const userDoc of usersSnapshot.docs) {
                     const userData = userDoc.data();
+                    console.log(`Processing user: ${userData.email || userDoc.id}`);
+                    
                     const enrolledCourses = await this.getUserEnrollments(userDoc.id);
                     const userPerformance = await this.calculateUserPerformance(userDoc.id, enrolledCourses);
+                    
                     this.users.push({
                         id: userDoc.id,
-                        ...userData,
+                        email: userData.email || 'No email',
+                        displayName: userData.displayName || 'Unknown User',
                         enrolledCount: enrolledCourses.length,
                         averageScore: userPerformance.averageScore,
-                        lastActive: userData.lastUpdated || userData.createdAt
+                        lastActive: userData.lastUpdated || userData.createdAt || new Date().toISOString(),
+                        createdAt: userData.createdAt || new Date().toISOString()
                     });
                 }
+                
+                console.log(`Loaded ${this.users.length} users into dashboard`);
             }
 
             async loadCourses() {
@@ -1084,14 +1094,18 @@
                 const usersSnapshot = await getDocs(collection(window.db, "users"));
                 this.enrollments = [];
                 for (const userDoc of usersSnapshot.docs) {
-                    const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
-                    userEnrollments.docs.forEach(enrollmentDoc => {
-                        this.enrollments.push({
-                            userId: userDoc.id,
-                            courseId: enrollmentDoc.id,
-                            ...enrollmentDoc.data()
+                    try {
+                        const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
+                        userEnrollments.docs.forEach(enrollmentDoc => {
+                            this.enrollments.push({
+                                userId: userDoc.id,
+                                courseId: enrollmentDoc.id,
+                                ...enrollmentDoc.data()
+                            });
                         });
-                    });
+                    } catch (error) {
+                        console.log(`No enrollments found for user ${userDoc.id}`);
+                    }
                 }
             }
 
@@ -1116,6 +1130,7 @@
                     const enrollmentsSnapshot = await getDocs(collection(window.db, "users", userId, "enrolledCourses"));
                     return enrollmentsSnapshot.docs.map(doc => doc.data());
                 } catch (error) {
+                    console.log(`No enrollments found for user ${userId}`);
                     return [];
                 }
             }
@@ -1123,12 +1138,31 @@
             async calculateUserPerformance(userId, enrollments) {
                 let totalScore = 0;
                 let scoreCount = 0;
+                
+                // Check if user has any quiz scores
+                try {
+                    const { getDocs, collection } = window.firebaseModules;
+                    const quizScoresSnapshot = await getDocs(collection(window.db, "users", userId, "quizScores"));
+                    
+                    quizScoresSnapshot.docs.forEach(scoreDoc => {
+                        const scoreData = scoreDoc.data();
+                        if (scoreData.score) {
+                            totalScore += scoreData.score;
+                            scoreCount++;
+                        }
+                    });
+                } catch (error) {
+                    console.log(`No quiz scores found for user ${userId}`);
+                }
+                
+                // Also check enrollments for scores
                 for (const enrollment of enrollments) {
                     if (enrollment.averageScore) {
                         totalScore += enrollment.averageScore;
                         scoreCount++;
                     }
                 }
+                
                 return {
                     averageScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
                     coursesWithScores: scoreCount
@@ -1139,6 +1173,7 @@
                 let totalScore = 0;
                 let scoreCount = 0;
                 let enrollmentCount = 0;
+                
                 for (const enrollment of this.enrollments) {
                     if (enrollment.courseId === courseId) {
                         enrollmentCount++;
@@ -1148,6 +1183,7 @@
                         }
                     }
                 }
+                
                 return {
                     enrollmentCount: enrollmentCount,
                     averageScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
@@ -1164,6 +1200,7 @@
                 this.safeUpdateElement('total-users', this.users.length);
                 this.safeUpdateElement('total-courses', this.courses.length);
                 this.safeUpdateElement('total-enrollments', this.enrollments.length);
+                
                 const totalScores = this.studentPerformances.reduce((sum, student) => sum + student.averageScore, 0);
                 const overallAverage = this.studentPerformances.length > 0 ? Math.round(totalScores / this.studentPerformances.length) : 0;
                 this.safeUpdateElement('overall-average-score', overallAverage + '%');
@@ -1172,14 +1209,18 @@
             updatePerformanceMetrics() {
                 const overallAverage = this.calculateOverallAverage();
                 this.safeUpdateElement('overall-average-score-analytics', overallAverage + '%');
+                
                 const passingStudents = this.studentPerformances.filter(s => s.averageScore >= 70).length;
                 const passingRate = this.studentPerformances.length > 0 ? Math.round((passingStudents / this.studentPerformances.length) * 100) : 0;
                 this.safeUpdateElement('passing-rate', passingRate + '%');
+                
                 const strugglingStudents = this.studentPerformances.filter(s => s.averageScore < 60).length;
                 this.safeUpdateElement('struggling-students', strugglingStudents);
+                
                 const topPerformers = this.studentPerformances.filter(s => s.averageScore >= 90).length;
                 const topPerformerRate = this.studentPerformances.length > 0 ? Math.round((topPerformers / this.studentPerformances.length) * 100) : 0;
                 this.safeUpdateElement('top-performers', topPerformerRate + '%');
+                
                 this.updateCoursePerformanceTable();
                 this.updateGradeDistribution();
                 this.updateStrugglingStudentsList();
@@ -1194,19 +1235,22 @@
             displayUsers() {
                 const tbody = document.getElementById('users-table-body');
                 if (!tbody) return;
+                
                 tbody.innerHTML = '';
+                
                 if (this.users.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--gray-500);">No users found</td></tr>';
                     return;
                 }
+                
                 this.users.forEach(user => {
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td>
-                            <div style="font-weight: 600;">${user.displayName || 'Unknown User'}</div>
+                            <div style="font-weight: 600;">${user.displayName}</div>
                             <div style="font-size: 0.75rem; color: var(--gray-500);">${user.id.substring(0, 8)}...</div>
                         </td>
-                        <td>${user.email || 'N/A'}</td>
+                        <td>${user.email}</td>
                         <td>${user.enrolledCount}</td>
                         <td><span style="font-weight: 700; color: ${user.averageScore >= 70 ? 'var(--success)' : user.averageScore >= 60 ? 'var(--warning)' : 'var(--accent)'}">${user.averageScore}%</span></td>
                         <td>${this.formatDate(user.lastActive)}</td>
@@ -1231,14 +1275,14 @@
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td>
-                            <div style="font-weight: 600;">${course.title}</div>
+                            <div style="font-weight: 600;">${course.title || 'Untitled Course'}</div>
                             <div style="font-size: 0.75rem; color: var(--gray-500);">${course.id}</div>
                         </td>
                         <td>${course.category || 'N/A'}</td>
                         <td>${course.level || 'N/A'}</td>
                         <td>${course.enrollmentCount || 0}</td>
                         <td><span style="font-weight: 700; color: ${course.averageScore >= 70 ? 'var(--success)' : course.averageScore >= 60 ? 'var(--warning)' : 'var(--accent)'}">${course.averageScore}%</span></td>
-                        <td><span class="badge ${course.isActive ? 'badge-success' : 'badge-accent'}">${course.isActive ? 'Active' : 'Inactive'}</span></td>
+                        <td><span class="badge ${course.isActive !== false ? 'badge-success' : 'badge-accent'}">${course.isActive !== false ? 'Active' : 'Inactive'}</span></td>
                         <td>
                             <button class="btn btn-outline btn-sm" onclick="dashboard.editCourse('${course.id}')"><i class="fas fa-edit"></i></button>
                             <button class="btn btn-danger btn-sm" onclick="dashboard.deleteCourse('${course.id}')"><i class="fas fa-trash"></i></button>
@@ -1261,12 +1305,12 @@
                     html += `
                         <div style="display: flex; justify-content: space-between; padding: 1rem; background: var(--gray-50); border-radius: var(--border-radius-sm);">
                             <div>
-                                <div style="font-weight: 600;">${course.title}</div>
-                                <div style="font-size: 0.875rem; color: var(--gray-600);">${course.category} • ${course.level}</div>
+                                <div style="font-weight: 600;">${course.title || 'Untitled Course'}</div>
+                                <div style="font-size: 0.875rem; color: var(--gray-600);">${course.category || 'N/A'} • ${course.level || 'N/A'}</div>
                             </div>
                             <div style="text-align: right;">
                                 <div style="font-size: 1.25rem; font-weight: 700; color: var(--success);">${course.averageScore}%</div>
-                                <div style="font-size: 0.75rem; color: var(--gray-500);">${course.enrollmentCount} students</div>
+                                <div style="font-size: 0.75rem; color: var(--gray-500);">${course.enrollmentCount || 0} students</div>
                             </div>
                         </div>
                     `;
@@ -1278,12 +1322,28 @@
             displayRecentActivity() {
                 const container = document.getElementById('recent-activity');
                 if (!container) return;
-                const activities = [
-                    { action: 'New user registration', user: 'john@example.com', time: '2 min ago' },
-                    { action: 'Course enrollment', user: 'sarah@example.com', course: 'AP Physics 1', time: '15 min ago' },
-                    { action: 'Quiz completed', user: 'mike@example.com', course: 'Algebra 2', score: '85%', time: '1 hour ago' },
-                    { action: 'Course completed', user: 'emma@example.com', course: 'Chemistry Grade 10', time: '3 hours ago' }
-                ];
+                
+                // Generate recent activity from user data
+                const activities = [];
+                const recentUsers = [...this.users]
+                    .sort((a, b) => new Date(b.lastActive) - new Date(a.lastActive))
+                    .slice(0, 5);
+                
+                recentUsers.forEach(user => {
+                    const timeDiff = this.getTimeDifference(user.lastActive);
+                    activities.push({
+                        action: 'User activity',
+                        user: user.email,
+                        time: timeDiff
+                    });
+                });
+                
+                if (activities.length === 0) {
+                    activities.push(
+                        { action: 'No recent activity', user: 'System', time: 'N/A' }
+                    );
+                }
+                
                 let html = '<div style="display: flex; flex-direction: column; gap: 1rem;">';
                 activities.forEach(activity => {
                     html += `
@@ -1291,7 +1351,7 @@
                             <div style="width: 8px; height: 8px; background: var(--primary); border-radius: 50%; margin-top: 0.5rem;"></div>
                             <div style="flex: 1;">
                                 <div style="font-weight: 600;">${activity.action}</div>
-                                <div style="font-size: 0.875rem; color: var(--gray-600);">${activity.user}${activity.course ? ` • ${activity.course}` : ''}${activity.score ? ` • Score: ${activity.score}` : ''}</div>
+                                <div style="font-size: 0.875rem; color: var(--gray-600);">${activity.user}</div>
                             </div>
                             <div style="font-size: 0.75rem; color: var(--gray-500);">${activity.time}</div>
                         </div>
@@ -1299,6 +1359,20 @@
                 });
                 html += '</div>';
                 container.innerHTML = html;
+            }
+
+            getTimeDifference(dateString) {
+                const date = new Date(dateString);
+                const now = new Date();
+                const diffMs = now - date;
+                const diffMins = Math.floor(diffMs / 60000);
+                const diffHours = Math.floor(diffMs / 3600000);
+                const diffDays = Math.floor(diffMs / 86400000);
+                
+                if (diffMins < 1) return 'Just now';
+                if (diffMins < 60) return `${diffMins} min ago`;
+                if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+                return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
             }
 
             updateCoursePerformanceTable() {
@@ -1315,9 +1389,9 @@
                     const badgeClass = course.averageScore >= 80 ? 'badge-success' : course.averageScore >= 70 ? 'badge-warning' : 'badge-accent';
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td>${course.title}</td>
+                        <td>${course.title || 'Untitled Course'}</td>
                         <td><strong>${course.averageScore}%</strong></td>
-                        <td>${course.enrollmentCount}</td>
+                        <td>${course.enrollmentCount || 0}</td>
                         <td><span class="badge ${badgeClass}">${performanceLevel}</span></td>
                     `;
                     tbody.appendChild(row);
@@ -1364,7 +1438,7 @@
                 strugglingStudents.forEach(student => {
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td>${student.displayName || 'Unknown User'}</td>
+                        <td>${student.displayName}</td>
                         <td>${student.email}</td>
                         <td><strong style="color: var(--accent);">${student.averageScore}%</strong></td>
                         <td>${student.enrolledCount} courses</td>
@@ -1391,10 +1465,10 @@
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td>
-                            <div style="font-weight: 600;">${user.displayName || 'Unknown User'}</div>
+                            <div style="font-weight: 600;">${user.displayName}</div>
                             <div style="font-size: 0.75rem; color: var(--gray-500);">${user.id.substring(0, 8)}...</div>
                         </td>
-                        <td>${user.email || 'N/A'}</td>
+                        <td>${user.email}</td>
                         <td>${user.enrolledCount}</td>
                         <td><span style="font-weight: 700; color: ${user.averageScore >= 70 ? 'var(--success)' : user.averageScore >= 60 ? 'var(--warning)' : 'var(--accent)'}">${user.averageScore}%</span></td>
                         <td>${this.formatDate(user.lastActive)}</td>
@@ -1482,7 +1556,7 @@
             viewUser(userId) {
                 const user = this.users.find(u => u.id === userId);
                 if (user) {
-                    alert(`User Details:\n\nID: ${user.id}\nEmail: ${user.email}\nDisplay Name: ${user.displayName || 'N/A'}\nEnrolled Courses: ${user.enrolledCount}\nAverage Score: ${user.averageScore}%\nLast Active: ${this.formatDate(user.lastActive)}`);
+                    alert(`User Details:\n\nID: ${user.id}\nEmail: ${user.email}\nDisplay Name: ${user.displayName}\nEnrolled Courses: ${user.enrolledCount}\nAverage Score: ${user.averageScore}%\nLast Active: ${this.formatDate(user.lastActive)}\nCreated: ${this.formatDate(user.createdAt)}`);
                 }
             }
 
