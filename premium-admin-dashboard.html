@@ -1028,11 +1028,10 @@
 
             async loadDashboardData() {
     try {
-        // Load users and enrollments FIRST, then courses
-        await Promise.all([
-            this.loadUsers(),
-            this.loadEnrollments()  // Move this before loadCourses()
-        ]);
+        console.time('DashboardLoad');
+        
+        // Use the optimized bulk loading instead of separate calls
+        await this.loadUsersAndEnrollments(); // This replaces both loadUsers() and loadEnrollments()
         
         // THEN load courses (which depends on enrollments)
         await this.loadCourses();
@@ -1044,39 +1043,25 @@
         this.displayCourses();
         this.displayTopCourses();
         this.displayRecentActivity();
+        
+        console.timeEnd('DashboardLoad');
     } catch (error) {
         console.error('Error loading dashboard data:', error);
         alert('Failed to load dashboard data. Please refresh the page.');
     }
 }
 
-            async loadUsers() {
-                const { getDocs, collection } = window.firebaseModules;
-                const usersSnapshot = await getDocs(collection(window.db, "users"));
-                this.users = [];
-                
-                console.log(`Found ${usersSnapshot.docs.length} users in database`);
-                
-                for (const userDoc of usersSnapshot.docs) {
-                    const userData = userDoc.data();
-                    console.log(`Processing user: ${userData.email || userDoc.id}`);
-                    
-                    const enrolledCourses = await this.getUserEnrollments(userDoc.id);
-                    const userPerformance = await this.calculateUserPerformance(userDoc.id, enrolledCourses);
-                    
-                    this.users.push({
-                        id: userDoc.id,
-                        email: userData.email || 'No email',
-                        displayName: userData.displayName || 'Unknown User',
-                        enrolledCount: enrolledCourses.length,
-                        averageScore: userPerformance.averageScore,
-                        lastActive: userData.lastUpdated || userData.createdAt || new Date().toISOString(),
-                        createdAt: userData.createdAt || new Date().toISOString()
-                    });
-                }
-                
-                console.log(`Loaded ${this.users.length} users into dashboard`);
-            }
+
+           // Replace both loadUsers() and loadEnrollments() with this:
+async loadUsersAndEnrollments() {
+    const { getDocs, collection } = window.firebaseModules;
+    
+    // Get all users in one query
+    const usersSnapshot = await getDocs(collection(window.db, "users"));
+    this.users = [];
+    this.enrollments = [];
+    
+    console.log(`Found ${usersSnapshot.docs.length} users, loading enrollments in parallel...`);
 
             async loadCourses() {
                 const { getDocs, collection } = window.firebaseModules;
@@ -1093,27 +1078,42 @@
                 }
             }
 
-            async loadEnrollments() {
-    const { getDocs, collection } = window.firebaseModules;
-    const usersSnapshot = await getDocs(collection(window.db, "users"));
-    this.enrollments = [];
-    
-    // Load all enrollments in parallel
-    const enrollmentPromises = usersSnapshot.docs.map(async (userDoc) => {
+            // Load all users and their enrollments in parallel
+    const userPromises = usersSnapshot.docs.map(async (userDoc) => {
+        const userData = userDoc.data();
+        
+        // Get user's enrollments in one query per user
+        let userEnrollments = [];
         try {
-            const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
-            return userEnrollments.docs.map(enrollmentDoc => ({
+            const enrollmentsSnapshot = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
+            userEnrollments = enrollmentsSnapshot.docs.map(enrollmentDoc => ({
                 userId: userDoc.id,
                 courseId: enrollmentDoc.id,
                 ...enrollmentDoc.data()
             }));
+            
+            // Add to global enrollments array
+            this.enrollments.push(...userEnrollments);
         } catch (error) {
-            return [];
+            console.log(`No enrollments for user ${userDoc.id}`);
         }
+        
+        // Calculate user performance
+        const userPerformance = await this.calculateUserPerformance(userDoc.id, userEnrollments);
+        
+        return {
+            id: userDoc.id,
+            email: userData.email || 'No email',
+            displayName: userData.displayName || 'Unknown User',
+            enrolledCount: userEnrollments.length,
+            averageScore: userPerformance.averageScore,
+            lastActive: userData.lastUpdated || userData.createdAt || new Date().toISOString(),
+            createdAt: userData.createdAt || new Date().toISOString()
+        };
     });
     
-    const results = await Promise.all(enrollmentPromises);
-    this.enrollments = results.flat();
+    this.users = await Promise.all(userPromises);
+    console.log(`Loaded ${this.users.length} users and ${this.enrollments.length} enrollments`);
 }
                 
             async loadPerformanceAnalytics() {
