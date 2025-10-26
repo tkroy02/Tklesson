@@ -1098,20 +1098,23 @@
     const usersSnapshot = await getDocs(collection(window.db, "users"));
     this.enrollments = [];
     
-    for (const userDoc of usersSnapshot.docs) {
+    // Load all enrollments in parallel
+    const enrollmentPromises = usersSnapshot.docs.map(async (userDoc) => {
         try {
             const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
-            userEnrollments.docs.forEach(enrollmentDoc => {
-                this.enrollments.push({
-                    userId: userDoc.id,
-                    courseId: enrollmentDoc.id,
-                    ...enrollmentDoc.data()
-                });
-            });
+            return userEnrollments.docs.map(enrollmentDoc => ({
+                userId: userDoc.id,
+                courseId: enrollmentDoc.id,
+                ...enrollmentDoc.data()
+            }));
         } catch (error) {
-            console.log(`No enrollments found for user ${userDoc.id}`);
+            return [];
         }
-    }
+    });
+    
+    const results = await Promise.all(enrollmentPromises);
+    this.enrollments = results.flat();
+}
 
 console.log(`Loaded ${this.enrollments.length} total enrollments`);
     // Debug: Show all enrollments
@@ -1183,44 +1186,31 @@ console.log(`Loaded ${this.enrollments.length} total enrollments`);
             async getCourseStatistics(courseId) {
     let totalScore = 0;
     let scoreCount = 0;
-    let enrollmentCount = 0;
     
     console.log(`Calculating statistics for course: ${courseId}`);
     
-    // Count enrollments for this course by checking each user's enrolledCourses
-    for (const user of this.users) {
-        try {
-            const { getDocs, collection } = window.firebaseModules;
-            const userEnrollments = await getDocs(collection(window.db, "users", user.id, "enrolledCourses"));
-            
-            const userEnrolledInCourse = userEnrollments.docs.some(doc => doc.id === courseId);
-            if (userEnrolledInCourse) {
-                enrollmentCount++;
-                
-                // Get the enrollment data to calculate average score
-                const enrollmentDoc = userEnrollments.docs.find(doc => doc.id === courseId);
-                if (enrollmentDoc) {
-                    const enrollmentData = enrollmentDoc.data();
-                    
-                    // Use the averageScore from enrollment if available
-                    if (enrollmentData.averageScore) {
-                        totalScore += enrollmentData.averageScore;
-                        scoreCount++;
-                        console.log(`User ${user.email}: averageScore = ${enrollmentData.averageScore}`);
-                    }
-                    // Or calculate from quizScores array
-                    else if (enrollmentData.quizScores && enrollmentData.quizScores.length > 0) {
-                        const avg = enrollmentData.quizScores.reduce((sum, score) => sum + score, 0) / enrollmentData.quizScores.length;
-                        totalScore += avg;
-                        scoreCount++;
-                        console.log(`User ${user.email}: calculated avg = ${avg} from ${enrollmentData.quizScores.length} quizzes`);
-                    }
-                }
-            }
-        } catch (error) {
-            console.log(`No enrollments found for user ${user.id}`);
+    // Use the already-loaded enrollments instead of querying again
+    const courseEnrollments = this.enrollments.filter(enrollment => enrollment.courseId === courseId);
+    const enrollmentCount = courseEnrollments.length;
+    
+    console.log(`Found ${enrollmentCount} enrollments for course ${courseId}`);
+    
+    // Calculate average score from cached enrollment data
+    courseEnrollments.forEach(enrollment => {
+        // Use the averageScore from enrollment if available
+        if (enrollment.averageScore) {
+            totalScore += enrollment.averageScore;
+            scoreCount++;
+            console.log(`User ${enrollment.userId}: averageScore = ${enrollment.averageScore}`);
         }
-    }
+        // Or calculate from quizScores array
+        else if (enrollment.quizScores && enrollment.quizScores.length > 0) {
+            const avg = enrollment.quizScores.reduce((sum, score) => sum + score, 0) / enrollment.quizScores.length;
+            totalScore += avg;
+            scoreCount++;
+            console.log(`User ${enrollment.userId}: calculated avg = ${avg} from ${enrollment.quizScores.length} quizzes`);
+        }
+    });
     
     const averageScore = scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0;
     console.log(`Course ${courseId}: ${enrollmentCount} enrollments, ${scoreCount} with scores, avg = ${averageScore}%`);
