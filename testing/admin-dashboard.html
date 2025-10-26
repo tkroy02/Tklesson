@@ -1432,7 +1432,7 @@
         </div>
         <div class="modal-actions">
             <button class="btn-outline" id="closeFreeCreditsModalBtn">Cancel</button>
-            <button class="btn-success" id="giveFreeCreditsBtn">Give Credits</button>
+            <button class="btn-success" id="confirmGiveCreditsBtn">Give Credits</button>
         </div>
     </div>
 </div>
@@ -4149,12 +4149,7 @@ async function updateBalanceDisplay(studentId) {
                 gold: 0
             };
             
-            const displayText = `
-                Hourly: ${balances.hourly} | 
-                Bronze: ${balances.bronze} | 
-                Silver: ${balances.silver} | 
-                Gold: ${balances.gold}
-            `;
+            const displayText = `Hourly: ${balances.hourly} | Bronze: ${balances.bronze} | Silver: ${balances.silver} | Gold: ${balances.gold}`;
             
             document.getElementById('currentBalanceDisplay').textContent = displayText;
         }
@@ -4164,7 +4159,7 @@ async function updateBalanceDisplay(studentId) {
     }
 }
 
-// Give free credits
+// Give free credits - FIXED VERSION
 async function giveFreeCredits() {
     const studentId = document.getElementById('creditsStudentSelect').value;
     const packageType = document.getElementById('creditsPackageType').value;
@@ -4182,44 +4177,68 @@ async function giveFreeCredits() {
     }
     
     try {
-        // Use the existing adjustStudentCredits function
-        const adjustCredits = firebase.functions().httpsCallable('adjustStudentCredits');
-        
-        const result = await adjustCredits({
+        // Get student document first
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        if (!studentDoc.exists) {
+            throw new Error('Student not found');
+        }
+
+        const studentData = studentDoc.data();
+        const currentBalances = studentData.packageBalances || {
+            hourly: 0,
+            bronze: 0,
+            silver: 0,
+            gold: 0
+        };
+
+        // Calculate new balance
+        const currentBalance = currentBalances[packageType] || 0;
+        const newBalance = currentBalance + amount;
+
+        // Update student's package balance directly in Firestore
+        await db.collection('students').doc(studentId).update({
+            [`packageBalances.${packageType}`]: newBalance,
+            lastUpdated: new Date()
+        });
+
+        // Create transaction record
+        await db.collection('creditTransactions').add({
             studentId: studentId,
+            studentName: studentData.fullName || 'Unknown Student',
+            adminId: currentUser.uid,
+            adminName: currentUser.displayName || 'Admin',
+            type: 'free_credit',
             packageType: packageType,
             amount: amount,
-            reason: reason
+            previousBalance: currentBalance,
+            newBalance: newBalance,
+            reason: reason,
+            timestamp: new Date(),
+            status: 'completed'
         });
+
+        alert(`✅ Successfully gave ${amount} ${packageType} credits to ${studentData.fullName || 'student'}!`);
+        document.getElementById('freeCreditsModal').style.display = 'none';
+        document.getElementById('freeCreditsForm').reset();
         
-        if (result.data.success) {
-            alert(`Successfully gave ${amount} ${packageType} credits to student!`);
-            document.getElementById('freeCreditsModal').style.display = 'none';
-            document.getElementById('freeCreditsForm').reset();
-            
-            // Update the balance display
-            await updateBalanceDisplay(studentId);
-        } else {
-            throw new Error(result.data.message || 'Failed to give credits');
-        }
+        // Update the balance display
+        await updateBalanceDisplay(studentId);
         
     } catch (error) {
         console.error("Error giving free credits:", error);
-        alert(`Error giving credits: ${error.message}`);
+        alert(`❌ Error giving credits: ${error.message}`);
     }
 }
 
-// Setup free credits UI
+// Setup free credits UI - FIXED VERSION
 function setupFreeCreditsUI() {
-    const openModalBtn = document.getElementById('openFreeCreditsModalBtn'); // CHANGED
+    const giveFreeCreditsBtn = document.getElementById('giveFreeCreditsBtn');
     const closeFreeCreditsModalBtn = document.getElementById('closeFreeCreditsModalBtn');
-    const giveCreditsBtn = document.getElementById('giveFreeCreditsBtn'); // This stays the same
+    const confirmGiveCreditsBtn = document.getElementById('confirmGiveCreditsBtn');
     const closeModal = document.getElementById('freeCreditsModal').querySelector('.close-modal');
     
-    if (openModalBtn) { // CHANGED
-        openModalBtn.addEventListener('click', openFreeCreditsModal);
-    } else {
-        console.error('Open Free Credits Modal button not found');
+    if (giveFreeCreditsBtn) {
+        giveFreeCreditsBtn.addEventListener('click', openFreeCreditsModal);
     }
     
     if (closeFreeCreditsModalBtn) {
@@ -4228,8 +4247,16 @@ function setupFreeCreditsUI() {
         });
     }
     
-    if (giveCreditsBtn) {
-        giveCreditsBtn.addEventListener('click', giveFreeCredits);
+    // Fix: Use the correct button ID from the modal
+    if (confirmGiveCreditsBtn) {
+        confirmGiveCreditsBtn.addEventListener('click', giveFreeCredits);
+    } else {
+        // Fallback: check if the button exists with a different ID
+        const modalGiveBtn = document.querySelector('#freeCreditsModal .btn-success');
+        if (modalGiveBtn && !modalGiveBtn.id) {
+            modalGiveBtn.id = 'confirmGiveCreditsBtn';
+            modalGiveBtn.addEventListener('click', giveFreeCredits);
+        }
     }
     
     if (closeModal) {
@@ -4239,17 +4266,11 @@ function setupFreeCreditsUI() {
     }
     
     setupStudentBalanceDisplay();
-}
-
-
-        
-        
+}  
         
     </script>
 </body>
 </html>
-
-
 
 
 
