@@ -1090,25 +1090,32 @@
             }
 
             async loadEnrollments() {
-                const { getDocs, collection } = window.firebaseModules;
-                const usersSnapshot = await getDocs(collection(window.db, "users"));
-                this.enrollments = [];
-                for (const userDoc of usersSnapshot.docs) {
-                    try {
-                        const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
-                        userEnrollments.docs.forEach(enrollmentDoc => {
-                            this.enrollments.push({
-                                userId: userDoc.id,
-                                courseId: enrollmentDoc.id,
-                                ...enrollmentDoc.data()
-                            });
-                        });
-                    } catch (error) {
-                        console.log(`No enrollments found for user ${userDoc.id}`);
-                    }
-                }
-            }
+    const { getDocs, collection } = window.firebaseModules;
+    const usersSnapshot = await getDocs(collection(window.db, "users"));
+    this.enrollments = [];
+    
+    for (const userDoc of usersSnapshot.docs) {
+        try {
+            const userEnrollments = await getDocs(collection(window.db, "users", userDoc.id, "enrolledCourses"));
+            userEnrollments.docs.forEach(enrollmentDoc => {
+                this.enrollments.push({
+                    userId: userDoc.id,
+                    courseId: enrollmentDoc.id,
+                    ...enrollmentDoc.data()
+                });
+            });
+        } catch (error) {
+            console.log(`No enrollments found for user ${userDoc.id}`);
+        }
+    }
 
+console.log(`Loaded ${this.enrollments.length} total enrollments`);
+    // Debug: Show all enrollments
+    this.enrollments.forEach(enrollment => {
+        console.log(`Enrollment: ${enrollment.userId} -> ${enrollment.courseId}, avg: ${enrollment.averageScore || 'N/A'}`);
+    });
+}
+                
             async loadPerformanceAnalytics() {
                 this.studentPerformances = [];
                 for (const user of this.users) {
@@ -1170,26 +1177,56 @@
             }
 
             async getCourseStatistics(courseId) {
-                let totalScore = 0;
-                let scoreCount = 0;
-                let enrollmentCount = 0;
+    let totalScore = 0;
+    let scoreCount = 0;
+    let enrollmentCount = 0;
+    
+    console.log(`Calculating statistics for course: ${courseId}`);
+    
+    // Count enrollments for this course by checking each user's enrolledCourses
+    for (const user of this.users) {
+        try {
+            const { getDocs, collection } = window.firebaseModules;
+            const userEnrollments = await getDocs(collection(window.db, "users", user.id, "enrolledCourses"));
+            
+            const userEnrolledInCourse = userEnrollments.docs.some(doc => doc.id === courseId);
+            if (userEnrolledInCourse) {
+                enrollmentCount++;
                 
-                for (const enrollment of this.enrollments) {
-                    if (enrollment.courseId === courseId) {
-                        enrollmentCount++;
-                        if (enrollment.averageScore) {
-                            totalScore += enrollment.averageScore;
-                            scoreCount++;
-                        }
+                // Get the enrollment data to calculate average score
+                const enrollmentDoc = userEnrollments.docs.find(doc => doc.id === courseId);
+                if (enrollmentDoc) {
+                    const enrollmentData = enrollmentDoc.data();
+                    
+                    // Use the averageScore from enrollment if available
+                    if (enrollmentData.averageScore) {
+                        totalScore += enrollmentData.averageScore;
+                        scoreCount++;
+                        console.log(`User ${user.email}: averageScore = ${enrollmentData.averageScore}`);
+                    }
+                    // Or calculate from quizScores array
+                    else if (enrollmentData.quizScores && enrollmentData.quizScores.length > 0) {
+                        const avg = enrollmentData.quizScores.reduce((sum, score) => sum + score, 0) / enrollmentData.quizScores.length;
+                        totalScore += avg;
+                        scoreCount++;
+                        console.log(`User ${user.email}: calculated avg = ${avg} from ${enrollmentData.quizScores.length} quizzes`);
                     }
                 }
-                
-                return {
-                    enrollmentCount: enrollmentCount,
-                    averageScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
-                    studentsWithScores: scoreCount
-                };
             }
+        } catch (error) {
+            console.log(`No enrollments found for user ${user.id}`);
+        }
+    }
+    
+    const averageScore = scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0;
+    console.log(`Course ${courseId}: ${enrollmentCount} enrollments, ${scoreCount} with scores, avg = ${averageScore}%`);
+    
+    return {
+        enrollmentCount: enrollmentCount,
+        averageScore: averageScore,
+        studentsWithScores: scoreCount
+    };
+}
 
             safeUpdateElement(elementId, value) {
                 const element = document.getElementById(elementId);
