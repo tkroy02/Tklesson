@@ -3454,32 +3454,252 @@ else if (sectionId === 'chat') {
     });
   });
 
-  //......................................................................................
-  //Profile Section starts here. All JS functionalities of the profile section starts here
- //.......................................................................................
-  
-  // Set up profile editing
-  document.getElementById('editProfileBtn').addEventListener('click', function() {
-    const form = document.getElementById('profileForm');
-    if (form.style.display === 'none') {
-      form.style.display = 'block';
-      this.textContent = 'Cancel Editing';
-    } else {
-      form.style.display = 'none';
-      this.textContent = 'Edit Profile';
+// PROFILE SECTION STARTS HERE
+// =============================================
+
+async function loadDashboardData() {
+    if (!currentUser || !currentUser.uid) {
+        console.error("No user logged in");
+        return;
     }
-  });
+    
+    const uid = currentUser.uid;
+    const studentId = currentUser.uid; // Define studentId here
+    await loadUserData(uid);
+    await loadTutoringOpportunities(uid); // Use uid instead of studentId
+    await loadMyBookings();  
+    await loadEarningsData();    // Add other essential data loads here
+}
+       
+// Load user data from Firestore
+async function loadUserData(uid) {
+    try {
+        const userDoc = await db.collection('students').doc(uid).get();
+        const container = document.getElementById('profile');
+        
+        if (userDoc.exists) {
+            userData = userDoc.data();
+            updateProfileUI(userData);
+            updateUIWithUserData();
+            setupAvailabilityToggle(); // Initialize the toggle after loading user data
+        } else {
+            container.innerHTML = `
+                <div class="error-state">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <h3>Profile Not Found</h3>
+                    <p>Please complete your profile setup.</p>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error("Error loading user data:", error);
+        showErrorMessage('Failed to load profile data. Please refresh the page.');
+    }
+}
+       
+// Fixed UI update function
+function updateProfileUI(data) {
+    const name = data.fullName || data.name || 'Student';
+    const email = data.email || currentUser.email || 'No email';
+    const phone = data.phone || data.personal?.phone || 'Not provided';
+    const role = data.role ? data.role.charAt(0).toUpperCase() + data.role.slice(1) : 'Student';
+    
+    // Update display elements
+    document.getElementById('profileName').textContent = name;
+    document.getElementById('profileEmail').textContent = email;
+    document.getElementById('profileRole').textContent = `${role} Account`;
+    
+    // Add phone display to profile card if element exists, otherwise create it
+    let phoneElement = document.getElementById('profilePhone');
+    if (!phoneElement) {
+        // Add phone line to profile card
+        const profileDetails = document.querySelector('.profile-details');
+        const roleElement = profileDetails.querySelector('p:nth-child(3)'); // Get the role line
+        const phoneLine = document.createElement('p');
+        phoneLine.innerHTML = '<i class="fas fa-phone"></i> <span id="profilePhone">' + phone + '</span>';
+        profileDetails.insertBefore(phoneLine, roleElement);
+    } else {
+        phoneElement.textContent = phone;
+    }
+    
+    // Update form fields
+    document.getElementById('name').value = name;
+    document.getElementById('email').value = email;
+    document.getElementById('phone').value = phone === 'Not provided' ? '' : phone;
+    document.getElementById('role').value = role;
+}
 
-  // Set up profile saving
-document.getElementById('saveProfileBtn').addEventListener('click', saveProfile);
-}  // <-- CLOSES initDashboard() function
+// Update all UI elements with user data
+function updateUIWithUserData() {
+    if (!userData || !currentUser) return;
+    
+    const { name, role } = getUserDisplayInfo(userData, currentUser);
+    
+    // Update sidebar and other UI elements
+    document.getElementById('userName').textContent = name;
+    document.getElementById('profileName').textContent = name;
+    
+    const email = userData.email || currentUser.email || 'No email';
+    document.getElementById('profileEmail').textContent = email;
+}
 
-// Initialize the dashboard when the page loads
-document.addEventListener('DOMContentLoaded', initDashboard);
+// Enhanced phone validation helper
+function isValidPhone(phone) {
+    if (!phone) return true; // Phone is optional
+    const phoneRegex = /^[\+]?[1-9][\d]{0,15}$/;
+    return phoneRegex.test(phone.replace(/[\s\-\(\)]/g, ''));
+}
 
-//.............................................................................
-//Profile Section ends. All JS functionalities of the profile section ends here
-//.............................................................................  
+// Enhanced save profile changes
+async function saveProfileChanges(name, phone) {
+    try {
+        const updateData = {
+            fullName: name,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        
+        // Only update phone if it's provided and different from current
+        if (phone !== (userData.phone || userData.personal?.phone || '')) {
+            updateData.phone = phone || '';
+            
+            // Also update in personal subcollection if it exists
+            if (userData.personal) {
+                updateData['personal.phone'] = phone || '';
+            }
+        }
+        
+        await db.collection('students').doc(currentUser.uid).update(updateData);
+        
+        // Update local userData
+        userData.fullName = name;
+        userData.phone = phone || '';
+        if (userData.personal) {
+            userData.personal.phone = phone || '';
+        }
+        
+        // Update UI immediately
+        updateProfileUI(userData);
+        
+        // Reset form
+        document.getElementById('profileForm').style.display = 'none';
+        document.getElementById('editProfileBtn').textContent = 'Edit Profile';
+        document.getElementById('editProfileBtn').classList.remove('editing');
+        
+        showSuccessMessage('Profile updated successfully!');
+        
+    } catch (error) {
+        console.error("Error updating profile:", error);
+        showErrorMessage('Error updating profile. Please try again.');
+    }
+}
+
+// Enhanced setupProfileEditing with phone validation
+function setupProfileEditing() {
+    let originalValues = {};
+    
+    document.getElementById('editProfileBtn').addEventListener('click', function() {
+        const form = document.getElementById('profileForm');
+        
+        if (form.style.display === 'none') {
+            // Store original values before editing
+            originalValues = {
+                name: document.getElementById('name').value,
+                phone: document.getElementById('phone').value
+            };
+            
+            form.style.display = 'block';
+            this.textContent = 'Cancel Editing';
+            this.classList.add('editing');
+        } else {
+            // Cancel editing - reset to original values
+            document.getElementById('name').value = originalValues.name;
+            document.getElementById('phone').value = originalValues.phone;
+            
+            form.style.display = 'none';
+            this.textContent = 'Edit Profile';
+            this.classList.remove('editing');
+        }
+    });
+    
+    document.getElementById('saveProfileBtn').addEventListener('click', function() {
+        const name = document.getElementById('name').value.trim();
+        const phone = document.getElementById('phone').value.trim();
+        
+        // Enhanced validation
+        if (!name) {
+            alert('Please enter your full name');
+            return;
+        }
+        
+        if (phone && !isValidPhone(phone)) {
+            alert('Please enter a valid phone number (digits only, optional country code)');
+            return;
+        }
+        
+        saveProfileChanges(name, phone);
+    });
+}
+
+// Utility functions for messages (keep existing)
+function showSuccessMessage(message) {
+    // You could use a toast notification here
+    alert(message);
+}
+
+function showErrorMessage(message) {
+    alert(message);
+}
+
+function setupAvailabilityToggle() {
+    const toggle = document.getElementById('availabilityToggle');
+    const label = document.getElementById('availabilityLabel');
+    
+    // Load current availability from Firestore
+    if (userData) {
+        const isAvailable = userData.available !== false; // Default to true if not set
+        toggle.checked = isAvailable;
+        updateAvailabilityLabel(label, isAvailable);
+    }
+    
+    // Handle toggle changes
+    toggle.addEventListener('change', async function() {
+        const isAvailable = this.checked;
+        
+        try {
+            // Update Firestore
+            await db.collection('students').doc(currentUser.uid).update({
+                available: isAvailable,
+                isAvailable: isAvailable, // Update both fields for consistency
+                lastAvailabilityUpdate: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
+            // Update local userData
+            userData.available = isAvailable;
+            userData.isAvailable = isAvailable;
+            
+            // Update UI
+            updateAvailabilityLabel(label, isAvailable);
+            
+            console.log('Availability updated to:', isAvailable);
+            
+        } catch (error) {
+            console.error("Error updating availability:", error);
+            // Revert toggle on error
+            this.checked = !isAvailable;
+            alert('Error updating availability. Please try again.');
+        }
+    });
+}
+
+function updateAvailabilityLabel(label, isAvailable) {
+    label.textContent = isAvailable ? 'Available' : 'Unavailable';
+    label.style.color = isAvailable ? 'var(--success)' : 'var(--error)';
+}
+
+
+// =============================================
+// PROFILE SECTION ENDS HERE
+// ============================================= 
 
 async function loadDashboardData() {
     await loadUserData(currentUser.uid);
@@ -9327,3 +9547,4 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
