@@ -1720,6 +1720,7 @@
             await loadSessionsData();
             await loadVacanciesData();
             await loadPaymentsData();
+            await loadReportsData();
             updateDashboardStats();
             initDashboard();
         }
@@ -2953,30 +2954,35 @@ function displayStudentsTable() {
         }
 
         // Setup UI event listeners
-        function setupUI() {
-            // Navigation
-            document.querySelectorAll('.sidebar-menu a').forEach(link => {
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    
-                    document.querySelectorAll('.sidebar-menu a').forEach(l => {
-                        l.classList.remove('active');
-                    });
-                    
-                    link.classList.add('active');
-                    
-                    const sectionId = link.getAttribute('data-section');
-                    document.querySelectorAll('.dashboard-section').forEach(section => {
-                        section.classList.remove('active');
-                    });
-                    document.getElementById(sectionId).classList.add('active');
-                    
-                    // Initialize chat system when messages section is opened
-                    if (sectionId === 'messages-and-chats' && !adminChatSystem.isInitialized) {
-                        initAdminChatSystem();
-                    }
-                });
+function setupUI() {
+    // Navigation
+    document.querySelectorAll('.sidebar-menu a').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            
+            document.querySelectorAll('.sidebar-menu a').forEach(l => {
+                l.classList.remove('active');
             });
+            
+            link.classList.add('active');
+            
+            const sectionId = link.getAttribute('data-section');
+            document.querySelectorAll('.dashboard-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(sectionId).classList.add('active');
+            
+            // Initialize chat system when messages section is opened
+            if (sectionId === 'messages-and-chats' && !adminChatSystem.isInitialized) {
+                initAdminChatSystem();
+            }
+            
+            // Load reports data when reports section is opened
+            if (sectionId === 'reports') {
+                loadReportsData();
+            }
+        });
+    });
 
             // Logout button
             document.getElementById('logoutBtn').addEventListener('click', () => {
@@ -4189,6 +4195,187 @@ function displayStudentsTable() {
             // This function can be expanded to handle specific notification logic
             console.log('New message in chat:', chat.chatId, 'from user:', userId);
         }
+
+
+        // Load reports data
+async function loadReportsData() {
+    try {
+        await loadRevenueData();
+        await loadExpenseData();
+        await loadActiveUsersData();
+        displayReports();
+    } catch (error) {
+        console.error("Error loading reports data:", error);
+    }
+}
+
+// Load revenue data from packagePurchases
+async function loadRevenueData() {
+    try {
+        const revenueSnapshot = await db.collection('packagePurchases').get();
+        window.revenueData = [];
+        
+        revenueSnapshot.forEach(doc => {
+            const purchase = doc.data();
+            purchase.id = doc.id;
+            window.revenueData.push(purchase);
+        });
+    } catch (error) {
+        console.error("Error loading revenue data:", error);
+        window.revenueData = [];
+    }
+}
+
+// Load expense data from tutorInvoices (approved payments)
+async function loadExpenseData() {
+    try {
+        const expenseSnapshot = await db.collection('tutorInvoices')
+            .where('status', '==', 'approved')
+            .get();
+        
+        window.expenseData = [];
+        
+        expenseSnapshot.forEach(doc => {
+            const invoice = doc.data();
+            invoice.id = doc.id;
+            window.expenseData.push(invoice);
+        });
+    } catch (error) {
+        console.error("Error loading expense data:", error);
+        window.expenseData = [];
+    }
+}
+
+// Load active users (users with sessions in last 30 days)
+async function loadActiveUsersData() {
+    try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const activeSessionsSnapshot = await db.collection('bookedSessions')
+            .where('date', '>=', thirtyDaysAgo)
+            .get();
+        
+        const activeStudentIds = new Set();
+        const activeTutorIds = new Set();
+        
+        activeSessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            if (session.studentId) activeStudentIds.add(session.studentId);
+            if (session.tutorId) activeTutorIds.add(session.tutorId);
+        });
+        
+        window.activeStudentsCount = activeStudentIds.size;
+        window.activeTutorsCount = activeTutorIds.size;
+        
+    } catch (error) {
+        console.error("Error loading active users data:", error);
+        window.activeStudentsCount = 0;
+        window.activeTutorsCount = 0;
+    }
+}
+
+        // Display reports
+function displayReports() {
+    const container = document.getElementById('reportsContent');
+    
+    // Calculate totals
+    const totalRevenue = window.revenueData?.reduce((sum, purchase) => sum + (purchase.amount || 0), 0) || 0;
+    const totalExpenses = window.expenseData?.reduce((sum, invoice) => sum + (invoice.amount || 0), 0) || 0;
+    const netProfit = totalRevenue - totalExpenses;
+    
+    // Revenue by package type
+    const revenueByPackage = {};
+    window.revenueData?.forEach(purchase => {
+        const packageType = purchase.packageType || 'unknown';
+        revenueByPackage[packageType] = (revenueByPackage[packageType] || 0) + (purchase.amount || 0);
+    });
+    
+    const revenueBreakdown = Object.entries(revenueByPackage)
+        .map(([pkg, amount]) => `${pkg}: $${amount.toFixed(2)}`)
+        .join(', ');
+    
+    const reportsHTML = `
+        <div class="stats-container">
+            <div class="stat-card">
+                <div class="stat-icon blue">
+                    <i class="fas fa-user-graduate"></i>
+                </div>
+                <div class="stat-value">${window.activeStudentsCount || 0}</div>
+                <div class="stat-label">Active Students (30 days)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green">
+                    <i class="fas fa-user-tie"></i>
+                </div>
+                <div class="stat-value">${window.activeTutorsCount || 0}</div>
+                <div class="stat-label">Active Tutors (30 days)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon pink">
+                    <i class="fas fa-dollar-sign"></i>
+                </div>
+                <div class="stat-value">$${totalRevenue.toFixed(2)}</div>
+                <div class="stat-label">Total Revenue</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon orange">
+                    <i class="fas fa-money-bill-wave"></i>
+                </div>
+                <div class="stat-value">$${totalExpenses.toFixed(2)}</div>
+                <div class="stat-label">Total Expenses</div>
+            </div>
+        </div>
+        
+        <div class="student-card" style="margin-top: 20px;">
+            <div class="student-header">
+                <div class="student-title">Financial Summary</div>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-chart-line"></i>
+                    <span><strong>Net Profit:</strong> $${netProfit.toFixed(2)}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-percentage"></i>
+                    <span><strong>Profit Margin:</strong> ${totalRevenue > 0 ? ((netProfit / totalRevenue) * 100).toFixed(1) : '0'}%</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="student-card" style="margin-top: 20px;">
+            <div class="student-header">
+                <div class="student-title">Revenue Breakdown by Package</div>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-box"></i>
+                    <span>${revenueBreakdown || 'No revenue data'}</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="student-card" style="margin-top: 20px;">
+            <div class="student-header">
+                <div class="student-title">Recent Financial Activity</div>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span><strong>Total Package Purchases:</strong> ${window.revenueData?.length || 0}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-file-invoice-dollar"></i>
+                    <span><strong>Approved Tutor Payments:</strong> ${window.expenseData?.length || 0}</span>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    container.innerHTML = reportsHTML;
+}
+        
+        
     </script>
     
     <!-- Tutor Details Modal -->
@@ -4211,22 +4398,5 @@ function displayStudentsTable() {
     
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
