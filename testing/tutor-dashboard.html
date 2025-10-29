@@ -3876,7 +3876,7 @@ function getUserDisplayInfo(userData, currentUser, defaultRole = 'Tutor') {
 }
 
 // Authentication state listener
-auth.onAuthStateChanged((user) => {
+auth.onAuthStateChanged(async (user) => {
     if (user) {
         // Start inactivity timer
         resetInactivityTimer();
@@ -3885,10 +3885,27 @@ auth.onAuthStateChanged((user) => {
         // Load user data
         currentUser = user;
         loadUserData(user.uid);
-        loadDashboardData().then(() => {
+        
+        await loadDashboardData();
         loadTutoringOpportunities(user.uid);
         loadMyStudents();
-
+        
+        // Auto-complete expired sessions
+        await checkAndCompleteExpiredSessions();
+        
+        // Check every 5 minutes (only set once)
+        if (!window.sessionCheckInterval) {
+            window.sessionCheckInterval = setInterval(checkAndCompleteExpiredSessions, 5 * 60 * 1000);
+        }
+    } else {
+        // Clear interval when user logs out
+        if (window.sessionCheckInterval) {
+            clearInterval(window.sessionCheckInterval);
+            window.sessionCheckInterval = null;
+        }
+    }
+});
+            
             // Initialize profile editing functionality
             setupProfileEditing();
         });
@@ -6728,11 +6745,14 @@ async function loadSessionsHistory() {
     container.innerHTML = '<div class="spinner">Loading session history...</div>';
     
     try {
-        // Get ALL sessions for this tutor (past and future, all statuses)
+        // First, auto-complete any expired sessions
+        await checkAndCompleteExpiredSessions();
+        
+        // Then load all sessions
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
             .orderBy('date', 'desc')
-            .limit(20) // Reduced limit
+            .limit(50)
             .get();
         
         allSessionsHistory = [];
@@ -6748,17 +6768,13 @@ async function loadSessionsHistory() {
             return;
         }
         
-        // Process all sessions
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
             allSessionsHistory.push(session);
         });
         
-        // Apply initial filters and display
         applySessionHistoryFilters();
-        
-        // Setup filter event listeners
         setupSessionHistoryFilters();
         
     } catch (error) {
@@ -6767,12 +6783,102 @@ async function loadSessionsHistory() {
             <div class="error-state">
                 <i class="fas fa-exclamation-circle"></i>
                 <h3>Error Loading History</h3>
-                <p>Failed to load session history. Please try again.</p>
+                <p>${error.message}</p>
             </div>
         `;
     }
 }
 
+       async function manuallyCompleteSession(sessionId) {
+    try {
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'completed',
+            completedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            autoCompleted: false,
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        console.log('Session marked as completed');
+        showSuccessMessage('Session marked as completed!');
+        
+        // Refresh sessions list
+        await loadSessionsHistory();
+        
+    } catch (error) {
+        console.error("Error completing session:", error);
+        showErrorMessage('Failed to complete session: ' + error.message);
+    }
+}
+
+       // ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+function showSuccessMessage(message) {
+    // Use your existing notification system
+    alert(message); // Replace with your toast/notification
+}
+
+function showErrorMessage(message) {
+    // Use your existing notification system
+    alert(message); // Replace with your toast/notification
+}
+
+       
+// Check and auto-complete expired sessions
+async function checkAndCompleteExpiredSessions() {
+    const now = new Date();
+    
+    try {
+        // Get confirmed sessions that have passed
+        const sessionsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .where('status', '==', 'confirmed')
+            .where('date', '<', firebase.firestore.Timestamp.now())
+            .limit(20)
+            .get();
+        
+        console.log(`Checking ${sessionsSnapshot.size} sessions for auto-completion`);
+        
+        const batch = db.batch();
+        let completedCount = 0;
+        
+        sessionsSnapshot.forEach(doc => {
+            const session = doc.data();
+            const sessionDate = session.date.toDate();
+            const duration = parseFloat(session.duration || 1.5);
+            const sessionEndTime = new Date(sessionDate.getTime() + (duration * 60 * 60 * 1000));
+            
+            // Check if session has ended (add 5 minute buffer)
+            const bufferTime = new Date(sessionEndTime.getTime() + (5 * 60 * 1000));
+            
+            if (now >= bufferTime) {
+                batch.update(doc.ref, {
+                    status: 'completed',
+                    completedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    autoCompleted: true,
+                    lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                completedCount++;
+                console.log(`Auto-completing session: ${doc.id}`);
+            }
+        });
+        
+        if (completedCount > 0) {
+            await batch.commit();
+            console.log(`✅ Auto-completed ${completedCount} sessions`);
+            
+            // Refresh the sessions list
+            if (currentSection === 'sessions') {
+                await loadSessionsHistory();
+            }
+        }
+        
+    } catch (error) {
+        console.error("Error auto-completing sessions:", error);
+    }
+}
+       
 // Apply filters to session history
 function applySessionHistoryFilters() {
     const container = document.getElementById('sessionsContainer');
@@ -11739,6 +11845,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
