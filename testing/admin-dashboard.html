@@ -4411,7 +4411,7 @@ function displayReports() {
 }
 
 // =============================================
-// ADMIN NOTIFICATION SYSTEM
+// ADMIN NOTIFICATION SYSTEM - COMPLETE REAL DATA VERSION
 // =============================================
 
 class AdminNotificationSystem {
@@ -4429,7 +4429,7 @@ class AdminNotificationSystem {
 
         try {
             this.setupDOMElements();
-            await this.loadAdminNotifications();
+            await this.loadRealNotifications();
             this.startRealtimeMonitoring();
             this.setupEventListeners();
             this.isInitialized = true;
@@ -4482,20 +4482,139 @@ class AdminNotificationSystem {
         document.body.insertAdjacentHTML('beforeend', dropdownHTML);
     }
 
-    // Load admin-specific notifications
-    async loadAdminNotifications() {
+    // Load real notifications from Firestore
+    async loadRealNotifications() {
         try {
-            // For now, create sample notifications since the collection might not exist
-            this.createSampleNotifications();
+            this.notifications = [];
+            
+            // 1. Load no-show reports from sessions
+            const noShowSnapshot = await db.collection('bookedSessions')
+                .where('attendanceStatus', '==', 'no-show')
+                .where('attendanceReportedAt', '>', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
+                .orderBy('attendanceReportedAt', 'desc')
+                .limit(10)
+                .get();
+
+            noShowSnapshot.forEach(doc => {
+                const session = doc.data();
+                this.notifications.push({
+                    id: `no-show-${doc.id}`,
+                    type: 'student_no_show',
+                    title: '🚨 Student No-Show Reported',
+                    message: `${session.studentName || 'Student'} reported no-show for ${session.subject || 'session'}`,
+                    priority: 'high',
+                    details: {
+                        sessionId: doc.id,
+                        studentName: session.studentName,
+                        tutorName: session.tutorName,
+                        subject: session.subject,
+                        sessionDate: session.date?.toDate().toLocaleDateString() || 'Unknown date',
+                        reportedAt: session.attendanceReportedAt?.toDate() || new Date()
+                    },
+                    isRead: false,
+                    createdAt: session.attendanceReportedAt?.toDate() || new Date()
+                });
+            });
+
+            // 2. Load pending payments
+            const pendingPaymentsSnapshot = await db.collection('tutorInvoices')
+                .where('status', '==', 'pending')
+                .orderBy('createdAt', 'desc')
+                .limit(10)
+                .get();
+
+            pendingPaymentsSnapshot.forEach(doc => {
+                const invoice = doc.data();
+                this.notifications.push({
+                    id: `payment-${doc.id}`,
+                    type: 'payment_issue',
+                    title: '💰 Payment Approval Needed',
+                    message: `Pending payment for ${invoice.tutorName || 'Tutor'} - $${invoice.amount || 0}`,
+                    priority: 'high',
+                    details: {
+                        invoiceId: doc.id,
+                        tutorName: invoice.tutorName,
+                        amount: invoice.amount,
+                        period: invoice.period
+                    },
+                    isRead: false,
+                    createdAt: invoice.createdAt?.toDate() || new Date()
+                });
+            });
+
+            // 3. Load pending tutor approvals
+            const pendingTutorsSnapshot = await db.collection('tutors')
+                .where('approved', '==', false)
+                .where('suspended', '==', false)
+                .orderBy('createdAt', 'desc')
+                .limit(10)
+                .get();
+
+            pendingTutorsSnapshot.forEach(doc => {
+                const tutor = doc.data();
+                this.notifications.push({
+                    id: `tutor-${doc.id}`,
+                    type: 'tutor_approval',
+                    title: '👨‍🏫 Tutor Approval Needed',
+                    message: `New tutor application: ${tutor.personal?.fullName || 'Applicant'}`,
+                    priority: 'medium',
+                    details: {
+                        tutorId: doc.id,
+                        tutorName: tutor.personal?.fullName,
+                        email: tutor.personal?.email,
+                        subjects: tutor.subjects?.subjects?.join(', ')
+                    },
+                    isRead: false,
+                    createdAt: tutor.createdAt?.toDate() || new Date()
+                });
+            });
+
+            // 4. Load system alerts if they exist
+            try {
+                const systemAlertsSnapshot = await db.collection('systemAlerts')
+                    .where('resolved', '==', false)
+                    .orderBy('createdAt', 'desc')
+                    .limit(5)
+                    .get();
+
+                systemAlertsSnapshot.forEach(doc => {
+                    const alert = doc.data();
+                    this.notifications.push({
+                        id: `alert-${doc.id}`,
+                        type: 'system_alert',
+                        title: '⚠️ System Alert',
+                        message: alert.message || 'System issue detected',
+                        priority: 'critical',
+                        details: {
+                            alertId: doc.id,
+                            issue: alert.issue,
+                            severity: alert.severity
+                        },
+                        isRead: false,
+                        createdAt: alert.createdAt?.toDate() || new Date()
+                    });
+                });
+            } catch (error) {
+                console.log('No system alerts collection found');
+            }
+
+            // Sort all notifications by date
+            this.notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            
+            // Limit to 20 most recent
+            this.notifications = this.notifications.slice(0, 20);
+            
+            this.unreadCount = this.notifications.filter(n => !n.isRead).length;
             this.updateAdminUI();
             
         } catch (error) {
-            console.error('Error loading admin notifications:', error);
-            this.showErrorState();
+            console.error('Error loading real notifications:', error);
+            // Fallback to sample data if real data fails
+            this.createSampleNotifications();
         }
     }
 
-    // Create sample notifications for demonstration
+    // Create sample notifications for demonstration (fallback)
     createSampleNotifications() {
         this.notifications = [
             {
@@ -4524,22 +4643,11 @@ class AdminNotificationSystem {
                 },
                 isRead: true,
                 createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000)
-            },
-            {
-                id: '3',
-                type: 'system_alert',
-                title: '⚠️ System Alert',
-                message: 'High server load detected',
-                priority: 'critical',
-                details: {
-                    issue: 'Server CPU at 85%'
-                },
-                isRead: false,
-                createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000)
             }
         ];
 
         this.unreadCount = this.notifications.filter(n => !n.isRead).length;
+        this.updateAdminUI();
     }
 
     // Update admin notification UI
@@ -4590,7 +4698,7 @@ class AdminNotificationSystem {
                         <div style="font-size: 13px; color: #666; margin-bottom: 4px;">${notification.message}</div>
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span class="notification-priority-badge priority-${notification.priority}" 
-                                  style="padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase;">
+                                  style="padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; background: ${this.getPriorityColor(notification.priority)}; color: white;">
                                 ${notification.priority}
                             </span>
                             <span style="font-size: 11px; color: #999;">${this.formatTime(notification.createdAt)}</span>
@@ -4609,6 +4717,7 @@ class AdminNotificationSystem {
             'payment_issue': 'fas fa-credit-card',
             'session_completed': 'fas fa-check-circle',
             'system_alert': 'fas fa-exclamation-triangle',
+            'tutor_approval': 'fas fa-user-tie',
             'attendance_discrepancy': 'fas fa-balance-scale'
         };
         return icons[type] || 'fas fa-bell';
@@ -4685,6 +4794,54 @@ class AdminNotificationSystem {
             this.unreadCount--;
             this.updateAdminUI();
         }
+        
+        // Handle navigation based on notification type
+        this.handleNotificationAction(notification);
+    }
+
+    // Handle notification actions and navigation
+    handleNotificationAction(notification) {
+        if (!notification) return;
+
+        switch (notification.type) {
+            case 'student_no_show':
+                // Navigate to session monitoring
+                this.switchToSection('session-monitoring');
+                break;
+            case 'payment_issue':
+                // Navigate to payment approval
+                this.switchToSection('payment-approval');
+                break;
+            case 'tutor_approval':
+                // Navigate to tutor management
+                this.switchToSection('tutor-management');
+                break;
+            case 'system_alert':
+                // Navigate to dashboard
+                this.switchToSection('dashboard');
+                break;
+        }
+    }
+
+    // Switch to specific section
+    switchToSection(sectionId) {
+        document.querySelectorAll('.sidebar-menu a').forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('data-section') === sectionId) {
+                link.classList.add('active');
+            }
+        });
+        
+        document.querySelectorAll('.dashboard-section').forEach(section => {
+            section.classList.remove('active');
+        });
+        document.getElementById(sectionId).classList.add('active');
+        
+        // Close dropdown
+        const dropdown = document.getElementById('adminNotificationDropdown');
+        if (dropdown) {
+            dropdown.style.display = 'none';
+        }
     }
 
     // Mark all as read
@@ -4705,6 +4862,156 @@ class AdminNotificationSystem {
         }
     }
 
+    // Display notifications in dedicated section
+    async displayNotificationsInSection() {
+        const notificationsContent = document.getElementById('notificationsContent');
+        if (!notificationsContent) return;
+
+        try {
+            // Reload real data for the dedicated section
+            await this.loadRealNotifications();
+            
+            if (this.notifications.length === 0) {
+                notificationsContent.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <i class="fas fa-bell-slash" style="font-size: 48px; margin-bottom: 16px; opacity: 0.3;"></i>
+                        <h3>No Notifications</h3>
+                        <p>You're all caught up! No new notifications.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Group notifications by date
+            const groupedNotifications = this.groupNotificationsByDate(this.notifications);
+            
+            let html = `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h4>All Notifications</h4>
+                        <div>
+                            <button class="btn-outline" onclick="adminNotifications.markAllAsRead()" style="margin-right: 10px;">
+                                <i class="fas fa-check-double"></i> Mark All Read
+                            </button>
+                            <button class="btn-outline" onclick="adminNotifications.clearAllNotifications()">
+                                <i class="fas fa-trash"></i> Clear All
+                            </button>
+                        </div>
+                    </div>
+            `;
+
+            // Display notifications by date group
+            Object.keys(groupedNotifications).forEach(date => {
+                html += `
+                    <div class="notification-date-group" style="margin-bottom: 24px;">
+                        <h5 style="color: #4361ee; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e0e0e0;">${date}</h5>
+                        <div class="notification-list">
+                `;
+                
+                groupedNotifications[date].forEach(notification => {
+                    html += `
+                        <div class="admin-notification-item ${notification.priority} ${notification.isRead ? 'read' : 'unread'}" 
+                             style="padding: 16px; margin-bottom: 12px; border-radius: 8px; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1); cursor: pointer; border-left: 4px solid ${this.getPriorityColor(notification.priority)};"
+                             onclick="adminNotifications.handleNotificationActionFromSection('${notification.id}')">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                                <div class="notification-icon" style="color: ${this.getPriorityColor(notification.priority)}; font-size: 18px; margin-top: 2px;">
+                                    <i class="${this.getNotificationIcon(notification.type)}"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                                        <div style="font-weight: 600; font-size: 15px;">${notification.title}</div>
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <span class="notification-priority-badge priority-${notification.priority}" 
+                                                  style="padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; background: ${this.getPriorityColor(notification.priority)}; color: white;">
+                                                ${notification.priority}
+                                            </span>
+                                            ${!notification.isRead ? 
+                                                '<span style="width: 8px; height: 8px; background: #4361ee; border-radius: 50%;"></span>' : 
+                                                ''
+                                            }
+                                        </div>
+                                    </div>
+                                    <div style="font-size: 14px; color: #666; margin-bottom: 8px;">${notification.message}</div>
+                                    <div style="font-size: 12px; color: #999;">
+                                        ${this.formatTime(notification.createdAt)}
+                                        ${this.getNotificationActions(notification)}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `</div>`;
+            notificationsContent.innerHTML = html;
+
+        } catch (error) {
+            console.error('Error displaying notifications in section:', error);
+            notificationsContent.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #e53e3e;">
+                    <i class="fas fa-exclamation-circle" style="font-size: 48px; margin-bottom: 16px;"></i>
+                    <h3>Error Loading Notifications</h3>
+                    <p>Failed to load notifications. Please try again later.</p>
+                    <button class="btn-primary" onclick="adminNotifications.displayNotificationsInSection()" style="margin-top: 16px;">
+                        <i class="fas fa-redo"></i> Retry
+                    </button>
+                </div>
+            `;
+        }
+    }
+
+    // Handle notification action from dedicated section
+    handleNotificationActionFromSection(notificationId) {
+        const notification = this.notifications.find(n => n.id === notificationId);
+        if (notification && !notification.isRead) {
+            notification.isRead = true;
+            this.unreadCount--;
+            this.updateAdminUI();
+        }
+        this.handleNotificationAction(notification);
+    }
+
+    // Group notifications by date
+    groupNotificationsByDate(notifications) {
+        const groups = {};
+        
+        notifications.forEach(notification => {
+            const date = new Date(notification.createdAt).toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            
+            if (!groups[date]) {
+                groups[date] = [];
+            }
+            groups[date].push(notification);
+        });
+        
+        return groups;
+    }
+
+    // Get notification actions based on type
+    getNotificationActions(notification) {
+        switch (notification.type) {
+            case 'student_no_show':
+                return ` • <a href="#" onclick="event.stopPropagation(); adminNotifications.handleNotificationActionFromSection('${notification.id}')" style="color: #4361ee; text-decoration: none;">View Session</a>`;
+            case 'payment_issue':
+                return ` • <a href="#" onclick="event.stopPropagation(); adminNotifications.handleNotificationActionFromSection('${notification.id}')" style="color: #4361ee; text-decoration: none;">Review Payment</a>`;
+            case 'tutor_approval':
+                return ` • <a href="#" onclick="event.stopPropagation(); adminNotifications.handleNotificationActionFromSection('${notification.id}')" style="color: #4361ee; text-decoration: none;">Review Tutor</a>`;
+            default:
+                return '';
+        }
+    }
+
     // Show error state
     showErrorState() {
         const listElement = document.getElementById('adminNotificationList');
@@ -4713,7 +5020,7 @@ class AdminNotificationSystem {
                 <div style="padding: 40px 20px; text-align: center; color: #e53e3e;">
                     <i class="fas fa-exclamation-circle" style="font-size: 48px; margin-bottom: 16px;"></i>
                     <p>Failed to load notifications</p>
-                    <button onclick="adminNotifications.loadAdminNotifications()" class="btn-outline" style="margin-top: 12px; padding: 8px 16px;">
+                    <button onclick="adminNotifications.loadRealNotifications()" class="btn-outline" style="margin-top: 12px; padding: 8px 16px;">
                         Try Again
                     </button>
                 </div>
@@ -4721,10 +5028,80 @@ class AdminNotificationSystem {
         }
     }
 
-    // Start real-time monitoring (simplified for demo)
+    // Start real-time monitoring
     startRealtimeMonitoring() {
         console.log('Admin notification monitoring started');
-        // In a real implementation, this would set up Firestore listeners
+        
+        // Listen for new no-show reports
+        const noShowListener = db.collection('bookedSessions')
+            .where('attendanceStatus', '==', 'no-show')
+            .onSnapshot((snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                        this.handleNewNoShow(change.doc);
+                    }
+                });
+            });
+        this.realtimeListeners.push(noShowListener);
+
+        // Listen for new pending payments
+        const paymentListener = db.collection('tutorInvoices')
+            .where('status', '==', 'pending')
+            .onSnapshot((snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                        this.handleNewPayment(change.doc);
+                    }
+                });
+            });
+        this.realtimeListeners.push(paymentListener);
+    }
+
+    // Handle new no-show
+    handleNewNoShow(doc) {
+        const session = doc.data();
+        const newNotification = {
+            id: `no-show-${doc.id}-${Date.now()}`,
+            type: 'student_no_show',
+            title: '🚨 Student No-Show Reported',
+            message: `${session.studentName || 'Student'} reported no-show for ${session.subject || 'session'}`,
+            priority: 'high',
+            details: {
+                sessionId: doc.id,
+                studentName: session.studentName,
+                tutorName: session.tutorName,
+                subject: session.subject
+            },
+            isRead: false,
+            createdAt: new Date()
+        };
+        
+        this.notifications.unshift(newNotification);
+        this.unreadCount++;
+        this.updateAdminUI();
+    }
+
+    // Handle new payment
+    handleNewPayment(doc) {
+        const invoice = doc.data();
+        const newNotification = {
+            id: `payment-${doc.id}-${Date.now()}`,
+            type: 'payment_issue',
+            title: '💰 Payment Approval Needed',
+            message: `Pending payment for ${invoice.tutorName || 'Tutor'} - $${invoice.amount || 0}`,
+            priority: 'high',
+            details: {
+                invoiceId: doc.id,
+                tutorName: invoice.tutorName,
+                amount: invoice.amount
+            },
+            isRead: false,
+            createdAt: new Date()
+        };
+        
+        this.notifications.unshift(newNotification);
+        this.unreadCount++;
+        this.updateAdminUI();
     }
 
     // Setup event listeners
@@ -4764,6 +5141,45 @@ document.addEventListener('DOMContentLoaded', function() {
     adminNotifications.initialize();
 });
 
+// Update navigation to load notifications in dedicated section
+function setupNavigation() {
+    document.querySelectorAll('.sidebar-menu a').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            
+            document.querySelectorAll('.sidebar-menu a').forEach(l => {
+                l.classList.remove('active');
+            });
+            
+            link.classList.add('active');
+            
+            const sectionId = link.getAttribute('data-section');
+            document.querySelectorAll('.dashboard-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(sectionId).classList.add('active');
+            
+            // Load notifications when notifications tab is clicked
+            if (sectionId === 'notifications' && window.adminNotifications) {
+                window.adminNotifications.displayNotificationsInSection();
+            }
+            
+            // Initialize chat system when messages section is opened
+            if (sectionId === 'messages-and-chats' && !adminChatSystem.isInitialized) {
+                initAdminChatSystem();
+            }
+            
+            // Load reports data when reports section is opened
+            if (sectionId === 'reports') {
+                loadReportsData();
+            }
+        });
+    });
+}
+
+// Call this in your existing setup
+setupNavigation();
+
         
     </script>
     
@@ -4787,6 +5203,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
 </body>
 </html>
+
 
 
 
