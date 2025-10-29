@@ -3876,7 +3876,7 @@ function getUserDisplayInfo(userData, currentUser, defaultRole = 'Tutor') {
 }
 
 // Authentication state listener
-auth.onAuthStateChanged(async (user) => {
+auth.onAuthStateChanged((user) => {
     if (user) {
         // Start inactivity timer
         resetInactivityTimer();
@@ -3885,27 +3885,10 @@ auth.onAuthStateChanged(async (user) => {
         // Load user data
         currentUser = user;
         loadUserData(user.uid);
-        
-        await loadDashboardData();
+        loadDashboardData().then(() => {
         loadTutoringOpportunities(user.uid);
         loadMyStudents();
-        
-        // Auto-complete expired sessions
-        await checkAndCompleteExpiredSessions();
-        
-        // Check every 5 minutes (only set once)
-        if (!window.sessionCheckInterval) {
-            window.sessionCheckInterval = setInterval(checkAndCompleteExpiredSessions, 5 * 60 * 1000);
-        }
-    } else {
-        // Clear interval when user logs out
-        if (window.sessionCheckInterval) {
-            clearInterval(window.sessionCheckInterval);
-            window.sessionCheckInterval = null;
-        }
-    }
-});
-            
+
             // Initialize profile editing functionality
             setupProfileEditing();
         });
@@ -6748,11 +6731,11 @@ async function loadSessionsHistory() {
         // First, auto-complete any expired sessions
         await checkAndCompleteExpiredSessions();
         
-        // Then load all sessions
+        // Get ALL sessions for this tutor (past and future, all statuses)
         const sessionsSnapshot = await db.collection('bookedSessions')
             .where('tutorId', '==', currentUser.uid)
             .orderBy('date', 'desc')
-            .limit(50)
+            .limit(20) // Reduced limit
             .get();
         
         allSessionsHistory = [];
@@ -6768,13 +6751,17 @@ async function loadSessionsHistory() {
             return;
         }
         
+        // Process all sessions
         sessionsSnapshot.forEach(doc => {
             const session = doc.data();
             session.id = doc.id;
             allSessionsHistory.push(session);
         });
         
+        // Apply initial filters and display
         applySessionHistoryFilters();
+        
+        // Setup filter event listeners
         setupSessionHistoryFilters();
         
     } catch (error) {
@@ -6783,48 +6770,12 @@ async function loadSessionsHistory() {
             <div class="error-state">
                 <i class="fas fa-exclamation-circle"></i>
                 <h3>Error Loading History</h3>
-                <p>${error.message}</p>
+                <p>Failed to load session history. Please try again.</p>
             </div>
         `;
     }
 }
 
-       async function manuallyCompleteSession(sessionId) {
-    try {
-        await db.collection('bookedSessions').doc(sessionId).update({
-            status: 'completed',
-            completedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            autoCompleted: false,
-            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        console.log('Session marked as completed');
-        showSuccessMessage('Session marked as completed!');
-        
-        // Refresh sessions list
-        await loadSessionsHistory();
-        
-    } catch (error) {
-        console.error("Error completing session:", error);
-        showErrorMessage('Failed to complete session: ' + error.message);
-    }
-}
-
-       // ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-function showSuccessMessage(message) {
-    // Use your existing notification system
-    alert(message); // Replace with your toast/notification
-}
-
-function showErrorMessage(message) {
-    // Use your existing notification system
-    alert(message); // Replace with your toast/notification
-}
-
-       
 // Check and auto-complete expired sessions
 async function checkAndCompleteExpiredSessions() {
     const now = new Date();
@@ -6878,7 +6829,42 @@ async function checkAndCompleteExpiredSessions() {
         console.error("Error auto-completing sessions:", error);
     }
 }
-       
+
+async function manuallyCompleteSession(sessionId) {
+    try {
+        await db.collection('bookedSessions').doc(sessionId).update({
+            status: 'completed',
+            completedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            autoCompleted: false,
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        console.log('Session marked as completed');
+        showSuccessMessage('Session marked as completed!');
+        
+        // Refresh sessions list
+        await loadSessionsHistory();
+        
+    } catch (error) {
+        console.error("Error completing session:", error);
+        showErrorMessage('Failed to complete session: ' + error.message);
+    }
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+function showSuccessMessage(message) {
+    // Use your existing notification system
+    alert(message); // Replace with your toast/notification
+}
+
+function showErrorMessage(message) {
+    // Use your existing notification system
+    alert(message); // Replace with your toast/notification
+}
+
 // Apply filters to session history
 function applySessionHistoryFilters() {
     const container = document.getElementById('sessionsContainer');
@@ -7046,7 +7032,6 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
 }
 
 // Add this to handle window resizing
-// Add this to handle window resizing
 function setupResponsiveSessions() {
     let resizeTimeout;
     
@@ -7076,7 +7061,7 @@ function createSessionHistoryRow(session) {
     const isFutureSession = sessionDate > new Date();
     const sessionType = session.sessionType === 'online' ? 'Online' : 'In-Person';
     
-    // Use Tutor Action as the Action Type
+    // Use Tutor Action as the Action Type - UPDATED: No more "Session Held"
     const tutorAction = getTutorActionForSession(session);
     const actionClass = getActionClass(tutorAction);
     
@@ -7110,6 +7095,11 @@ function createSessionHistoryRow(session) {
                         <i class="fas fa-file-invoice"></i> Invoice
                     </button>
                 ` : ''}
+                ${session.status === 'confirmed' && sessionDate < new Date() ? `
+                    <button class="btn-primary complete-session-btn" data-session-id="${session.id}" style="margin-top: 5px;">
+                        <i class="fas fa-check-circle"></i> Mark Complete
+                    </button>
+                ` : ''}
             </td>
         </tr>
     `;
@@ -7127,7 +7117,7 @@ function getStatusClass(status) {
     }
 }
 
-// Get tutor action description for session
+// Get tutor action description for session - UPDATED: No more "Session Held"
 function getTutorActionForSession(session) {
     const now = new Date();
     const sessionDate = session.date.toDate();
@@ -7136,7 +7126,7 @@ function getTutorActionForSession(session) {
         case 'completed':
             return 'Session Completed';
         case 'confirmed':
-            return sessionDate > now ? 'Session Confirmed' : 'Session Held';
+            return 'Session Confirmed';
         case 'pending':
             return 'Awaiting Response';
         case 'cancelled':
@@ -7150,18 +7140,17 @@ function getTutorActionForSession(session) {
     }
 }
 
-// Get CSS class for action badge
+// Get CSS class for action badge - UPDATED: No more "Session Held"
 function getActionClass(action) {
     switch(action) {
         case 'Session Completed':
-        case 'Session Held':
             return 'success';
         case 'Session Confirmed':
             return 'primary';
         case 'Awaiting Response':
         case 'Reschedule Pending':
             return 'warning';
-        case 'You Cancelled':
+        case 'Tutor Cancelled':
         case 'Student Cancelled':
             return 'error';
         case 'Rescheduled':
@@ -7205,6 +7194,7 @@ async function showSessionDetails(sessionId) {
         const session = sessionDoc.data();
         const date = session.date.toDate();
         const isFutureSession = date > new Date();
+        const isPastSession = date < new Date();
         
         // Get additional session metadata
         const sessionMetadata = await getSessionMetadata(sessionId);
@@ -7289,6 +7279,17 @@ async function showSessionDetails(sessionId) {
                     <div style="margin-top: 20px; padding: 15px; background: #e8f5e8; border-radius: 8px;">
                         <strong style="color: #2e7d32;">This session has been completed.</strong>
                         <p style="margin: 5px 0 0 0; color: #666;">You can generate an invoice for this session from the Invoice section.</p>
+                    </div>
+                ` : ''}
+                
+                ${isPastSession && session.status === 'confirmed' ? `
+                    <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 8px;">
+                        <strong style="color: #856404;">This session has passed but is not yet marked as completed.</strong>
+                        <p style="margin: 10px 0 0 0;">
+                            <button class="btn-primary" onclick="manuallyCompleteSession('${sessionId}')" style="width: 100%;">
+                                <i class="fas fa-check-circle"></i> Mark Session as Completed
+                            </button>
+                        </p>
                     </div>
                 ` : ''}
             </div>
@@ -7511,6 +7512,14 @@ function addSessionHistoryListeners() {
             switchToInvoiceSection(sessionId);
         });
     });
+    
+    // Complete session buttons (for past confirmed sessions)
+    document.querySelectorAll('.complete-session-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const sessionId = this.getAttribute('data-session-id');
+            manuallyCompleteSession(sessionId);
+        });
+    });
 }
 
 // Switch to invoice section and pre-select session
@@ -7542,9 +7551,7 @@ function switchToInvoiceSection(sessionId) {
     }, 100);
 }
 
-// ADD THESE MISSING FUNCTIONS:
-
-// 1. CSS for mobile sessions
+// CSS for mobile sessions
 const mobileSessionsCSS = `
 /* Mobile Sessions Container */
 .mobile-sessions-container {
@@ -7726,7 +7733,7 @@ const mobileSessionsCSS = `
 }
 `;
 
-// 2. Create mobile session card function
+// Create mobile session card function
 function createMobileSessionCard(session) {
     const sessionDate = session.date.toDate();
     const formattedSessionDate = sessionDate.toLocaleDateString();
@@ -7738,7 +7745,7 @@ function createMobileSessionCard(session) {
     const formattedActionDate = actionDate.toLocaleDateString();
     const formattedActionTime = actionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
-    // Use Tutor Action as the Action Type
+    // Use Tutor Action as the Action Type - UPDATED: No more "Session Held"
     const tutorAction = getTutorActionForSession(session);
     const actionClass = getActionClass(tutorAction);
     
@@ -7782,12 +7789,17 @@ function createMobileSessionCard(session) {
                         <i class="fas fa-file-invoice"></i> Invoice
                     </button>
                 ` : ''}
+                ${session.status === 'confirmed' && sessionDate < new Date() ? `
+                    <button class="btn-primary complete-session-btn" data-session-id="${session.id}">
+                        <i class="fas fa-check-circle"></i> Complete
+                    </button>
+                ` : ''}
             </div>
         </div>
     `;
 }
 
-// 3. Create pagination controls function
+// Create pagination controls function
 function createPaginationControls(totalPages, totalSessions) {
     const paginationContainer = document.getElementById('sessionsPagination');
     if (!paginationContainer) return;
@@ -11845,8 +11857,6 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
-
-
 
 
 
