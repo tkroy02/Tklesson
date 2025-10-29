@@ -155,6 +155,27 @@ body {
 .protection-notice i {
   font-size: 1.2em;
 }
+
+/* Add to your existing CSS */
+.session-card.under-review {
+    border-left: 4px solid #ff9800;
+    background: rgba(255, 152, 0, 0.02);
+}
+
+.booking-info-text {
+    margin-top: 20px;
+    padding: 15px;
+    background: #f0f7ff;
+    border-left: 4px solid #2196F3;
+    border-radius: 8px;
+    color: #1565C0;
+    font-size: 0.9em;
+    line-height: 1.6;
+}
+
+.booking-info-text strong {
+    color: #0d47a1;
+}
   
 /* Reviews Section Styles */
 .reviews-container {
@@ -237,76 +258,6 @@ body {
   font-size: 0.9em;
 }
 
-/* Attendance Status Styles */
-.attendance-status {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
-    margin-left: 8px;
-}
-
-.status-attended {
-    background: rgba(76, 201, 240, 0.1);
-    color: var(--success);
-}
-
-.status-no-show {
-    background: rgba(230, 57, 70, 0.1);
-    color: var(--error);
-}
-
-.status-pending-attendance {
-    background: rgba(255, 193, 7, 0.1);
-    color: var(--warning);
-}
-
-/* Attendance Action Buttons */
-.attendance-actions {
-    display: flex;
-    gap: 10px;
-    margin-top: 10px;
-    flex-wrap: wrap;
-}
-
-.btn-attended {
-    background: var(--success);
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: var(--border-radius-sm);
-    cursor: pointer;
-    font-weight: 500;
-    transition: var(--transition);
-}
-
-.btn-attended:hover {
-    background: var(--success-light);
-}
-
-.btn-no-show {
-    background: var(--error);
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: var(--border-radius-sm);
-    cursor: pointer;
-    font-weight: 500;
-    transition: var(--transition);
-}
-
-.btn-no-show:hover {
-    background: #c53030;
-}
-
-.attendance-reported {
-    color: var(--gray);
-    font-size: 0.9em;
-    font-style: italic;
-    margin-top: 8px;
-}
-  
 /* Star Rating */
 .star-rating {
   display: flex;
@@ -3484,10 +3435,11 @@ function initDashboard() {
           tutorsLoaded = true;
         }
       } else if (sectionId === 'bookings') {
-    // ALWAYS reload bookings when the section is clicked
-    loadUserBookings();
-    bookingsLoaded = true; // Still mark as loaded to avoid spinner on first load
-} else if (sectionId === 'sessions') {
+        if (!bookingsLoaded) {
+          loadUserBookings();
+          bookingsLoaded = true;
+        }
+      } else if (sectionId === 'sessions') {
         // Only load sessions history on first visit to the tab
         if (!sessionsLoaded) {
           loadUserSessionHistory();
@@ -4942,10 +4894,23 @@ function loadBookingsDisplay(bookings) {
         const formattedDate = date.toLocaleDateString();
         const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
-        // Calculate if session can be joined (15 minutes before to session end time)
+        // Calculate session timing windows
+        const sessionStartTime = date;
         const sessionEndTime = new Date(date.getTime() + (booking.duration * 60 * 60 * 1000));
-        const canJoin = now >= new Date(date.getTime() - 15 * 60 * 1000) && 
-                       now <= sessionEndTime;
+        const fifteenMinutesBefore = new Date(date.getTime() - 15 * 60 * 1000);
+        
+        // Calculate if session can be joined (15 minutes before to session end time)
+        const canJoin = now >= fifteenMinutesBefore && now <= sessionEndTime;
+        
+        // ⭐ REVISED: Show No-Show button only during session window
+        // AND only if no report has been filed yet
+        const canReportNoShow = now >= sessionStartTime && 
+                                now <= sessionEndTime && 
+                                booking.status === 'confirmed' &&
+                                !booking.noShowReported;
+        
+        // Show "Under Review" badge if no-show was already reported
+        const noShowUnderReview = booking.noShowReported && booking.status === 'confirmed';
         
         // Check if meeting link is available
         const meetLinkAvailable = booking.meetLink && booking.status === 'confirmed' && booking.meetCreated;
@@ -4987,7 +4952,7 @@ function loadBookingsDisplay(bookings) {
         }
         
         html += `
-            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''}" id="booking-${sanitizedId}">
+            <div class="session-card ${booking.hasPendingReschedule ? 'reschedule-requested' : ''} ${noShowUnderReview ? 'under-review' : ''}" id="booking-${sanitizedId}">
                 <div class="session-header">
                     <div class="session-title">${sanitizedSubject}</div>
                     <div class="session-date">${formattedDate} at ${formattedTime}</div>
@@ -5010,12 +4975,19 @@ function loadBookingsDisplay(bookings) {
                         <span>Status: <span class="status-badge ${getStatusClass(booking.status)}">${status}</span></span>
                     </div>
                     ${rescheduleInfo}
+                    
+                    ${noShowUnderReview ? `
+                        <div class="session-detail" style="color: #ff9800; font-weight: 600; background: rgba(255, 152, 0, 0.1); padding: 10px; border-radius: 8px; margin-top: 10px;">
+                            <i class="fas fa-hourglass-half"></i>
+                            <span>⚠️ No-Show Report Under Admin Review - Credit will be refunded if confirmed (24-48 hours)</span>
+                        </div>
+                    ` : ''}
                 </div>
                 <div class="session-actions">
                     ${booking.hasPendingReschedule ? 
                         `<button class="btn-success" data-session-id="${sanitizedId}" data-action="accept-reschedule">Accept Reschedule</button>
                          <button class="btn-danger" data-session-id="${sanitizedId}" data-action="decline-reschedule">Decline Reschedule</button>` :
-                        `<button class="btn-outline" data-session-id="${sanitizedId}" data-action="cancel">Cancel</button>`
+                        `${!noShowUnderReview ? `<button class="btn-outline" data-session-id="${sanitizedId}" data-action="cancel">Cancel</button>` : ''}`
                     }
                     ${canJoin && meetLinkAvailable ? 
                         `<button class="btn-primary" data-session-id="${sanitizedId}" data-action="join">
@@ -5024,6 +4996,12 @@ function loadBookingsDisplay(bookings) {
                     ${canJoin && booking.status === 'confirmed' && !meetLinkAvailable ? 
                         `<button class="btn-outline" disabled>
                             <i class="fas fa-clock"></i> Awaiting Meeting Link
+                         </button>` : ''}
+                    
+                    ${canReportNoShow && !noShowUnderReview ? 
+                        `<button class="btn-danger" data-session-id="${sanitizedId}" data-action="report-no-show" 
+                                 style="background: #ff6b6b; border-color: #ff6b6b;">
+                            <i class="fas fa-user-times"></i> Report Tutor No-Show
                          </button>` : ''}
                 </div>
             </div>
@@ -5035,10 +5013,16 @@ function loadBookingsDisplay(bookings) {
     // Add informational text
     const infoText = document.createElement('div');
     infoText.className = 'booking-info-text';
-    infoText.innerHTML = '<i class="fas fa-info-circle"></i> Join Session button will appear once status is confirmed and it\'s within 15 minutes of your session time.';
+    infoText.innerHTML = `
+        <i class="fas fa-info-circle"></i> 
+        <strong>Important:</strong> 
+        "Report No-Show" button appears during session time if tutor doesn't show. 
+        Reports are reviewed by admin within 24-48 hours. 
+        Credit is manually refunded only after verification.
+    `;
     container.appendChild(infoText);
     
-    // Set up the event listener only once
+    // Set up the event listener (including No-Show handler)
     if (!bookingsContainerListener) {
         bookingsContainerListener = function(e) {
             const sessionId = e.target.getAttribute('data-session-id');
@@ -5064,10 +5048,253 @@ function loadBookingsDisplay(bookings) {
                 case 'decline-reschedule':
                     respondToReschedule(sessionId, 'decline');
                     break;
+                case 'report-no-show':
+                    reportTutorNoShow(sessionId);
+                    break;
             }
         };
         
         container.addEventListener('click', bookingsContainerListener);
+    }
+}
+  
+// ⭐ REVISED FUNCTION: Report Tutor No-Show 
+  async function reportTutorNoShow(sessionId) {
+    // Confirmation dialog with important information
+    const confirmed = confirm(
+        '⚠️ REPORT TUTOR NO-SHOW\n\n' +
+        'You are about to report that your tutor did not show up for this session.\n\n' +
+        '📋 What happens next:\n' +
+        '• Your report will be submitted to our support team\n' +
+        '• Admin will review your case within 24-48 hours\n' +
+        '• We will verify with the tutor\n' +
+        '• If confirmed, your credit will be manually refunded\n' +
+        '• You may be contacted for additional information\n\n' +
+        '⚠️ IMPORTANT:\n' +
+        '• Only report if the tutor genuinely did not attend\n' +
+        '• False reports may result in account suspension\n' +
+        '• This does not cancel the session - it creates a review request\n\n' +
+        'Do you want to proceed with this report?'
+    );
+    
+    if (!confirmed) {
+        return;
+    }
+
+    // Ask for additional details (optional but helpful for admin)
+    const studentNotes = prompt(
+        'Please provide additional details (optional):\n\n' +
+        '• Did the tutor contact you?\n' +
+        '• How long did you wait?\n' +
+        '• Any other relevant information?'
+    );
+    
+    const reportBtn = document.querySelector(`[data-session-id="${sessionId}"][data-action="report-no-show"]`);
+    
+    try {
+        // Show loading state
+        if (reportBtn) {
+            const originalText = reportBtn.innerHTML;
+            reportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting Report...';
+            reportBtn.disabled = true;
+        }
+        
+        // Get session data
+        const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
+        
+        if (!sessionDoc.exists) {
+            throw new Error('Session not found');
+        }
+        
+        const sessionData = sessionDoc.data();
+        
+        // Verify session is in valid state for no-show report
+        const now = new Date();
+        const sessionDate = sessionData.date.toDate();
+        const sessionEndTime = new Date(sessionDate.getTime() + (sessionData.duration * 60 * 60 * 1000));
+        
+        if (now < sessionDate) {
+            throw new Error('Cannot report no-show before session start time');
+        }
+        
+        if (now > sessionEndTime) {
+            throw new Error('Cannot report no-show after session has ended');
+        }
+        
+        if (sessionData.status !== 'confirmed') {
+            throw new Error('Can only report no-show for confirmed sessions');
+        }
+        
+        if (sessionData.noShowReported) {
+            throw new Error('No-show has already been reported for this session');
+        }
+        
+        // Create no-show report document for admin review
+        const noShowReport = await db.collection('noShowReports').add({
+            sessionId: sessionId,
+            reportedBy: 'student',
+            studentId: auth.currentUser.uid,
+            studentName: userData?.fullName || userData?.name || 'Student',
+            studentEmail: userData?.email || auth.currentUser.email,
+            tutorId: sessionData.tutorId,
+            tutorName: sessionData.tutorName,
+            tutorEmail: sessionData.tutorEmail,
+            subject: sessionData.subject,
+            sessionDate: sessionData.date,
+            sessionDuration: sessionData.duration,
+            reportedAt: new Date(),
+            reportedAtTimestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            
+            // Report status tracking
+            status: 'pending_admin_review',
+            adminReviewed: false,
+            adminReviewedAt: null,
+            adminReviewedBy: null,
+            
+            // Credit refund tracking (MANUAL ONLY)
+            creditRefunded: false,
+            creditRefundedAt: null,
+            creditRefundedBy: null,
+            refundApproved: false,
+            
+            // Evidence and notes
+            studentNotes: studentNotes || 'No additional notes provided',
+            meetLink: sessionData.meetLink || '',
+            meetPlatform: sessionData.meetPlatform || '',
+            
+            // For verification
+            sessionStartTime: sessionData.date,
+            sessionEndTime: new Date(sessionDate.getTime() + (sessionData.duration * 60 * 60 * 1000)),
+            reportTime: new Date(),
+            
+            // Tutor response tracking
+            tutorResponseReceived: false,
+            tutorResponse: null,
+            tutorRespondedAt: null,
+            
+            // Admin notes
+            adminNotes: '',
+            resolutionNotes: ''
+        });
+        
+        // Update session with no-show flag (but DON'T change status yet)
+        await db.collection('bookedSessions').doc(sessionId).update({
+            noShowReported: true,
+            noShowReportedAt: new Date(),
+            noShowReportedBy: 'student',
+            noShowReportId: noShowReport.id,
+            lastUpdated: new Date()
+            // NOTE: Status remains 'confirmed' until admin reviews
+        });
+        
+        // Create notification for tutor
+        await db.collection('tutorNotifications').add({
+            tutorId: sessionData.tutorId,
+            type: 'no_show_reported',
+            title: '⚠️ Student Reported No-Show',
+            message: `${sessionData.studentName} reported that you did not attend the ${sessionData.subject} session`,
+            priority: 'urgent',
+            isRead: false,
+            requiresAction: true,
+            relatedSessionId: sessionId,
+            details: {
+                studentName: sessionData.studentName,
+                studentId: sessionData.studentId,
+                subject: sessionData.subject,
+                date: sessionData.date.toDate().toLocaleDateString(),
+                time: sessionData.date.toDate().toLocaleTimeString(),
+                reportedAt: new Date().toLocaleString(),
+                reportId: noShowReport.id,
+                actionRequired: 'Please respond to this report immediately',
+                studentNotes: studentNotes || 'No additional details provided'
+            },
+            createdAt: new Date()
+        });
+        
+        // Create HIGH PRIORITY notification for admin
+        await db.collection('adminNotifications').add({
+            type: 'no_show_report',
+            title: '🚨 URGENT: Student Reported Tutor No-Show',
+            message: `${sessionData.studentName} reported ${sessionData.tutorName} did not attend ${sessionData.subject} session`,
+            priority: 'urgent',
+            isRead: false,
+            requiresAction: true,
+            relatedSessionId: sessionId,
+            reportId: noShowReport.id,
+            studentId: sessionData.studentId,
+            tutorId: sessionData.tutorId,
+            details: {
+                studentName: sessionData.studentName,
+                studentEmail: userData?.email || auth.currentUser.email,
+                tutorName: sessionData.tutorName,
+                tutorEmail: sessionData.tutorEmail,
+                subject: sessionData.subject,
+                date: sessionData.date.toDate().toLocaleDateString(),
+                time: sessionData.date.toDate().toLocaleTimeString(),
+                duration: sessionData.duration,
+                reportedAt: new Date().toLocaleString(),
+                studentNotes: studentNotes || 'No additional notes',
+                meetLink: sessionData.meetLink || 'No meeting link',
+                sessionStartTime: sessionDate.toLocaleString(),
+                sessionEndTime: sessionEndTime.toLocaleString(),
+                reportTime: new Date().toLocaleString(),
+                actionRequired: 'VERIFY WITH BOTH PARTIES BEFORE REFUNDING CREDIT'
+            },
+            createdAt: new Date()
+        });
+        
+        // Send email to admin (if you have email functions set up)
+        try {
+            const sendAdminEmail = firebase.functions().httpsCallable('sendNoShowAlertEmail');
+            await sendAdminEmail({ 
+                reportId: noShowReport.id,
+                sessionId: sessionId,
+                studentName: sessionData.studentName,
+                tutorName: sessionData.tutorName,
+                subject: sessionData.subject,
+                sessionDate: sessionData.date.toDate().toISOString(),
+                studentNotes: studentNotes || 'No additional notes'
+            });
+        } catch (emailError) {
+            console.warn('Email notification failed (non-critical):', emailError);
+            // Continue anyway - admin notification is in database
+        }
+        
+        // Success message - make it VERY clear no automatic refund
+        alert(
+            '✅ NO-SHOW REPORT SUBMITTED\n\n' +
+            'Your report has been submitted to our support team.\n\n' +
+            '📋 What happens next:\n' +
+            '1. Admin will review within 24-48 hours\n' +
+            '2. We will verify with the tutor\n' +
+            '3. Both parties may be contacted\n' +
+            '4. If confirmed, credit will be MANUALLY refunded\n\n' +
+            '⏳ Please allow 1-2 business days for resolution.\n\n' +
+            '📧 You will receive an email when the review is complete.\n\n' +
+            'Report ID: ' + noShowReport.id.substring(0, 8) + '...\n' +
+            'Reference this ID if you need to contact support.'
+        );
+        
+        // Refresh bookings display
+        loadUserBookings();
+        
+    } catch (error) {
+        console.error('Error reporting no-show:', error);
+        
+        let errorMessage = 'Failed to submit no-show report. ';
+        if (error.message) {
+            errorMessage += error.message;
+        } else {
+            errorMessage += 'Please try again or contact support directly.';
+        }
+        
+        alert('❌ ' + errorMessage);
+        
+        // Reset button
+        if (reportBtn) {
+            reportBtn.innerHTML = '<i class="fas fa-user-times"></i> Report Tutor No-Show';
+            reportBtn.disabled = false;
+        }
     }
 }
   
@@ -5492,11 +5719,8 @@ function displaySessionsAsCards(sessions) {
       cardClass += ' rescheduled';
     }
     
-    // Determine attendance status and actions
-    const attendanceSection = getAttendanceSection(session);
-    
     html += `
-      <div class="${cardClass}" id="session-${session.id}">
+      <div class="${cardClass}">
         <div class="session-history-header">
           <div class="session-history-subject">${session.subject || 'No subject specified'}</div>
           <div class="session-history-date">
@@ -5522,12 +5746,6 @@ function displaySessionsAsCards(sessions) {
             <i class="fas fa-hourglass-half"></i>
             <span>Status: <span class="status-badge ${getStatusClass(session.status)}">${session.status || 'unknown'}</span></span>
           </div>
-          ${session.attendanceStatus ? `
-          <div class="session-history-detail">
-            <i class="fas fa-user-check"></i>
-            <span>Attendance: <span class="attendance-status status-${session.attendanceStatus}">${session.attendanceStatus}</span></span>
-          </div>
-          ` : ''}
           <div class="session-history-detail">
             <i class="fas fa-calendar-check"></i>
             <span>Action: ${actionType}</span>
@@ -5544,9 +5762,6 @@ function displaySessionsAsCards(sessions) {
             <span>Notes: ${session.notes}</span>
           </div>
         ` : ''}
-        
-        <!-- Attendance Actions Section -->
-        ${attendanceSection}
         
         <div class="session-history-actions">
           ${session.meetLink && session.status === 'completed' ? `
@@ -5568,140 +5783,6 @@ function displaySessionsAsCards(sessions) {
   container.innerHTML = html;
 }
 
-// Helper function to generate attendance section
-function getAttendanceSection(session) {
-    const now = new Date();
-    const sessionTime = session.date.toDate();
-    const sessionEndTime = new Date(sessionTime.getTime() + (session.duration * 60 * 60 * 1000));
-    
-    // Session is in the past and completed
-    const isPastSession = now > sessionEndTime;
-    const isCompleted = session.status === 'completed';
-    
-    // Check if attendance is already reported
-    const isAttendanceReported = session.attendanceStatus && 
-                                (session.attendanceStatus === 'attended' || 
-                                 session.attendanceStatus === 'no-show');
-    
-    // Check if student reported attendance
-    const studentReportedAttendance = session.studentReportedAttendance === true;
-    
-    if (isCompleted && isPastSession && !isAttendanceReported) {
-        return `
-            <div class="attendance-actions">
-                <button class="btn-attended" onclick="reportAttendance('${session.id}', 'attended')">
-                    <i class="fas fa-check-circle"></i> Mark as Attended
-                </button>
-                <button class="btn-no-show" onclick="reportAttendance('${session.id}', 'no-show')">
-                    <i class="fas fa-times-circle"></i> Report No-Show
-                </button>
-            </div>
-        `;
-    } else if (isCompleted && isPastSession && studentReportedAttendance) {
-        return `
-            <div class="attendance-reported">
-                <i class="fas fa-info-circle"></i> 
-                You reported: ${session.attendanceStatus === 'attended' ? 'Attended' : 'No-Show'}
-                ${session.attendanceReportedAt ? ` on ${session.attendanceReportedAt.toDate().toLocaleDateString()}` : ''}
-            </div>
-        `;
-    } else if (isAttendanceReported) {
-        return `
-            <div class="session-history-detail">
-                <i class="fas fa-clipboard-check"></i>
-                <span>Attendance: <span class="attendance-status status-${session.attendanceStatus}">${session.attendanceStatus}</span></span>
-            </div>
-        `;
-    }
-    
-    return '';
-}
-
-// Report attendance (attended or no-show)
-async function reportAttendance(sessionId, attendanceStatus) {
-    if (!sessionId || !attendanceStatus) {
-        alert('Invalid session or attendance status.');
-        return;
-    }
-
-    // Confirm the action
-    const actionText = attendanceStatus === 'attended' ? 'mark as attended' : 'report as no-show';
-    if (!confirm(`Are you sure you want to ${actionText} this session?`)) {
-        return;
-    }
-
-    try {
-        const sessionRef = db.collection('bookedSessions').doc(sessionId);
-        
-        // Update the session with attendance information
-        await sessionRef.update({
-            attendanceStatus: attendanceStatus,
-            studentReportedAttendance: true,
-            attendanceReportedAt: new Date(),
-            attendanceReportedBy: 'student',
-            updatedAt: new Date()
-        });
-
-        // Create notification for tutor
-        const sessionDoc = await sessionRef.get();
-        const session = sessionDoc.data();
-        
-        await db.collection('tutorNotifications').add({
-            tutorId: session.tutorId,
-            type: 'attendance_reported',
-            title: `Attendance ${attendanceStatus === 'attended' ? 'Confirmed' : 'No-Show Reported'}`,
-            message: `${session.studentName} ${attendanceStatus === 'attended' ? 'confirmed attendance' : 'reported no-show'} for ${session.subject} session`,
-            details: {
-                studentName: session.studentName,
-                studentId: session.studentId,
-                sessionId: sessionId,
-                subject: session.subject,
-                date: session.date.toDate().toLocaleDateString(),
-                time: session.date.toDate().toLocaleTimeString(),
-                attendanceStatus: attendanceStatus,
-                reportedBy: 'student'
-            },
-            relatedSessionId: sessionId,
-            isRead: false,
-            priority: 'medium',
-            createdAt: new Date()
-        });
-
-        // Show success message
-        const message = attendanceStatus === 'attended' 
-            ? 'Thank you for confirming your attendance!'
-            : 'No-show reported. The tutor has been notified.';
-        
-        showToast(message, 'success');
-
-        // Reload sessions to update UI
-        loadUserSessionHistory();
-
-    } catch (error) {
-        console.error('Error reporting attendance:', error);
-        alert('Failed to report attendance. Please try again.');
-    }
-}
-
-// Enhanced session completion handler
-function handleSessionCompletion(sessionId) {
-    // This function can be called when a session is marked as completed
-    const sessionRef = db.collection('bookedSessions').doc(sessionId);
-    
-    sessionRef.update({
-        status: 'completed',
-        completedAt: new Date(),
-        // Don't set attendance status here - let student report it
-        requiresAttendanceConfirmation: true
-    }).then(() => {
-        console.log('Session marked as completed:', sessionId);
-        // Reload sessions to show attendance buttons
-        loadUserSessionHistory();
-    }).catch(error => {
-        console.error('Error completing session:', error);
-    });
-}
-  
 function switchView(view) {
   currentView = view;
   
@@ -5838,8 +5919,7 @@ function displaySessionsAsTable(sessions) {
                     <th>Subject</th>
                     <th>Duration</th>
                     <th>Status</th>
-                    <th>Attendance</th>
-                    <th>Actions</th>
+                    <th>Action Type</th>
                 </tr>
             </thead>
             <tbody>
@@ -5848,13 +5928,8 @@ function displaySessionsAsTable(sessions) {
     sessions.forEach(session => {
         const sessionDate = session.date.toDate();
         const formattedDate = sessionDate.toLocaleDateString();
-        const now = new Date();
-        const sessionEndTime = new Date(sessionDate.getTime() + (session.duration * 60 * 60 * 1000));
-        const isPastSession = now > sessionEndTime;
-        const isCompleted = session.status === 'completed';
+        const { actionTime, actionType } = getActionTimestamp(session);
         
-        const attendanceActions = getTableAttendanceActions(session, isCompleted, isPastSession);
-
         html += `
             <tr>
                 <td>${formattedDate}</td>
@@ -5862,45 +5937,13 @@ function displaySessionsAsTable(sessions) {
                 <td>${session.subject || 'No subject'}</td>
                 <td>${session.duration || '1'} hours</td>
                 <td><span class="status-badge ${getStatusClass(session.status)}">${session.status}</span></td>
-                <td>
-                    ${session.attendanceStatus ? 
-                        `<span class="attendance-status status-${session.attendanceStatus}">${session.attendanceStatus}</span>` : 
-                        (isCompleted && isPastSession ? '<span class="attendance-status status-pending-attendance">Pending</span>' : 'N/A')
-                    }
-                </td>
-                <td>
-                    ${attendanceActions}
-                    ${session.meetLink && session.status === 'completed' ? 
-                        `<button class="btn-outline btn-small" onclick="window.open('${session.meetLink}', '_blank')">Meeting Link</button>` : ''}
-                    ${session.status === 'completed' ? 
-                        `<button class="btn-primary btn-small" onclick="rateSession('${session.id}')">Rate</button>` : ''}
-                </td>
+                <td>${actionType}</td>
             </tr>
         `;
     });
     
     html += '</tbody></table>';
     container.innerHTML = html;
-}
-
-// Helper function for table attendance actions
-function getTableAttendanceActions(session, isCompleted, isPastSession) {
-    const isAttendanceReported = session.attendanceStatus && 
-                                (session.attendanceStatus === 'attended' || 
-                                 session.attendanceStatus === 'no-show');
-    
-    const studentReportedAttendance = session.studentReportedAttendance === true;
-
-    if (isCompleted && isPastSession && !isAttendanceReported) {
-        return `
-            <button class="btn-attended btn-small" onclick="reportAttendance('${session.id}', 'attended')">Attended</button>
-            <button class="btn-no-show btn-small" onclick="reportAttendance('${session.id}', 'no-show')">No-Show</button>
-        `;
-    } else if (isCompleted && isPastSession && studentReportedAttendance) {
-        return `<span style="color: var(--gray); font-size: 0.8em;">Reported: ${session.attendanceStatus}</span>`;
-    }
-    
-    return '';
 }
 
 // Missing function: getStatusClass
@@ -9505,37 +9548,23 @@ async function updateTutorRating(tutorId) {
     });
 }
 
-// Enhanced Toast notification function (builds upon your existing one)
+// Toast notification
 function showToast(message, type = 'info') {
-    // Remove existing toast if any (prevents multiple toasts)
-    const existingToast = document.querySelector('.toast-notification');
-    if (existingToast) {
-        existingToast.remove();
-    }
-
-    // Determine icon based on type
-    let icon = 'info-circle';
-    if (type === 'success') icon = 'check-circle';
-    if (type === 'error') icon = 'exclamation-circle';
-    if (type === 'warning') icon = 'exclamation-triangle';
-
+    // Use your existing notification system or create a simple one
     const toast = document.createElement('div');
     toast.className = `toast-notification toast-${type}`;
     toast.innerHTML = `
         <div class="toast-content">
-            <i class="fas fa-${icon}"></i>
+            <i class="fas fa-${type === 'success' ? 'check-circle' : 'info-circle'}"></i>
             <span>${message}</span>
         </div>
     `;
     
     document.body.appendChild(toast);
-
-    // Auto remove after 5 seconds (increased from 3 for better readability)
+    
     setTimeout(() => {
-        if (toast.parentNode) {
-            toast.parentNode.removeChild(toast);
-        }
-    }, 5000);
+        toast.remove();
+    }, 3000);
 }
 
 // Initialize reviews when section is opened
@@ -9599,5 +9628,4 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
-
 
