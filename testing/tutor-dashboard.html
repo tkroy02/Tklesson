@@ -6805,14 +6805,16 @@ function displayFilteredSessions(sessions, container, loadMoreBtn) {
                 <table class="sessions-table">
                     <thead>
                         <tr>
-                            <th>Date & Time</th>
-                            <th>Student</th>
-                            <th>Subject</th>
-                            <th>Type</th>
-                            <th>Duration</th>
-                            <th>Status</th>
-                            <th>Tutor Action</th>
-                            <th>Actions</th>
+                            <th>Action Time</th>
+        <th>Action Type</th>
+        <th>Student</th>
+        <th>Subject</th>
+        <th>Session Date</th>
+        <th>Type</th>
+        <th>Duration</th>
+        <th>Status</th>
+        <th>Tutor Action</th>
+        <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="sessionsTableBody">
@@ -6865,10 +6867,17 @@ function setupResponsiveSessions() {
 
 // ADD THIS FUNCTION - it creates table rows for session history
 function createSessionHistoryRow(session) {
-    const date = session.date.toDate();
-    const formattedDate = date.toLocaleDateString();
-    const formattedTime = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    const isFutureSession = date > new Date();
+    const sessionDate = session.date.toDate();
+    const formattedSessionDate = sessionDate.toLocaleDateString();
+    const formattedSessionTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Get action time information
+    const actionTimeInfo = getActionTime(session);
+    const actionDate = actionTimeInfo.timestamp.toDate();
+    const formattedActionDate = actionDate.toLocaleDateString();
+    const formattedActionTime = actionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const isFutureSession = sessionDate > new Date();
     const statusClass = getStatusClass(session.status);
     const sessionType = session.sessionType === 'online' ? 'Online' : 'In-Person';
     
@@ -6876,15 +6885,30 @@ function createSessionHistoryRow(session) {
     const tutorAction = getTutorActionForSession(session);
     const actionClass = getActionClass(tutorAction);
     
+    // Get action type badge class
+    const actionTypeClass = getActionTypeClass(actionTimeInfo.type);
+    
     return `
         <tr class="session-history-row ${isFutureSession ? 'future-session' : 'past-session'}">
             <td>
-                <div>${formattedDate}</div>
-                <div class="timestamp-cell">${formattedTime}</div>
-                ${isFutureSession ? '<div class="future-badge">Upcoming</div>' : ''}
+                <div class="action-time-cell">
+                    <div class="action-date">${formattedActionDate}</div>
+                    <div class="action-time">${formattedActionTime}</div>
+                    <div class="action-relative-time">${getRelativeTime(actionDate)}</div>
+                </div>
+            </td>
+            <td>
+                <span class="action-type-badge action-type-${actionTypeClass}">
+                    ${actionTimeInfo.action}
+                </span>
             </td>
             <td>${session.studentName || 'Unknown Student'}</td>
             <td>${session.subject || 'General'}</td>
+            <td>
+                <div>${formattedSessionDate}</div>
+                <div class="timestamp-cell">${formattedSessionTime}</div>
+                ${isFutureSession ? '<div class="future-badge">Upcoming</div>' : ''}
+            </td>
             <td>${sessionType}</td>
             <td>${session.duration || '1.5'}h</td>
             <td>
@@ -7094,6 +7118,87 @@ async function showSessionDetails(sessionId) {
     }
 }
 
+function getActionTime(session) {
+    // Priority order for action timestamps
+    if (session.cancelledAt) {
+        return {
+            timestamp: session.cancelledAt,
+            action: 'Cancelled',
+            type: 'cancellation'
+        };
+    } else if (session.confirmedAt) {
+        return {
+            timestamp: session.confirmedAt,
+            action: 'Confirmed',
+            type: 'confirmation'
+        };
+    } else if (session.completedAt) {
+        return {
+            timestamp: session.completedAt,
+            action: 'Completed',
+            type: 'completion'
+        };
+    } else if (session.bookedAt) {
+        return {
+            timestamp: session.bookedAt,
+            action: 'Booked',
+            type: 'booking'
+        };
+    } else if (session.lastUpdated) {
+        return {
+            timestamp: session.lastUpdated,
+            action: 'Updated',
+            type: 'update'
+        };
+    } else {
+        // Fallback to session date
+        return {
+            timestamp: session.date,
+            action: 'Scheduled',
+            type: 'scheduled'
+        };
+    }
+}
+
+// Get CSS class for action type badge
+function getActionTypeClass(actionType) {
+    switch(actionType) {
+        case 'cancellation':
+            return 'error';
+        case 'confirmation':
+            return 'success';
+        case 'completion':
+            return 'primary';
+        case 'booking':
+            return 'info';
+        case 'update':
+            return 'warning';
+        default:
+            return 'gray';
+    }
+}
+
+// Get relative time string (e.g., "2 hours ago")
+function getRelativeTime(date) {
+    const now = new Date();
+    const diffInSeconds = Math.floor((now - date) / 1000);
+    
+    if (diffInSeconds < 60) {
+        return 'just now';
+    } else if (diffInSeconds < 3600) {
+        const minutes = Math.floor(diffInSeconds / 60);
+        return `${minutes} min ago`;
+    } else if (diffInSeconds < 86400) {
+        const hours = Math.floor(diffInSeconds / 3600);
+        return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    } else if (diffInSeconds < 604800) {
+        const days = Math.floor(diffInSeconds / 86400);
+        return `${days} day${days > 1 ? 's' : ''} ago`;
+    } else {
+        return date.toLocaleDateString();
+    }
+}
+       
 // Get additional session metadata for timeline
 async function getSessionMetadata(sessionId) {
     const metadata = {
