@@ -180,6 +180,38 @@
             font-weight: bold;
         }
 
+/* Admin Notification Styles */
+.admin-notification-item.critical {
+    border-left: 4px solid #e53e3e;
+    background: rgba(229, 62, 62, 0.05);
+}
+
+.admin-notification-item.high {
+    border-left: 4px solid #dd6b20;
+    background: rgba(221, 107, 32, 0.05);
+}
+
+.admin-notification-item.medium {
+    border-left: 4px solid #d69e2e;
+}
+
+.admin-notification-item.low {
+    border-left: 4px solid #38a169;
+}
+
+.notification-priority-badge {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.7em;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.priority-critical { background: #e53e3e; color: white; }
+.priority-high { background: #dd6b20; color: white; }
+.priority-medium { background: #d69e2e; color: white; }
+.priority-low { background: #38a169; color: white; }
+        
         /* Main Content Styles */
         .main-content {
             flex: 1;
@@ -4377,7 +4409,295 @@ function displayReports() {
     
     container.innerHTML = reportsHTML;
 }
+
+// =============================================
+// ADMIN NOTIFICATION SYSTEM
+// =============================================
+
+class AdminNotificationSystem {
+    constructor() {
+        this.notifications = [];
+        this.unreadCount = 0;
+        this.realtimeListener = null;
+        this.isInitialized = false;
+    }
+
+    // Initialize admin notification system
+    async initialize() {
+        if (this.isInitialized) return;
+
+        try {
+            this.setupDOMElements();
+            await this.loadAdminNotifications();
+            this.startRealtimeMonitoring();
+            this.setupEventListeners();
+            this.isInitialized = true;
+            
+            console.log('Admin notification system initialized');
+        } catch (error) {
+            console.error('Failed to initialize admin notifications:', error);
+        }
+    }
+
+    // Setup DOM elements for admin notifications
+    setupDOMElements() {
+        // Create notification dropdown for admin
+        const dropdownHTML = `
+            <div id="adminNotificationDropdown" class="notification-dropdown hidden">
+                <div class="notification-header">
+                    <h4>Admin Notifications</h4>
+                    <div class="notification-actions">
+                        <button id="adminMarkAllRead" class="btn-outline btn-small">Mark All Read</button>
+                        <button id="adminClearAll" class="btn-outline btn-small">Clear All</button>
+                    </div>
+                </div>
+                <div class="notification-list" id="adminNotificationList">
+                    <div class="notification-loading">
+                        <div class="loading-spinner"></div>
+                        <span>Loading notifications...</span>
+                    </div>
+                </div>
+                <div class="notification-footer">
+                    <span id="adminNotificationFooter">Loading...</span>
+                </div>
+            </div>
+        `;
+
+        // Add to admin top bar
+        const existingDropdown = document.getElementById('adminNotificationDropdown');
+        if (existingDropdown) existingDropdown.remove();
         
+        document.body.insertAdjacentHTML('beforeend', dropdownHTML);
+    }
+
+    // Load admin-specific notifications
+    async loadAdminNotifications() {
+        try {
+            // Query for admin notifications
+            const snapshot = await db.collection('adminNotifications')
+                .orderBy('createdAt', 'desc')
+                .limit(50)
+                .get();
+
+            this.processAdminNotifications(snapshot);
+            this.updateAdminUI();
+            
+        } catch (error) {
+            console.error('Error loading admin notifications:', error);
+            this.showErrorState();
+        }
+    }
+
+    // Process admin notifications
+    processAdminNotifications(snapshot) {
+        this.notifications = [];
+        
+        if (snapshot.empty) {
+            this.unreadCount = 0;
+            return;
+        }
+
+        snapshot.forEach(doc => {
+            const notification = {
+                id: doc.id,
+                ...doc.data()
+            };
+            this.notifications.push(notification);
+        });
+
+        this.unreadCount = this.notifications.filter(n => !n.isRead).length;
+    }
+
+    // Start real-time monitoring for admin alerts
+    startRealtimeMonitoring() {
+        // Monitor for new no-show reports
+        this.monitorNoShows();
+        
+        // Monitor session completions
+        this.monitorSessionCompletions();
+        
+        // Monitor payment issues
+        this.monitorPaymentIssues();
+        
+        // Monitor system alerts
+        this.monitorSystemAlerts();
+    }
+}
+
+        // Real-time monitoring for admin dashboard
+startRealtimeMonitoring() {
+    // 1. Monitor No-Shows
+    this.realtimeListeners = [];
+    
+    // No-show monitoring
+    const noShowListener = db.collection('bookedSessions')
+        .where('attendanceStatus', '==', 'no-show')
+        .where('attendanceReportedAt', '>', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) // Last 7 days
+        .onSnapshot((snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added') {
+                    this.handleNewNoShow(change.doc);
+                }
+            });
+        });
+    this.realtimeListeners.push(noShowListener);
+
+    // 2. Monitor Session Completions
+    const completionListener = db.collection('bookedSessions')
+        .where('status', '==', 'completed')
+        .where('completedAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000)) // Last 24 hours
+        .onSnapshot((snapshot) => {
+            this.updateCompletionAnalytics(snapshot);
+        });
+    this.realtimeListeners.push(completionListener);
+
+    // 3. Monitor System Issues
+    const systemListener = db.collection('systemAlerts')
+        .where('resolved', '==', false)
+        .onSnapshot((snapshot) => {
+            this.handleSystemAlerts(snapshot);
+        });
+    this.realtimeListeners.push(systemListener);
+}
+
+// Handle new no-show reports
+async handleNewNoShow(noShowDoc) {
+    const noShowData = noShowDoc.data();
+    
+    // Create admin notification for no-show
+    const notification = {
+        type: 'student_no_show',
+        title: '🚨 Student No-Show Reported',
+        message: `${noShowData.studentName} reported no-show for ${noShowData.subject} session`,
+        priority: 'high',
+        details: {
+            sessionId: noShowDoc.id,
+            studentName: noShowData.studentName,
+            tutorName: noShowData.tutorName,
+            subject: noShowData.subject,
+            sessionDate: noShowData.date.toDate().toLocaleDateString(),
+            reportedAt: noShowData.attendanceReportedAt?.toDate() || new Date(),
+            reportedBy: noShowData.attendanceReportedBy || 'student'
+        },
+        requiresAction: true,
+        actionType: 'review_no_show',
+        isRead: false,
+        createdAt: new Date()
+    };
+
+    await this.createAdminNotification(notification);
+}
+
+// Create admin notification in Firestore
+async createAdminNotification(notificationData) {
+    try {
+        await db.collection('adminNotifications').add(notificationData);
+        console.log('Admin notification created:', notificationData.type);
+    } catch (error) {
+        console.error('Error creating admin notification:', error);
+    }
+}
+
+        // Different types of admin notifications
+getAdminNotificationTypes() {
+    return {
+        NO_SHOW: {
+            type: 'student_no_show',
+            icon: 'fas fa-user-slash',
+            color: '#e53e3e',
+            priority: 'high'
+        },
+        PAYMENT_ISSUE: {
+            type: 'payment_issue',
+            icon: 'fas fa-credit-card',
+            color: '#dd6b20',
+            priority: 'high'
+        },
+        SESSION_COMPLETION: {
+            type: 'session_completed',
+            icon: 'fas fa-check-circle',
+            color: '#38a169',
+            priority: 'medium'
+        },
+        SYSTEM_ALERT: {
+            type: 'system_alert',
+            icon: 'fas fa-exclamation-triangle',
+            color: '#d69e2e',
+            priority: 'critical'
+        },
+        DISCREPANCY: {
+            type: 'attendance_discrepancy',
+            icon: 'fas fa-balance-scale',
+            color: '#805ad5',
+            priority: 'medium'
+        }
+    };
+}
+
+// Generate notification message based on type
+generateAdminNotificationMessage(notification) {
+    const types = this.getAdminNotificationTypes();
+    
+    switch(notification.type) {
+        case types.NO_SHOW.type:
+            return `${notification.details.studentName} no-show for ${notification.details.subject}`;
+            
+        case types.PAYMENT_ISSUE.type:
+            return `Payment issue with ${notification.details.studentName}`;
+            
+        case types.SESSION_COMPLETION.type:
+            return `${notification.details.completedCount} sessions completed today`;
+            
+        case types.SYSTEM_ALERT.type:
+            return `System issue: ${notification.details.issue}`;
+            
+        case types.DISCREPANCY.type:
+            return `Attendance discrepancy for ${notification.details.sessionId}`;
+            
+        default:
+            return notification.message;
+    }
+}
+
+// Integrate with admin dashboard
+function initializeAdminDashboard() {
+    // Initialize notification system
+    window.adminNotifications = new AdminNotificationSystem();
+    adminNotifications.initialize();
+
+    // Add notification bell to admin header
+    const adminHeader = document.querySelector('.admin-header');
+    if (adminHeader) {
+        adminHeader.innerHTML += `
+            <div class="notification-btn" id="adminNotificationBell">
+                <i class="fas fa-bell"></i>
+                <span class="notification-badge" id="adminNotificationCount" style="display: none;">0</span>
+            </div>
+        `;
+    }
+
+    // Setup admin notification handlers
+    setupAdminNotificationHandlers();
+}
+
+// Setup event handlers for admin notifications
+function setupAdminNotificationHandlers() {
+    // Notification bell click
+    document.getElementById('adminNotificationBell')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        adminNotifications.toggleDropdown();
+    });
+
+    // Mark all as read
+    document.getElementById('adminMarkAllRead')?.addEventListener('click', () => {
+        adminNotifications.markAllAsRead();
+    });
+
+    // Clear all notifications
+    document.getElementById('adminClearAll')?.addEventListener('click', () => {
+        adminNotifications.clearAllNotifications();
+    });
+}
         
     </script>
     
@@ -4401,6 +4721,7 @@ function displayReports() {
     
 </body>
 </html>
+
 
 
 
