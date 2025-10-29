@@ -4420,6 +4420,7 @@ class AdminNotificationSystem {
         this.unreadCount = 0;
         this.realtimeListener = null;
         this.isInitialized = false;
+        this.realtimeListeners = [];
     }
 
     // Initialize admin notification system
@@ -4507,117 +4508,111 @@ class AdminNotificationSystem {
 
     // Start real-time monitoring for admin alerts
     startRealtimeMonitoring() {
-        this.monitorNoShows();
-        this.monitorSessionCompletions();
-        this.monitorPaymentIssues();
-        this.monitorSystemAlerts();
-    }
-} // ✅ class ends cleanly here, extra duplicate removed
-    
-    // No-show monitoring
-    const noShowListener = db.collection('bookedSessions')
-        .where('attendanceStatus', '==', 'no-show')
-        .where('attendanceReportedAt', '>', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) // Last 7 days
-        .onSnapshot((snapshot) => {
-            snapshot.docChanges().forEach((change) => {
-                if (change.type === 'added') {
-                    this.handleNewNoShow(change.doc);
-                }
+        // 1. Monitor No-Shows
+        const noShowListener = db.collection('bookedSessions')
+            .where('attendanceStatus', '==', 'no-show')
+            .where('attendanceReportedAt', '>', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
+            .onSnapshot((snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                        this.handleNewNoShow(change.doc);
+                    }
+                });
             });
-        });
-    this.realtimeListeners.push(noShowListener);
+        this.realtimeListeners.push(noShowListener);
 
-    // 2. Monitor Session Completions
-    const completionListener = db.collection('bookedSessions')
-        .where('status', '==', 'completed')
-        .where('completedAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000)) // Last 24 hours
-        .onSnapshot((snapshot) => {
-            this.updateCompletionAnalytics(snapshot);
-        });
-    this.realtimeListeners.push(completionListener);
+        // 2. Monitor Session Completions
+        const completionListener = db.collection('bookedSessions')
+            .where('status', '==', 'completed')
+            .where('completedAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000))
+            .onSnapshot((snapshot) => {
+                this.updateCompletionAnalytics(snapshot);
+            });
+        this.realtimeListeners.push(completionListener);
 
-    // 3. Monitor System Issues
-    const systemListener = db.collection('systemAlerts')
-        .where('resolved', '==', false)
-        .onSnapshot((snapshot) => {
-            this.handleSystemAlerts(snapshot);
-        });
-    this.realtimeListeners.push(systemListener);
-}
-
-// Handle new no-show reports
-async handleNewNoShow(noShowDoc) {
-    const noShowData = noShowDoc.data();
-    
-    // Create admin notification for no-show
-    const notification = {
-        type: 'student_no_show',
-        title: '🚨 Student No-Show Reported',
-        message: `${noShowData.studentName} reported no-show for ${noShowData.subject} session`,
-        priority: 'high',
-        details: {
-            sessionId: noShowDoc.id,
-            studentName: noShowData.studentName,
-            tutorName: noShowData.tutorName,
-            subject: noShowData.subject,
-            sessionDate: noShowData.date.toDate().toLocaleDateString(),
-            reportedAt: noShowData.attendanceReportedAt?.toDate() || new Date(),
-            reportedBy: noShowData.attendanceReportedBy || 'student'
-        },
-        requiresAction: true,
-        actionType: 'review_no_show',
-        isRead: false,
-        createdAt: new Date()
-    };
-
-    await this.createAdminNotification(notification);
-}
-
-// Create admin notification in Firestore
-async createAdminNotification(notificationData) {
-    try {
-        await db.collection('adminNotifications').add(notificationData);
-        console.log('Admin notification created:', notificationData.type);
-    } catch (error) {
-        console.error('Error creating admin notification:', error);
+        // 3. Monitor System Issues
+        const systemListener = db.collection('systemAlerts')
+            .where('resolved', '==', false)
+            .onSnapshot((snapshot) => {
+                this.handleSystemAlerts(snapshot);
+            });
+        this.realtimeListeners.push(systemListener);
     }
-}
 
-        // Different types of admin notifications
-getAdminNotificationTypes() {
-    return {
-        NO_SHOW: {
+    // Handle new no-show reports
+    async handleNewNoShow(noShowDoc) {
+        const noShowData = noShowDoc.data();
+        
+        const notification = {
             type: 'student_no_show',
-            icon: 'fas fa-user-slash',
-            color: '#e53e3e',
-            priority: 'high'
-        },
-        PAYMENT_ISSUE: {
-            type: 'payment_issue',
-            icon: 'fas fa-credit-card',
-            color: '#dd6b20',
-            priority: 'high'
-        },
-        SESSION_COMPLETION: {
-            type: 'session_completed',
-            icon: 'fas fa-check-circle',
-            color: '#38a169',
-            priority: 'medium'
-        },
-        SYSTEM_ALERT: {
-            type: 'system_alert',
-            icon: 'fas fa-exclamation-triangle',
-            color: '#d69e2e',
-            priority: 'critical'
-        },
-        DISCREPANCY: {
-            type: 'attendance_discrepancy',
-            icon: 'fas fa-balance-scale',
-            color: '#805ad5',
-            priority: 'medium'
+            title: '🚨 Student No-Show Reported',
+            message: `${noShowData.studentName} reported no-show for ${noShowData.subject} session`,
+            priority: 'high',
+            details: {
+                sessionId: noShowDoc.id,
+                studentName: noShowData.studentName,
+                tutorName: noShowData.tutorName,
+                subject: noShowData.subject,
+                sessionDate: noShowData.date.toDate().toLocaleDateString(),
+                reportedAt: noShowData.attendanceReportedAt?.toDate() || new Date(),
+                reportedBy: noShowData.attendanceReportedBy || 'student'
+            },
+            requiresAction: true,
+            actionType: 'review_no_show',
+            isRead: false,
+            createdAt: new Date()
+        };
+
+        await this.createAdminNotification(notification);
+    }
+
+    // Create admin notification in Firestore
+    async createAdminNotification(notificationData) {
+        try {
+            await db.collection('adminNotifications').add(notificationData);
+            console.log('Admin notification created:', notificationData.type);
+        } catch (error) {
+            console.error('Error creating admin notification:', error);
         }
-    };
-}
+    }
+
+    // Different types of admin notifications
+    getAdminNotificationTypes() {
+        return {
+            NO_SHOW: {
+                type: 'student_no_show',
+                icon: 'fas fa-user-slash',
+                color: '#e53e3e',
+                priority: 'high'
+            },
+            PAYMENT_ISSUE: {
+                type: 'payment_issue',
+                icon: 'fas fa-credit-card',
+                color: '#dd6b20',
+                priority: 'high'
+            },
+            SESSION_COMPLETION: {
+                type: 'session_completed',
+                icon: 'fas fa-check-circle',
+                color: '#38a169',
+                priority: 'medium'
+            },
+            SYSTEM_ALERT: {
+                type: 'system_alert',
+                icon: 'fas fa-exclamation-triangle',
+                color: '#d69e2e',
+                priority: 'critical'
+            },
+            DISCREPANCY: {
+                type: 'attendance_discrepancy',
+                icon: 'fas fa-balance-scale',
+                color: '#805ad5',
+                priority: 'medium'
+            }
+        };
+    }
+} // ✅ now this closing brace truly ends the class
+
 
 // Generate notification message based on type
 generateAdminNotificationMessage(notification) {
@@ -4706,6 +4701,7 @@ function setupAdminNotificationHandlers() {
     
 </body>
 </html>
+
 
 
 
