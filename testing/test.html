@@ -3386,6 +3386,31 @@ let sessionsLoaded = false;
 let schedulingLoaded = false;
 let inactivityTimer;
 
+// ============================================
+// INACTIVITY LOGOUT CODE - ADD HERE
+// ============================================
+const INACTIVITY_TIMEOUT = 2 * 60 * 60 * 1000; // 2 hours
+
+function resetInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+        console.log('User inactive for 2 hours. Logging out...');
+        auth.signOut().then(() => {
+            window.location.href = 'login.html';
+        });
+    }, INACTIVITY_TIMEOUT);
+}
+
+function setupActivityListeners() {
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'];
+    events.forEach(event => {
+        document.addEventListener(event, resetInactivityTimer, true);
+    });
+}
+// ============================================
+// END INACTIVITY LOGOUT CODE
+// ============================================
+  
 // Initialize the dashboard
 function initDashboard() {
   // Wait for authentication to be ready
@@ -5011,16 +5036,15 @@ function loadBookingsDisplay(bookings) {
     container.innerHTML = html;
 
     // Add informational text
-    const infoText = document.createElement('div');
-    infoText.className = 'booking-info-text';
-    infoText.innerHTML = `
-        <i class="fas fa-info-circle"></i> 
-        <strong>Important:</strong> 
-        "Report No-Show" button appears during session time if tutor doesn't show. 
-        Reports are reviewed by admin within 24-48 hours. 
-        Credit is manually refunded only after verification.
-    `;
-    container.appendChild(infoText);
+   const infoText = document.createElement('div');
+infoText.className = 'booking-info-text';
+infoText.innerHTML = `
+    <i class="fas fa-info-circle"></i> 
+    <strong>Join Session:</strong> Button will appear once status is confirmed and it's within 15 minutes of your session time.<br><br>
+    <strong>Report No-Show:</strong> Button appears during session time if tutor doesn't show. Reports are reviewed by admin within 24-48 hours. Credit is manually refunded only after verification.
+`;
+container.appendChild(infoText);
+
     
     // Set up the event listener (including No-Show handler)
     if (!bookingsContainerListener) {
@@ -5067,7 +5091,7 @@ function loadBookingsDisplay(bookings) {
         '📋 What happens next:\n' +
         '• Your report will be submitted to our support team\n' +
         '• Admin will review your case within 24-48 hours\n' +
-        '• We will check our system and verify with the tutor\n' +
+        '• We will verify with the tutor\n' +
         '• If confirmed, your credit will be manually refunded\n' +
         '• You may be contacted for additional information\n\n' +
         '⚠️ IMPORTANT:\n' +
@@ -5266,7 +5290,7 @@ function loadBookingsDisplay(bookings) {
             'Your report has been submitted to our support team.\n\n' +
             '📋 What happens next:\n' +
             '1. Admin will review within 24-48 hours\n' +
-            '2. We will check our system and verify with the tutor\n' +
+            '2. We will verify with the tutor\n' +
             '3. Both parties may be contacted\n' +
             '4. If confirmed, credit will be MANUALLY refunded\n\n' +
             '⏳ Please allow 1-2 business days for resolution.\n\n' +
@@ -5458,7 +5482,7 @@ auth.onAuthStateChanged((user) => {
       // SPECIFIC INITIALIZATION CODE THAT SHOULD BE HERE:
       initDashboard(); // Your main dashboard initialization
       loadPackageBalance(); // Load package balance
-      setupProfileEditing(); // Profile editing handlers
+      //setupProfileEditing(); // Profile editing handlers
       resetInactivityTimer(); // Activity tracking
       // INITIALIZE CHAT SYSTEM
       setTimeout(() => {
@@ -5621,15 +5645,15 @@ function filterSessions() {
   });
   
   filteredSessionsData.sort((a, b) => {
-    const aDate = a.date.toDate();
-    const bDate = b.date.toDate();
-    return bDate - aDate;
-  });
+    const { actionTime: aActionTime } = getActionTimestamp(a);
+    const { actionTime: bActionTime } = getActionTimestamp(b);
+    return bActionTime - aActionTime;
+});
 }
 
 function setupPagination() {
   totalPages = Math.ceil(filteredSessionsData.length / itemsPerPage);
-  currentPage = 1;
+  //currentPage = 1;
   
   const paginationContainer = document.getElementById('paginationContainer');
   const pageNumbersContainer = document.getElementById('pageNumbers');
@@ -5770,11 +5794,11 @@ function displaySessionsAsCards(sessions) {
             </button>
           ` : ''}
           
-          ${session.status === 'completed' ? `
-            <button class="btn-primary btn-small" onclick="rateSession('${session.id}')">
-              <i class="fas fa-star"></i> Rate Session
-            </button>
-          ` : ''}
+         ${session.status === 'completed' ? `
+  <button class="btn-primary btn-small" onclick="switchToReviewsSection('${session.id}')">
+    <i class="fas fa-star"></i> Rate Session
+  </button>
+` : ''}
         </div>
       </div>
     `;
@@ -5798,6 +5822,43 @@ function switchView(view) {
   displayCurrentPage();
 }
 
+// Add this function to handle switching to reviews section
+function switchToReviewsSection(sessionId) {
+  // Activate reviews section menu item
+  document.querySelectorAll('.menu-item a').forEach(item => {
+    item.classList.remove('active');
+    if (item.getAttribute('data-section') === 'reviews') {
+      item.classList.add('active');
+    }
+  });
+  
+  // Show reviews section
+  document.querySelectorAll('.dashboard-section').forEach(section => {
+    section.classList.remove('active');
+    if (section.id === 'reviews') {
+      section.classList.add('active');
+    }
+  });
+  
+  // Load reviews and auto-open the review modal for this session
+  setTimeout(() => {
+    // Initialize review status first, then load reviews
+    initializeReviewStatus().then(() => {
+      loadReviewsSection();
+      // Auto-open the review modal for this specific session
+      setTimeout(() => {
+        showReviewModal(sessionId);
+      }, 500);
+    }).catch(() => {
+      // If initialization fails, still try to load and open modal
+      loadReviewsSection();
+      setTimeout(() => {
+        showReviewModal(sessionId);
+      }, 500);
+    });
+  }, 100);
+}
+  
 function showNoSessionsMessage() {
   const cardsContainer = document.getElementById('sessionsCardsContainer');
   const tableContainer = document.getElementById('sessionsContainer');
@@ -5914,10 +5975,10 @@ function displaySessionsAsTable(sessions) {
         <table class="sessions-table">
             <thead>
                 <tr>
-                    <th>Session Date</th>
+                    <th>Action Date</th>
                     <th>Tutor</th>
                     <th>Subject</th>
-                    <th>Duration</th>
+                    <th>Session Date</th>
                     <th>Status</th>
                     <th>Action Type</th>
                 </tr>
@@ -5927,15 +5988,18 @@ function displaySessionsAsTable(sessions) {
 
     sessions.forEach(session => {
         const sessionDate = session.date.toDate();
-        const formattedDate = sessionDate.toLocaleDateString();
+        const formattedSessionDate = sessionDate.toLocaleDateString();
+        const formattedSessionTime = sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         const { actionTime, actionType } = getActionTimestamp(session);
+        const formattedActionDate = actionTime.toLocaleDateString();
+        const formattedActionTime = actionTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
         html += `
             <tr>
-                <td>${formattedDate}</td>
+                <td>${formattedActionDate} ${formattedActionTime}</td>
                 <td>${session.tutorName || 'Unknown'}</td>
                 <td>${session.subject || 'No subject'}</td>
-                <td>${session.duration || '1'} hours</td>
+                <td>${formattedSessionDate} ${formattedSessionTime}</td>
                 <td><span class="status-badge ${getStatusClass(session.status)}">${session.status}</span></td>
                 <td>${actionType}</td>
             </tr>
@@ -9628,6 +9692,14 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
+
+
+
+
+
+
+
+
 
 
 
