@@ -118,6 +118,14 @@
     background: #e0a800;
 }
 
+.pending-earning {
+    background-color: rgba(255, 193, 7, 0.05) !important;
+}
+
+.pending-earning:hover {
+    background-color: rgba(255, 193, 7, 0.1) !important;
+}
+        
 .tutor-guidance {
   background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
   color: white;
@@ -8464,6 +8472,7 @@ function processEarningsData(invoicesSnapshot) {
     let totalHours = 0;
     let currentMonthEarnings = 0;
     let rejectedEarnings = 0;
+    let pendingEarnings = 0;
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
     
@@ -8478,15 +8487,17 @@ function processEarningsData(invoicesSnapshot) {
         const sessionEarnings = hours * hourlyRate;
         const status = invoice.status || 'pending';
         
-        // Only count approved and pending invoices in positive earnings
-        if (status === 'approved' || status === 'pending') {
-            // Check if invoice is in current month
+        if (status === 'approved') {
+            // Only approved invoices count toward actual earnings
             if (invoiceDate.getMonth() === currentMonth && invoiceDate.getFullYear() === currentYear) {
                 currentMonthEarnings += sessionEarnings;
             }
             
             totalEarnings += sessionEarnings;
             totalHours += hours;
+        } else if (status === 'pending') {
+            // Track pending separately
+            pendingEarnings += sessionEarnings;
         } else if (status === 'rejected') {
             // Track rejected earnings separately
             rejectedEarnings += sessionEarnings;
@@ -8503,20 +8514,22 @@ function processEarningsData(invoicesSnapshot) {
         });
     });
     
-    const avgSessionEarnings = invoices.length > 0 ? totalEarnings / invoices.length : 0;
+    const approvedInvoices = invoices.filter(inv => inv.status === 'approved');
+    const avgSessionEarnings = approvedInvoices.length > 0 ? 
+        totalEarnings / approvedInvoices.length : 0;
     
     return {
         invoices,
-        totalSessions: invoices.filter(inv => inv.status !== 'rejected').length,
-        totalEarnings,
+        totalSessions: approvedInvoices.length,
+        totalEarnings, // This is ONLY approved earnings
+        pendingEarnings,
         rejectedEarnings,
-        netEarnings: totalEarnings - rejectedEarnings,
         avgSessionEarnings,
         totalHours,
-        currentMonthEarnings
+        currentMonthEarnings // This is ONLY approved monthly earnings
     };
 }
-
+       
 // Display earnings overview
 function displayEarningsOverview(earningsData) {
     // Update overview stats
@@ -8525,51 +8538,64 @@ function displayEarningsOverview(earningsData) {
     document.getElementById('avgSessionEarnings').textContent = `$${earningsData.avgSessionEarnings.toFixed(2)}`;
     document.getElementById('totalHours').textContent = earningsData.totalHours.toFixed(1);
     
-    // Add rejected earnings display if there are any rejected invoices
-    if (earningsData.rejectedEarnings > 0) {
-        // Create or update rejected earnings display
-        let rejectedDisplay = document.getElementById('rejectedEarnings');
-        if (!rejectedDisplay) {
-            rejectedDisplay = document.createElement('div');
-            rejectedDisplay.id = 'rejectedEarnings';
-            rejectedDisplay.className = 'stat-card';
-            rejectedDisplay.innerHTML = `
-                <div class="stat-icon" style="background: rgba(230, 57, 70, 0.1); color: #e63946;">
-                    <i class="fas fa-times-circle"></i>
-                </div>
-                <div class="stat-value" style="color: #e63946;">-$${earningsData.rejectedEarnings.toFixed(2)}</div>
-                <div class="stat-label">Rejected Payments</div>
-            `;
-            document.querySelector('.stats-container').appendChild(rejectedDisplay);
-        } else {
-            rejectedDisplay.querySelector('.stat-value').textContent = `-$${earningsData.rejectedEarnings.toFixed(2)}`;
-        }
-        
-        // Show net earnings
-        let netEarningsDisplay = document.getElementById('netEarnings');
-        if (!netEarningsDisplay) {
-            netEarningsDisplay = document.createElement('div');
-            netEarningsDisplay.id = 'netEarnings';
-            netEarningsDisplay.className = 'stat-card';
-            const netColor = earningsData.netEarnings >= 0 ? '#4cc9f0' : '#e63946';
-            netEarningsDisplay.innerHTML = `
-                <div class="stat-icon" style="background: rgba(76, 201, 240, 0.1); color: ${netColor};">
-                    <i class="fas fa-calculator"></i>
-                </div>
-                <div class="stat-value" style="color: ${netColor};">$${earningsData.netEarnings.toFixed(2)}</div>
-                <div class="stat-label">Net Earnings</div>
-            `;
-            document.querySelector('.stats-container').appendChild(netEarningsDisplay);
-        } else {
-            const netColor = earningsData.netEarnings >= 0 ? '#4cc9f0' : '#e63946';
-            netEarningsDisplay.querySelector('.stat-value').textContent = `$${earningsData.netEarnings.toFixed(2)}`;
-            netEarningsDisplay.querySelector('.stat-value').style.color = netColor;
-            netEarningsDisplay.querySelector('.stat-icon').style.color = netColor;
-        }
+    // Update main dashboard earnings stat (this shows actual approved earnings)
+    document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentMonthEarnings.toFixed(2)}`;
+    
+    // Create or update additional stats container for pending and rejected
+    let additionalStats = document.getElementById('earningsAdditionalStats');
+    if (!additionalStats) {
+        additionalStats = document.createElement('div');
+        additionalStats.id = 'earningsAdditionalStats';
+        additionalStats.className = 'stats-container';
+        additionalStats.style.marginTop = '20px';
+        document.querySelector('#earningsOverview').appendChild(additionalStats);
     }
     
-    // Update main dashboard earnings stat (use net earnings)
-    document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentMonthEarnings.toFixed(2)}`;
+    // Clear previous content
+    additionalStats.innerHTML = '';
+    
+    // Show pending earnings if any
+    if (earningsData.pendingEarnings > 0) {
+        const pendingCard = document.createElement('div');
+        pendingCard.className = 'stat-card';
+        pendingCard.innerHTML = `
+            <div class="stat-icon" style="background: rgba(255, 193, 7, 0.1); color: #ffc107;">
+                <i class="fas fa-clock"></i>
+            </div>
+            <div class="stat-value" style="color: #ffc107;">$${earningsData.pendingEarnings.toFixed(2)}</div>
+            <div class="stat-label">Pending Approval</div>
+        `;
+        additionalStats.appendChild(pendingCard);
+    }
+    
+    // Show rejected earnings if any
+    if (earningsData.rejectedEarnings > 0) {
+        const rejectedCard = document.createElement('div');
+        rejectedCard.className = 'stat-card';
+        rejectedCard.innerHTML = `
+            <div class="stat-icon" style="background: rgba(230, 57, 70, 0.1); color: #e63946;">
+                <i class="fas fa-times-circle"></i>
+            </div>
+            <div class="stat-value" style="color: #e63946;">-$${earningsData.rejectedEarnings.toFixed(2)}</div>
+            <div class="stat-label">Rejected Payments</div>
+        `;
+        additionalStats.appendChild(rejectedCard);
+    }
+    
+    // Show total submitted (approved + pending + rejected) for transparency
+    const totalSubmitted = earningsData.totalEarnings + earningsData.pendingEarnings + earningsData.rejectedEarnings;
+    if (totalSubmitted > earningsData.totalEarnings) {
+        const submittedCard = document.createElement('div');
+        submittedCard.className = 'stat-card';
+        submittedCard.innerHTML = `
+            <div class="stat-icon" style="background: rgba(108, 117, 125, 0.1); color: #6c757d;">
+                <i class="fas fa-paper-plane"></i>
+            </div>
+            <div class="stat-value" style="color: #6c757d;">$${totalSubmitted.toFixed(2)}</div>
+            <div class="stat-label">Total Submitted</div>
+        `;
+        additionalStats.appendChild(submittedCard);
+    }
 }
      
 // Display earnings history table
@@ -8591,17 +8617,20 @@ function displayEarningsHistory(invoices) {
     }
     
     let tableHTML = '';
-    let runningTotal = 0;
+    
+    // Calculate running total of ONLY approved earnings
+    const approvedEarningsTotal = invoices
+        .filter(invoice => invoice.status === 'approved')
+        .reduce((total, invoice) => total + invoice.sessionEarnings, 0);
     
     invoices.forEach(invoice => {
-        // Only add to running total if not rejected
-        if (invoice.status !== 'rejected') {
-            runningTotal += invoice.sessionEarnings;
-        }
-        
         const statusBadge = getEarningsStatusBadge(invoice.status);
-        const rowClass = invoice.status === 'rejected' ? 'rejected-earning' : '';
-        const amountStyle = invoice.status === 'rejected' ? 'style="color: #e63946; text-decoration: line-through;"' : '';
+        const rowClass = invoice.status === 'rejected' ? 'rejected-earning' : 
+                        invoice.status === 'pending' ? 'pending-earning' : '';
+        
+        const amountStyle = invoice.status === 'rejected' ? 
+            'style="color: #e63946; text-decoration: line-through;"' : 
+            invoice.status === 'pending' ? 'style="color: #ffc107;"' : '';
         
         tableHTML += `
             <tr class="earning-row ${rowClass}">
@@ -8617,7 +8646,7 @@ function displayEarningsHistory(invoices) {
     });
     
     tableBody.innerHTML = tableHTML;
-    earningsTotal.textContent = `$${runningTotal.toFixed(2)}`;
+    earningsTotal.textContent = `$${approvedEarningsTotal.toFixed(2)}`;
 }
 
 // Helper function for status badges in earnings table
@@ -8639,11 +8668,11 @@ function displayEmptyEarningsState() {
     document.getElementById('avgSessionEarnings').textContent = '$0.00';
     document.getElementById('totalHours').textContent = '0';
     
-    // Remove dynamic elements if they exist
-    const rejectedDisplay = document.getElementById('rejectedEarnings');
-    const netDisplay = document.getElementById('netEarnings');
-    if (rejectedDisplay) rejectedDisplay.remove();
-    if (netDisplay) netDisplay.remove();
+    // Remove additional stats if they exist
+    const additionalStats = document.getElementById('earningsAdditionalStats');
+    if (additionalStats) {
+        additionalStats.remove();
+    }
     
     const tableBody = document.getElementById('earningsTableBody');
     tableBody.innerHTML = `
@@ -11974,6 +12003,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
