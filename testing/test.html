@@ -2805,23 +2805,56 @@ function displayStudentsTable() {
 
         // Reject payment
         async function rejectPayment(paymentId) {
-            if (!confirm('Are you sure you want to reject this payment?')) return;
-            
-            try {
-                await db.collection('tutorInvoices').doc(paymentId).update({
-                    status: 'rejected',
-                    rejectedAt: new Date(),
-                    rejectedBy: currentUser.uid
-                });
-                
-                alert('Payment rejected successfully!');
-                await loadPaymentsData();
-                updateDashboardStats();
-            } catch (error) {
-                console.error("Error rejecting payment:", error);
-                alert('Error rejecting payment. Please try again.');
-            }
-        }
+    if (!confirm('Are you sure you want to reject this payment? The tutor will be notified and their earnings will be adjusted.')) return;
+    
+    try {
+        await db.collection('tutorInvoices').doc(paymentId).update({
+            status: 'rejected',
+            rejectedAt: new Date(),
+            rejectedBy: currentUser.uid,
+            rejectionReason: 'Payment rejected by admin' // You can add a prompt for reason
+        });
+        
+        // Send notification to tutor
+        await sendTutorPaymentNotification(paymentId, 'rejected');
+        
+        alert('Payment rejected successfully! Tutor has been notified.');
+        await loadPaymentsData();
+        updateDashboardStats();
+    } catch (error) {
+        console.error("Error rejecting payment:", error);
+        alert('Error rejecting payment. Please try again.');
+    }
+}
+
+// Send notification to tutor about payment status
+async function sendTutorPaymentNotification(paymentId, status) {
+    try {
+        const paymentDoc = await db.collection('tutorInvoices').doc(paymentId).get();
+        if (!paymentDoc.exists) return;
+        
+        const payment = paymentDoc.data();
+        const tutorId = payment.tutorId;
+        
+        const notificationData = {
+            type: 'payment_update',
+            title: status === 'approved' ? 'Payment Approved' : 'Payment Rejected',
+            message: status === 'approved' ? 
+                `Your payment request for $${payment.totalAmount} has been approved` :
+                `Your payment request for $${payment.totalAmount} has been rejected`,
+            status: status,
+            invoiceId: paymentId,
+            amount: payment.totalAmount,
+            timestamp: new Date(),
+            read: false
+        };
+        
+        await db.collection('tutors').doc(tutorId).collection('notifications').add(notificationData);
+        
+    } catch (error) {
+        console.error("Error sending payment notification:", error);
+    }
+}
 
         // View payment details
 function viewPaymentDetails(paymentId) {
@@ -5358,5 +5391,6 @@ setupNavigation();
     
 </body>
 </html>
+
 
 
