@@ -2785,39 +2785,23 @@ function displayStudentsTable() {
 
         // Approve payment
         async function approvePayment(paymentId) {
-    if (!confirm('Are you sure you want to approve this payment?')) return;
-    
-    try {
-        const payment = paymentsData.find(p => p.id === paymentId);
-        if (!payment) {
-            throw new Error('Payment not found');
+            if (!confirm('Are you sure you want to approve this payment?')) return;
+            
+            try {
+                await db.collection('tutorInvoices').doc(paymentId).update({
+                    status: 'approved',
+                    approvedAt: new Date(),
+                    approvedBy: currentUser.uid
+                });
+                
+                alert('Payment approved successfully!');
+                await loadPaymentsData();
+                updateDashboardStats();
+            } catch (error) {
+                console.error("Error approving payment:", error);
+                alert('Error approving payment. Please try again.');
+            }
         }
-
-        // Update payment status
-        await db.collection('tutorInvoices').doc(paymentId).update({
-            status: 'approved',
-            approvedAt: new Date(),
-            approvedBy: currentUser.uid
-        });
-
-        // RECORD THE EXPENSE
-        await recordExpense(payment);
-
-        alert('Payment approved successfully and recorded as expense!');
-        await loadPaymentsData();
-        await loadExpenseData(); // Reload expense data
-        updateDashboardStats();
-        
-        // Refresh reports if open
-        if (document.getElementById('reports').classList.contains('active')) {
-            await loadReportsData();
-        }
-        
-    } catch (error) {
-        console.error("Error approving payment:", error);
-        alert('Error approving payment. Please try again.');
-    }
-}
 
         // Reject payment
         async function rejectPayment(paymentId) {
@@ -2839,37 +2823,6 @@ function displayStudentsTable() {
             }
         }
 
-// NEW FUNCTION: Record expense when payment is approved
-async function recordExpense(payment) {
-    try {
-        const expenseData = {
-            type: 'tutor_payment',
-            description: `Tutor payment for ${payment.tutorName} - ${payment.subject} session`,
-            amount: payment.totalAmount || 0,
-            tutorId: payment.tutorId,
-            tutorName: payment.tutorName,
-            studentId: payment.studentId,
-            studentName: payment.studentName,
-            sessionId: payment.sessionId,
-            invoiceId: payment.id,
-            invoiceNumber: payment.invoiceNumber,
-            sessionDate: payment.sessionDate,
-            hours: payment.hours,
-            hourlyRate: payment.hourlyRate,
-            status: 'paid',
-            approvedBy: currentUser.uid,
-            approvedAt: new Date(),
-            createdAt: new Date()
-        };
-
-        await db.collection('expenses').add(expenseData);
-        
-    } catch (error) {
-        console.error("Error recording expense:", error);
-        // Don't throw error here - we don't want to block payment approval
-    }
-}
-        
         // View payment details
 function viewPaymentDetails(paymentId) {
     const payment = paymentsData.find(p => p.id === paymentId);
@@ -4449,106 +4402,25 @@ async function loadRevenueData() {
 // Load expense data from tutorInvoices (approved payments)
 async function loadExpenseData() {
     try {
-        window.expenseData = [];
-
-        // Load from dedicated expenses collection
-        const expensesSnapshot = await db.collection('expenses').get();
-        expensesSnapshot.forEach(doc => {
-            const expense = doc.data();
-            expense.id = doc.id;
-            expense.source = 'expenses_collection';
-            window.expenseData.push(expense);
-        });
-
-        // Also load from approved tutor invoices (backward compatibility)
-        const invoiceSnapshot = await db.collection('tutorInvoices')
+        const expenseSnapshot = await db.collection('tutorInvoices')
             .where('status', '==', 'approved')
             .get();
         
-        invoiceSnapshot.forEach(doc => {
-            const invoice = doc.data();
-            // Check if this invoice is already recorded in expenses
-            const alreadyRecorded = window.expenseData.some(expense => 
-                expense.invoiceId === doc.id
-            );
-            
-            if (!alreadyRecorded) {
-                window.expenseData.push({
-                    id: doc.id,
-                    type: 'tutor_payment',
-                    description: `Tutor payment for ${invoice.tutorName} - ${invoice.subject} session`,
-                    amount: invoice.totalAmount || 0,
-                    tutorName: invoice.tutorName,
-                    studentName: invoice.studentName,
-                    sessionDate: invoice.sessionDate,
-                    hours: invoice.hours,
-                    hourlyRate: invoice.hourlyRate,
-                    source: 'tutorInvoices',
-                    approvedAt: invoice.approvedAt,
-                    createdAt: invoice.createdAt
-                });
-            }
-        });
-
-        console.log('Total expenses loaded:', window.expenseData.length);
+        window.expenseData = [];
         
+        expenseSnapshot.forEach(doc => {
+            const invoice = doc.data();
+            invoice.id = doc.id;
+            window.expenseData.push(invoice);
+        });
+        
+        console.log('Expenses loaded:', window.expenseData.length);
     } catch (error) {
         console.error("Error loading expense data:", error);
         window.expenseData = [];
     }
 }
 
-// Initialize expenses collection (run once)
-async function initializeExpensesCollection() {
-    try {
-        // Check if we have approved payments that need to be migrated to expenses
-        const approvedPayments = await db.collection('tutorInvoices')
-            .where('status', '==', 'approved')
-            .get();
-        
-        const batch = db.batch();
-        let migratedCount = 0;
-        
-        approvedPayments.forEach(doc => {
-            const payment = doc.data();
-            const expenseRef = db.collection('expenses').doc();
-            
-            batch.set(expenseRef, {
-                type: 'tutor_payment',
-                description: `Tutor payment for ${payment.tutorName} - ${payment.subject} session`,
-                amount: payment.totalAmount || 0,
-                tutorId: payment.tutorId,
-                tutorName: payment.tutorName,
-                studentId: payment.studentId,
-                studentName: payment.studentName,
-                sessionId: payment.sessionId,
-                invoiceId: doc.id,
-                invoiceNumber: payment.invoiceNumber,
-                sessionDate: payment.sessionDate,
-                hours: payment.hours,
-                hourlyRate: payment.hourlyRate,
-                status: 'paid',
-                approvedBy: payment.approvedBy || 'system',
-                approvedAt: payment.approvedAt || new Date(),
-                createdAt: payment.createdAt || new Date()
-            });
-            
-            migratedCount++;
-        });
-        
-        if (migratedCount > 0) {
-            await batch.commit();
-            console.log(`Migrated ${migratedCount} approved payments to expenses collection`);
-        }
-        
-    } catch (error) {
-        console.error("Error initializing expenses collection:", error);
-    }
-}
-
-// Call this once to migrate existing data
-// initializeExpensesCollection();
-        
 // Load active users (users with sessions in last 30 days)
 async function loadActiveUsersData() {
     try {
@@ -4584,9 +4456,9 @@ function displayReports() {
     
     // Calculate totals
     const totalRevenue = window.revenueData?.reduce((sum, purchase) => sum + (purchase.amount || 0), 0) || 0;
-    const totalExpenses = window.expenseData?.reduce((sum, expense) => {
-    // Use amount field (now consistent across both sources)
-    return sum + (expense.amount || 0);
+    const totalExpenses = window.expenseData?.reduce((sum, invoice) => {
+    // Use totalAmount instead of amount
+    return sum + (invoice.totalAmount || 0);
 }, 0) || 0;
     const netProfit = totalRevenue - totalExpenses;
     
@@ -4681,36 +4553,6 @@ function displayReports() {
     container.innerHTML = reportsHTML;
 }
 
-// Expense breakdown
-const expensesByType = {};
-window.expenseData?.forEach(expense => {
-    const type = expense.type || 'other';
-    expensesByType[type] = (expensesByType[type] || 0) + (expense.amount || 0);
-});
-
-const expenseBreakdown = Object.entries(expensesByType)
-    .map(([type, amount]) => `${type}: $${amount.toFixed(2)}`)
-    .join(', ');
-
-// Add this HTML to your reports display:
-container.innerHTML += `
-    <div class="student-card" style="margin-top: 20px;">
-        <div class="student-header">
-            <div class="student-title">Expense Breakdown</div>
-        </div>
-        <div class="student-details">
-            <div class="student-detail">
-                <i class="fas fa-receipt"></i>
-                <span>${expenseBreakdown || 'No expense data'}</span>
-            </div>
-            <div class="student-detail">
-                <i class="fas fa-file-invoice-dollar"></i>
-                <span><strong>Total Expense Records:</strong> ${window.expenseData?.length || 0}</span>
-            </div>
-        </div>
-    </div>
-`;
-        
 // =============================================
 // ADMIN NOTIFICATION SYSTEM - COMPLETE REAL DATA VERSION
 // =============================================
@@ -5516,6 +5358,5 @@ setupNavigation();
     
 </body>
 </html>
-
 
 
