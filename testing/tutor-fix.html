@@ -8458,6 +8458,7 @@ async function loadEarningsData() {
         const earningsData = processEarningsData(invoicesSnapshot);
         displayEarningsOverview(earningsData);
         displayEarningsHistory(earningsData.invoices);
+        displayMonthlyReports(earningsData.invoices);
         
     } catch (error) {
         console.error("Error loading earnings data:", error);
@@ -8468,20 +8469,31 @@ async function loadEarningsData() {
 // Process earnings data from invoices
 function processEarningsData(invoicesSnapshot) {
     const invoices = [];
-    let totalInvoiced = 0;        // ALL submitted invoices
-    let actualEarnings = 0;       // ONLY approved invoices
-    let approvedHours = 0;        // ONLY approved hours
-    let approvedSessions = 0;     // ONLY approved sessions
-    let totalHours = 0;           // ALL hours submitted
-    let totalSessions = 0;        // ALL sessions submitted
+    let totalInvoiced = 0;        
+    let actualEarnings = 0;       
+    let approvedHours = 0;        
+    let approvedSessions = 0;     
+    let totalHours = 0;           
+    let totalSessions = 0;        
+    
+    // Fortnight (14 days) tracking
+    let fortnightEarnings = 0;
+    let fortnightInvoiced = 0;
+    let fortnightSessions = 0;
+    
     let currentMonthInvoiced = 0;
     let currentMonthEarnings = 0;
     let pendingEarnings = 0;
     let rejectedEarnings = 0;
     let pendingSessions = 0;
     let rejectedSessions = 0;
+    
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
+    
+    // Calculate 14 days ago
+    const fortnightAgo = new Date();
+    fortnightAgo.setDate(fortnightAgo.getDate() - 14);
     
     invoicesSnapshot.forEach(doc => {
         const invoice = doc.data();
@@ -8499,7 +8511,16 @@ function processEarningsData(invoicesSnapshot) {
         totalHours += hours;
         totalSessions += 1;
         
-        // Count in current month invoiced if applicable
+        // Count in fortnight totals
+        if (invoiceDate >= fortnightAgo) {
+            fortnightInvoiced += sessionEarnings;
+            if (status === 'approved') {
+                fortnightEarnings += sessionEarnings;
+                fortnightSessions += 1;
+            }
+        }
+        
+        // Count in current month totals
         if (invoiceDate.getMonth() === currentMonth && invoiceDate.getFullYear() === currentYear) {
             currentMonthInvoiced += sessionEarnings;
         }
@@ -8536,19 +8557,22 @@ function processEarningsData(invoicesSnapshot) {
     
     return {
         invoices,
-        approvedSessions,          // ONLY approved sessions
-        approvedHours,             // ONLY approved hours
-        totalSessions,             // ALL sessions submitted
-        totalHours,                // ALL hours submitted
-        totalInvoiced,             // ALL submitted amounts
-        actualEarnings,            // ONLY approved amounts
+        approvedSessions,
+        approvedHours,
+        totalSessions,
+        totalHours,
+        totalInvoiced,
+        actualEarnings,
         pendingEarnings,
         rejectedEarnings,
         pendingSessions,
         rejectedSessions,
         avgSessionEarnings,
-        currentMonthInvoiced,      // ALL current month invoices
-        currentMonthEarnings       // ONLY approved current month
+        currentMonthInvoiced,
+        currentMonthEarnings,
+        fortnightEarnings,
+        fortnightInvoiced,
+        fortnightSessions
     };
 }
 
@@ -8562,8 +8586,17 @@ function displayEarningsOverview(earningsData) {
     // Update Total Earnings to show ACTUAL EARNINGS (approved only)
     document.getElementById('totalEarnings').textContent = `$${earningsData.actualEarnings.toFixed(2)}`;
     
-    // Update main dashboard earnings stat (show actual earnings)
-    document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentMonthEarnings.toFixed(2)}`;
+    // Change to fortnight earnings for main dashboard
+    document.getElementById('monthlyEarnings').textContent = `$${earningsData.fortnightEarnings.toFixed(2)}`;
+    
+    // Update the label to show "Last 14 Days Earnings"
+    const monthlyEarningsElement = document.getElementById('monthlyEarnings').closest('.stat-card');
+    if (monthlyEarningsElement) {
+        const labelElement = monthlyEarningsElement.querySelector('.stat-label');
+        if (labelElement) {
+            labelElement.textContent = 'Last 14 Days Earnings';
+        }
+    }
     
     // Add breakdown below the existing stats
     updateEarningsBreakdown(earningsData);
@@ -8576,7 +8609,7 @@ function updateEarningsBreakdown(earningsData) {
         existingBreakdown.remove();
     }
     
-    // Create breakdown container - always show for full transparency
+    // Create breakdown container
     const breakdown = document.createElement('div');
     breakdown.id = 'earningsBreakdown';
     breakdown.style.marginTop = '20px';
@@ -8588,8 +8621,19 @@ function updateEarningsBreakdown(earningsData) {
     let breakdownHTML = '<h4 style="margin-bottom: 15px; color: #4361ee;">Work Submitted Overview</h4>';
     breakdownHTML += '<div class="stats-container">';
     
-    // Show total submitted (all work)
+    // Add fortnight summary
     breakdownHTML += `
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(76, 201, 240, 0.1); color: #4cc9f0;">
+                <i class="fas fa-calendar-week"></i>
+            </div>
+            <div class="stat-value" style="color: #4cc9f0; font-size: 20px;">$${earningsData.fortnightEarnings.toFixed(2)}</div>
+            <div class="stat-label">Last 14 Days</div>
+            <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                ${earningsData.fortnightSessions} approved sessions
+            </div>
+        </div>
+        
         <div class="stat-card">
             <div class="stat-icon" style="background: rgba(67, 97, 238, 0.1); color: #4361ee;">
                 <i class="fas fa-paper-plane"></i>
@@ -8676,6 +8720,112 @@ function updateEarningsBreakdown(earningsData) {
     }
 }
 
+// Display monthly reports for tax purposes
+function displayMonthlyReports(invoices) {
+    // Group invoices by month-year
+    const monthlyData = {};
+    
+    invoices.forEach(invoice => {
+        if (invoice.status === 'approved') {
+            const invoiceDate = invoice.invoiceDate;
+            const monthYear = `${invoiceDate.getFullYear()}-${(invoiceDate.getMonth() + 1).toString().padStart(2, '0')}`;
+            const monthName = invoiceDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            
+            if (!monthlyData[monthYear]) {
+                monthlyData[monthYear] = {
+                    monthName: monthName,
+                    earnings: 0,
+                    sessions: 0,
+                    hours: 0
+                };
+            }
+            
+            monthlyData[monthYear].earnings += invoice.sessionEarnings;
+            monthlyData[monthYear].sessions += 1;
+            monthlyData[monthYear].hours += invoice.hours;
+        }
+    });
+    
+    // Convert to array and sort by date (newest first)
+    const monthlyArray = Object.values(monthlyData).sort((a, b) => {
+        return new Date(b.monthName) - new Date(a.monthName);
+    });
+    
+    // Create or update monthly reports section
+    let monthlyReportsSection = document.getElementById('monthlyReportsSection');
+    if (!monthlyReportsSection) {
+        monthlyReportsSection = document.createElement('div');
+        monthlyReportsSection.id = 'monthlyReportsSection';
+        monthlyReportsSection.style.marginTop = '30px';
+        monthlyReportsSection.style.padding = '20px';
+        monthlyReportsSection.style.backgroundColor = '#f8f9fa';
+        monthlyReportsSection.style.borderRadius = '8px';
+        monthlyReportsSection.style.border = '1px solid #e0e0e0';
+        
+        // Insert after earnings breakdown
+        const earningsBreakdown = document.getElementById('earningsBreakdown');
+        if (earningsBreakdown) {
+            earningsBreakdown.parentNode.insertBefore(monthlyReportsSection, earningsBreakdown.nextSibling);
+        }
+    }
+    
+    if (monthlyArray.length === 0) {
+        monthlyReportsSection.innerHTML = `
+            <h4 style="margin-bottom: 15px; color: #4361ee;">
+                <i class="fas fa-file-invoice-dollar"></i> Monthly Earnings Report
+            </h4>
+            <p style="color: #666; text-align: center;">No monthly earnings data available yet.</p>
+        `;
+        return;
+    }
+    
+    let reportsHTML = `
+        <h4 style="margin-bottom: 15px; color: #4361ee;">
+            <i class="fas fa-file-invoice-dollar"></i> Monthly Earnings Report (For Tax Purposes)
+        </h4>
+        <div style="margin-bottom: 15px; font-size: 14px; color: #666;">
+            <i class="fas fa-info-circle"></i> Use this report for tax filing and income tracking
+        </div>
+        <div class="stats-container">
+    `;
+    
+    // Show last 6 months or all available months
+    const monthsToShow = monthlyArray.slice(0, 6);
+    
+    monthsToShow.forEach(monthData => {
+        reportsHTML += `
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(123, 97, 255, 0.1); color: #7b61ff;">
+                    <i class="fas fa-calendar-alt"></i>
+                </div>
+                <div class="stat-value" style="color: #7b61ff; font-size: 18px;">$${monthData.earnings.toFixed(2)}</div>
+                <div class="stat-label">${monthData.monthName}</div>
+                <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                    ${monthData.sessions} sessions • ${monthData.hours.toFixed(1)} hours
+                </div>
+            </div>
+        `;
+    });
+    
+    reportsHTML += `</div>`;
+    
+    // Add export button
+    reportsHTML += `
+        <div style="text-align: center; margin-top: 15px;">
+            <button class="btn-outline" onclick="exportMonthlyReport()" style="padding: 8px 16px;">
+                <i class="fas fa-download"></i> Export Tax Report
+            </button>
+        </div>
+    `;
+    
+    monthlyReportsSection.innerHTML = reportsHTML;
+}
+
+// Export function for tax reports
+function exportMonthlyReport() {
+    alert('Tax report export feature coming soon! This will generate a CSV file with all your monthly earnings data for tax purposes.');
+}
+
 // Display earnings history table
 function displayEarningsHistory(invoices) {
     const tableBody = document.getElementById('earningsTableBody');
@@ -8732,7 +8882,7 @@ function displayEarningsHistory(invoices) {
     });
     
     tableBody.innerHTML = tableHTML;
-    earningsTotal.textContent = `$${allInvoicesTotal.toFixed(2)}`; // Show total of ALL invoices
+    earningsTotal.textContent = `$${allInvoicesTotal.toFixed(2)}`;
 }
 
 // Display empty earnings state
@@ -8747,6 +8897,12 @@ function displayEmptyEarningsState() {
     const breakdown = document.getElementById('earningsBreakdown');
     if (breakdown) {
         breakdown.remove();
+    }
+    
+    // Remove monthly reports if exists
+    const monthlyReports = document.getElementById('monthlyReportsSection');
+    if (monthlyReports) {
+        monthlyReports.remove();
     }
     
     const tableBody = document.getElementById('earningsTableBody');
@@ -8814,7 +8970,6 @@ document.head.appendChild(earningsStyle);
 // =============================================
 // YOUR EARNINGS SECTION ENDS HERE
 // =============================================
-
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
 // =============================================
@@ -12113,6 +12268,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
