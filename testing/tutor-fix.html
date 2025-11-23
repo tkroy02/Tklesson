@@ -8468,11 +8468,13 @@ async function loadEarningsData() {
 // Process earnings data from invoices
 function processEarningsData(invoicesSnapshot) {
     const invoices = [];
-    let totalEarnings = 0;
+    let totalInvoiced = 0;        // ALL submitted invoices
+    let actualEarnings = 0;       // ONLY approved invoices
     let totalHours = 0;
+    let currentMonthInvoiced = 0;
     let currentMonthEarnings = 0;
-    let rejectedEarnings = 0;
     let pendingEarnings = 0;
+    let rejectedEarnings = 0;
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
     
@@ -8487,19 +8489,24 @@ function processEarningsData(invoicesSnapshot) {
         const sessionEarnings = hours * hourlyRate;
         const status = invoice.status || 'pending';
         
+        // Always count in total invoiced (ALL invoices)
+        totalInvoiced += sessionEarnings;
+        totalHours += hours;
+        
+        // Count in current month invoiced if applicable
+        if (invoiceDate.getMonth() === currentMonth && invoiceDate.getFullYear() === currentYear) {
+            currentMonthInvoiced += sessionEarnings;
+        }
+        
+        // Handle status-specific tracking
         if (status === 'approved') {
-            // Only approved invoices count toward actual earnings
+            actualEarnings += sessionEarnings;
             if (invoiceDate.getMonth() === currentMonth && invoiceDate.getFullYear() === currentYear) {
                 currentMonthEarnings += sessionEarnings;
             }
-            
-            totalEarnings += sessionEarnings;
-            totalHours += hours;
         } else if (status === 'pending') {
-            // Track pending separately
             pendingEarnings += sessionEarnings;
         } else if (status === 'rejected') {
-            // Track rejected earnings separately
             rejectedEarnings += sessionEarnings;
         }
         
@@ -8516,88 +8523,120 @@ function processEarningsData(invoicesSnapshot) {
     
     const approvedInvoices = invoices.filter(inv => inv.status === 'approved');
     const avgSessionEarnings = approvedInvoices.length > 0 ? 
-        totalEarnings / approvedInvoices.length : 0;
+        actualEarnings / approvedInvoices.length : 0;
     
     return {
         invoices,
-        totalSessions: approvedInvoices.length,
-        totalEarnings, // This is ONLY approved earnings
+        totalSessions: invoices.length, // ALL sessions
+        totalInvoiced,                  // ALL submitted amounts
+        actualEarnings,                 // ONLY approved amounts
         pendingEarnings,
         rejectedEarnings,
         avgSessionEarnings,
         totalHours,
-        currentMonthEarnings // This is ONLY approved monthly earnings
+        currentMonthInvoiced,           // ALL current month invoices
+        currentMonthEarnings            // ONLY approved current month
     };
 }
-       
+
 // Display earnings overview
 function displayEarningsOverview(earningsData) {
-    // Update overview stats
+    // Update the existing stats cards
     document.getElementById('totalSessionsCount').textContent = earningsData.totalSessions;
-    document.getElementById('totalEarnings').textContent = `$${earningsData.totalEarnings.toFixed(2)}`;
-    document.getElementById('avgSessionEarnings').textContent = `$${earningsData.avgSessionEarnings.toFixed(2)}`;
     document.getElementById('totalHours').textContent = earningsData.totalHours.toFixed(1);
+    document.getElementById('avgSessionEarnings').textContent = `$${earningsData.avgSessionEarnings.toFixed(2)}`;
     
-    // Update main dashboard earnings stat (this shows actual approved earnings)
+    // Update Total Earnings to show ACTUAL EARNINGS (approved only)
+    document.getElementById('totalEarnings').textContent = `$${earningsData.actualEarnings.toFixed(2)}`;
+    
+    // Update main dashboard earnings stat (show actual earnings)
     document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentMonthEarnings.toFixed(2)}`;
     
-    // Create or update additional stats container for pending and rejected
-    let additionalStats = document.getElementById('earningsAdditionalStats');
-    if (!additionalStats) {
-        additionalStats = document.createElement('div');
-        additionalStats.id = 'earningsAdditionalStats';
-        additionalStats.className = 'stats-container';
-        additionalStats.style.marginTop = '20px';
-        document.querySelector('#earningsOverview').appendChild(additionalStats);
+    // Add breakdown below the existing stats
+    updateEarningsBreakdown(earningsData);
+}
+
+function updateEarningsBreakdown(earningsData) {
+    // Remove existing breakdown if any
+    const existingBreakdown = document.getElementById('earningsBreakdown');
+    if (existingBreakdown) {
+        existingBreakdown.remove();
     }
     
-    // Clear previous content
-    additionalStats.innerHTML = '';
+    // Only create breakdown if we have pending or rejected invoices
+    if (earningsData.pendingEarnings <= 0 && earningsData.rejectedEarnings <= 0) {
+        return;
+    }
     
-    // Show pending earnings if any
+    // Create breakdown container
+    const breakdown = document.createElement('div');
+    breakdown.id = 'earningsBreakdown';
+    breakdown.style.marginTop = '20px';
+    breakdown.style.padding = '20px';
+    breakdown.style.backgroundColor = '#f8f9fa';
+    breakdown.style.borderRadius = '8px';
+    breakdown.style.border = '1px solid #e0e0e0';
+    
+    let breakdownHTML = '<h4 style="margin-bottom: 15px; color: #4361ee;">Earnings Breakdown</h4>';
+    breakdownHTML += '<div class="stats-container">';
+    
+    // Show total invoiced (all submitted work)
+    breakdownHTML += `
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(67, 97, 238, 0.1); color: #4361ee;">
+                <i class="fas fa-file-invoice-dollar"></i>
+            </div>
+            <div class="stat-value" style="color: #4361ee; font-size: 24px;">$${earningsData.totalInvoiced.toFixed(2)}</div>
+            <div class="stat-label">Total Invoiced</div>
+        </div>
+    `;
+    
+    // Add pending if any
     if (earningsData.pendingEarnings > 0) {
-        const pendingCard = document.createElement('div');
-        pendingCard.className = 'stat-card';
-        pendingCard.innerHTML = `
-            <div class="stat-icon" style="background: rgba(255, 193, 7, 0.1); color: #ffc107;">
-                <i class="fas fa-clock"></i>
+        breakdownHTML += `
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(255, 193, 7, 0.1); color: #ffc107;">
+                    <i class="fas fa-clock"></i>
+                </div>
+                <div class="stat-value" style="color: #ffc107; font-size: 24px;">$${earningsData.pendingEarnings.toFixed(2)}</div>
+                <div class="stat-label">Pending Approval</div>
             </div>
-            <div class="stat-value" style="color: #ffc107;">$${earningsData.pendingEarnings.toFixed(2)}</div>
-            <div class="stat-label">Pending Approval</div>
         `;
-        additionalStats.appendChild(pendingCard);
     }
     
-    // Show rejected earnings if any
+    // Add rejected if any
     if (earningsData.rejectedEarnings > 0) {
-        const rejectedCard = document.createElement('div');
-        rejectedCard.className = 'stat-card';
-        rejectedCard.innerHTML = `
-            <div class="stat-icon" style="background: rgba(230, 57, 70, 0.1); color: #e63946;">
-                <i class="fas fa-times-circle"></i>
+        breakdownHTML += `
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(230, 57, 70, 0.1); color: #e63946;">
+                    <i class="fas fa-times-circle"></i>
+                </div>
+                <div class="stat-value" style="color: #e63946; font-size: 24px;">-$${earningsData.rejectedEarnings.toFixed(2)}</div>
+                <div class="stat-label">Rejected</div>
             </div>
-            <div class="stat-value" style="color: #e63946;">-$${earningsData.rejectedEarnings.toFixed(2)}</div>
-            <div class="stat-label">Rejected Payments</div>
         `;
-        additionalStats.appendChild(rejectedCard);
     }
     
-    // Show total submitted (approved + pending + rejected) for transparency
-    const totalSubmitted = earningsData.totalEarnings + earningsData.pendingEarnings + earningsData.rejectedEarnings;
-    if (totalSubmitted > earningsData.totalEarnings) {
-        const submittedCard = document.createElement('div');
-        submittedCard.className = 'stat-card';
-        submittedCard.innerHTML = `
-            <div class="stat-icon" style="background: rgba(108, 117, 125, 0.1); color: #6c757d;">
-                <i class="fas fa-paper-plane"></i>
-            </div>
-            <div class="stat-value" style="color: #6c757d;">$${totalSubmitted.toFixed(2)}</div>
-            <div class="stat-label">Total Submitted</div>
-        `;
-        additionalStats.appendChild(submittedCard);
+    breakdownHTML += '</div>';
+    
+    // Add explanation text
+    if (earningsData.pendingEarnings > 0) {
+        breakdownHTML += `<p style="margin-top: 15px; font-size: 14px; color: #666; text-align: center;">
+            <i class="fas fa-info-circle"></i> 
+            You have <strong>$${earningsData.pendingEarnings.toFixed(2)}</strong> awaiting admin approval. 
+            This amount will be added to your earnings once approved.
+        </p>`;
+    }
+    
+    breakdown.innerHTML = breakdownHTML;
+    
+    // Insert the breakdown after the stats container
+    const statsContainer = document.querySelector('#earnings-overview .stats-container');
+    if (statsContainer && statsContainer.parentNode) {
+        statsContainer.parentNode.insertBefore(breakdown, statsContainer.nextSibling);
     }
 }
-     
+
 // Display earnings history table
 function displayEarningsHistory(invoices) {
     const tableBody = document.getElementById('earningsTableBody');
@@ -8606,7 +8645,7 @@ function displayEarningsHistory(invoices) {
     if (invoices.length === 0) {
         tableBody.innerHTML = `
             <tr>
-                <td colspan="7" style="text-align: center; padding: 40px;">
+                <td colspan="6" style="text-align: center; padding: 40px;">
                     <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
                     <p style="color: #666;">No earnings history yet. Submitted invoices will appear here.</p>
                 </td>
@@ -8618,47 +8657,43 @@ function displayEarningsHistory(invoices) {
     
     let tableHTML = '';
     
-    // Calculate running total of ONLY approved earnings
-    const approvedEarningsTotal = invoices
-        .filter(invoice => invoice.status === 'approved')
-        .reduce((total, invoice) => total + invoice.sessionEarnings, 0);
+    // Calculate total of ALL invoices for the summary
+    const allInvoicesTotal = invoices.reduce((total, invoice) => total + invoice.sessionEarnings, 0);
     
     invoices.forEach(invoice => {
-        const statusBadge = getEarningsStatusBadge(invoice.status);
-        const rowClass = invoice.status === 'rejected' ? 'rejected-earning' : 
-                        invoice.status === 'pending' ? 'pending-earning' : '';
+        const status = invoice.status || 'pending';
+        let statusBadge = '';
+        let rowClass = '';
+        let amountStyle = '';
         
-        const amountStyle = invoice.status === 'rejected' ? 
-            'style="color: #e63946; text-decoration: line-through;"' : 
-            invoice.status === 'pending' ? 'style="color: #ffc107;"' : '';
+        // Add status badge and styling based on status
+        if (status === 'pending') {
+            statusBadge = ' <span class="status-badge status-pending">Pending</span>';
+            rowClass = 'pending-earning';
+            amountStyle = 'style="color: #ffc107;"';
+        } else if (status === 'rejected') {
+            statusBadge = ' <span class="status-badge status-rejected">Rejected</span>';
+            rowClass = 'rejected-earning';
+            amountStyle = 'style="color: #e63946; text-decoration: line-through;"';
+        } else if (status === 'approved') {
+            statusBadge = ' <span class="status-badge status-approved">Approved</span>';
+            amountStyle = 'style="color: #4cc9f0;"';
+        }
         
         tableHTML += `
             <tr class="earning-row ${rowClass}">
                 <td>${invoice.sessionDate.toLocaleDateString()}</td>
-                <td>${invoice.studentName || 'Unknown Student'}</td>
+                <td>${invoice.studentName || 'Unknown Student'}${statusBadge}</td>
                 <td>${invoice.subject || 'General'}</td>
                 <td>${invoice.hours}h</td>
                 <td>$${invoice.hourlyRate}/h</td>
-                <td>${statusBadge}</td>
                 <td><strong ${amountStyle}>$${invoice.sessionEarnings.toFixed(2)}</strong></td>
             </tr>
         `;
     });
     
     tableBody.innerHTML = tableHTML;
-    earningsTotal.textContent = `$${approvedEarningsTotal.toFixed(2)}`;
-}
-
-// Helper function for status badges in earnings table
-function getEarningsStatusBadge(status) {
-    const statusConfig = {
-        'pending': { class: 'status-pending', text: 'Pending' },
-        'approved': { class: 'status-active', text: 'Approved' },
-        'rejected': { class: 'status-suspended', text: 'Rejected' }
-    };
-    
-    const config = statusConfig[status] || { class: 'status-pending', text: 'Pending' };
-    return `<span class="status-badge ${config.class}">${config.text}</span>`;
+    earningsTotal.textContent = `$${allInvoicesTotal.toFixed(2)}`; // Show total of ALL invoices
 }
 
 // Display empty earnings state
@@ -8667,17 +8702,18 @@ function displayEmptyEarningsState() {
     document.getElementById('totalEarnings').textContent = '$0.00';
     document.getElementById('avgSessionEarnings').textContent = '$0.00';
     document.getElementById('totalHours').textContent = '0';
+    document.getElementById('monthlyEarnings').textContent = '$0.00';
     
-    // Remove additional stats if they exist
-    const additionalStats = document.getElementById('earningsAdditionalStats');
-    if (additionalStats) {
-        additionalStats.remove();
+    // Remove breakdown if it exists
+    const breakdown = document.getElementById('earningsBreakdown');
+    if (breakdown) {
+        breakdown.remove();
     }
     
     const tableBody = document.getElementById('earningsTableBody');
     tableBody.innerHTML = `
         <tr>
-            <td colspan="7" style="text-align: center; padding: 40px;">
+            <td colspan="6" style="text-align: center; padding: 40px;">
                 <i class="fas fa-chart-line" style="font-size: 48px; color: #ddd; margin-bottom: 15px;"></i>
                 <h4 style="color: #666; margin-bottom: 10px;">No Earnings Yet</h4>
                 <p style="color: #999;">Your earnings will appear here once you submit invoices for your sessions.</p>
@@ -8685,7 +8721,7 @@ function displayEmptyEarningsState() {
         </tr>
     `;
 }
-     
+
 // Display earnings error state
 function displayEarningsErrorState() {
     const tableBody = document.getElementById('earningsTableBody');
@@ -8700,10 +8736,45 @@ function displayEarningsErrorState() {
     `;
 }
 
+// Add CSS for status badges
+const earningsStyle = document.createElement('style');
+earningsStyle.textContent = `
+    .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-left: 8px;
+    }
+    .status-pending {
+        background: rgba(255, 193, 7, 0.1);
+        color: #ffc107;
+    }
+    .status-approved {
+        background: rgba(76, 201, 240, 0.1);
+        color: #4cc9f0;
+    }
+    .status-rejected {
+        background: rgba(230, 57, 70, 0.1);
+        color: #e63946;
+    }
+    .pending-earning {
+        background-color: rgba(255, 193, 7, 0.05);
+    }
+    .rejected-earning {
+        background-color: rgba(230, 57, 70, 0.05);
+        color: #999;
+    }
+    .rejected-earning td {
+        opacity: 0.7;
+    }
+`;
+document.head.appendChild(earningsStyle);
+
 // =============================================
 // YOUR EARNINGS SECTION ENDS HERE
 // =============================================
-
 
 // =============================================
 // NOTIFICATION BELL FUNCTIONALITY STARTS HERE (REAL DATA VERSION)
@@ -12003,6 +12074,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
