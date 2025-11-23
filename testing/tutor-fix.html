@@ -9507,10 +9507,110 @@ function displayEarningsHistory(invoices) {
         tableBody.setAttribute('data-earnings-data', JSON.stringify(invoices));
     }
 
+    function updateEarningsPagination(currentPage, totalPages, totalItems, startIndex, endIndex) {
+        let paginationContainer = document.getElementById('earningsHistoryPagination');
+        
+        if (!paginationContainer) {
+            paginationContainer = document.createElement('div');
+            paginationContainer.id = 'earningsHistoryPagination';
+            paginationContainer.style.marginTop = '20px';
+            paginationContainer.style.display = 'flex';
+            paginationContainer.style.justifyContent = 'space-between';
+            paginationContainer.style.alignItems = 'center';
+            paginationContainer.style.padding = '15px';
+            paginationContainer.style.backgroundColor = '#f8f9fa';
+            paginationContainer.style.borderRadius = '8px';
+            
+            // Insert after the total earnings
+            const totalEarnings = document.querySelector('.total-earnings');
+            if (totalEarnings && totalEarnings.parentNode) {
+                totalEarnings.parentNode.insertBefore(paginationContainer, totalEarnings.nextSibling);
+            }
+        }
+
+        const pageInfo = `Showing ${startIndex + 1}-${Math.min(endIndex, totalItems)} of ${totalItems} invoices`;
+        
+        let paginationHTML = `
+            <div style="font-size: 14px; color: #666;">
+                <strong>${pageInfo}</strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+        `;
+
+        // Previous button
+        paginationHTML += `
+            <button class="btn-outline" onclick="changeEarningsPage(${currentPage - 1})" 
+                    ${currentPage === 1 ? 'disabled style="opacity: 0.5;"' : ''}
+                    style="padding: 8px 12px; font-size: 12px;">
+                <i class="fas fa-chevron-left"></i> Previous
+            </button>
+        `;
+
+        // Page numbers
+        if (totalPages <= 7) {
+            for (let i = 1; i <= totalPages; i++) {
+                paginationHTML += `
+                    <button class="${i === currentPage ? 'btn-primary' : 'btn-outline'}" 
+                            onclick="changeEarningsPage(${i})"
+                            style="padding: 8px 12px; font-size: 12px; min-width: 40px;">
+                        ${i}
+                    </button>
+                `;
+            }
+        } else {
+            let startPage = Math.max(1, currentPage - 2);
+            let endPage = Math.min(totalPages, currentPage + 2);
+
+            if (startPage > 1) {
+                paginationHTML += `
+                    <button class="btn-outline" onclick="changeEarningsPage(1)" style="padding: 8px 12px; font-size: 12px; min-width: 40px;">
+                        1
+                    </button>
+                `;
+                if (startPage > 2) {
+                    paginationHTML += `<span style="color: #666; padding: 0 5px;">...</span>`;
+                }
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                paginationHTML += `
+                    <button class="${i === currentPage ? 'btn-primary' : 'btn-outline'}" 
+                            onclick="changeEarningsPage(${i})"
+                            style="padding: 8px 12px; font-size: 12px; min-width: 40px;">
+                        ${i}
+                    </button>
+                `;
+            }
+
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    paginationHTML += `<span style="color: #666; padding: 0 5px;">...</span>`;
+                }
+                paginationHTML += `
+                    <button class="btn-outline" onclick="changeEarningsPage(${totalPages})" style="padding: 8px 12px; font-size: 12px; min-width: 40px;">
+                        ${totalPages}
+                    </button>
+                `;
+            }
+        }
+
+        // Next button
+        paginationHTML += `
+            <button class="btn-outline" onclick="changeEarningsPage(${currentPage + 1})" 
+                    ${currentPage === totalPages ? 'disabled style="opacity: 0.5;"' : ''}
+                    style="padding: 8px 12px; font-size: 12px;">
+                Next <i class="fas fa-chevron-right"></i>
+            </button>
+        `;
+
+        paginationHTML += `</div>`;
+        paginationContainer.innerHTML = paginationHTML;
+    }
+
     // Initial render
     renderEarningsPage(currentPage);
 
-    // Calculate and display total
+    // Calculate and display total of ALL invoices
     const allInvoicesTotal = invoices.reduce((total, invoice) => total + invoice.sessionEarnings, 0);
     earningsTotal.textContent = `$${allInvoicesTotal.toFixed(2)}`;
 }
@@ -9634,29 +9734,36 @@ function changeEarningsPage(newPage) {
     const invoices = JSON.parse(tableBody.getAttribute('data-earnings-data') || '[]');
 
     if (newPage >= 1 && newPage <= totalPages && newPage !== currentPage) {
+        // Re-render the page with the new page number
         const itemsPerPage = 10;
         const startIndex = (newPage - 1) * itemsPerPage;
         const endIndex = startIndex + itemsPerPage;
         const invoicesToShow = invoices.slice(startIndex, endIndex);
 
-        let tableHTML = '';
+        const earningsHistorySection = document.getElementById('earnings-history');
+        const earningsTotal = document.getElementById('earningsTotal');
+
+        // Clear existing content
+        tableBody.innerHTML = '';
+        
+        // Remove existing mobile cards
+        const existingCards = document.querySelectorAll('.earnings-card');
+        existingCards.forEach(card => card.remove());
 
         invoicesToShow.forEach(invoice => {
             const status = invoice.status || 'pending';
             let statusBadge = '';
-            let rowClass = '';
             let amountStyle = '';
+            let rowClass = '';
 
-            // FIX: Safely handle sessionDate - it might be a Firestore Timestamp
+            // Safely handle sessionDate
             let sessionDateDisplay = 'Invalid Date';
             try {
-                // Check if it's a Firestore Timestamp and convert to Date
                 if (invoice.sessionDate && typeof invoice.sessionDate.toDate === 'function') {
                     sessionDateDisplay = invoice.sessionDate.toDate().toLocaleDateString();
                 } else if (invoice.sessionDate instanceof Date) {
                     sessionDateDisplay = invoice.sessionDate.toLocaleDateString();
                 } else if (invoice.sessionDate) {
-                    // If it's already a string or other format, try to parse it
                     sessionDateDisplay = new Date(invoice.sessionDate).toLocaleDateString();
                 }
             } catch (error) {
@@ -9665,31 +9772,55 @@ function changeEarningsPage(newPage) {
             }
 
             if (status === 'pending') {
-                statusBadge = ' <span class="status-badge status-pending">Pending</span>';
+                statusBadge = '<span class="status-badge status-pending">Pending</span>';
                 rowClass = 'pending-earning';
-                amountStyle = 'style="color: #ffc107;"';
+                amountStyle = 'color: #ffc107;';
             } else if (status === 'rejected') {
-                statusBadge = ' <span class="status-badge status-rejected">Rejected</span>';
+                statusBadge = '<span class="status-badge status-rejected">Rejected</span>';
                 rowClass = 'rejected-earning';
-                amountStyle = 'style="color: #e63946; text-decoration: line-through;"';
+                amountStyle = 'color: #e63946; text-decoration: line-through;';
             } else if (status === 'approved') {
-                statusBadge = ' <span class="status-badge status-approved">Approved</span>';
-                amountStyle = 'style="color: #4cc9f0;"';
+                statusBadge = '<span class="status-badge status-approved">Approved</span>';
+                amountStyle = 'color: #4cc9f0;';
             }
 
-            tableHTML += `
+            // Desktop table row
+            tableBody.innerHTML += `
                 <tr class="earning-row ${rowClass}">
                     <td>${sessionDateDisplay}</td>
                     <td>${invoice.studentName || 'Unknown Student'}${statusBadge}</td>
                     <td>${invoice.subject || 'General'}</td>
                     <td>${invoice.hours}h</td>
                     <td>$${invoice.hourlyRate}/h</td>
-                    <td><strong ${amountStyle}>$${invoice.sessionEarnings.toFixed(2)}</strong></td>
+                    <td><strong style="${amountStyle}">$${invoice.sessionEarnings.toFixed(2)}</strong></td>
                 </tr>
             `;
+
+            // Mobile card
+            const card = document.createElement('div');
+            card.className = `earnings-card ${rowClass}`;
+            card.innerHTML = `
+                <div class="card-row">
+                    <span class="card-label">Date & Student</span>
+                    <span class="card-value">${sessionDateDisplay}<br>${invoice.studentName || 'Unknown Student'} ${statusBadge}</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Subject</span>
+                    <span class="card-value">${invoice.subject || 'General'}</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Duration</span>
+                    <span class="card-value">${invoice.hours}h @ $${invoice.hourlyRate}/h</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Amount</span>
+                    <span class="card-value amount" style="${amountStyle}">$${invoice.sessionEarnings.toFixed(2)}</span>
+                </div>
+            `;
+            
+            earningsHistorySection.insertBefore(card, earningsHistorySection.querySelector('.total-earnings'));
         });
 
-        tableBody.innerHTML = tableHTML;
         tableBody.setAttribute('data-current-page', newPage);
 
         // Update pagination controls
@@ -13164,6 +13295,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
