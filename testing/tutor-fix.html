@@ -8466,6 +8466,70 @@ async function loadEarningsData() {
     }
 }
 
+// Get current pay period dates
+function getCurrentPayPeriod() {
+    const today = new Date();
+    const currentDay = today.getDate();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    
+    let periodStart, periodEnd, periodName;
+    
+    if (currentDay <= 15) {
+        // First half of month: 1st to 15th
+        periodStart = new Date(currentYear, currentMonth, 1);
+        periodEnd = new Date(currentYear, currentMonth, 15);
+        periodName = `${today.toLocaleDateString('en-US', { month: 'long' })} 1st-15th`;
+    } else {
+        // Second half of month: 16th to last day
+        periodStart = new Date(currentYear, currentMonth, 16);
+        
+        // Calculate last day of month (handles 28, 29, 30, 31 days automatically)
+        const lastDay = new Date(currentYear, currentMonth + 1, 0).getDate();
+        periodEnd = new Date(currentYear, currentMonth, lastDay);
+        periodName = `${today.toLocaleDateString('en-US', { month: 'long' })} 16th-${lastDay}`;
+    }
+    
+    return {
+        start: periodStart,
+        end: periodEnd,
+        name: periodName,
+        isCurrentPeriod: today >= periodStart && today <= periodEnd
+    };
+}
+
+// Get previous pay period
+function getPreviousPayPeriod() {
+    const today = new Date();
+    const currentDay = today.getDate();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    
+    let periodStart, periodEnd, periodName;
+    
+    if (currentDay <= 15) {
+        // Previous period was second half of previous month
+        const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+        const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+        const prevMonthLastDay = new Date(prevYear, prevMonth + 1, 0).getDate();
+        
+        periodStart = new Date(prevYear, prevMonth, 16);
+        periodEnd = new Date(prevYear, prevMonth, prevMonthLastDay);
+        periodName = `${new Date(prevYear, prevMonth).toLocaleDateString('en-US', { month: 'long' })} 16th-${prevMonthLastDay}`;
+    } else {
+        // Previous period was first half of current month
+        periodStart = new Date(currentYear, currentMonth, 1);
+        periodEnd = new Date(currentYear, currentMonth, 15);
+        periodName = `${today.toLocaleDateString('en-US', { month: 'long' })} 1st-15th`;
+    }
+    
+    return {
+        start: periodStart,
+        end: periodEnd,
+        name: periodName
+    };
+}
+
 // Process earnings data from invoices
 function processEarningsData(invoicesSnapshot) {
     const invoices = [];
@@ -8476,10 +8540,14 @@ function processEarningsData(invoicesSnapshot) {
     let totalHours = 0;           
     let totalSessions = 0;        
     
-    // Fortnight (14 days) tracking
-    let fortnightEarnings = 0;
-    let fortnightInvoiced = 0;
-    let fortnightSessions = 0;
+    // Pay period tracking
+    const currentPeriod = getCurrentPayPeriod();
+    const previousPeriod = getPreviousPayPeriod();
+    
+    let currentPeriodEarnings = 0;
+    let currentPeriodSessions = 0;
+    let previousPeriodEarnings = 0;
+    let previousPeriodSessions = 0;
     
     let currentMonthInvoiced = 0;
     let currentMonthEarnings = 0;
@@ -8490,10 +8558,6 @@ function processEarningsData(invoicesSnapshot) {
     
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
-    
-    // Calculate 14 days ago
-    const fortnightAgo = new Date();
-    fortnightAgo.setDate(fortnightAgo.getDate() - 14);
     
     invoicesSnapshot.forEach(doc => {
         const invoice = doc.data();
@@ -8511,12 +8575,19 @@ function processEarningsData(invoicesSnapshot) {
         totalHours += hours;
         totalSessions += 1;
         
-        // Count in fortnight totals
-        if (invoiceDate >= fortnightAgo) {
-            fortnightInvoiced += sessionEarnings;
+        // Count in current pay period
+        if (invoiceDate >= currentPeriod.start && invoiceDate <= currentPeriod.end) {
             if (status === 'approved') {
-                fortnightEarnings += sessionEarnings;
-                fortnightSessions += 1;
+                currentPeriodEarnings += sessionEarnings;
+                currentPeriodSessions += 1;
+            }
+        }
+        
+        // Count in previous pay period
+        if (invoiceDate >= previousPeriod.start && invoiceDate <= previousPeriod.end) {
+            if (status === 'approved') {
+                previousPeriodEarnings += sessionEarnings;
+                previousPeriodSessions += 1;
             }
         }
         
@@ -8570,9 +8641,13 @@ function processEarningsData(invoicesSnapshot) {
         avgSessionEarnings,
         currentMonthInvoiced,
         currentMonthEarnings,
-        fortnightEarnings,
-        fortnightInvoiced,
-        fortnightSessions
+        // Pay period data
+        currentPeriodEarnings,
+        currentPeriodSessions,
+        currentPeriodName: currentPeriod.name,
+        previousPeriodEarnings,
+        previousPeriodSessions,
+        previousPeriodName: previousPeriod.name
     };
 }
 
@@ -8586,15 +8661,17 @@ function displayEarningsOverview(earningsData) {
     // Update Total Earnings to show ACTUAL EARNINGS (approved only)
     document.getElementById('totalEarnings').textContent = `$${earningsData.actualEarnings.toFixed(2)}`;
     
-    // Change to fortnight earnings for main dashboard
-    document.getElementById('monthlyEarnings').textContent = `$${earningsData.fortnightEarnings.toFixed(2)}`;
+    // UPDATE: Change to current pay period earnings
+    document.getElementById('monthlyEarnings').textContent = `$${earningsData.currentPeriodEarnings.toFixed(2)}`;
     
-    // Update the label to show "Last 14 Days Earnings"
+    // Update the label to show pay period
     const monthlyEarningsElement = document.getElementById('monthlyEarnings').closest('.stat-card');
     if (monthlyEarningsElement) {
         const labelElement = monthlyEarningsElement.querySelector('.stat-label');
         if (labelElement) {
-            labelElement.textContent = 'Last 14 Days Earnings';
+            labelElement.textContent = 'Current Pay Period';
+            // Add tooltip with period dates
+            labelElement.title = earningsData.currentPeriodName;
         }
     }
     
@@ -8618,22 +8695,45 @@ function updateEarningsBreakdown(earningsData) {
     breakdown.style.borderRadius = '8px';
     breakdown.style.border = '1px solid #e0e0e0';
     
-    let breakdownHTML = '<h4 style="margin-bottom: 15px; color: #4361ee;">Work Submitted Overview</h4>';
+    let breakdownHTML = '<h4 style="margin-bottom: 15px; color: #4361ee;">Pay Period Overview</h4>';
     breakdownHTML += '<div class="stats-container">';
     
-    // Add fortnight summary
+    // Current pay period
     breakdownHTML += `
         <div class="stat-card">
             <div class="stat-icon" style="background: rgba(76, 201, 240, 0.1); color: #4cc9f0;">
                 <i class="fas fa-calendar-week"></i>
             </div>
-            <div class="stat-value" style="color: #4cc9f0; font-size: 20px;">$${earningsData.fortnightEarnings.toFixed(2)}</div>
-            <div class="stat-label">Last 14 Days</div>
+            <div class="stat-value" style="color: #4cc9f0; font-size: 20px;">$${earningsData.currentPeriodEarnings.toFixed(2)}</div>
+            <div class="stat-label">Current Period</div>
             <div style="font-size: 12px; color: #666; margin-top: 5px;">
-                ${earningsData.fortnightSessions} approved sessions
+                ${earningsData.currentPeriodSessions} sessions
+            </div>
+            <div style="font-size: 11px; color: #999; margin-top: 3px;">
+                ${earningsData.currentPeriodName}
             </div>
         </div>
-        
+    `;
+    
+    // Previous pay period
+    breakdownHTML += `
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(108, 117, 125, 0.1); color: #6c757d;">
+                <i class="fas fa-calendar-check"></i>
+            </div>
+            <div class="stat-value" style="color: #6c757d; font-size: 20px;">$${earningsData.previousPeriodEarnings.toFixed(2)}</div>
+            <div class="stat-label">Last Period</div>
+            <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                ${earningsData.previousPeriodSessions} sessions
+            </div>
+            <div style="font-size: 11px; color: #999; margin-top: 3px;">
+                ${earningsData.previousPeriodName}
+            </div>
+        </div>
+    `;
+    
+    // Total submitted work
+    breakdownHTML += `
         <div class="stat-card">
             <div class="stat-icon" style="background: rgba(67, 97, 238, 0.1); color: #4361ee;">
                 <i class="fas fa-paper-plane"></i>
@@ -8703,6 +8803,21 @@ function updateEarningsBreakdown(earningsData) {
     
     breakdownHTML += '</div>';
     
+    // Add pay period info box
+    breakdownHTML += `
+        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid #4361ee; margin-top: 15px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <i class="fas fa-info-circle" style="color: #4361ee;"></i>
+                <div>
+                    <strong>Pay Schedule:</strong> Semi-monthly (15th and last day of month)
+                </div>
+            </div>
+            <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                Invoices approved during each period are paid on the 15th and last day of the following month.
+            </div>
+        </div>
+    `;
+    
     // Add summary text
     breakdownHTML += `<p style="margin-top: 15px; font-size: 14px; color: #666; text-align: center;">
         <i class="fas fa-info-circle"></i> 
@@ -8734,6 +8849,7 @@ function displayMonthlyReports(invoices) {
             if (!monthlyData[monthYear]) {
                 monthlyData[monthYear] = {
                     monthName: monthName,
+                    monthKey: monthYear,
                     earnings: 0,
                     sessions: 0,
                     hours: 0
@@ -8748,7 +8864,7 @@ function displayMonthlyReports(invoices) {
     
     // Convert to array and sort by date (newest first)
     const monthlyArray = Object.values(monthlyData).sort((a, b) => {
-        return new Date(b.monthName) - new Date(a.monthName);
+        return new Date(b.monthKey) - new Date(a.monthKey);
     });
     
     // Create or update monthly reports section
@@ -8779,51 +8895,274 @@ function displayMonthlyReports(invoices) {
         return;
     }
     
-    let reportsHTML = `
+    // Pagination settings
+    const monthsPerPage = 6;
+    const totalPages = Math.ceil(monthlyArray.length / monthsPerPage);
+    let currentPage = 1;
+    
+    function renderMonthlyPage(page) {
+        const startIndex = (page - 1) * monthsPerPage;
+        const endIndex = startIndex + monthsPerPage;
+        const monthsToShow = monthlyArray.slice(startIndex, endIndex);
+        
+        let reportsHTML = `
+            <h4 style="margin-bottom: 15px; color: #4361ee;">
+                <i class="fas fa-file-invoice-dollar"></i> Monthly Earnings Report (For Tax Purposes)
+            </h4>
+            <div style="margin-bottom: 15px; font-size: 14px; color: #666;">
+                <i class="fas fa-info-circle"></i> Use this report for tax filing and income tracking
+                <span style="float: right; font-weight: 600;">
+                    Page ${page} of ${totalPages} • ${monthlyArray.length} months total
+                </span>
+            </div>
+            <div class="stats-container">
+        `;
+        
+        monthsToShow.forEach(monthData => {
+            reportsHTML += `
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: rgba(123, 97, 255, 0.1); color: #7b61ff;">
+                        <i class="fas fa-calendar-alt"></i>
+                    </div>
+                    <div class="stat-value" style="color: #7b61ff; font-size: 18px;">$${monthData.earnings.toFixed(2)}</div>
+                    <div class="stat-label">${monthData.monthName}</div>
+                    <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                        ${monthData.sessions} sessions • ${monthData.hours.toFixed(1)} hours
+                    </div>
+                </div>
+            `;
+        });
+        
+        reportsHTML += `</div>`;
+        
+        // Add pagination controls if needed
+        if (totalPages > 1) {
+            reportsHTML += `
+                <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 20px;">
+                    <button class="btn-outline" onclick="changeMonthlyPage(${page - 1})" ${page === 1 ? 'disabled style="opacity: 0.5;"' : ''}>
+                        <i class="fas fa-chevron-left"></i> Previous
+                    </button>
+                    
+                    <span style="color: #666; font-weight: 600;">
+                        Page ${page} of ${totalPages}
+                    </span>
+                    
+                    <button class="btn-outline" onclick="changeMonthlyPage(${page + 1})" ${page === totalPages ? 'disabled style="opacity: 0.5;"' : ''}>
+                        Next <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            `;
+        }
+        
+        // Add export button
+        reportsHTML += `
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn-primary" onclick="exportMonthlyReport()" style="padding: 10px 20px; margin-right: 10px;">
+                    <i class="fas fa-download"></i> Export Full Report
+                </button>
+                <button class="btn-outline" onclick="showYearlySummary()" style="padding: 10px 20px;">
+                    <i class="fas fa-chart-bar"></i> Yearly Summary
+                </button>
+            </div>
+        `;
+        
+        monthlyReportsSection.innerHTML = reportsHTML;
+        
+        // Store current state for pagination
+        monthlyReportsSection.setAttribute('data-current-page', page);
+        monthlyReportsSection.setAttribute('data-total-pages', totalPages);
+        monthlyReportsSection.setAttribute('data-monthly-data', JSON.stringify(monthlyArray));
+    }
+    
+    // Initial render
+    renderMonthlyPage(currentPage);
+}
+
+// Pagination function
+function changeMonthlyPage(newPage) {
+    const monthlyReportsSection = document.getElementById('monthlyReportsSection');
+    if (!monthlyReportsSection) return;
+    
+    const currentPage = parseInt(monthlyReportsSection.getAttribute('data-current-page'));
+    const totalPages = parseInt(monthlyReportsSection.getAttribute('data-total-pages'));
+    
+    if (newPage >= 1 && newPage <= totalPages && newPage !== currentPage) {
+        const monthlyData = JSON.parse(monthlyReportsSection.getAttribute('data-monthly-data'));
+        
+        // Re-render with new page
+        const startIndex = (newPage - 1) * 6;
+        const endIndex = startIndex + 6;
+        const monthsToShow = monthlyData.slice(startIndex, endIndex);
+        
+        let reportsHTML = `
+            <h4 style="margin-bottom: 15px; color: #4361ee;">
+                <i class="fas fa-file-invoice-dollar"></i> Monthly Earnings Report
+            </h4>
+            <div style="margin-bottom: 15px; font-size: 14px; color: #666;">
+                <i class="fas fa-info-circle"></i> Page ${newPage} of ${totalPages} • ${monthlyData.length} months total
+                <span style="float: right; font-weight: 600;">
+                    Showing ${startIndex + 1}-${Math.min(endIndex, monthlyData.length)} of ${monthlyData.length} months
+                </span>
+            </div>
+            <div class="stats-container">
+        `;
+        
+        monthsToShow.forEach(monthData => {
+            reportsHTML += `
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: rgba(123, 97, 255, 0.1); color: #7b61ff;">
+                        <i class="fas fa-calendar-alt"></i>
+                    </div>
+                    <div class="stat-value" style="color: #7b61ff; font-size: 18px;">$${monthData.earnings.toFixed(2)}</div>
+                    <div class="stat-label">${monthData.monthName}</div>
+                    <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                        ${monthData.sessions} sessions • ${monthData.hours.toFixed(1)} hours
+                    </div>
+                </div>
+            `;
+        });
+        
+        reportsHTML += `</div>`;
+        
+        // Pagination controls
+        reportsHTML += `
+            <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 20px;">
+                <button class="btn-outline" onclick="changeMonthlyPage(${newPage - 1})" ${newPage === 1 ? 'disabled style="opacity: 0.5;"' : ''}>
+                    <i class="fas fa-chevron-left"></i> Previous
+                </button>
+                
+                <span style="color: #666; font-weight: 600;">
+                    Page ${newPage} of ${totalPages}
+                </span>
+                
+                <button class="btn-outline" onclick="changeMonthlyPage(${newPage + 1})" ${newPage === totalPages ? 'disabled style="opacity: 0.5;"' : ''}>
+                    Next <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+        `;
+        
+        // Export buttons
+        reportsHTML += `
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn-primary" onclick="exportMonthlyReport()" style="padding: 10px 20px; margin-right: 10px;">
+                    <i class="fas fa-download"></i> Export Full Report
+                </button>
+                <button class="btn-outline" onclick="showYearlySummary()" style="padding: 10px 20px;">
+                    <i class="fas fa-chart-bar"></i> Yearly Summary
+                </button>
+            </div>
+        `;
+        
+        monthlyReportsSection.innerHTML = reportsHTML;
+        monthlyReportsSection.setAttribute('data-current-page', newPage);
+    }
+}
+
+// Yearly summary view
+function showYearlySummary() {
+    const monthlyReportsSection = document.getElementById('monthlyReportsSection');
+    if (!monthlyReportsSection) return;
+    
+    const monthlyData = JSON.parse(monthlyReportsSection.getAttribute('data-monthly-data'));
+    
+    // Group by year
+    const yearlyData = {};
+    monthlyData.forEach(month => {
+        const year = month.monthName.split(' ')[1];
+        if (!yearlyData[year]) {
+            yearlyData[year] = {
+                year: year,
+                earnings: 0,
+                sessions: 0,
+                hours: 0,
+                months: 0
+            };
+        }
+        yearlyData[year].earnings += month.earnings;
+        yearlyData[year].sessions += month.sessions;
+        yearlyData[year].hours += month.hours;
+        yearlyData[year].months += 1;
+    });
+    
+    const yearlyArray = Object.values(yearlyData).sort((a, b) => b.year - a.year);
+    
+    let yearlyHTML = `
         <h4 style="margin-bottom: 15px; color: #4361ee;">
-            <i class="fas fa-file-invoice-dollar"></i> Monthly Earnings Report (For Tax Purposes)
+            <i class="fas fa-chart-bar"></i> Yearly Earnings Summary
         </h4>
         <div style="margin-bottom: 15px; font-size: 14px; color: #666;">
-            <i class="fas fa-info-circle"></i> Use this report for tax filing and income tracking
+            <i class="fas fa-info-circle"></i> Annual overview for tax planning
         </div>
         <div class="stats-container">
     `;
     
-    // Show last 6 months or all available months
-    const monthsToShow = monthlyArray.slice(0, 6);
-    
-    monthsToShow.forEach(monthData => {
-        reportsHTML += `
+    yearlyArray.forEach(yearData => {
+        yearlyHTML += `
             <div class="stat-card">
-                <div class="stat-icon" style="background: rgba(123, 97, 255, 0.1); color: #7b61ff;">
-                    <i class="fas fa-calendar-alt"></i>
+                <div class="stat-icon" style="background: rgba(255, 107, 107, 0.1); color: #ff6b6b;">
+                    <i class="fas fa-calendar-star"></i>
                 </div>
-                <div class="stat-value" style="color: #7b61ff; font-size: 18px;">$${monthData.earnings.toFixed(2)}</div>
-                <div class="stat-label">${monthData.monthName}</div>
+                <div class="stat-value" style="color: #ff6b6b; font-size: 20px;">$${yearData.earnings.toFixed(2)}</div>
+                <div class="stat-label">${yearData.year} Total</div>
                 <div style="font-size: 12px; color: #666; margin-top: 5px;">
-                    ${monthData.sessions} sessions • ${monthData.hours.toFixed(1)} hours
+                    ${yearData.sessions} sessions • ${yearData.hours.toFixed(1)} hours
+                </div>
+                <div style="font-size: 11px; color: #999; margin-top: 3px;">
+                    ${yearData.months} active months
                 </div>
             </div>
         `;
     });
     
-    reportsHTML += `</div>`;
+    yearlyHTML += `</div>`;
     
-    // Add export button
-    reportsHTML += `
-        <div style="text-align: center; margin-top: 15px;">
-            <button class="btn-outline" onclick="exportMonthlyReport()" style="padding: 8px 16px;">
-                <i class="fas fa-download"></i> Export Tax Report
+    // Back button
+    yearlyHTML += `
+        <div style="text-align: center; margin-top: 20px;">
+            <button class="btn-outline" onclick="changeMonthlyPage(1)" style="padding: 10px 20px;">
+                <i class="fas fa-arrow-left"></i> Back to Monthly View
             </button>
         </div>
     `;
     
-    monthlyReportsSection.innerHTML = reportsHTML;
+    monthlyReportsSection.innerHTML = yearlyHTML;
 }
 
-// Export function for tax reports
+// Enhanced export function
 function exportMonthlyReport() {
-    alert('Tax report export feature coming soon! This will generate a CSV file with all your monthly earnings data for tax purposes.');
+    const monthlyReportsSection = document.getElementById('monthlyReportsSection');
+    if (!monthlyReportsSection) return;
+    
+    const monthlyData = JSON.parse(monthlyReportsSection.getAttribute('data-monthly-data'));
+    
+    // Create CSV content
+    let csvContent = "Month,Earnings,Sessions,Hours,Average Hourly Rate\n";
+    
+    monthlyData.forEach(month => {
+        const hourlyRate = month.hours > 0 ? (month.earnings / month.hours).toFixed(2) : "0.00";
+        csvContent += `"${month.monthName}",${month.earnings.toFixed(2)},${month.sessions},${month.hours.toFixed(1)},${hourlyRate}\n`;
+    });
+    
+    // Calculate totals
+    const totalEarnings = monthlyData.reduce((sum, month) => sum + month.earnings, 0);
+    const totalSessions = monthlyData.reduce((sum, month) => sum + month.sessions, 0);
+    const totalHours = monthlyData.reduce((sum, month) => sum + month.hours, 0);
+    
+    csvContent += `\n"TOTAL",${totalEarnings.toFixed(2)},${totalSessions},${totalHours.toFixed(1)},""\n`;
+    
+    // Create download link
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `earnings-report-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    alert(`✅ Earnings report downloaded! ${monthlyData.length} months of data exported.`);
 }
 
 // Display earnings history table
@@ -12268,6 +12607,7 @@ function initRatingsAndReviews() {
 </button>
 </body>
 </html>
+
 
 
 
