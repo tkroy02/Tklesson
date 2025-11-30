@@ -3237,6 +3237,20 @@ const mobileSessionsCSS = `
             justify-content: flex-end;
         }
 
+/* NUCLEAR MODAL HIDING */
+.modal[style*="display: none"],
+.modal[style*="display:none"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+/* Ensure hidden modals stay hidden */
+.modal:not([style*="display: flex"]):not([style*="display: block"]) {
+    display: none !important;
+}
+        
         /* Reschedule status styles */
         .session-card.reschedule-pending {
             border-left: 4px solid var(--warning);
@@ -4667,12 +4681,11 @@ function generateJitsiMeetLink() {
 }
 
 // Main confirm session function - Tutor creates the Jitsi meeting
-// Main confirm session function - Tutor creates the Jitsi meeting
 async function confirmSession(sessionId) {
-    // Immediately remove any existing overlays
-    forceRemoveOverlays();
-    
     if (!confirm('Confirm this session?')) return;
+    
+    // Store reference to modal BEFORE async operations
+    const sessionModal = document.getElementById('sessionModal');
     
     try {
         const sessionDoc = await db.collection('bookedSessions').doc(sessionId).get();
@@ -4699,24 +4712,39 @@ async function confirmSession(sessionId) {
         // Send notification to student with the new Jitsi meeting link
         await createSessionNotification(session, jitsiMeetingData.meetLink);
         
-        showNotification('✅ Session confirmed! Jitsi meeting room created and student has been notified.', 'success');
-        
         // Show success message with the Jitsi meeting link
         showSessionConfirmationSuccess(session, jitsiMeetingData);
+        
+        // CRITICAL: Close the modal FIRST before any other UI updates
+        if (sessionModal) {
+            sessionModal.style.display = 'none';
+            sessionModal.style.visibility = 'hidden';
+        }
+        
+        // Small delay before showing success notification
+        setTimeout(() => {
+            showNotification('✅ Session confirmed! Jitsi meeting room created and student has been notified.', 'success');
+        }, 300);
         
         // Refresh the UI
         if (typeof loadTutoringOpportunities === 'function' && typeof currentUser !== 'undefined') {
             loadTutoringOpportunities(currentUser.uid);
         }
         
-        // ✅ CORRECT PLACEMENT: Hide overlays AFTER everything is done
-        hideAllOverlays();
-        
     } catch (error) {
         console.error("Error confirming session:", error);
         showNotification('❌ Error confirming session. Please try again.', 'error');
-        // Also hide overlays on error
-        hideAllOverlays();
+        
+        // Close modal even on error
+        if (sessionModal) {
+            sessionModal.style.display = 'none';
+            sessionModal.style.visibility = 'hidden';
+        }
+    } finally {
+        // FINAL CLEANUP - This runs no matter what
+        setTimeout(() => {
+            forceRemoveAllOverlays();
+        }, 100);
     }
 }
        
@@ -4730,53 +4758,89 @@ if (overlay) {
     overlay.style.display = 'none'; 
 }
 
-function forceRemoveOverlays() {
-    console.log('🚨 FORCE REMOVING ALL OVERLAYS');
+function forceRemoveAllOverlays() {
+    console.log('☢️ NUCLEAR OVERLAY REMOVAL INITIATED');
     
-    // Method 1: Hide all modals by ID
-    const modalIds = ['sessionModal', 'rescheduleModal', 'cancelModal', 
-                      'bookingsRescheduleModal', 'bookingsCancelModal', 
-                      'bookingsDetailsModal'];
+    // 1. Remove by ID
+    const modalIds = [
+        'sessionModal', 'rescheduleModal', 'cancelModal',
+        'bookingsRescheduleModal', 'bookingsCancelModal', 
+        'bookingsDetailsModal', 'studentScheduleModal',
+        'studentSessionsModal', 'studentProfileModal'
+    ];
     
     modalIds.forEach(id => {
-        const modal = document.getElementById(id);
-        if (modal) {
-            modal.style.display = 'none';
-            modal.style.visibility = 'hidden';
-            modal.classList.remove('is-active', 'visible');
+        const element = document.getElementById(id);
+        if (element) {
+            element.remove(); // Completely remove from DOM
         }
     });
     
-    // Method 2: Hide all elements with .modal class
-    document.querySelectorAll('.modal').forEach(el => {
-        el.style.display = 'none';
-        el.style.visibility = 'hidden';
-        el.classList.remove('is-active', 'visible');
+    // 2. Remove all .modal elements
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.remove();
     });
     
-    // Method 3: Remove backdrop elements
-    document.querySelectorAll('.modal-backdrop, .loading-overlay').forEach(el => {
-        el.style.display = 'none';
-        el.style.visibility = 'hidden';
-        el.classList.remove('is-active');
+    // 3. Remove all .modal-backdrop elements
+    document.querySelectorAll('.modal-backdrop, .loading-overlay').forEach(backdrop => {
+        backdrop.remove();
     });
     
-    // Method 4: Find and hide any fixed position elements with dark background
-    document.querySelectorAll('div').forEach(div => {
-        const styles = window.getComputedStyle(div);
+    // 4. Find and remove suspicious fixed overlays
+    const allElements = Array.from(document.querySelectorAll('*'));
+    allElements.forEach(el => {
+        const styles = window.getComputedStyle(el);
+        
+        // Check for overlay characteristics
         if (styles.position === 'fixed' && 
-            (styles.backgroundColor === 'rgba(0, 0, 0, 0.5)' || 
-             styles.background.includes('rgba(0, 0, 0, 0.5)'))) {
-            div.style.display = 'none';
-            div.style.visibility = 'hidden';
+            styles.zIndex >= 1000 &&
+            (styles.backgroundColor.includes('rgba(0, 0, 0') || 
+             styles.background.includes('rgba(0, 0, 0'))) {
+            
+            // Check if it's covering the whole screen
+            if (styles.width === '100%' || parseInt(styles.width) >= window.innerWidth - 50) {
+                console.log('🗑️ Removing suspicious overlay:', el.id, el.className);
+                el.remove();
+            }
         }
     });
     
-    // Method 5: Reset body overflow
-    document.body.style.overflow = 'auto';
-    document.body.style.pointerEvents = 'auto';
+    // 5. Reset body styles
+    document.body.style.overflow = '';
+    document.body.style.pointerEvents = '';
+    document.body.style.position = '';
     
-    console.log('✅ Emergency overlay removal complete');
+    // 6. Recreate modals (they'll be hidden by default)
+    setTimeout(recreateModals, 200);
+    
+    console.log('✅ Nuclear cleanup complete');
+}
+
+function recreateModals() {
+    // Recreate the session modal
+    if (!document.getElementById('sessionModal')) {
+        const modal = document.createElement('div');
+        modal.id = 'sessionModal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Session Details</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="sessionModalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-outline" id="closeModalBtn">Close</button>
+                    <button class="btn-primary" id="confirmSessionBtn">Confirm Session</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Re-setup modal listeners
+        setupModals();
+    }
 }
        
 // Create session notification for student
@@ -13329,9 +13393,13 @@ function initRatingsAndReviews() {
        
 </script>    
 
-<button onclick="forceRemoveOverlays()" style="position: fixed; bottom: 10px; right: 10px; z-index: 9999; padding: 10px; background: #ff4444; color: white; border: none; border-radius: 5px; cursor: pointer;">
-    EMERGENCY: Remove Overlays
+<button onclick="diagnoseOverlay(); forceRemoveAllOverlays();" 
+        style="position: fixed; bottom: 10px; right: 10px; z-index: 99999; 
+               padding: 10px; background: #ff4444; color: white; border: none; 
+               border-radius: 5px; cursor: pointer; font-weight: bold;">
+    🆘 DIAGNOSE & FIX
 </button>
 </body>
 </html>
+
 
