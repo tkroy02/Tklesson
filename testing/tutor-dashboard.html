@@ -12902,10 +12902,6 @@ document.addEventListener('DOMContentLoaded', function() {
 //----------------------------------------------------------------------------------
 //RATINGS AND REVIEWS SECTION START HERE
 //-----------------------------------------------------------------------------------
-// =============================================
-// RATINGS & REVIEWS SECTION
-// =============================================
-
 // Global variables
 var allReviews = [];
 var currentReviewFilter = 'all';
@@ -12914,20 +12910,36 @@ var currentRatingFilter = 'all';
 // Load ratings and reviews
 async function loadRatingsAndReviews() {
     const container = document.getElementById('reviewsContainer');
-    if (!container) return;
+    if (!container) {
+        console.error('Reviews container not found!');
+        return;
+    }
     
     container.innerHTML = '<div class="spinner">Loading reviews...</div>';
     
+    // RESET FILTERS FIRST
+    currentReviewFilter = 'all';
+    currentRatingFilter = 'all';
+    console.log('Filters reset to:', currentReviewFilter, currentRatingFilter);
+    
     try {
+        // FIX #1: Use auth.currentUser instead of currentUser
+        const tutorId = auth.currentUser.uid;
+        
+        console.log('Loading reviews for tutor:', tutorId); // Debug log
+        
         // Get all reviews for this tutor
         const reviewsSnapshot = await db.collection('ratings_reviews')
-            .where('tutorId', '==', currentUser.uid)
+            .where('tutorId', '==', tutorId)
             .orderBy('createdAt', 'desc')
             .get();
+        
+        console.log('Found reviews:', reviewsSnapshot.size); // Debug log
         
         allReviews = [];
         
         if (reviewsSnapshot.empty) {
+            console.log('No reviews found'); // Debug log
             showEmptyReviewsState(container);
             updateRatingStats([]);
             return;
@@ -12937,7 +12949,15 @@ async function loadRatingsAndReviews() {
         reviewsSnapshot.forEach(doc => {
             const review = doc.data();
             review.id = doc.id;
+            
+            // FIX #2: Handle missing createdAt field
+            if (!review.createdAt) {
+                console.warn('Review missing createdAt:', doc.id);
+                review.createdAt = new Date(); // Fallback to now
+            }
+            
             allReviews.push(review);
+            console.log('Loaded review:', review); // Debug log
         });
         
         // Update rating statistics
@@ -12951,32 +12971,45 @@ async function loadRatingsAndReviews() {
         
     } catch (error) {
         console.error("Error loading reviews:", error);
+        console.error("Error details:", error.code, error.message); // More debug info
         showErrorState(container);
     }
 }
 
 // Update rating statistics
 function updateRatingStats(reviews) {
+    const avgElement = document.getElementById('averageRating');
+    const totalElement = document.getElementById('totalReviews');
+    
+    // FIX #3: Add safety checks for DOM elements
+    if (!avgElement || !totalElement) {
+        console.error('Rating stat elements not found in DOM');
+        return;
+    }
+    
     if (reviews.length === 0) {
-        document.getElementById('averageRating').textContent = '0.0';
-        document.getElementById('totalReviews').textContent = '0 Reviews';
+        avgElement.textContent = '0.0';
+        totalElement.textContent = '0 Reviews';
         resetRatingBars();
         return;
     }
     
     // Calculate average rating
-    const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
+    const totalRating = reviews.reduce((sum, review) => sum + (review.rating || 0), 0);
     const averageRating = totalRating / reviews.length;
     
     // Count ratings by star
     const ratingCounts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0};
     reviews.forEach(review => {
-        ratingCounts[review.rating]++;
+        const rating = review.rating || 0;
+        if (rating >= 1 && rating <= 5) {
+            ratingCounts[rating]++;
+        }
     });
     
     // Update UI
-    document.getElementById('averageRating').textContent = averageRating.toFixed(1);
-    document.getElementById('totalReviews').textContent = `${reviews.length} Review${reviews.length !== 1 ? 's' : ''}`;
+    avgElement.textContent = averageRating.toFixed(1);
+    totalElement.textContent = `${reviews.length} Review${reviews.length !== 1 ? 's' : ''}`;
     
     // Update stars display
     updateAverageStars(averageRating);
@@ -12988,6 +13021,11 @@ function updateRatingStats(reviews) {
 // Update average stars display
 function updateAverageStars(averageRating) {
     const starsContainer = document.getElementById('averageStars');
+    if (!starsContainer) {
+        console.error('Average stars container not found');
+        return;
+    }
+    
     starsContainer.innerHTML = '';
     
     for (let i = 1; i <= 5; i++) {
@@ -13040,26 +13078,46 @@ function resetRatingBars() {
 // Apply review filters
 function applyReviewFilters() {
     const container = document.getElementById('reviewsContainer');
+    if (!container) {
+        console.error('reviewsContainer not found!');
+        return;
+    }
+    
+    console.log('Applying filters - Rating:', currentRatingFilter, 'Response:', currentReviewFilter);
+    console.log('Total reviews before filtering:', allReviews.length);
+    
     let filteredReviews = [...allReviews];
     
     // Apply rating filter
-    if (currentRatingFilter !== 'all') {
-        filteredReviews = filteredReviews.filter(review => 
-            review.rating === parseInt(currentRatingFilter)
-        );
+    if (currentRatingFilter && currentRatingFilter !== 'all') {
+        const ratingValue = parseInt(currentRatingFilter);
+        console.log('Filtering by rating:', ratingValue);
+        filteredReviews = filteredReviews.filter(review => {
+            console.log('Review rating:', review.rating, 'Match:', review.rating === ratingValue);
+            return review.rating === ratingValue;
+        });
+        console.log('After rating filter:', filteredReviews.length);
     }
     
     // Apply response filter
-    if (currentReviewFilter !== 'all') {
+    if (currentReviewFilter && currentReviewFilter !== 'all') {
+        console.log('Filtering by response status:', currentReviewFilter);
         filteredReviews = filteredReviews.filter(review => {
             if (currentReviewFilter === 'responded') {
-                return review.tutorResponse && review.tutorResponse.trim() !== '';
+                const hasResponse = review.tutorResponse && review.tutorResponse.trim() !== '';
+                console.log('Has response:', hasResponse);
+                return hasResponse;
             } else if (currentReviewFilter === 'not-responded') {
-                return !review.tutorResponse || review.tutorResponse.trim() === '';
+                const noResponse = !review.tutorResponse || review.tutorResponse.trim() === '';
+                console.log('No response:', noResponse);
+                return noResponse;
             }
             return true;
         });
+        console.log('After response filter:', filteredReviews.length);
     }
+    
+    console.log('Final filtered reviews:', filteredReviews.length);
     
     // Display filtered reviews
     displayReviews(filteredReviews, container);
@@ -13067,6 +13125,9 @@ function applyReviewFilters() {
 
 // Display reviews
 function displayReviews(reviews, container) {
+    console.log('displayReviews called with', reviews.length, 'reviews'); // DEBUG
+    console.log('Container element:', container); // DEBUG
+    
     if (reviews.length === 0) {
         container.innerHTML = `
             <div class="reviews-empty-state">
@@ -13078,7 +13139,11 @@ function displayReviews(reviews, container) {
         return;
     }
     
-    container.innerHTML = reviews.map(review => createReviewCard(review)).join('');
+    const reviewsHTML = reviews.map(review => createReviewCard(review)).join('');
+    console.log('Generated HTML length:', reviewsHTML.length); // DEBUG
+    
+    container.innerHTML = reviewsHTML;
+    console.log('Container innerHTML set, length:', container.innerHTML.length); // DEBUG
     
     // Add event listeners
     addReviewCardListeners();
@@ -13086,11 +13151,22 @@ function displayReviews(reviews, container) {
 
 // Create review card
 function createReviewCard(review) {
-    const reviewDate = review.createdAt.toDate();
+    console.log('Creating card for review:', review.id, review); // DEBUG
+    
+    // FIX #4: Handle missing createdAt safely
+    let reviewDate;
+    if (review.createdAt && review.createdAt.toDate) {
+        reviewDate = review.createdAt.toDate();
+    } else if (review.createdAt) {
+        reviewDate = new Date(review.createdAt);
+    } else {
+        reviewDate = new Date();
+    }
+    
     const hasResponse = review.tutorResponse && review.tutorResponse.trim() !== '';
     
-    return `
-        <div class="review-card rating-${review.rating}" data-review-id="${review.id}">
+    const cardHTML = `
+        <div class="review-card rating-${review.rating || 0}" data-review-id="${review.id}">
             <div class="review-header">
                 <div class="review-student-info">
                     <div class="student-avatar">
@@ -13100,7 +13176,7 @@ function createReviewCard(review) {
                         <h4>${review.studentName || 'Student'}</h4>
                         <div class="subject">${review.subject || 'General Tutoring'}</div>
                         <div class="stars">
-                            ${generateStars(review.rating)}
+                            ${generateStars(review.rating || 0)}
                         </div>
                     </div>
                 </div>
@@ -13118,7 +13194,7 @@ function createReviewCard(review) {
                 <div class="review-response">
                     <div class="response-header">
                         <h5><i class="fas fa-reply"></i> Your Response</h5>
-                        <div class="response-date">${formatReviewDate(review.respondedAt.toDate())}</div>
+                        <div class="response-date">${review.respondedAt ? formatReviewDate(review.respondedAt.toDate()) : ''}</div>
                     </div>
                     <div class="response-text">${review.tutorResponse}</div>
                 </div>
@@ -13141,6 +13217,9 @@ function createReviewCard(review) {
             </div>
         </div>
     `;
+    
+    console.log('Card HTML generated, length:', cardHTML.length); // DEBUG
+    return cardHTML;
 }
 
 // Generate stars HTML
@@ -13175,18 +13254,24 @@ function setupReviewFilters() {
     const responseFilter = document.getElementById('responseFilter');
     
     if (ratingFilter) {
-        ratingFilter.addEventListener('change', function() {
-            currentRatingFilter = this.value;
-            applyReviewFilters();
-        });
+        ratingFilter.removeEventListener('change', handleRatingFilterChange); // Prevent duplicates
+        ratingFilter.addEventListener('change', handleRatingFilterChange);
     }
     
     if (responseFilter) {
-        responseFilter.addEventListener('change', function() {
-            currentReviewFilter = this.value;
-            applyReviewFilters();
-        });
+        responseFilter.removeEventListener('change', handleResponseFilterChange);
+        responseFilter.addEventListener('change', handleResponseFilterChange);
     }
+}
+
+function handleRatingFilterChange(e) {
+    currentRatingFilter = e.target.value;
+    applyReviewFilters();
+}
+
+function handleResponseFilterChange(e) {
+    currentReviewFilter = e.target.value;
+    applyReviewFilters();
 }
 
 // Add review card listeners
@@ -13202,15 +13287,17 @@ function addReviewCardListeners() {
 // Open response modal
 async function openResponseModal(reviewId) {
     const review = allReviews.find(r => r.id === reviewId);
-    if (!review) return;
+    if (!review) {
+        console.error('Review not found:', reviewId);
+        return;
+    }
     
     const modalContent = `
-        <h3>Respond to Review</h3>
         <div class="review-preview">
             <div class="student-info">
-                <strong>${review.studentName}</strong> - ${generateStars(review.rating)}
+                <strong>${review.studentName || 'Student'}</strong> - ${generateStars(review.rating || 0)}
             </div>
-            <div class="review-text-preview">"${review.reviewText}"</div>
+            <div class="review-text-preview">"${review.reviewText || 'No review text'}"</div>
         </div>
         <form id="responseForm">
             <div class="form-group">
@@ -13249,7 +13336,6 @@ function showResponseModal(content, reviewId) {
         document.body.appendChild(modal);
     }
     
-    // Always recreate the modal content to ensure fresh event listeners
     modal.innerHTML = `
         <div class="modal-content" style="max-width: 600px;">
             <div class="modal-header">
@@ -13266,7 +13352,7 @@ function showResponseModal(content, reviewId) {
         </div>
     `;
     
-    // Add event listeners each time modal is shown
+    // Add event listeners
     const closeBtn = modal.querySelector('.close-modal');
     const cancelBtn = modal.querySelector('#cancelResponseBtn');
     const submitBtn = modal.querySelector('#submitResponseBtn');
@@ -13274,7 +13360,6 @@ function showResponseModal(content, reviewId) {
     closeBtn.addEventListener('click', () => modal.style.display = 'none');
     cancelBtn.addEventListener('click', () => modal.style.display = 'none');
     
-    // Use the reviewId from the button's data attribute
     submitBtn.addEventListener('click', () => {
         const currentReviewId = submitBtn.getAttribute('data-review-id');
         submitResponse(currentReviewId);
@@ -13288,7 +13373,6 @@ function showResponseModal(content, reviewId) {
     
     modal.style.display = 'flex';
     
-    // Focus on textarea
     setTimeout(() => {
         const textarea = document.getElementById('responseText');
         if (textarea) textarea.focus();
@@ -13306,20 +13390,14 @@ async function submitResponse(reviewId) {
     }
     
     try {
-        // Update review with response
         await db.collection('ratings_reviews').doc(reviewId).update({
             tutorResponse: responseText,
             respondedAt: new Date(),
             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
         });
         
-        // Close modal
         modal.style.display = 'none';
-        
-        // Show success message
         showReviewActionSuccess('Response submitted successfully!');
-        
-        // Reload reviews to reflect changes
         loadRatingsAndReviews();
         
     } catch (error) {
@@ -13349,6 +13427,9 @@ function showErrorState(container) {
             <i class="fas fa-exclamation-circle"></i>
             <h3>Error Loading Reviews</h3>
             <p>Failed to load reviews. Please try again.</p>
+            <button onclick="loadRatingsAndReviews()" class="btn-primary">
+                <i class="fas fa-sync"></i> Retry
+            </button>
         </div>
     `;
 }
@@ -13382,9 +13463,44 @@ function showReviewActionSuccess(message) {
 
 // Initialize ratings and reviews section
 function initRatingsAndReviews() {
-    // This will be called when the section is activated
+    console.log('Initializing ratings and reviews section...');
     loadRatingsAndReviews();
-} 
+}
+
+// FIX #5: Add debugging function
+function debugTutorReviews() {
+    console.log('=== TUTOR REVIEWS DEBUG ===');
+    console.log('Current user:', auth.currentUser?.uid);
+    console.log('All reviews loaded:', allReviews.length);
+    console.log('Reviews data:', allReviews);
+    
+    // Check if container exists
+    const container = document.getElementById('reviewsContainer');
+    console.log('Reviews container exists:', !!container);
+    console.log('Container innerHTML length:', container?.innerHTML.length);
+    console.log('Container HTML:', container?.innerHTML.substring(0, 200));
+    
+    // Check other required elements
+    console.log('averageRating element:', !!document.getElementById('averageRating'));
+    console.log('totalReviews element:', !!document.getElementById('totalReviews'));
+    console.log('averageStars element:', !!document.getElementById('averageStars'));
+    
+    // Test if we can query the collection
+    db.collection('ratings_reviews')
+        .where('tutorId', '==', auth.currentUser.uid)
+        .get()
+        .then(snapshot => {
+            console.log('Direct query result:', snapshot.size, 'reviews');
+            snapshot.forEach(doc => {
+                console.log('Review doc:', doc.id, doc.data());
+            });
+        })
+        .catch(err => {
+            console.error('Query error:', err);
+        });
+}
+
+// Call this in console to debug: debugTutorReviews()
 
 //----------------------------------------------------------------------------------
 //RATINGS AND REVIEWS SECTION ENDS HERE
