@@ -246,6 +246,100 @@
             font-weight: bold;
         }
 
+// Add CSS for photo status indicators (add to your existing CSS)
+const photoApprovalCSS = `
+<style>
+    .photo-status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    
+    .photo-status-badge.approved {
+        background: rgba(76, 201, 240, 0.15);
+        color: #4cc9f0;
+    }
+    
+    .photo-status-badge.pending {
+        background: rgba(255, 193, 7, 0.15);
+        color: #ffc107;
+    }
+    
+    .photo-status-badge.rejected {
+        background: rgba(230, 57, 70, 0.15);
+        color: #e63946;
+    }
+    
+    .photo-status-badge.no-photo {
+        background: rgba(108, 117, 125, 0.15);
+        color: #6c757d;
+    }
+    
+    .tutor-photo-thumb {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        object-fit: cover;
+        cursor: pointer;
+        transition: transform 0.2s;
+        border: 2px solid transparent;
+    }
+    
+    .tutor-photo-thumb:hover {
+        transform: scale(1.1);
+    }
+    
+    .tutor-photo-thumb.approved {
+        border-color: #4cc9f0;
+    }
+    
+    .tutor-photo-thumb.pending {
+        border-color: #ffc107;
+    }
+    
+    .tutor-photo-thumb.rejected {
+        border-color: #e63946;
+    }
+    
+    .photo-action-buttons {
+        display: flex;
+        gap: 5px;
+        margin-top: 5px;
+    }
+    
+    .photo-action-btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        border-radius: 4px;
+        cursor: pointer;
+        border: none;
+        font-weight: 500;
+    }
+    
+    .photo-approve-btn {
+        background: #4cc9f0;
+        color: white;
+    }
+    
+    .photo-reject-btn {
+        background: #e63946;
+        color: white;
+    }
+    
+    .rejection-reason-box {
+        background: #ffe6e6;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 3px solid #e63946;
+        margin-top: 10px;
+        font-size: 13px;
+    }
+
 /* Admin Notification Styles */
 .admin-notification-item.critical {
     border-left: 4px solid #e53e3e;
@@ -2144,90 +2238,679 @@ function addStudentActionListeners() {
             document.getElementById('pendingPayments').textContent = paymentsData.length;
         }
 
-        // Display tutors table
-        function displayTutorsTable() {
-            const container = document.getElementById('tutorManagementContent');
-            const statusFilter = document.getElementById('tutorStatusFilter').value;
-            const searchTerm = document.getElementById('tutorSearch').value.toLowerCase();
-            
-            let filteredTutors = tutorsData;
-            
-            if (statusFilter !== 'all') {
-                filteredTutors = filteredTutors.filter(tutor => {
-                    if (statusFilter === 'active') return tutor.approved === true;
-                    if (statusFilter === 'pending') return tutor.approved === false || tutor.approved === undefined;
-                    if (statusFilter === 'suspended') return tutor.suspended === true;
-                    return true;
-                });
+// =============================================
+// COMPLETE PHOTO APPROVAL SYSTEM - NO DUPLICATES
+// =============================================
+
+// Display tutors table with event delegation
+function displayTutorsTable() {
+    const container = document.getElementById('tutorManagementContent');
+    const statusFilter = document.getElementById('tutorStatusFilter').value;
+    const searchTerm = document.getElementById('tutorSearch').value.toLowerCase();
+    const photoFilter = document.getElementById('photoStatusFilter')?.value || 'all';
+    
+    let filteredTutors = tutorsData;
+    
+    if (statusFilter !== 'all') {
+        filteredTutors = filteredTutors.filter(tutor => {
+            if (statusFilter === 'active') return tutor.approved === true;
+            if (statusFilter === 'pending') return tutor.approved === false || tutor.approved === undefined;
+            if (statusFilter === 'suspended') return tutor.suspended === true;
+            return true;
+        });
+    }
+    
+    if (photoFilter !== 'all') {
+        filteredTutors = filteredTutors.filter(tutor => {
+            if (photoFilter === 'no-photo') return !tutor.profilePhoto;
+            return tutor.profilePhotoStatus === photoFilter;
+        });
+    }
+    
+    if (searchTerm) {
+        filteredTutors = filteredTutors.filter(tutor => {
+            const name = tutor.personal?.fullName || '';
+            const email = tutor.personal?.email || '';
+            return name.toLowerCase().includes(searchTerm) || 
+                   email.toLowerCase().includes(searchTerm);
+        });
+    }
+    
+    if (filteredTutors.length === 0) {
+        container.innerHTML = '<p>No tutors found matching your criteria.</p>';
+        return;
+    }
+    
+    let tableHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Photo</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Status</th>
+                    <th>Photo Status</th>
+                    <th>Subjects</th>
+                    <th>Sessions</th>
+                    <th>Rating</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="tutorTableBody">
+    `;
+    
+    filteredTutors.forEach(tutor => {
+        const name = tutor.personal?.fullName || 'N/A';
+        const email = tutor.personal?.email || 'N/A';
+        const status = getTutorStatus(tutor);
+        const subjects = tutor.subjects?.subjects?.join(', ') || 'N/A';
+        const sessions = tutor.totalSessions || 0;
+        
+        const tutorRatings = adminChatSystem.tutorRatings?.[tutor.id] || {};
+        const rating = tutorRatings.averageRating ? tutorRatings.averageRating.toFixed(1) : 'N/A';
+        
+        // Get photo status
+        const photoStatus = tutor.profilePhotoStatus || 'no-photo';
+        const hasPhoto = !!tutor.profilePhoto;
+        const photoUrl = tutor.profilePhoto || 'https://via.placeholder.com/40/e3f2fd/0c5460?text=No+Photo';
+        
+        let photoStatusBadge = '';
+        if (hasPhoto) {
+            if (photoStatus === 'approved') {
+                photoStatusBadge = '<span class="status-badge status-active">✓ Approved</span>';
+            } else if (photoStatus === 'rejected') {
+                photoStatusBadge = '<span class="status-badge status-suspended">❌ Rejected</span>';
+            } else {
+                photoStatusBadge = '<span class="status-badge status-pending">⏳ Pending</span>';
             }
+        } else {
+            photoStatusBadge = '<span class="status-badge status-inactive">No Photo</span>';
+        }
+        
+        tableHTML += `
+            <tr data-tutor-id="${tutor.id}">
+                <td style="text-align: center;">
+                    <img src="${photoUrl}" alt="${name}" 
+                         class="tutor-photo-thumb ${photoStatus}"
+                         style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid ${photoStatus === 'approved' ? '#4cc9f0' : photoStatus === 'rejected' ? '#e63946' : '#ffc107'}; cursor: pointer;"
+                         data-action="view-photo">
+                </td>
+                <td>${name}</td>
+                <td>${email}</td>
+                <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
+                <td>${photoStatusBadge}</td>
+                <td>${subjects}</td>
+                <td>${sessions}</td>
+                <td>${rating}</td>
+                <td>
+                    <button class="btn-outline" data-action="view-tutor">View</button>
+                    ${hasPhoto && photoStatus !== 'approved' ? 
+                        `<button class="btn-success" data-action="approve-photo">Approve Photo</button>` : ''
+                    }
+                    ${hasPhoto && photoStatus !== 'rejected' ? 
+                        `<button class="btn-danger" data-action="reject-photo">Reject Photo</button>` : ''
+                    }
+                    ${tutor.approved ? 
+                        `<button class="btn-danger" data-action="suspend-tutor">Suspend</button>` :
+                        `<button class="btn-success" data-action="approve-tutor">Approve</button>`
+                    }
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody></table>';
+    container.innerHTML = tableHTML;
+    
+    // Setup event delegation once
+    setupTutorTableEventDelegation();
+}
+
+// Setup event delegation for tutor table
+function setupTutorTableEventDelegation() {
+    const tableBody = document.getElementById('tutorTableBody');
+    if (!tableBody) return;
+    
+    // Remove any existing listeners
+    tableBody.removeEventListener('click', handleTutorTableClick);
+    
+    // Add new listener
+    tableBody.addEventListener('click', handleTutorTableClick);
+}
+
+// Handle all tutor table clicks
+function handleTutorTableClick(event) {
+    const target = event.target;
+    
+    // Handle photo click
+    if (target.classList.contains('tutor-photo-thumb')) {
+        const tutorRow = target.closest('tr');
+        if (tutorRow) {
+            const tutorId = tutorRow.getAttribute('data-tutor-id');
+            viewTutorPhoto(tutorId);
+        }
+        return;
+    }
+    
+    // Handle button clicks
+    const button = target.closest('button');
+    if (!button) return;
+    
+    const tutorRow = button.closest('tr');
+    if (!tutorRow) return;
+    
+    const tutorId = tutorRow.getAttribute('data-tutor-id');
+    const action = button.getAttribute('data-action');
+    
+    if (!tutorId || !action) return;
+    
+    event.stopPropagation();
+    
+    switch(action) {
+        case 'view-tutor':
+            viewTutorDetails(tutorId);
+            break;
+        case 'approve-tutor':
+            approveTutor(tutorId);
+            break;
+        case 'suspend-tutor':
+            suspendTutor(tutorId);
+            break;
+        case 'approve-photo':
+            approveTutorPhoto(tutorId);
+            break;
+        case 'reject-photo':
+            showRejectPhotoModal(tutorId);
+            break;
+    }
+}
+
+// Approve tutor photo
+async function approveTutorPhoto(tutorId) {
+    if (!confirm('Are you sure you want to approve this photo?')) return;
+    
+    try {
+        await db.collection('tutors').doc(tutorId).update({
+            profilePhotoStatus: 'approved',
+            photoApprovedAt: new Date(),
+            photoApprovedBy: currentUser.uid,
+            photoRejectionReason: firebase.firestore.FieldValue.delete()
+        });
+        
+        // Send notification to tutor
+        await sendPhotoApprovalNotification(tutorId, 'approved');
+        
+        alert('Photo approved successfully!');
+        await loadTutorsData();
+        
+    } catch (error) {
+        console.error("Error approving photo:", error);
+        alert('Error approving photo. Please try again.');
+    }
+}
+
+// Show reject photo modal
+function showRejectPhotoModal(tutorId) {
+    const tutor = tutorsData.find(t => t.id === tutorId);
+    if (!tutor) return;
+    
+    // Remove existing modal if any
+    const existingModal = document.getElementById('rejectPhotoModal');
+    if (existingModal) existingModal.remove();
+    
+    const modalHTML = `
+        <div id="rejectPhotoModal" class="modal" style="display: flex;">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h3>Reject Tutor Photo</h3>
+                    <span class="close-modal" data-action="close-modal">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <img src="${tutor.profilePhoto || 'https://via.placeholder.com/150'}" 
+                             alt="${tutor.personal?.fullName || 'Tutor'}" 
+                             style="width: 150px; height: 150px; border-radius: 50%; object-fit: cover; border: 3px solid #e63946;">
+                        <h4 style="margin-top: 10px;">${tutor.personal?.fullName || 'Tutor'}</h4>
+                        <p style="color: #666; margin-bottom: 20px;">${tutor.personal?.email || ''}</p>
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label for="rejectionReason">Reason for Rejection *</label>
+                        <select id="rejectionReason" class="form-control" required>
+                            <option value="">Select a reason</option>
+                            <option value="Inappropriate content">Inappropriate content</option>
+                            <option value="Poor quality/blurry">Poor quality/blurry</option>
+                            <option value="Not a clear face photo">Not a clear face photo</option>
+                            <option value="Contains other people">Contains other people</option>
+                            <option value="Logo/watermark present">Logo/watermark present</option>
+                            <option value="Too dark/bright">Too dark/bright</option>
+                            <option value="Doesn't meet professional standards">Doesn't meet professional standards</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label for="customReason">Additional Details (Optional)</label>
+                        <textarea id="customReason" class="form-control" rows="3" placeholder="Provide additional details or instructions..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-outline" data-action="cancel-reject">Cancel</button>
+                    <button class="btn-danger" data-action="confirm-reject">Reject Photo</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add modal to body
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+    
+    // Setup event delegation for the modal
+    const modal = document.getElementById('rejectPhotoModal');
+    modal.addEventListener('click', handleRejectModalClick.bind(null, tutorId));
+    
+    // Close on outside click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeModal(modal);
+        }
+    });
+}
+
+// Handle reject modal clicks
+function handleRejectModalClick(tutorId, event) {
+    const target = event.target;
+    const action = target.getAttribute('data-action') || 
+                   target.closest('[data-action]')?.getAttribute('data-action');
+    
+    if (!action) return;
+    
+    event.stopPropagation();
+    
+    switch(action) {
+        case 'close-modal':
+        case 'cancel-reject':
+            closeModal(document.getElementById('rejectPhotoModal'));
+            break;
             
-            if (searchTerm) {
-                filteredTutors = filteredTutors.filter(tutor => {
-                    const name = tutor.personal?.fullName || '';
-                    const email = tutor.personal?.email || '';
-                    return name.toLowerCase().includes(searchTerm) || 
-                           email.toLowerCase().includes(searchTerm);
-                });
-            }
+        case 'confirm-reject':
+            const reason = document.getElementById('rejectionReason').value;
+            const customReason = document.getElementById('customReason').value;
             
-            if (filteredTutors.length === 0) {
-                container.innerHTML = '<p>No tutors found matching your criteria.</p>';
+            if (!reason) {
+                alert('Please select a rejection reason.');
                 return;
             }
             
-            let tableHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Email</th>
-                            <th>Status</th>
-                            <th>Subjects</th>
-                            <th>Sessions</th>
-                            <th>Rating</th>
-                            <th>Reviews</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
+            const fullReason = customReason ? `${reason}: ${customReason}` : reason;
             
-            filteredTutors.forEach(tutor => {
-                const name = tutor.personal?.fullName || 'N/A';
-                const email = tutor.personal?.email || 'N/A';
-                const status = getTutorStatus(tutor);
-                const subjects = tutor.subjects?.subjects?.join(', ') || 'N/A';
-                const sessions = tutor.totalSessions || 0;
-                
-                const tutorRatings = adminChatSystem.tutorRatings?.[tutor.id] || {};
-                const rating = tutorRatings.averageRating ? tutorRatings.averageRating.toFixed(1) : 'N/A';
-                const reviews = tutorRatings.reviewCount || 0;
-                
-                tableHTML += `
-                    <tr>
-                        <td>${name}</td>
-                        <td>${email}</td>
-                        <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
-                        <td>${subjects}</td>
-                        <td>${sessions}</td>
-                        <td>${rating}</td>
-                        <td>${reviews}</td>
-                        <td>
-                            <button class="btn-outline view-tutor-btn" data-tutor-id="${tutor.id}">View</button>
-                            ${tutor.approved ? 
-                                `<button class="btn-danger suspend-tutor-btn" data-tutor-id="${tutor.id}">Suspend</button>` :
-                                `<button class="btn-success approve-tutor-btn" data-tutor-id="${tutor.id}">Approve</button>`
-                            }
-                        </td>
-                    </tr>
-                `;
+            if (!confirm(`Are you sure you want to reject this photo?\nReason: ${fullReason}`)) {
+                return;
+            }
+            
+            rejectTutorPhoto(tutorId, fullReason).then(() => {
+                closeModal(document.getElementById('rejectPhotoModal'));
+            }).catch(error => {
+                console.error("Error rejecting photo:", error);
+                alert('Error rejecting photo. Please try again.');
             });
+            break;
+    }
+}
+
+// Close modal helper
+function closeModal(modal) {
+    if (modal) {
+        modal.style.display = 'none';
+        setTimeout(() => {
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+        }, 300);
+    }
+}
+
+// Reject tutor photo
+async function rejectTutorPhoto(tutorId, reason) {
+    try {
+        await db.collection('tutors').doc(tutorId).update({
+            profilePhotoStatus: 'rejected',
+            photoRejectionReason: reason,
+            photoRejectedAt: new Date(),
+            photoRejectedBy: currentUser.uid
+        });
+        
+        // Send notification to tutor
+        await sendPhotoApprovalNotification(tutorId, 'rejected', reason);
+        
+        alert('Photo rejected successfully! Tutor has been notified.');
+        await loadTutorsData();
+        
+    } catch (error) {
+        console.error("Error rejecting photo:", error);
+        throw error;
+    }
+}
+
+// Send photo approval notification to tutor
+async function sendPhotoApprovalNotification(tutorId, status, reason = null) {
+    try {
+        const tutorDoc = await db.collection('tutors').doc(tutorId).get();
+        if (!tutorDoc.exists) return;
+        
+        const tutor = tutorDoc.data();
+        
+        const notificationData = {
+            type: 'photo_approval',
+            title: status === 'approved' ? '✅ Photo Approved' : '❌ Photo Rejected',
+            message: status === 'approved' ? 
+                'Your profile photo has been approved!' :
+                `Your profile photo was rejected. ${reason ? `Reason: ${reason}` : ''}`,
+            status: status,
+            reason: reason,
+            timestamp: new Date(),
+            read: false,
+            actionRequired: status === 'rejected'
+        };
+        
+        await db.collection('tutors').doc(tutorId).collection('notifications').add(notificationData);
+        
+        // Also update the tutor's profile with notification status
+        await db.collection('tutors').doc(tutorId).update({
+            lastNotificationAt: new Date(),
+            hasUnreadNotifications: true
+        });
+        
+    } catch (error) {
+        console.error("Error sending photo approval notification:", error);
+    }
+}
+
+// Enhanced viewTutorDetails function with event delegation
+function viewTutorDetails(tutorId) {
+    const tutor = tutorsData.find(t => t.id === tutorId);
+    if (!tutor) return;
+    
+    const tutorRatings = adminChatSystem.tutorRatings?.[tutorId] || {};
+    const averageRating = tutorRatings.averageRating ? tutorRatings.averageRating.toFixed(1) : 'N/A';
+    const reviewCount = tutorRatings.reviewCount || 0;
+    
+    // Get photo status info
+    const photoStatus = tutor.profilePhotoStatus || 'no-photo';
+    const photoUrl = tutor.profilePhoto || 'https://via.placeholder.com/150/e3f2fd/0c5460?text=No+Photo';
+    const rejectionReason = tutor.photoRejectionReason;
+    
+    const modalBody = document.getElementById('tutorModalBody');
+    modalBody.innerHTML = `
+        <div class="student-card">
+            <div class="student-header">
+                <div class="student-title">${tutor.personal?.fullName || 'N/A'}</div>
+                <span class="status-badge status-${getTutorStatus(tutor)}">${getTutorStatus(tutor).charAt(0).toUpperCase() + getTutorStatus(tutor).slice(1)}</span>
+            </div>
             
-            tableHTML += '</tbody></table>';
-            container.innerHTML = tableHTML;
+            <div style="text-align: center; margin-bottom: 20px;">
+                <img src="${photoUrl}" 
+                     alt="${tutor.personal?.fullName || 'Tutor'}" 
+                     style="width: 120px; height: 120px; border-radius: 50%; object-fit: cover; border: 4px solid ${photoStatus === 'approved' ? '#4cc9f0' : photoStatus === 'rejected' ? '#e63946' : '#ffc107'};">
+                
+                <div style="margin-top: 10px;">
+                    ${photoStatus === 'approved' ? 
+                        '<span class="status-badge status-active">✓ Photo Approved</span>' :
+                      photoStatus === 'rejected' ? 
+                        `<span class="status-badge status-suspended">❌ Photo Rejected</span>` :
+                      tutor.profilePhoto ?
+                        '<span class="status-badge status-pending">⏳ Pending Approval</span>' :
+                        '<span class="status-badge status-inactive">No Photo Uploaded</span>'
+                    }
+                </div>
+                
+                ${rejectionReason ? `
+                    <div style="margin-top: 10px; padding: 10px; background: #ffe6e6; border-radius: 5px; border-left: 3px solid #e63946;">
+                        <strong>Rejection Reason:</strong> ${rejectionReason}
+                    </div>
+                ` : ''}
+                
+                ${tutor.profilePhoto && photoStatus !== 'approved' ? `
+                    <div style="margin-top: 15px;">
+                        <button class="btn-success" data-tutor-id="${tutor.id}" data-action="modal-approve-photo">
+                            <i class="fas fa-check"></i> Approve Photo
+                        </button>
+                        <button class="btn-danger" data-tutor-id="${tutor.id}" data-action="modal-reject-photo" style="margin-left: 10px;">
+                            <i class="fas fa-times"></i> Reject Photo
+                        </button>
+                    </div>
+                ` : ''}
+            </div>
             
-            addTutorActionListeners();
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-envelope"></i>
+                    <span>${tutor.personal?.email || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-phone"></i>
+                    <span>${tutor.personal?.phone || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-graduation-cap"></i>
+                    <span>${tutor.professional?.qualifications || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-book"></i>
+                    <span>${tutor.subjects?.subjects?.join(', ') || 'N/A'}</span>
+                </div>
+            </div>
+            <div class="student-details">
+                <div class="student-detail">
+                    <i class="fas fa-calendar"></i>
+                    <span>Joined: ${tutor.createdAt?.toDate().toLocaleDateString() || 'N/A'}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-star"></i>
+                    <span>Average Rating: ${averageRating} (${reviewCount} reviews)</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-chalkboard-teacher"></i>
+                    <span>Total Sessions: ${tutor.totalSessions || 0}</span>
+                </div>
+                <div class="student-detail">
+                    <i class="fas fa-dollar-sign"></i>
+                    <span>Hourly Rate: $${tutor.professional?.hourlyRate || 'N/A'}</span>
+                </div>
+            </div>
+            ${reviewCount > 0 ? `
+            <div class="ratings-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-light);">
+                <h4 style="margin-bottom: 15px;">Recent Reviews</h4>
+                ${getRecentReviews(tutorRatings.ratings)}
+            </div>
+            ` : ''}
+        </div>
+    `;
+    
+    const modal = document.getElementById('tutorModal');
+    modal.style.display = 'flex';
+    
+    // Setup modal event delegation
+    modal.addEventListener('click', handleTutorModalClick);
+}
+
+// Handle tutor modal clicks
+function handleTutorModalClick(event) {
+    const target = event.target;
+    const action = target.getAttribute('data-action') || 
+                   target.closest('[data-action]')?.getAttribute('data-action');
+    
+    if (!action) {
+        // Check if clicking outside modal content
+        if (target.classList.contains('modal')) {
+            target.style.display = 'none';
         }
+        return;
+    }
+    
+    const tutorId = target.getAttribute('data-tutor-id') || 
+                   target.closest('[data-tutor-id]')?.getAttribute('data-tutor-id');
+    
+    if (!tutorId) return;
+    
+    event.stopPropagation();
+    
+    switch(action) {
+        case 'modal-approve-photo':
+            approveTutorPhoto(tutorId);
+            document.getElementById('tutorModal').style.display = 'none';
+            break;
+        case 'modal-reject-photo':
+            showRejectPhotoModal(tutorId);
+            document.getElementById('tutorModal').style.display = 'none';
+            break;
+    }
+}
+
+// View tutor photo in larger view
+function viewTutorPhoto(tutorId) {
+    const tutor = tutorsData.find(t => t.id === tutorId);
+    if (!tutor || !tutor.profilePhoto) return;
+    
+    // Remove existing modal if any
+    const existingModal = document.getElementById('photoViewerModal');
+    if (existingModal) existingModal.remove();
+    
+    const modalHTML = `
+        <div id="photoViewerModal" class="modal" style="display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.9);">
+            <div class="modal-content" style="background: transparent; box-shadow: none; border: none; max-width: 90vw; max-height: 90vh;">
+                <span class="close-modal" data-action="close-photo-viewer" style="position: fixed; top: 20px; right: 20px; color: white; font-size: 30px; cursor: pointer; z-index: 1000;">&times;</span>
+                <div style="position: relative; text-align: center;">
+                    <img src="${tutor.profilePhoto}" 
+                         alt="${tutor.personal?.fullName || 'Tutor'}" 
+                         style="max-width: 100%; max-height: 70vh; border-radius: 8px;">
+                    <div style="margin-top: 15px; color: white; padding: 10px;">
+                        <h4 style="margin: 0 0 5px 0; color: white;">${tutor.personal?.fullName || 'Tutor'}</h4>
+                        <p style="margin: 0; font-size: 14px; opacity: 0.8;">${tutor.personal?.email || ''}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+    
+    // Setup close event
+    const modal = document.getElementById('photoViewerModal');
+    modal.addEventListener('click', function(e) {
+        if (e.target.classList.contains('close-modal') || e.target === modal) {
+            closeModal(modal);
+        }
+    });
+    
+    // Close on ESC key
+    const closeOnEsc = (e) => {
+        if (e.key === 'Escape') {
+            closeModal(modal);
+            document.removeEventListener('keydown', closeOnEsc);
+        }
+    };
+    document.addEventListener('keydown', closeOnEsc);
+}
+
+// Remove old functions that cause duplicates
+function removeDuplicateFunctions() {
+    // These functions are no longer needed and cause duplicates
+    delete window.addTutorActionListeners;
+    delete window.addPhotoActionListeners;
+    
+    // Remove any duplicate inline onclick handlers from your HTML if they exist
+    const tutorModal = document.getElementById('tutorModal');
+    if (tutorModal) {
+        tutorModal.innerHTML = tutorModal.innerHTML.replace(
+            /onclick="[^"]*"/g, 
+            ''
+        );
+    }
+}
+
+// Initialize tutor management with proper event handling
+function initTutorManagement() {
+    // Setup filter event listeners (only once)
+    setupTutorFilters();
+    
+    // Load initial data
+    loadTutorsData();
+}
+
+// Setup tutor filters with proper event handling
+function setupTutorFilters() {
+    const tutorStatusFilter = document.getElementById('tutorStatusFilter');
+    const tutorSearch = document.getElementById('tutorSearch');
+    const photoStatusFilter = document.getElementById('photoStatusFilter');
+    
+    // Use event delegation for filters too
+    document.querySelector('#tutor-management .filter-section').addEventListener('change', function(e) {
+        if (e.target.id === 'tutorStatusFilter' || e.target.id === 'photoStatusFilter') {
+            displayTutorsTable();
+        }
+    });
+    
+    document.querySelector('#tutor-management .filter-section').addEventListener('input', function(e) {
+        if (e.target.id === 'tutorSearch') {
+            displayTutorsTable();
+        }
+    });
+}
+
+// Update your existing setupUI function to use this
+// In setupUI(), replace the tutor filter section with:
+// initTutorManagement();
+
+// Add this CSS for photo viewer
+const photoViewerCSS = `
+<style>
+    .tutor-photo-thumb {
+        transition: transform 0.2s ease;
+    }
+    
+    .tutor-photo-thumb:hover {
+        transform: scale(1.1);
+    }
+    
+    #photoViewerModal .modal-content {
+        animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: scale(0.9); }
+        to { opacity: 1; transform: scale(1); }
+    }
+</style>
+`;
+
+document.head.insertAdjacentHTML('beforeend', photoViewerCSS);
+
+// Add photo status filter HTML to your Tutor Management section
+const photoFilterHTML = `
+<div class="filter-group">
+    <label for="photoStatusFilter">Photo Status:</label>
+    <select id="photoStatusFilter" class="form-control">
+        <option value="all">All Photos</option>
+        <option value="approved">Approved Only</option>
+        <option value="pending">Pending Only</option>
+        <option value="rejected">Rejected Only</option>
+        <option value="no-photo">No Photo</option>
+    </select>
+</div>
+`;
+
+// Add this to your filter-section in the HTML
+// <div class="filter-section">
+//     ... existing filters ...
+//     ${photoFilterHTML}
+// </div>
+
+// Call this once when the page loads
+document.addEventListener('DOMContentLoaded', function() {
+    removeDuplicateFunctions();
+    initTutorManagement();
+});
 
         // Display students table
 function displayStudentsTable() {
@@ -2539,28 +3222,43 @@ function displayStudentsTable() {
         }
 
         // Add event listeners for tutor actions
-        function addTutorActionListeners() {
-            document.querySelectorAll('.view-tutor-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const tutorId = btn.getAttribute('data-tutor-id');
-                    viewTutorDetails(tutorId);
-                });
-            });
-            
-            document.querySelectorAll('.approve-tutor-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const tutorId = btn.getAttribute('data-tutor-id');
-                    approveTutor(tutorId);
-                });
-            });
-            
-            document.querySelectorAll('.suspend-tutor-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const tutorId = btn.getAttribute('data-tutor-id');
-                    suspendTutor(tutorId);
-                });
-            });
-        }
+function addTutorActionListeners() {
+    document.querySelectorAll('.view-tutor-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tutorId = btn.getAttribute('data-tutor-id');
+            viewTutorDetails(tutorId);
+        });
+    });
+    
+    document.querySelectorAll('.approve-tutor-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tutorId = btn.getAttribute('data-tutor-id');
+            approveTutor(tutorId);
+        });
+    });
+    
+    document.querySelectorAll('.suspend-tutor-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tutorId = btn.getAttribute('data-tutor-id');
+            suspendTutor(tutorId);
+        });
+    });
+    
+    // Add photo action listeners if they exist in this table
+    document.querySelectorAll('.approve-photo-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tutorId = btn.getAttribute('data-tutor-id');
+            approveTutorPhoto(tutorId);
+        });
+    });
+    
+    document.querySelectorAll('.reject-photo-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tutorId = btn.getAttribute('data-tutor-id');
+            showRejectPhotoModal(tutorId);
+        });
+    });
+}
 
         // Add event listeners for student actions
         function addStudentActionListeners() {
