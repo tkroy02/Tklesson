@@ -4536,70 +4536,74 @@ function viewPaymentDetails(paymentId) {
 
         // Give free credits
         async function giveFreeCredits() {
-            const studentId = document.getElementById('creditsStudentSelect').value;
-            const packageType = document.getElementById('creditsPackageType').value;
-            const amount = parseInt(document.getElementById('creditsAmount').value);
-            const reason = document.getElementById('creditsReason').value.trim();
-            
-            if (!studentId || !packageType || !amount || !reason) {
-                alert('Please fill in all required fields');
-                return;
-            }
-            
-            if (amount < 1 || amount > 100) {
-                alert('Please enter a valid number of credits (1-100)');
-                return;
-            }
-            
-            try {
-                const studentDoc = await db.collection('students').doc(studentId).get();
-                if (!studentDoc.exists) {
-                    throw new Error('Student not found');
-                }
-
-                const studentData = studentDoc.data();
-                const currentBalances = studentData.packageBalances || {
-                    hourly: 0,
-                    bronze: 0,
-                    silver: 0,
-                    gold: 0
-                };
-
-                const currentBalance = currentBalances[packageType] || 0;
-                const newBalance = currentBalance + amount;
-
-                await db.collection('students').doc(studentId).update({
-                    [`packageBalances.${packageType}`]: newBalance,
-                    lastUpdated: new Date()
-                });
-
-                await db.collection('creditTransactions').add({
-                    studentId: studentId,
-                    studentName: studentData.fullName || 'Unknown Student',
-                    adminId: currentUser.uid,
-                    adminName: currentUser.displayName || 'Admin',
-                    type: 'free_credit',
-                    packageType: packageType,
-                    amount: amount,
-                    previousBalance: currentBalance,
-                    newBalance: newBalance,
-                    reason: reason,
-                    timestamp: new Date(),
-                    status: 'completed'
-                });
-
-
-                alert(`✅ Successfully gave ${amount} ${packageType} credits to ${studentData.fullName || 'student'}!`);
-                document.getElementById('freeCreditsModal').style.display = 'none';
-                document.getElementById('freeCreditsForm').reset();
-                
-                await updateBalanceDisplay(studentId);
-                
-            } catch (error) {
-                console.error("Error giving free credits:", error);
-                alert(`❌ Error giving credits: ${error.message}`);
-            }
+    const studentId = document.getElementById('creditsStudentSelect').value;
+    const packageType = document.getElementById('creditsPackageType').value;
+    const amount = parseInt(document.getElementById('creditsAmount').value);
+    const reason = document.getElementById('creditsReason').value.trim();
+    
+    if (!studentId || !packageType || !amount || !reason) {
+        alert('Please fill in all required fields');
+        return;
+    }
+    
+    if (amount < 1 || amount > 100) {
+        alert('Please enter a valid number of credits (1-100)');
+        return;
+    }
+    
+    try {
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        if (!studentDoc.exists) {
+            throw new Error('Student not found');
         }
+
+        const studentData = studentDoc.data();
+        const currentBalances = studentData.packageBalances || {
+            hourly: 0,
+            bronze: 0,
+            silver: 0,
+            gold: 0
+        };
+
+        const currentBalance = currentBalances[packageType] || 0;
+        const newBalance = currentBalance + amount;
+
+        // Update student balance
+        await db.collection('students').doc(studentId).update({
+            [`packageBalances.${packageType}`]: newBalance,
+            lastUpdated: new Date()
+        });
+
+        // Record transaction
+        await db.collection('creditTransactions').add({
+            studentId: studentId,
+            studentName: studentData.fullName || 'Unknown Student',
+            adminId: currentUser.uid,
+            adminName: currentUser.displayName || 'Admin',
+            type: 'free_credit',
+            packageType: packageType,
+            amount: amount,
+            previousBalance: currentBalance,
+            newBalance: newBalance,
+            reason: reason,
+            timestamp: new Date(),
+            status: 'completed'
+        });
+
+        // ✅ SEND NOTIFICATION TO STUDENT
+        await sendCreditChangeNotification(studentId, studentData, packageType, amount, reason, 'added');
+
+        alert(`✅ Successfully gave ${amount} ${packageType} credits to ${studentData.fullName || 'student'}!`);
+        document.getElementById('freeCreditsModal').style.display = 'none';
+        document.getElementById('freeCreditsForm').reset();
+        
+        await updateBalanceDisplay(studentId);
+        
+    } catch (error) {
+        console.error("Error giving free credits:", error);
+        alert(`❌ Error giving credits: ${error.message}`);
+    }
+}
 
         // Setup UI event listeners
 function setupUI() {
@@ -8435,8 +8439,8 @@ async function sendDeductionNotification(studentId, studentData, packageType, am
             amount: action === 'deducted' ? -amount : amount,
             packageType: packageType,
             reason: reason,
-            timestamp: new Date(),
-            read: false,
+            createdAt: new Date(),
+            isRead: false,         
             actionRequired: false,
             
             // Admin info
@@ -8569,6 +8573,55 @@ function displayStudentsTable() {
 
     // Add student action listeners
     addStudentActionListeners();
+}
+
+async function sendCreditChangeNotification(studentId, studentData, packageType, amount, reason, action = 'deducted') {
+    try {
+        const notificationData = {
+            // REQUIRED: Must include userId for the rule to work
+            userId: studentId,
+            
+            // Notification metadata
+            userType: 'student',
+            studentName: studentData.fullName || 'Student',
+            studentEmail: studentData.email || '',
+            
+            // Notification content
+            title: action === 'deducted' ? '⚠️ Credits Deducted' : '🎉 Free Credits Added',
+            message: action === 'deducted' 
+                ? `Admin deducted ${amount} ${packageType} credit${amount !== 1 ? 's' : ''} from your account. Reason: ${reason}`
+                : `You received ${amount} FREE ${packageType} credit${amount !== 1 ? 's' : ''}! Reason: ${reason}`,
+            type: action === 'deducted' ? 'credit_deduction' : 'credit_addition',
+            
+            // Credit details
+            amount: action === 'deducted' ? -amount : amount,
+            packageType: packageType,
+            reason: reason,
+            
+            // Flags
+            createdAt: new Date(),
+            isRead: false,
+            actionRequired: false,
+            priority: action === 'deducted' ? 'high' : 'medium',
+            
+            // Admin info
+            adminId: currentUser.uid,
+            adminName: currentUser.displayName || 'Admin Support'
+        };
+        
+        console.log('Creating credit change notification...');
+        
+        // WRITE TO GLOBAL NOTIFICATIONS COLLECTION
+        await db.collection('notifications').add(notificationData);
+        
+        console.log(`✅ ${action === 'deducted' ? 'Deduction' : 'Credit'} notification sent to student`);
+        return true;
+        
+    } catch (error) {
+        console.error("Error sending credit notification:", error);
+        console.error("Error details:", error.code, error.message);
+        return false;
+    }
 }
 
 // Update the viewStudentDetails function to show credit balances
