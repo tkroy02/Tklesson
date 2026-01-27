@@ -60,7 +60,6 @@ button:hover { background-color: #01579b; }
 .correct { background-color: #c8e6c9; border-left-color: #4caf50; }
 .wrong { background-color: #ffcdd2; border-left-color: #f44336; }
 #score { font-size: 1.3em; font-weight: bold; margin-top: 15px; padding: 10px; background: #e3f2fd; border-radius: 5px; }
-.timer { text-align: right; font-weight: bold; margin-bottom: 15px; font-size: 1.2em; color: #d32f2f; }
 .email-container { margin-bottom: 15px; }
 #submission-message { margin-top: 10px; font-weight: bold; color: #01579b; }
 .mathjax-container { overflow-x: auto; }
@@ -91,7 +90,6 @@ button:hover { background-color: #01579b; }
         <input type="email" id="email" placeholder="you@example.com" required>
     </div>
 
-    <div class="timer" id="timer">30:00</div>
     <div id="quiz-container"></div>
 
     <div class="button-row">
@@ -229,7 +227,7 @@ const questions = [
     }
 ];
 
-// Shuffle helper
+// Shuffle helper - Fisher-Yates algorithm
 function shuffleArray(arr){ 
     const shuffled = [...arr];
     for (let i = shuffled.length - 1; i > 0; i--) {
@@ -239,13 +237,46 @@ function shuffleArray(arr){
     return shuffled;
 }
 
-let shuffledQuestions = shuffleArray(questions);
+// Store the original questions and shuffled state
+let originalQuestions = [...questions];
+let shuffledQuestions = [];
+let questionData = []; // Will store both question and shuffled options
+
+// Initialize quiz data with shuffled questions and options
+function initializeQuizData() {
+    // Shuffle question order
+    shuffledQuestions = shuffleArray(originalQuestions);
+    
+    // For each question, shuffle options and track correct answer
+    questionData = shuffledQuestions.map(q => {
+        // Create array of option objects with their values
+        const optionObjects = q.options.map(opt => ({
+            value: opt,
+            isCorrect: normalizeAns(opt) === normalizeAns(q.answer)
+        }));
+        
+        // Shuffle the options
+        const shuffledOptions = shuffleArray(optionObjects);
+        
+        // Find the correct answer in shuffled options
+        const correctOptionIndex = shuffledOptions.findIndex(opt => opt.isCorrect);
+        
+        return {
+            ...q,
+            displayedOptions: shuffledOptions.map(opt => opt.value),
+            correctOptionIndex: correctOptionIndex,
+            originalAnswer: q.answer
+        };
+    });
+}
+
 const container = document.getElementById('quiz-container');
 
-// Render quiz dynamically
+// Render quiz dynamically with shuffled options
 function renderQuiz(){
     container.innerHTML = '';
-    shuffledQuestions.forEach((q, idx) => {
+    
+    questionData.forEach((q, idx) => {
         const div = document.createElement('div');
         div.classList.add('question');
         div.id = `qdiv${idx}`;
@@ -253,8 +284,9 @@ function renderQuiz(){
         let html = `<p>${idx + 1}. ${q.q}</p>`;
         
         html += `<div class="options">`;
-        html += q.options.map(opt => 
-            `<label><input type="radio" name="q${idx}" value="${opt.replace(/\$/g, '')}"> ${opt}</label>`
+        // Use the pre-shuffled options
+        html += q.displayedOptions.map((opt, optIdx) => 
+            `<label><input type="radio" name="q${idx}" value="${optIdx}"> ${opt}</label>`
         ).join('');
         html += `</div>`;
 
@@ -301,7 +333,7 @@ async function checkAnswers(){
     let score = 0;
     const submissionData = [];
 
-    shuffledQuestions.forEach((q, idx) => {
+    questionData.forEach((q, idx) => {
         const div = document.getElementById(`qdiv${idx}`);
         div.classList.remove('correct', 'wrong');
         
@@ -310,11 +342,10 @@ async function checkAnswers(){
         if (oldAnswer) oldAnswer.remove();
 
         const selected = document.querySelector(`input[name="q${idx}"]:checked`);
-        const userAnsRaw = selected ? selected.value : '';
-        const userAns = normalizeAns(userAnsRaw);
-        const correctAns = normalizeAns(q.answer);
+        const userSelectedIndex = selected ? parseInt(selected.value) : -1;
+        const isCorrect = userSelectedIndex === q.correctOptionIndex;
 
-        if(userAns === correctAns){
+        if(isCorrect){
             div.classList.add('correct');
             score++;
         } else {
@@ -325,18 +356,20 @@ async function checkAnswers(){
             answerDisplay.style.color = '#01579b';
             answerDisplay.style.marginTop = '6px';
             answerDisplay.style.fontWeight = 'bold';
-            answerDisplay.innerHTML = `Correct answer: ${q.answer}`;
+            answerDisplay.innerHTML = `Correct answer: ${q.displayedOptions[q.correctOptionIndex]}`;
             div.appendChild(answerDisplay);
         }
 
         submissionData.push({
             question: q.q,
-            correctAnswer: q.answer,
-            userAnswer: userAnsRaw || 'No answer'
+            correctAnswer: q.originalAnswer,
+            userAnswer: userSelectedIndex !== -1 ? q.displayedOptions[userSelectedIndex] : 'No answer',
+            userSelectedIndex: userSelectedIndex,
+            correctOptionIndex: q.correctOptionIndex
         });
     });
 
-    document.getElementById('score').innerHTML = `Your score: <strong>${score} / ${shuffledQuestions.length}</strong>`;
+    document.getElementById('score').innerHTML = `Your score: <strong>${score} / ${questionData.length}</strong>`;
     document.getElementById('solution-btn').style.display = 'inline-block';
 
     // Disable further selection
@@ -356,7 +389,7 @@ async function checkAnswers(){
                 name: nameInput.value.trim(),
                 email: emailInput.value.trim(),
                 score,
-                total: shuffledQuestions.length,
+                total: questionData.length,
                 test: "AP Calculus – Product & Quotient Rules Quiz",
                 answers: submissionData
             })
@@ -373,19 +406,16 @@ async function checkAnswers(){
 
 // Restart quiz
 function restartQuiz(){
-    shuffledQuestions = shuffleArray(questions);
+    initializeQuizData(); // Re-shuffle both questions and options
     renderQuiz();
-    startTimer();
     
-    // Reset timer
-    clearInterval(timerId);
-    remaining = 30 * 60;
-    updateTimer();
-    timerId = setInterval(updateTimer, 1000);
-    
-    // Re-enable submit button
+    // Re-enable submit button and inputs
     document.getElementById('submitBtn').disabled = false;
     document.getElementById('submitBtn').style.backgroundColor = '';
+    
+    // Re-enable all radio buttons
+    const allInputs = document.querySelectorAll('#quiz-container input[type="radio"]');
+    allInputs.forEach(input => input.disabled = false);
 }
 
 // Show solution with LaTeX
@@ -458,58 +488,9 @@ function showSolution(){
     solutionWindow.document.close();
 }
 
-// Timer functionality
-let remaining = 30 * 60; // 30 minutes
-const timerEl = document.getElementById('timer');
-let timerId;
-
-function pad(n){ 
-    return n.toString().padStart(2, '0'); 
-}
-
-function updateTimer(){
-    const min = Math.floor(remaining / 60);
-    const sec = remaining % 60;
-    timerEl.textContent = `${pad(min)}:${pad(sec)}`;
-    
-    if(remaining <= 0){
-        clearInterval(timerId);
-        disableQuiz();
-        alert('Time is up! Quiz is now disabled.');
-        
-        const nameInput = document.getElementById('name');
-        const emailInput = document.getElementById('email');
-        if(nameInput.value.trim() && emailInput.value.trim()){
-            checkAnswers();
-        } else {
-            const msgEl = document.getElementById('submission-message');
-            msgEl.textContent = 'Time is up! Please enter your name and email, then click Submit to save your score.';
-            msgEl.style.color = 'red';
-        }
-        return;
-    }
-    remaining--;
-}
-
-function startTimer() {
-    clearInterval(timerId);
-    remaining = 30 * 60;
-    updateTimer();
-    timerId = setInterval(updateTimer, 1000);
-}
-
-function disableQuiz(){
-    const inputs = document.querySelectorAll('#quiz-container input');
-    inputs.forEach(input => { 
-        input.disabled = true; 
-    });
-    document.getElementById('submitBtn').disabled = true;
-    document.getElementById('submitBtn').style.backgroundColor = '#cccccc';
-}
-
 // Initialize quiz
+initializeQuizData();
 renderQuiz();
-startTimer();
 </script>
 
 </body>
