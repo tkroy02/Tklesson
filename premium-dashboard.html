@@ -5108,50 +5108,47 @@ function updateDashboardDisplay(stats) {
     }
 }
 
-function updateRecentActivity(courses) {
+async function updateRecentActivity() {
+    const user = auth.currentUser;
+    if (!user) return;
+    
     const activityList = document.querySelector('.activity-list');
     if (!activityList) return;
     
-    // Get recent activities from course data
-    const recentActivities = [];
-    
-    courses.forEach(course => {
-        if (course.lastAccessed) {
-            recentActivities.push({
-                type: 'accessed',
-                course: course.title,
-                timestamp: new Date(course.lastAccessed),
-                icon: 'fas fa-book'
-            });
-        }
+    try {
+        const activitiesRef = collection(db, 'users', user.uid, 'activities');
+        const q = query(activitiesRef, orderBy('timestamp', 'desc'), limit(5));
+        const snapshot = await getDocs(q);
         
-        if (course.completedQuizzes > 0) {
-            recentActivities.push({
-                type: 'quiz',
-                course: course.title,
-                timestamp: new Date(course.lastAccessed),
-                icon: 'fas fa-check-circle',
-                description: `Completed quiz in ${course.title}`
-            });
+        const activities = [];
+        snapshot.forEach(doc => {
+            activities.push(doc.data());
+        });
+        
+        if (activities.length > 0) {
+            activityList.innerHTML = activities.map(activity => `
+                <li class="activity-item">
+                    <div class="activity-icon"><i class="${getActivityIcon(activity.type)}"></i></div>
+                    <div>
+                        <div><strong>${getActivityDescription(activity)}</strong></div>
+                        <small>${getTimeAgo(new Date(activity.timestamp))}</small>
+                    </div>
+                </li>
+            `).join('');
+        } else {
+            activityList.innerHTML = `
+                <li class="activity-item">
+                    <div class="activity-icon"><i class="fas fa-info-circle"></i></div>
+                    <div>
+                        <div><strong>No recent activity</strong></div>
+                        <small>Start learning to see your activity here</small>
+                    </div>
+                </li>
+            `;
         }
-    });
-    
-    // Sort by timestamp (newest first) and take top 3
-    const sortedActivities = recentActivities
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, 3);
-    
-    if (sortedActivities.length > 0) {
-        activityList.innerHTML = sortedActivities.map(activity => `
-            <li class="activity-item">
-                <div class="activity-icon"><i class="${activity.icon}"></i></div>
-                <div>
-                    <div><strong>${getActivityDescription(activity)}</strong></div>
-                    <small>${getTimeAgo(activity.timestamp)}</small>
-                </div>
-            </li>
-        `).join('');
-    } else {
+    } catch (error) {
+        console.error("Error loading activities:", error);
+        // Fallback to empty state if error
         activityList.innerHTML = `
             <li class="activity-item">
                 <div class="activity-icon"><i class="fas fa-info-circle"></i></div>
@@ -5164,14 +5161,25 @@ function updateRecentActivity(courses) {
     }
 }
 
+function getActivityIcon(type) {
+    switch(type) {
+        case 'study': return 'fas fa-book';
+        case 'quiz': return 'fas fa-check-circle';
+        case 'flashcard': return 'fas fa-layer-group';
+        default: return 'fas fa-info-circle';
+    }
+}
+
 function getActivityDescription(activity) {
     switch(activity.type) {
-        case 'accessed':
-            return `Studied ${activity.course}`;
+        case 'study':
+            return `Studied ${activity.courseTitle}`;
         case 'quiz':
-            return `Completed quiz in ${activity.course}`;
+            return `Completed quiz in ${activity.courseTitle}`;
+        case 'flashcard':
+            return `Practiced flashcards in ${activity.courseTitle}`;
         default:
-            return `Activity in ${activity.course}`;
+            return `Activity in ${activity.courseTitle}`;
     }
 }
 
@@ -5182,11 +5190,31 @@ function getTimeAgo(timestamp) {
     const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
     
-    if (diffMins < 60) return `${diffMins} minutes ago`;
-    if (diffHours < 24) return `${diffHours} hours ago`;
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays} days ago`;
     return timestamp.toLocaleDateString();
+}
+
+// Add this function to log activities
+async function logActivity(courseId, courseTitle, activityType) {
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    try {
+        const activityRef = collection(db, 'users', user.uid, 'activities');
+        await addDoc(activityRef, {
+            courseId: courseId,
+            courseTitle: courseTitle,
+            type: activityType, // 'study', 'quiz', 'flashcard', etc.
+            timestamp: new Date().toISOString()
+        });
+        console.log(`Activity logged: ${activityType} in ${courseTitle}`);
+    } catch (error) {
+        console.error("Error logging activity:", error);
+    }
 }
 
  // Add these Firestore functions:
@@ -5222,6 +5250,10 @@ function getTimeAgo(timestamp) {
             lastAccessed: new Date().toISOString()
         });
         console.log("Course enrolled in Firestore:", courseId);
+        
+        // Log the enrollment activity
+        await logActivity(courseId, courseTitle, 'enrolled');
+        
         return true;
     } catch (error) {
         console.error("Error enrolling course:", error);
@@ -5292,7 +5324,7 @@ async function initializeCoursesInFirestore() {
     }
 }
 
-async function updateCourseProgress(courseId, progress, activityType = 'study') {
+async function updateCourseProgress(courseId, progress, activityType = 'study', courseTitle = '') {
     const user = auth.currentUser;
     if (!user) return;
     
@@ -5319,21 +5351,30 @@ async function updateCourseProgress(courseId, progress, activityType = 'study') 
             
             // Store individual quiz scores for average calculation
             const currentScores = currentData.quizScores || [];
-            // Note: We'll need to pass the actual score from the quiz function
-            currentScores.push(progress); // Using progress as score for now
+            currentScores.push(progress); // Using progress as score
             updateData.quizScores = currentScores;
             updateData.averageScore = calculateAverage(currentScores);
             
+            // Log quiz activity
+            await logActivity(courseId, courseTitle || currentData.title, 'quiz');
+            
         } else if (activityType === 'study') {
             updateData.studyHours = (currentData.studyHours || 0) + 0.5;
+            
+            // Log study activity
+            await logActivity(courseId, courseTitle || currentData.title, 'study');
         }
         
         await updateDoc(courseRef, updateData);
         console.log(`Progress updated for ${courseId}: ${updateData.progress}%`);
         
-        // Refresh progress display
+        // Refresh displays
         if (document.getElementById('progress')?.classList.contains('active')) {
             updateProgressDisplay();
+        }
+        if (document.getElementById('dashboard')?.classList.contains('active')) {
+            updateDashboardStats();
+            updateRecentActivity();
         }
     } catch (error) {
         console.error("Error updating progress:", error);
@@ -5421,7 +5462,10 @@ window.showPage = async function(pageId, element = null) {
     
     // Update dashboard stats when dashboard is shown
     if (pageId === 'dashboard') {
-        setTimeout(() => updateDashboardStats(), 50);
+        setTimeout(async () => {
+            await updateDashboardStats();
+            await updateRecentActivity();
+        }, 50);
     }
     
     // Update progress when progress page is shown
@@ -5435,9 +5479,9 @@ window.showPage = async function(pageId, element = null) {
     if (user) {
         console.log("User signed in:", user.email);
 
-        await trackPageVisit(); // Add this
+        await trackPageVisit();
         
-        // Check subscription status - ADD THIS
+        // Check subscription status
         window.isSubscriptionActive = await checkSubscriptionStatus(user);
         
         // Update profile display immediately
@@ -5449,6 +5493,7 @@ window.showPage = async function(pageId, element = null) {
             await updateDashboardStats();
             await updateMyCoursesDisplay();
             await updateAllCoursesDisplay();
+            await updateRecentActivity();
             setupCourseSearch();
             
             // Animate progress bars
@@ -5477,6 +5522,7 @@ window.showPage = async function(pageId, element = null) {
   window.updateProgressDisplay = updateProgressDisplay;
   window.updateCourseProgress = updateCourseProgress;
   window.updateDashboardStats = updateDashboardStats;
+  window.logActivity = logActivity;
   window.currentTextbookUnit = window.currentTextbookUnit || 'unit1';
   window.correctAnswers = window.correctAnswers || 0;
 
