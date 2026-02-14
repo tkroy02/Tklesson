@@ -5008,13 +5008,14 @@ async function updateDashboardStats() {
         
         // Calculate all original stats PLUS subscription status
         const enrolledCount = enrolledCourses.length;
+        const studyDays = await calculateStudyDays(user);
+        const currentStreak = await calculateCurrentStreak(user);
         const coursesWithScores = enrolledCourses.filter(course => course.averageScore);
         const averageGrade = coursesWithScores.length > 0 
             ? Math.round(coursesWithScores.reduce((sum, course) => sum + course.averageScore, 0) / coursesWithScores.length)
             : 0;
         
         const quizzesCompleted = enrolledCourses.reduce((sum, course) => sum + (course.completedQuizzes || 0), 0);
-        const studyDays = calculateCurrentStreak(enrolledCourses);
         
         // Update dashboard display - Keep ALL 5 stats in a grid
         const statsContainer = document.querySelector('.stats-container');
@@ -5075,23 +5076,32 @@ if (statsContainer) {
     }
 }
 
-function calculateStudyDays(courses) {
-    // Simple streak calculation - count days with recent activity
-    const today = new Date();
-    const recentDays = new Set();
+async function calculateStudyDays(user) {
+    if (!user) return 0;
     
-    courses.forEach(course => {
-        if (course.lastAccessed) {
-            const lastAccess = new Date(course.lastAccessed);
-            const diffTime = Math.abs(today - lastAccess);
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            if (diffDays <= 7) { // Activity in last 7 days
-                recentDays.add(lastAccess.toDateString());
+    try {
+        // Query all activities for this user
+        const activitiesRef = collection(db, 'users', user.uid, 'activities');
+        const activitiesSnapshot = await getDocs(activitiesRef);
+        
+        // Extract unique dates
+        const uniqueDates = new Set();
+        
+        activitiesSnapshot.forEach((doc) => {
+            const activity = doc.data();
+            if (activity.timestamp) {
+                // Extract just the date part (YYYY-MM-DD) to count unique days
+                const date = new Date(activity.timestamp);
+                const dateString = date.toISOString().split('T')[0];
+                uniqueDates.add(dateString);
             }
-        }
-    });
-    
-    return recentDays.size;
+        });
+        
+        return uniqueDates.size;
+    } catch (error) {
+        console.error("Error calculating study days:", error);
+        return 0;
+    }
 }
 
 function updateDashboardDisplay(stats) {
@@ -5208,14 +5218,22 @@ async function logActivity(courseId, courseTitle, activityType) {
     if (!user) return;
     
     try {
-        const activityRef = collection(db, 'users', user.uid, 'activities');
-        await addDoc(activityRef, {
+        // Create a daily activity ID: courseId_YYYY-MM-DD
+        const today = new Date().toISOString().split('T')[0]; // "2026-02-14"
+        const dailyActivityId = `${courseId}_${today}`;
+        
+        const activityRef = doc(db, 'users', user.uid, 'activities', dailyActivityId);
+        
+        // Use setDoc with merge to update if exists, create if doesn't
+        await setDoc(activityRef, {
             courseId: courseId,
             courseTitle: courseTitle,
-            type: activityType, // 'study', 'quiz', 'flashcard', etc.
-            timestamp: new Date().toISOString()
-        });
-        console.log(`Activity logged: ${activityType} in ${courseTitle}`);
+            date: today,
+            timestamp: new Date().toISOString(),
+            activityCount: increment(1), // Increment counter each time
+            lastActivityType: activityType
+        }, { merge: true });
+        
     } catch (error) {
         console.error("Error logging activity:", error);
     }
@@ -5552,12 +5570,16 @@ async function updateProgressDisplay() {
         
         const studyHours = enrolledCourses.reduce((sum, course) => sum + (course.studyHours || 0), 0);
         
+        // ADD THIS LINE - Calculate current streak
+        const currentStreak = await calculateCurrentStreak(user);
+        
         updateProgressPage(enrolledCourses, {
             totalCourses,
             averageProgress,
             averageScore,
             completedQuizzes,
-            studyHours
+            studyHours,
+            currentStreak  // ADD THIS
         });
         
     } catch (error) {
@@ -5576,7 +5598,7 @@ function updateProgressPage(courses, stats) {
                 const progress = course.progress || 0;
                 const averageScore = course.averageScore || 0;
                 const completedQuizzes = course.completedQuizzes || 0;
-                const totalQuizzes = 200; // Your fixed number
+                const totalQuizzes = 200;
                 
                 return `
                 <div style="margin-bottom: 25px;">
@@ -5628,7 +5650,7 @@ function updateProgressPage(courses, stats) {
                     </div>
                     <div>
                         <div style="font-size: 0.9rem; color: var(--gray);">Current Streak</div>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${calculateCurrentStreak(courses)} days</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${stats.currentStreak} days</div>
                     </div>
                 </div>
             </div>
@@ -5656,45 +5678,55 @@ function getGradeFromScore(score) {
     return 'F';
 }
 
-function calculateCurrentStreak(courses) {
-    if (courses.length === 0) return 0;
+async function calculateCurrentStreak(user) {
+    if (!user) return 0;
     
-    // Collect all unique access dates
-    const accessDates = new Set();
-    courses.forEach(course => {
-        if (course.lastAccessed) {
-            const date = new Date(course.lastAccessed);
-            accessDates.add(date.toDateString());
-        }
-    });
-    
-    // Sort dates
-    const sortedDates = Array.from(accessDates)
-        .map(d => new Date(d))
-        .sort((a, b) => b - a);
-    
-    if (sortedDates.length === 0) return 0;
-    
-    // Calculate consecutive days from today backwards
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    let streak = 0;
-    let checkDate = new Date(today);
-    
-    for (let accessDate of sortedDates) {
-        accessDate.setHours(0, 0, 0, 0);
-        const diffDays = Math.floor((checkDate - accessDate) / (1000 * 60 * 60 * 24));
+    try {
+        const activitiesRef = collection(db, 'users', user.uid, 'activities');
+        const activitiesSnapshot = await getDocs(activitiesRef);
         
-        if (diffDays === streak) {
-            streak++;
-            checkDate.setDate(checkDate.getDate() - 1);
-        } else if (diffDays > streak) {
-            break;
+        // Extract unique dates
+        const uniqueDates = new Set();
+        activitiesSnapshot.forEach((doc) => {
+            const activity = doc.data();
+            if (activity.timestamp) {
+                const date = new Date(activity.timestamp);
+                const dateString = date.toISOString().split('T')[0];
+                uniqueDates.add(dateString);
+            }
+        });
+        
+        // Sort dates
+        const sortedDates = Array.from(uniqueDates)
+            .map(d => new Date(d))
+            .sort((a, b) => b - a);
+        
+        if (sortedDates.length === 0) return 0;
+        
+        // Calculate consecutive days from today backwards
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        let streak = 0;
+        let checkDate = new Date(today);
+        
+        for (let activityDate of sortedDates) {
+            activityDate.setHours(0, 0, 0, 0);
+            const diffDays = Math.floor((checkDate - activityDate) / (1000 * 60 * 60 * 24));
+            
+            if (diffDays === streak) {
+                streak++;
+                checkDate.setDate(checkDate.getDate() - 1);
+            } else if (diffDays > streak) {
+                break;
+            }
         }
+        
+        return streak;
+    } catch (error) {
+        console.error("Error calculating streak:", error);
+        return 0;
     }
-    
-    return streak;
 }
 
 // Add a function to track page visits
