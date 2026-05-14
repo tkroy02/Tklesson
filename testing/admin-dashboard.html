@@ -8889,15 +8889,19 @@ async function deductCredits() {
     }
     
     if (amount < 1 || amount > 100) {
-        alert('Please enter a valid number of credits to deduct (1-100)');
+        alert('Please enter a valid number of packages (1-100)');
         return;
     }
+
+    // Package multipliers
+    const packageSizes = {
+        hourly: 1,
+        bronze: 4,
+        silver: 8,
+        gold: 12
+    };
     
-    // Confirm with admin
-    const confirmationMessage = `Are you sure you want to deduct ${amount} ${packageType} credits?\n\nReason: ${reason}`;
-    if (!confirm(confirmationMessage)) {
-        return;
-    }
+    const actualAmount = amount * (packageSizes[packageType] || 1);
     
     try {
         const studentDoc = await db.collection('students').doc(studentId).get();
@@ -8915,47 +8919,45 @@ async function deductCredits() {
 
         const currentBalance = currentBalances[packageType] || 0;
         
-        // Check if student has enough credits
-        if (currentBalance < amount) {
-            throw new Error(`Student only has ${currentBalance} credits available`);
+        if (currentBalance < actualAmount) {
+            alert(`❌ Insufficient balance. Student has ${currentBalance} ${packageType} sessions, cannot deduct ${actualAmount}.`);
+            return;
         }
+        
+        const newBalance = currentBalance - actualAmount;
 
-        const newBalance = currentBalance - amount;
-
-        // Update the student's balance
+        // Update student balance
         await db.collection('students').doc(studentId).update({
             [`packageBalances.${packageType}`]: newBalance,
             lastUpdated: new Date()
         });
 
-        // Record the deduction transaction
+        // Record transaction
         await db.collection('creditTransactions').add({
             studentId: studentId,
             studentName: studentData.fullName || 'Unknown Student',
             adminId: currentUser.uid,
             adminName: currentUser.displayName || 'Admin',
-            type: 'admin_deduction',
+            type: 'credit_deduction',
             packageType: packageType,
-            amount: -amount, // Negative amount for deduction
+            packages: amount,
+            sessions: actualAmount,
+            amount: -actualAmount,
             previousBalance: currentBalance,
             newBalance: newBalance,
             reason: reason,
             timestamp: new Date(),
-            status: 'completed',
-            notes: 'Admin deduction for system loophole/misuse'
+            status: 'completed'
         });
 
         // Send notification to student
-        await sendDeductionNotification(studentId, studentData, packageType, amount, reason);
+        await sendCreditChangeNotification(studentId, studentData, packageType, -actualAmount, reason, 'deducted');
 
-        alert(`✅ Successfully deducted ${amount} ${packageType} credits from ${studentData.fullName || 'student'}!\nNew balance: ${newBalance} credits`);
-        
-        // Close modal and reset form
+        alert(`✅ Successfully deducted ${amount} ${packageType} package(s) = ${actualAmount} sessions from ${studentData.fullName || 'student'}!`);
         document.getElementById('deductCreditsModal').style.display = 'none';
         document.getElementById('deductCreditsForm').reset();
         
-        // Reload student data to update the table
-        await loadStudentsData();
+        await updateDeductBalanceDisplay(studentId);
         
     } catch (error) {
         console.error("Error deducting credits:", error);
