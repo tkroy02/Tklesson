@@ -7690,7 +7690,6 @@ function setupChatEventListeners() {
 
 async function loadInitialUnreadCounts(studentId) {
     try {
-        // Load all chats student is part of
         const snapshot = await db.collection('chats')
             .where('participants', 'array-contains', studentId)
             .get();
@@ -7704,7 +7703,7 @@ async function loadInitialUnreadCounts(studentId) {
             totalUnread += unreadCount;
         });
 
-        // Also check admin chat separately (it may not have student in participants index)
+        // Also check admin chat separately
         const adminChatId = `support_student_${studentId}`;
         if (!chatUnreadCounts[adminChatId]) {
             try {
@@ -7715,7 +7714,7 @@ async function loadInitialUnreadCounts(studentId) {
                     totalUnread += adminUnread;
                 }
             } catch (e) {
-                // Admin chat may not exist yet, that's fine
+                // Admin chat may not exist yet
             }
         }
 
@@ -7729,7 +7728,6 @@ async function loadInitialUnreadCounts(studentId) {
 }
 
 function setupRealtimeUnreadListeners(studentId) {
-    // Listen for any changes to chats in real time
     db.collection('chats')
         .where('participants', 'array-contains', studentId)
         .onSnapshot((snapshot) => {
@@ -7746,7 +7744,6 @@ function setupRealtimeUnreadListeners(studentId) {
                             .reduce((sum, c) => sum + c, 0);
                         updateUnreadBadge(unreadMessagesCount);
 
-                        // Update contact badge in UI if contacts are loaded
                         const contactEl = document.querySelector(`[data-chat-id="${chatId}"]`);
                         if (contactEl) {
                             const existing = contactEl.querySelector('.unread-count');
@@ -7767,24 +7764,8 @@ function setupRealtimeUnreadListeners(studentId) {
                             }
                         }
 
-                        // Update admin contact badge if it's the admin chat
                         if (chatId.startsWith('support_student_')) {
-                            const adminStatus = document.querySelector('.admin-contact .contact-status');
-                            if (adminStatus) {
-                                const existing = adminStatus.querySelector('.unread-count');
-                                if (unreadCount > 0) {
-                                    if (existing) {
-                                        existing.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                                    } else {
-                                        const badge = document.createElement('div');
-                                        badge.className = 'unread-count';
-                                        badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                                        adminStatus.appendChild(badge);
-                                    }
-                                } else if (existing) {
-                                    existing.remove();
-                                }
-                            }
+                            updateAdminContactBadge(unreadCount);
                         }
                     }
                 }
@@ -7793,41 +7774,22 @@ function setupRealtimeUnreadListeners(studentId) {
             console.error('Error in unread listener:', error);
         });
 
-    // Also listen to admin chat separately for real-time updates
+    // Listen to admin chat separately
     const adminChatId = `support_student_${studentId}`;
     db.collection('chats').doc(adminChatId)
         .onSnapshot((doc) => {
             if (doc.exists) {
                 const unreadCount = doc.data().unreadCounts?.[studentId] || 0;
                 const oldCount = chatUnreadCounts[adminChatId] || 0;
-
                 if (oldCount !== unreadCount) {
                     chatUnreadCounts[adminChatId] = unreadCount;
                     unreadMessagesCount = Object.values(chatUnreadCounts)
                         .reduce((sum, c) => sum + c, 0);
                     updateUnreadBadge(unreadMessagesCount);
-
-                    // Update admin contact badge
-                    const adminStatus = document.querySelector('.admin-contact .contact-status');
-                    if (adminStatus) {
-                        const existing = adminStatus.querySelector('.unread-count');
-                        if (unreadCount > 0) {
-                            if (existing) {
-                                existing.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                            } else {
-                                const badge = document.createElement('div');
-                                badge.className = 'unread-count';
-                                badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                                adminStatus.appendChild(badge);
-                            }
-                        } else if (existing) {
-                            existing.remove();
-                        }
-                    }
+                    updateAdminContactBadge(unreadCount);
                 }
             }
         }, (error) => {
-            // Admin chat may not exist yet, ignore permission errors silently
             console.log('Admin chat listener note:', error.code);
         });
 }
@@ -7842,6 +7804,45 @@ function updateUnreadBadge(count) {
             badge.style.display = 'none';
         }
     }
+}
+
+// =======================================================
+// CONTACT BADGE HELPERS
+// =======================================================
+
+function updateContactBadge(chatId, count) {
+    const el = document.querySelector(`[data-chat-id="${chatId}"]`);
+    if (!el) return;
+    const existing = el.querySelector('.unread-count');
+    if (count > 0) {
+        if (existing) existing.textContent = count > 99 ? '99+' : count;
+        else {
+            const status = el.querySelector('.contact-status');
+            if (status) {
+                const badge = document.createElement('div');
+                badge.className = 'unread-count';
+                badge.textContent = count > 99 ? '99+' : count;
+                status.appendChild(badge);
+            }
+        }
+    } else if (existing) existing.remove();
+}
+
+function updateAdminContactBadge(count) {
+    const el = document.querySelector('.admin-contact');
+    if (!el) return;
+    const status = el.querySelector('.contact-status');
+    if (!status) return;
+    const existing = status.querySelector('.unread-count');
+    if (count > 0) {
+        if (existing) existing.textContent = count > 99 ? '99+' : count;
+        else {
+            const badge = document.createElement('div');
+            badge.className = 'unread-count';
+            badge.textContent = count > 99 ? '99+' : count;
+            status.appendChild(badge);
+        }
+    } else if (existing) existing.remove();
 }
 
 // =======================================================
@@ -7930,7 +7931,7 @@ function loadChatContacts() {
                         `<div class="unread-count">${unreadCount > 99 ? '99+' : unreadCount}</div>` : '';
 
                     const contactEl = document.createElement('div');
-                    contactEl.className = 'contact-item';
+                    contactEl.className = `contact-item${currentChat?.tutorId === otherId ? ' active' : ''}`;
                     contactEl.setAttribute('data-tutor-id', otherId);
                     contactEl.setAttribute('data-chat-id', doc.id);
                     contactEl.innerHTML = `
@@ -7963,45 +7964,6 @@ function loadChatContacts() {
         }, (error) => {
             console.error('Error loading contacts:', error);
         });
-}
-
-// =======================================================
-// CONTACT BADGE HELPERS
-// =======================================================
-
-function updateContactBadge(chatId, count) {
-    const el = document.querySelector(`[data-chat-id="${chatId}"]`);
-    if (!el) return;
-    const existing = el.querySelector('.unread-count');
-    if (count > 0) {
-        if (existing) existing.textContent = count > 99 ? '99+' : count;
-        else {
-            const status = el.querySelector('.contact-status');
-            if (status) {
-                const badge = document.createElement('div');
-                badge.className = 'unread-count';
-                badge.textContent = count > 99 ? '99+' : count;
-                status.appendChild(badge);
-            }
-        }
-    } else if (existing) existing.remove();
-}
-
-function updateAdminContactBadge(count) {
-    const el = document.querySelector('.admin-contact');
-    if (!el) return;
-    const status = el.querySelector('.contact-status');
-    if (!status) return;
-    const existing = status.querySelector('.unread-count');
-    if (count > 0) {
-        if (existing) existing.textContent = count > 99 ? '99+' : count;
-        else {
-            const badge = document.createElement('div');
-            badge.className = 'unread-count';
-            badge.textContent = count > 99 ? '99+' : count;
-            status.appendChild(badge);
-        }
-    } else if (existing) existing.remove();
 }
 
 // =======================================================
@@ -8049,7 +8011,7 @@ async function openChat(contact) {
         setupTutorQuickMessages();
     }
 
-    // Clear badge immediately for both admin and tutor chats
+    // Clear badge immediately
     if (contact.chatId) {
         chatUnreadCounts[contact.chatId] = 0;
         unreadMessagesCount = Object.values(chatUnreadCounts).reduce((s, c) => s + c, 0);
@@ -8168,7 +8130,12 @@ async function sendMessage() {
     loadChatMessages(chatId);
 }
 
-  async function startNewChat(tutorId) {
+// =======================================================
+// START NEW CHAT (from tutors list)
+// =======================================================
+
+async function startNewChat(tutorId) {
+    // Navigate to chat section
     const mi = document.querySelector('a[data-section="chat"]');
     const sec = document.getElementById('chat');
     if (mi && sec) {
@@ -8178,31 +8145,45 @@ async function sendMessage() {
         sec.classList.add('active');
         if (!chatSystemInitialized) initChatSystem();
     }
+
     try {
-        const list = document.getElementById('contactsList');
-        if (list) list.innerHTML = '<div class="loading-state">Starting conversation...</div>';
+        // Get or create the chat document
         const chat = await getOrCreateChat(tutorId);
+
+        // Build contact object
         const contact = {
             chatId: chat.id,
             tutorId,
-            tutorName: chat.participantNames[tutorId] || 'Tutor',
+            tutorName: chat.participantNames?.[tutorId] || 'Tutor',
             tutorSubjects: [],
             lastMessage: chat.lastMessage,
             lastMessageAt: chat.lastMessageAt,
-            unreadCount: chat.unreadCounts[auth.currentUser.uid] || 0
+            unreadCount: chat.unreadCounts?.[auth.currentUser.uid] || 0,
+            isAdmin: false
         };
+
+        // Load tutor details
         try {
             const td = await db.collection('tutors').doc(tutorId).get();
             if (td.exists) {
                 const t = td.data();
                 contact.tutorSubjects = t.subjects?.subjects || [];
                 contact.tutorAvatar = t.photoURL;
+                contact.tutorName = t.personal?.fullName || contact.tutorName;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.warn('Could not load tutor details:', e);
+        }
+
+        // Open the chat
         await openChat(contact);
+
+        // Reload contacts so tutor appears in the list
+        loadChatContacts();
+
     } catch (e) {
         console.error('Error starting chat:', e);
-        alert('Failed to start chat.');
+        alert('Failed to start chat. Please try again.');
     }
 }
 
@@ -8211,6 +8192,7 @@ async function getOrCreateChat(tutorId) {
     const chatId = [sid, tutorId].sort().join('_');
     const existing = await db.collection('chats').doc(chatId).get();
     if (existing.exists) return { id: chatId, ...existing.data() };
+
     const [sd, td] = await Promise.all([
         db.collection('students').doc(sid).get(),
         db.collection('tutors').doc(tutorId).get()
@@ -8232,7 +8214,7 @@ async function getOrCreateChat(tutorId) {
 }
 
 window.startNewChat = startNewChat;
-  
+
 // =======================================================
 // QUICK MESSAGES
 // =======================================================
@@ -8317,13 +8299,13 @@ auth.onAuthStateChanged(user => {
     if (user) {
         currentUser = user;
 
-        // Load notifications immediately on login - no need to visit Messages
+        // Load notifications immediately on login
         setTimeout(async () => {
             await loadInitialUnreadCounts(user.uid);
             setupRealtimeUnreadListeners(user.uid);
         }, 1500);
 
-        // Initialize full chat UI after a bit longer
+        // Initialize full chat UI
         setTimeout(initChatSystem, 2000);
     }
 });
