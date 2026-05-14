@@ -8167,6 +8167,71 @@ async function sendMessage() {
     input.style.height = 'auto';
     loadChatMessages(chatId);
 }
+
+  async function startNewChat(tutorId) {
+    const mi = document.querySelector('a[data-section="chat"]');
+    const sec = document.getElementById('chat');
+    if (mi && sec) {
+        document.querySelectorAll('.menu-item a').forEach(a => a.classList.remove('active'));
+        document.querySelectorAll('.dashboard-section').forEach(s => s.classList.remove('active'));
+        mi.classList.add('active');
+        sec.classList.add('active');
+        if (!chatSystemInitialized) initChatSystem();
+    }
+    try {
+        const list = document.getElementById('contactsList');
+        if (list) list.innerHTML = '<div class="loading-state">Starting conversation...</div>';
+        const chat = await getOrCreateChat(tutorId);
+        const contact = {
+            chatId: chat.id,
+            tutorId,
+            tutorName: chat.participantNames[tutorId] || 'Tutor',
+            tutorSubjects: [],
+            lastMessage: chat.lastMessage,
+            lastMessageAt: chat.lastMessageAt,
+            unreadCount: chat.unreadCounts[auth.currentUser.uid] || 0
+        };
+        try {
+            const td = await db.collection('tutors').doc(tutorId).get();
+            if (td.exists) {
+                const t = td.data();
+                contact.tutorSubjects = t.subjects?.subjects || [];
+                contact.tutorAvatar = t.photoURL;
+            }
+        } catch (e) {}
+        await openChat(contact);
+    } catch (e) {
+        console.error('Error starting chat:', e);
+        alert('Failed to start chat.');
+    }
+}
+
+async function getOrCreateChat(tutorId) {
+    const sid = auth.currentUser.uid;
+    const chatId = [sid, tutorId].sort().join('_');
+    const existing = await db.collection('chats').doc(chatId).get();
+    if (existing.exists) return { id: chatId, ...existing.data() };
+    const [sd, td] = await Promise.all([
+        db.collection('students').doc(sid).get(),
+        db.collection('tutors').doc(tutorId).get()
+    ]);
+    const sn = sd.data()?.fullName || sd.data()?.name || 'Student';
+    const tn = td.data()?.personal?.fullName || td.data()?.fullName || 'Tutor';
+    const data = {
+        participants: [sid, tutorId],
+        participantNames: { [sid]: sn, [tutorId]: tn },
+        lastMessage: '',
+        lastMessageAt: new Date(),
+        createdAt: new Date(),
+        unreadCounts: { [sid]: 0, [tutorId]: 0 },
+        typing: { [sid]: false, [tutorId]: false },
+        status: 'active'
+    };
+    await db.collection('chats').doc(chatId).set(data);
+    return { id: chatId, ...data };
+}
+
+window.startNewChat = startNewChat;
   
 // =======================================================
 // QUICK MESSAGES
