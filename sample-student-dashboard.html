@@ -1811,9 +1811,14 @@ html { scrollbar-color: var(--primary) #dce4f0; scrollbar-width: thin; }
   }
 }
   
-/* Loading spinner */
 .spinner {
-  /* spinner-specific styles go here */
+    border: 4px solid rgba(11, 61, 145, 0.1);
+    border-radius: 50%;
+    border-top: 4px solid #0b3d91;
+    width: 30px;
+    height: 30px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
 }
 
 
@@ -3419,25 +3424,19 @@ button:disabled {
     </div>
     
     <div class="chat-container">
-    <!-- Contacts List -->
-    <div class="chat-contacts">
+      <!-- Contacts List -->
+      <div class="chat-contacts">
         <div class="contact-search">
-            <input type="text" id="contactSearch" placeholder="Search tutors...">
+          <input type="text" id="contactSearch" placeholder="Search tutors...">
         </div>
         <div class="contacts-list" id="contactsList">
-            <div class="empty-state">
-                <i class="fas fa-comments"></i>
-                <h4>No Conversations</h4>
-                <p>Start a conversation with your tutors</p>
-            </div>
+          <div class="empty-state">
+            <i class="fas fa-comments"></i>
+            <h4>No Conversations</h4>
+            <p>Start a conversation with your tutors</p>
+          </div>
         </div>
-    </div>
-
-    <div id="mobileChatHeader" style="display: none;">
-        <button class="chat-back-btn" id="chatBackBtn">
-            <i class="fas fa-arrow-left"></i> Back
-        </button>
-    </div>
+      </div>
       
       <!-- Chat Messages Area -->
       <div class="chat-messages">
@@ -3452,7 +3451,6 @@ button:disabled {
             <div class="contact-avatar">
               <i class="fas fa-user-tie"></i>
             </div>
-            
             <div class="contact-info">
               <div class="contact-name" id="currentContactName">Tutor Name</div>
               <div class="contact-subject" id="currentContactSubject">Subject</div>
@@ -3481,17 +3479,17 @@ button:disabled {
               <i class="fas fa-paper-plane"></i>
             </button>
           </div>
-          <div class="quick-actions" id="quickMessages">
-    <button class="quick-action" onclick="insertQuickMessage('Can we schedule a session?')">
-        Schedule Session
-    </button>
-    <button class="quick-action" onclick="insertQuickMessage('I need help with...')">
-        Need Help
-    </button>
-    <button class="quick-action" onclick="insertQuickMessage('What are your available times?')">
-        Availability
-    </button>
-</div>
+          <div class="quick-actions">
+            <button class="quick-action" onclick="insertQuickMessage('Can we schedule a session?')">
+              Schedule Session
+            </button>
+            <button class="quick-action" onclick="insertQuickMessage('I need help with...')">
+              Need Help
+            </button>
+            <button class="quick-action" onclick="insertQuickMessage('What are your available times?')">
+              Availability
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -7979,38 +7977,51 @@ if (contact.isAdmin) {
 async function handleAdminChatWelcome(chatId) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
+
+    try {
+        const adminChatRef = db.collection('chats').doc(chatId);
+        const chatDoc = await adminChatRef.get();
+        
+        if (!chatDoc.exists) {
+    // CREATE THE CHAT FIRST
+    await adminChatRef.set({
+        participants: [auth.currentUser.uid, 'admin'],
+        participantNames: {
+            [auth.currentUser.uid]: userData?.name || 'Student',
+            'admin': 'Customer Support'
+        },
+        chatType: 'support_student',
+        subject: 'Customer Support',
+        isAdminChat: true,
+        studentId: auth.currentUser.uid,
+        studentName: userData?.name || 'Student',
+        status: 'active',
+        lastMessage: '',
+        lastMessageAt: new Date(),
+        unreadCounts: {
+            [auth.currentUser.uid]: 0,
+            'admin': 0
+        },
+        createdAt: new Date(),
+        lastUpdated: new Date()
+    });
     
+    messagesContainer.innerHTML = `...welcome message...`;
+        } else {
+            loadChatMessages(chatId);
+        }
+    } catch (error) {
+        console.error('Error in handleAdminChatWelcome:', error);
+        messagesContainer.innerHTML = '<div class="error-state">Could not load chat. Please try again.</div>';
+    }
+}
+  
+    // Check if admin chat exists
     const adminChatRef = db.collection('chats').doc(chatId);
     const chatDoc = await adminChatRef.get();
     
     if (!chatDoc.exists) {
-        // CREATE THE CHAT FIRST
-        const studentId = auth.currentUser.uid;
-        const studentName = userData?.name || 'Student';
-        
-        await adminChatRef.set({
-            participants: [studentId, 'admin'],
-            participantNames: {
-                [studentId]: studentName,
-                'admin': 'Customer Support'
-            },
-            chatType: 'support_student',
-            subject: 'Customer Support',
-            isAdminChat: true,
-            studentId: studentId,
-            studentName: studentName,
-            status: 'active',
-            lastMessage: '',
-            lastMessageAt: new Date(),
-            unreadCounts: {
-                [studentId]: 0,
-                'admin': 0
-            },
-            createdAt: new Date(),
-            lastUpdated: new Date()
-        });
-        
-        // NOW show the welcome message
+        // No admin chat exists yet - show welcome message
         messagesContainer.innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-headset" style="font-size: 3rem; color: #ff6b6b; margin-bottom: 1rem;"></i>
@@ -8025,10 +8036,9 @@ async function handleAdminChatWelcome(chatId) {
             </div>
         `;
     } else {
+        // Admin chat exists - load messages normally
         loadChatMessages(chatId);
-    }
-}
-  
+    }  
 // Load chat messages
 function loadChatMessages(chatId) {
     const messagesContainer = document.getElementById('messagesContainer');
@@ -8173,7 +8183,13 @@ async function sendMessage() {
         // Clear input
         messageInput.value = '';
         messageInput.style.height = 'auto';
-
+      
+      // ADD THIS: For new admin chats, properly initialize the chat view
+if (isAdminChat) {
+    loadChatMessages(chatId);
+    // Update currentChat with the real chatId
+    currentChat.chatId = chatId;
+}
         
         // Reload messages to show the new message
         loadChatMessages(chatId);
@@ -8543,21 +8559,20 @@ function setupMobileChatFeatures() {
     }
 }
 
-// Enhanced openChat function with mobile support
-const originalOpenChat = window.openChat;
-window.openChat = async function(contact) {
+async function openChat(contact) {
+    // Mobile behavior
     if (window.innerWidth <= 768) {
         document.querySelector('.chat-contacts').style.display = 'none';
         document.querySelector('.chat-messages').style.display = 'flex';
-        
         const mobileChatHeader = document.getElementById('mobileChatHeader');
-        if (mobileChatHeader) mobileChatHeader.style.display = 'flex'; // ← safe
-        
+        if (mobileChatHeader) mobileChatHeader.style.display = 'flex';
         isMobileChatOpen = true;
     }
-    await originalOpenChat(contact); // ← will now be reached
+    
+    // Call original function
+    await originalOpenChat(contact);
 };
-  
+
 // Handle window resize for responsive behavior
 function setupChatResponsiveBehavior() {
     window.addEventListener('resize', function() {
@@ -9999,4 +10014,3 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>    
 </body>
 </html>
-
