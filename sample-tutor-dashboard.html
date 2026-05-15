@@ -11783,18 +11783,27 @@ async function sendTutorMessage() {
         const isAdminChat = currentChat.isAdmin;
         const receiverId = isAdminChat ? 'admin' : currentChat.studentId;
         
-        let chatId;
-        
-        if (isAdminChat) {
-            if (currentChat.chatId) {
-                // Use existing chat ID
-                chatId = currentChat.chatId;
-            } else {
-                // Create new admin chat with format: admin_tutor_{tutorId}_{timestamp}
-                chatId = `admin_tutor_${tutorId}_${Date.now()}`;
-            }
-        } else {
-            chatId = currentChat.chatId;
+        let chatId = currentChat.chatId;
+
+        if (!chatId && isAdminChat) {
+            // Find existing admin chat
+            const snapshot = await db.collection('chats')
+                .where('participants', 'array-contains', tutorId)
+                .limit(10)
+                .get();
+            
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                if (data.participants && data.participants.includes('admin')) {
+                    chatId = doc.id;
+                }
+            });
+        }
+
+        if (!chatId) {
+            chatId = isAdminChat ? 
+                `admin_tutor_${tutorId}_${Date.now()}` : 
+                currentChat.chatId;
         }
 
         const messageData = {
@@ -11810,25 +11819,26 @@ async function sendTutorMessage() {
         const chatDoc = await chatRef.get();
 
         if (!chatDoc.exists) {
-            await chatRef.set({
+            const newChatData = {
                 participants: [tutorId, receiverId],
                 participantNames: {
                     [tutorId]: tutorName,
-                    [receiverId]: isAdminChat ? 'TKLesson Support' : 'Student'
+                    [receiverId]: isAdminChat ? 'Admin Support' : 'Student'
                 },
-                status: 'active',
                 lastMessage: text,
                 lastMessageAt: new Date(),
                 lastMessageBy: tutorId,
                 unreadCounts: { [tutorId]: 0, [receiverId]: 1 },
                 createdAt: new Date(),
-                lastUpdated: new Date(),
-                ...(isAdminChat ? {} : {
-    chatType: 'tutor_session',
-    subject: currentChat.subject || 'Tutoring Session'
-})
-            });
-            currentChat.chatId = chatId;
+                lastUpdated: new Date()
+            };
+            
+            if (!isAdminChat) {
+                newChatData.chatType = 'tutor_session';
+                newChatData.subject = currentChat.subject || 'Tutoring Session';
+            }
+            
+            await chatRef.set(newChatData);
         } else {
             await chatRef.update({
                 lastMessage: text,
@@ -11843,7 +11853,6 @@ async function sendTutorMessage() {
         messageInput.value = '';
         messageInput.style.height = 'auto';
 
-        // Update chatId before reloading
         currentChat.chatId = chatId;
         loadTutorChatMessages(chatId);
         
@@ -11852,7 +11861,7 @@ async function sendTutorMessage() {
         alert('Failed to send message. Please try again.');
     }
 }
-
+       
 // =======================================================
 // BADGE HELPERS
 // =======================================================
