@@ -11563,7 +11563,7 @@ function loadTutorChatContacts() {
 
             // Update total including admin unread counts
             const adminUnreadTotal = Object.entries(tutorChatUnreadCounts)
-                .filter(([chatId]) => chatId.startsWith('admin_tutor_'))
+                .filter(([chatId]) => chatId.startsWith('support_') || chatId.startsWith('admin_tutor_'))
                 .reduce((sum, [, count]) => sum + count, 0);
                 
             totalUnread += adminUnreadTotal;
@@ -11576,6 +11576,48 @@ function loadTutorChatContacts() {
         });
 }
 
+// Add this helper function
+async function findOrCreateAdminChat(tutorId, tutorName) {
+    // Always search first — never generate a new ID blindly
+    const snapshot = await db.collection('chats')
+        .where('participants', 'array-contains', tutorId)
+        .get();
+
+    for (const doc of snapshot.docs) {
+        const participants = doc.data().participants || [];
+        if (participants.includes('admin')) {
+            return doc.id; // Found existing — return it
+        }
+    }
+
+    // None found — create one with a deterministic ID
+    const chatId = `support_${tutorId}`;
+    const chatRef = db.collection('chats').doc(chatId);
+    const existing = await chatRef.get();
+
+    if (!existing.exists) {
+        await chatRef.set({
+            participants: [tutorId, 'admin'],
+            participantNames: {
+                [tutorId]: tutorName,
+                admin: 'Admin Support'
+            },
+            participantTypes: {
+                [tutorId]: 'tutor',
+                admin: 'support'
+            },
+            lastMessage: '',
+            lastMessageAt: new Date(),
+            lastMessageBy: tutorId,
+            unreadCounts: { [tutorId]: 0, admin: 0 },
+            createdAt: new Date(),
+            lastUpdated: new Date()
+        });
+    }
+
+    return chatId;
+}
+       
 function createTutorContactElement(contact) {
     const contactDiv = document.createElement('div');
     contactDiv.className = `contact-item ${currentChat?.studentId === contact.studentId ? 'active' : ''}`;
@@ -11653,10 +11695,9 @@ async function openTutorChat(contact) {
             
             // Find or determine admin chat ID with format: admin_tutor_{tutorId}_{timestamp}
             if (!contact.chatId) {
-    const adminChatsSnapshot = await db.collection('chats')
-        .where('participants', 'array-contains', currentUser.uid)
-        .limit(10)
-        .get();
+    const tutorName = userData?.fullName || userData?.personal?.fullName || 'Tutor';
+    contact.chatId = await findOrCreateAdminChat(currentUser.uid, tutorName);
+}
         
     if (!adminChatsSnapshot.empty) {
         for (const doc of adminChatsSnapshot.docs) {
@@ -11786,25 +11827,9 @@ async function sendTutorMessage() {
         let chatId = currentChat.chatId;
 
         if (!chatId && isAdminChat) {
-            // Find existing admin chat
-            const snapshot = await db.collection('chats')
-                .where('participants', 'array-contains', tutorId)
-                .limit(10)
-                .get();
-            
-            snapshot.forEach(doc => {
-                const data = doc.data();
-                if (data.participants && data.participants.includes('admin')) {
-                    chatId = doc.id;
-                }
-            });
-        }
-
-        if (!chatId) {
-            chatId = isAdminChat ? 
-                `admin_tutor_${tutorId}_${Date.now()}` : 
-                currentChat.chatId;
-        }
+    chatId = await findOrCreateAdminChat(tutorId, tutorName);
+    currentChat.chatId = chatId;
+}
 
         const messageData = {
             text,
