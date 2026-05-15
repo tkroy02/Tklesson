@@ -11330,20 +11330,19 @@ async function loadTutorInitialUnreadCounts(tutorId) {
             totalUnread += unreadCount;
         });
 
-        // Also check admin chat separately
-        const adminChatId = `support_tutor_${tutorId}`;
-        if (!tutorChatUnreadCounts[adminChatId]) {
-            try {
-                const adminDoc = await db.collection('chats').doc(adminChatId).get();
-                if (adminDoc.exists) {
-                    const adminUnread = adminDoc.data().unreadCounts?.[tutorId] || 0;
-                    tutorChatUnreadCounts[adminChatId] = adminUnread;
-                    totalUnread += adminUnread;
-                }
-            } catch (e) {
-                // Admin chat may not exist yet
+        // Also check admin chat separately using correct format: admin_{type}_{userId}_{timestamp}
+        const adminChatsSnapshot = await db.collection('chats')
+            .where('participants', 'array-contains', tutorId)
+            .where('chatType', '==', 'support_tutor')
+            .get();
+            
+        adminChatsSnapshot.forEach(doc => {
+            const adminUnread = doc.data().unreadCounts?.[tutorId] || 0;
+            if (!tutorChatUnreadCounts[doc.id]) {
+                tutorChatUnreadCounts[doc.id] = adminUnread;
+                totalUnread += adminUnread;
             }
-        }
+        });
 
         tutorUnreadMessagesCount = totalUnread;
         updateTutorUnreadMessagesCount(totalUnread);
@@ -11355,7 +11354,17 @@ async function loadTutorInitialUnreadCounts(tutorId) {
 }
 
 function setupTutorRealtimeUnreadListeners() {
+    if (!currentUser || !currentUser.uid) {
+        console.warn('setupTutorRealtimeUnreadListeners called without valid currentUser');
+        return;
+    }
+    
     const tutorId = currentUser.uid;
+
+    // Clean up existing listener
+    if (tutorUnreadListener) {
+        tutorUnreadListener();
+    }
 
     tutorUnreadListener = db.collection('chats')
         .where('participants', 'array-contains', tutorId)
@@ -11374,7 +11383,7 @@ function setupTutorRealtimeUnreadListeners() {
                         updateTutorUnreadMessagesCount(tutorUnreadMessagesCount);
                         updateTutorContactBadge(chatId, unreadCount);
 
-                        if (chatId.startsWith('support_tutor_')) {
+                        if (chat.chatType === 'support_tutor') {
                             updateTutorAdminContactBadge(unreadCount);
                         }
                     }
@@ -11382,25 +11391,6 @@ function setupTutorRealtimeUnreadListeners() {
             });
         }, (error) => {
             console.error('Error in tutor unread listener:', error);
-        });
-
-    // Also listen to admin chat separately
-    const adminChatId = `support_tutor_${tutorId}`;
-    db.collection('chats').doc(adminChatId)
-        .onSnapshot((doc) => {
-            if (doc.exists) {
-                const unreadCount = doc.data().unreadCounts?.[tutorId] || 0;
-                const oldCount = tutorChatUnreadCounts[adminChatId] || 0;
-                if (oldCount !== unreadCount) {
-                    tutorChatUnreadCounts[adminChatId] = unreadCount;
-                    tutorUnreadMessagesCount = Object.values(tutorChatUnreadCounts)
-                        .reduce((sum, c) => sum + c, 0);
-                    updateTutorUnreadMessagesCount(tutorUnreadMessagesCount);
-                    updateTutorAdminContactBadge(unreadCount);
-                }
-            }
-        }, (error) => {
-            console.log('Admin tutor chat listener note:', error.code);
         });
 }
 
@@ -11467,7 +11457,13 @@ function loadTutorChatContacts() {
     adminContact.setAttribute('data-contact-id', 'admin');
     adminContact.setAttribute('data-student-id', 'admin');
 
-    const adminUnreadCount = tutorChatUnreadCounts[`support_tutor_${currentUser.uid}`] || 0;
+    const adminUnreadCount = Object.entries(tutorChatUnreadCounts)
+        .filter(([chatId]) => {
+            // Find admin chat IDs matching format: admin_support_tutor_{tutorId}_{timestamp}
+            return chatId.startsWith('admin_support_tutor_');
+        })
+        .reduce((sum, [, count]) => sum + count, 0);
+        
     const adminUnreadBadge = adminUnreadCount > 0 ?
         `<div class="unread-count">${adminUnreadCount > 99 ? '99+' : adminUnreadCount}</div>` : '';
 
@@ -11489,13 +11485,13 @@ function loadTutorChatContacts() {
 
     adminContact.addEventListener('click', () => {
         openTutorChat({
-            chatId: `support_tutor_${currentUser.uid}`,
+            chatId: null, // Will be determined when opening
             studentId: 'admin',
             studentName: 'TKLesson Support',
             studentAvatar: null,
             lastMessage: 'Click to start conversation',
             lastMessageAt: new Date(),
-            unreadCount: tutorChatUnreadCounts[`support_tutor_${currentUser.uid}`] || 0,
+            unreadCount: adminUnreadCount,
             subject: 'Admin & Technical Support',
             isAdmin: true
         });
@@ -11506,6 +11502,7 @@ function loadTutorChatContacts() {
 
     contactsListener = db.collection('chats')
         .where('participants', 'array-contains', tutorId)
+        .where('chatType', '==', 'tutor_session')
         .orderBy('lastMessageAt', 'desc')
         .onSnapshot(async (snapshot) => {
             // Keep admin contact, remove rest
@@ -11522,7 +11519,7 @@ function loadTutorChatContacts() {
                     <p>Your conversations with students will appear here</p>
                 `;
                 contactsList.appendChild(empty);
-                updateTutorUnreadMessagesCount(0);
+                // Don't reset unread count here - admin messages might exist
                 return;
             }
 
@@ -11563,35 +11560,19 @@ function loadTutorChatContacts() {
                 }
             }
 
-            // Check admin chat unread separately
-            await checkTutorAdminChatUnreadCount(tutorId, totalUnread);
+            // Update total including admin unread counts
+            const adminUnreadTotal = Object.entries(tutorChatUnreadCounts)
+                .filter(([chatId]) => chatId.startsWith('admin_support_tutor_'))
+                .reduce((sum, [, count]) => sum + count, 0);
+                
+            totalUnread += adminUnreadTotal;
+            tutorUnreadMessagesCount = totalUnread;
+            updateTutorUnreadMessagesCount(totalUnread);
 
         }, (error) => {
             console.error('Error loading contacts:', error);
             contactsList.innerHTML = '<div class="error-state">Error loading conversations</div>';
         });
-}
-
-async function checkTutorAdminChatUnreadCount(tutorId, currentTotalUnread) {
-    try {
-        const adminChatId = `support_tutor_${tutorId}`;
-        const adminChatDoc = await db.collection('chats').doc(adminChatId).get();
-
-        if (adminChatDoc.exists) {
-            const adminUnreadCount = adminChatDoc.data().unreadCounts?.[tutorId] || 0;
-            tutorChatUnreadCounts[adminChatId] = adminUnreadCount;
-            const totalUnread = currentTotalUnread + adminUnreadCount;
-            tutorUnreadMessagesCount = totalUnread;
-            updateTutorUnreadMessagesCount(totalUnread);
-            updateTutorAdminContactBadge(adminUnreadCount);
-        } else {
-            tutorUnreadMessagesCount = currentTotalUnread;
-            updateTutorUnreadMessagesCount(currentTotalUnread);
-        }
-    } catch (error) {
-        console.error('Error checking tutor admin chat unread count:', error);
-        updateTutorUnreadMessagesCount(currentTotalUnread);
-    }
 }
 
 function createTutorContactElement(contact) {
@@ -11668,6 +11649,19 @@ async function openTutorChat(contact) {
             avatar.style.background = 'linear-gradient(135deg, #ff6b6b, #ee5a52)';
             if (chatActions) chatActions.style.display = 'none';
             setupTutorAdminQuickMessages();
+            
+            // Find or determine admin chat ID
+            if (!contact.chatId) {
+                const adminChatsSnapshot = await db.collection('chats')
+                    .where('participants', 'array-contains', currentUser.uid)
+                    .where('chatType', '==', 'support_tutor')
+                    .limit(1)
+                    .get();
+                    
+                if (!adminChatsSnapshot.empty) {
+                    contact.chatId = adminChatsSnapshot.docs[0].id;
+                }
+            }
         } else {
             avatar.innerHTML = contact.studentAvatar ?
                 `<img src="${contact.studentAvatar}" alt="${contact.studentName}">` :
@@ -11677,13 +11671,13 @@ async function openTutorChat(contact) {
             setupTutorStudentQuickMessages();
         }
 
-        // Clear badge immediately
+        // Clear badge immediately if we have a chatId
         if (contact.chatId) {
             tutorChatUnreadCounts[contact.chatId] = 0;
             tutorUnreadMessagesCount = Object.values(tutorChatUnreadCounts).reduce((s, c) => s + c, 0);
             updateTutorUnreadMessagesCount(tutorUnreadMessagesCount);
             updateTutorContactBadge(contact.chatId, 0);
-            if (contact.chatId.startsWith('support_tutor_')) updateTutorAdminContactBadge(0);
+            if (contact.isAdmin) updateTutorAdminContactBadge(0);
             markTutorChatAsRead(contact.chatId);
         }
 
@@ -11703,6 +11697,17 @@ async function loadTutorChatMessages(chatId) {
     if (!container) return;
     container.innerHTML = '<div class="loading-state">Loading messages...</div>';
     if (chatMessagesListener) chatMessagesListener();
+
+    if (!chatId) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-headset" style="font-size:3rem;color:#ff6b6b;margin-bottom:1rem;"></i>
+                <h4>Welcome to TKLesson Support!</h4>
+                <p>We're here to help you with any tutor-related questions.</p>
+                <p><strong>How can we assist you today?</strong></p>
+            </div>`;
+        return;
+    }
 
     const chatDoc = await db.collection('chats').doc(chatId).get();
     if (!chatDoc.exists) {
@@ -11753,7 +11758,7 @@ async function markTutorChatAsRead(chatId) {
         tutorUnreadMessagesCount = Math.max(0, tutorUnreadMessagesCount - oldCount);
         updateTutorUnreadMessagesCount(tutorUnreadMessagesCount);
         updateTutorContactBadge(chatId, 0);
-        if (chatId.startsWith('support_tutor_')) updateTutorAdminContactBadge(0);
+        if (currentChat?.isAdmin) updateTutorAdminContactBadge(0);
     } catch (error) {
         console.error('Error marking chat as read:', error);
     }
@@ -11770,26 +11775,21 @@ async function sendTutorMessage() {
         const tutorId = currentUser.uid;
         const tutorName = userData?.fullName || userData?.personal?.fullName || 'Tutor';
         const isAdminChat = currentChat.isAdmin;
-
-        let chatId;
-if (isAdminChat) {
-    // Check if admin already created a chat for this tutor
-    const existingChats = await db.collection('chats')
-        .where('participants', 'array-contains', tutorId)
-        .where('participantTypes.admin', '==', 'support')
-        .limit(1)
-        .get();
-    
-    if (!existingChats.empty) {
-        chatId = existingChats.docs[0].id;
-    } else {
-        chatId = `admin_tutor_${tutorId}_${Date.now()}`;
-    }
-} else {
-    chatId = currentChat.chatId;
-}
-        
         const receiverId = isAdminChat ? 'admin' : currentChat.studentId;
+        
+        let chatId;
+        
+        if (isAdminChat) {
+            if (currentChat.chatId) {
+                // Use existing chat ID
+                chatId = currentChat.chatId;
+            } else {
+                // Create new admin chat with format: admin_{type}_{userId}_{timestamp}
+                chatId = `admin_support_tutor_${tutorId}_${Date.now()}`;
+            }
+        } else {
+            chatId = currentChat.chatId;
+        }
 
         const messageData = {
             text,
@@ -11840,13 +11840,12 @@ if (isAdminChat) {
         }
 
         await chatRef.collection('messages').add(messageData);
-messageInput.value = '';
-messageInput.style.height = 'auto';
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
 
-// Update chatId before reloading
-currentChat.chatId = chatId;
-
-loadTutorChatMessages(chatId);
+        // Update chatId before reloading
+        currentChat.chatId = chatId;
+        loadTutorChatMessages(chatId);
         
     } catch (error) {
         console.error('Error sending message:', error);
@@ -11879,7 +11878,7 @@ function updateTutorContactBadge(chatId, unreadCount) {
         }
     }
 
-    if (chatId.startsWith('support_tutor_')) {
+    if (currentChat?.isAdmin && chatId === currentChat.chatId) {
         updateTutorAdminContactBadge(unreadCount);
     }
 }
@@ -11962,11 +11961,32 @@ function filterTutorContacts(searchTerm) {
 }
 
 // =======================================================
-// STUDENT SCHEDULE (unchanged from original)
+// STUDENT SCHEDULE
 // =======================================================
+
+function getStatusClass(status) {
+    const statusMap = {
+        'confirmed': 'success',
+        'pending': 'warning',
+        'rescheduled': 'info',
+        'cancelled': 'danger',
+        'completed': 'secondary'
+    };
+    return statusMap[status?.toLowerCase()] || 'primary';
+}
 
 async function viewStudentSchedule() {
     try {
+        // Fetch bookings from the correct source
+        const bookingsSnapshot = await db.collection('bookedSessions')
+            .where('tutorId', '==', currentUser.uid)
+            .get();
+            
+        const allBookings = [];
+        bookingsSnapshot.forEach(doc => {
+            allBookings.push({ id: doc.id, ...doc.data() });
+        });
+        
         const modalContent = `
             <h3>View Student Schedule</h3>
             <p>Select a student to view their upcoming schedule:</p>
@@ -11982,14 +12002,14 @@ async function viewStudentSchedule() {
             </div>
         `;
         showStudentScheduleModal(modalContent);
-        await populateStudentDropdown();
+        await populateStudentDropdown(allBookings);
     } catch (error) {
         console.error("Error in viewStudentSchedule:", error);
         alert('Error loading student schedule. Please try again.');
     }
 }
 
-async function populateStudentDropdown() {
+async function populateStudentDropdown(allBookings) {
     try {
         const studentSelect = document.getElementById('studentSelect');
         if (!studentSelect) return;
@@ -12162,8 +12182,6 @@ window.addEventListener('online', () => loadTutorChatContacts());
 // MOBILE CHAT FUNCTIONALITY
 // =============================================
 
-// Setup mobile chat features
-// SIMPLE FIX - Replace your existing setupMobileChatFeatures function with this:
 function setupMobileChatFeatures() {
     const chatBackBtn = document.getElementById('chatBackBtn');
     
@@ -12217,20 +12235,6 @@ function handleBackButtonClick() {
     
     console.log('Chat view reset to contacts list');
 }
-    
-    // Modify openTutorChat function for mobile
-    const originalOpenTutorChat = window.openTutorChat;
-    window.openTutorChat = function(contact) {
-        if (window.innerWidth <= 768) {
-            // On mobile, hide contacts and show messages
-            document.querySelector('.chat-contacts').style.display = 'none';
-            document.querySelector('.chat-messages').style.display = 'flex';
-            document.getElementById('mobileChatHeader').style.display = 'flex';
-        }
-        
-        // Call original function
-        originalOpenTutorChat(contact);
-    };
 
 // Handle window resize for responsive behavior
 function setupChatResponsiveBehavior() {
@@ -12239,16 +12243,20 @@ function setupChatResponsiveBehavior() {
         
         // Reset to desktop view on larger screens
         if (window.innerWidth > 768) {
-            document.querySelector('.chat-contacts').style.display = 'block';
-            document.querySelector('.chat-messages').style.display = 'flex';
-            document.getElementById('mobileChatHeader').style.display = 'none';
-            chatSection.classList.remove('keyboard-open');
+            const chatContacts = document.querySelector('.chat-contacts');
+            const chatMessages = document.querySelector('.chat-messages');
+            const mobileChatHeader = document.getElementById('mobileChatHeader');
+            
+            if (chatContacts) chatContacts.style.display = 'block';
+            if (chatMessages) chatMessages.style.display = 'flex';
+            if (mobileChatHeader) mobileChatHeader.style.display = 'none';
+            if (chatSection) chatSection.classList.remove('keyboard-open');
         }
         
         // Handle keyboard open/close detection
-        if (window.innerHeight < 500) {
+        if (window.innerHeight < 500 && chatSection) {
             chatSection.classList.add('keyboard-open');
-        } else {
+        } else if (chatSection) {
             chatSection.classList.remove('keyboard-open');
         }
     });
@@ -12263,7 +12271,6 @@ document.addEventListener('DOMContentLoaded', function() {
 //----------------------------------------------------------------------------------------
 //TUTOR CHAT SYSTEM ENDS HERE
 //----------------------------------------------------------------------------------------
-
 //----------------------------------------------------------------------------------
 //RATINGS AND REVIEWS SECTION START HERE
 //-----------------------------------------------------------------------------------
