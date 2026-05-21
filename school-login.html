@@ -699,104 +699,140 @@
         }
 
         loginForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            hideError();
+    e.preventDefault();
+    hideError();
 
-            const email = emailInput.value.trim();
-            const password = passwordInput.value;
-            const schoolId = selectedSchoolId.value;
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    const schoolId = selectedSchoolId.value;
 
-            if (!email) {
-                showError('Please enter your email address.');
-                emailInput.focus();
-                return;
-            }
+    if (!email) {
+        showError('Please enter your email address.');
+        emailInput.focus();
+        return;
+    }
 
-            if (!schoolId) {
-                if (detectedSchool) {
-                    selectedSchoolId.value = detectedSchool.id;
-                } else {
-                    showError('Please select your school from the dropdown.');
-                    return;
-                }
-            }
+    if (!schoolId) {
+        if (detectedSchool) {
+            selectedSchoolId.value = detectedSchool.id;
+        } else {
+            showError('Please select your school from the dropdown.');
+            return;
+        }
+    }
 
-            if (!password) {
-                showError('Please enter your password.');
-                passwordInput.focus();
-                return;
-            }
+    if (!password) {
+        showError('Please enter your password.');
+        passwordInput.focus();
+        return;
+    }
 
-            loginButton.classList.add('loading');
-            loginButton.disabled = true;
+    loginButton.classList.add('loading');
+    loginButton.disabled = true;
 
-            try {
-                const userCredential = await signInWithEmailAndPassword(auth, email, password);
-                const user = userCredential.user;
+    try {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
 
-                const finalSchoolId = selectedSchoolId.value;
+        const finalSchoolId = selectedSchoolId.value;
 
-                const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
-                const userDoc = await getDoc(userRef);
+        // ========== STEP 1: Check schooladmins collection first ==========
+        let userData = null;
+        let userRole = null;
 
-                if (!userDoc.exists()) {
-                    await auth.signOut();
-                    showError('You are not registered at this school. Please select the correct school or contact your administrator.');
-                    loginButton.classList.remove('loading');
-                    loginButton.disabled = false;
-                    return;
-                }
+        const schoolAdminRef = doc(db, 'schooladmins', user.uid);
+        const schoolAdminDoc = await getDoc(schoolAdminRef);
 
-                const userData = userDoc.data();
-                const schoolRef = doc(db, 'schools', finalSchoolId);
-                const schoolDoc = await getDoc(schoolRef);
-                const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
-
-                sessionStorage.setItem('schoolId', finalSchoolId);
-                sessionStorage.setItem('userRole', userData.role || 'student');
-                sessionStorage.setItem('userDisplayName', userData.displayName || user.email);
-                sessionStorage.setItem('userEmail', user.email);
-                sessionStorage.setItem('userUid', user.uid);
-                sessionStorage.setItem('schoolName', schoolData.name || 'Your School');
-                sessionStorage.setItem('schoolLocation', 
-                    [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
-                );
-
-                window.location.href = 'school-hub.html';
-
-            } catch (error) {
-                console.error('Login error:', error);
+        if (schoolAdminDoc.exists()) {
+            const adminData = schoolAdminDoc.data();
+            
+            // Verify this admin belongs to the selected school
+            if (adminData.schoolId === finalSchoolId) {
+                userData = adminData;
+                userRole = 'admin';
+                console.log('✅ User identified as school admin for:', finalSchoolId);
+            } else {
+                // Admin exists but for a different school
+                await auth.signOut();
+                showError('You are an administrator for a different school. Please select the correct school from the dropdown.');
                 loginButton.classList.remove('loading');
                 loginButton.disabled = false;
-
-                switch (error.code) {
-                    case 'auth/user-not-found':
-                    case 'auth/invalid-credential':
-                    case 'auth/wrong-password':
-                        showError('Invalid email or password. Please try again.');
-                        break;
-                    case 'auth/invalid-email':
-                        showError('Please enter a valid email address.');
-                        break;
-                    case 'auth/too-many-requests':
-                        showError('Too many login attempts. Please try again later.');
-                        break;
-                    case 'auth/network-request-failed':
-                        showError('Network error. Please check your connection.');
-                        break;
-                    default:
-                        showError('Login failed. Please try again.');
-                }
+                return;
             }
-        });
+        }
 
-        onAuthStateChanged(auth, async (user) => {
-            if (user && sessionStorage.getItem('schoolId')) {
-                window.location.href = 'school-hub.html';
+        // ========== STEP 2: If not an admin, check regular users ==========
+        if (!userRole) {
+            const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
+            const userDoc = await getDoc(userRef);
+
+            if (!userDoc.exists()) {
+                await auth.signOut();
+                showError('You are not registered at this school. Please select the correct school or contact your administrator.');
+                loginButton.classList.remove('loading');
+                loginButton.disabled = false;
+                return;
             }
-        });
 
-        loadSchools();
+            userData = userDoc.data();
+            userRole = userData.role || 'student';
+            console.log('✅ User identified as:', userRole, 'for school:', finalSchoolId);
+        }
+
+        // ========== STEP 3: Get school info ==========
+        const schoolRef = doc(db, 'schools', finalSchoolId);
+        const schoolDoc = await getDoc(schoolRef);
+        const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
+
+        // ========== STEP 4: Store session ==========
+        sessionStorage.setItem('schoolId', finalSchoolId);
+        sessionStorage.setItem('userRole', userRole);
+        sessionStorage.setItem('userDisplayName', userData.displayName || user.email);
+        sessionStorage.setItem('userEmail', user.email);
+        sessionStorage.setItem('userUid', user.uid);
+        sessionStorage.setItem('schoolName', schoolData.name || 'Your School');
+        sessionStorage.setItem('schoolLocation', 
+            [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
+        );
+
+        console.log('✅ Login successful — Role:', userRole, '| School:', schoolData.name);
+
+        // ========== STEP 5: Redirect to hub ==========
+        window.location.href = 'school-hub.html';
+
+    } catch (error) {
+        console.error('❌ Login error:', error);
+        loginButton.classList.remove('loading');
+        loginButton.disabled = false;
+
+        switch (error.code) {
+            case 'auth/user-not-found':
+            case 'auth/invalid-credential':
+            case 'auth/wrong-password':
+                showError('Invalid email or password. Please try again.');
+                break;
+            case 'auth/invalid-email':
+                showError('Please enter a valid email address.');
+                break;
+            case 'auth/too-many-requests':
+                showError('Too many login attempts. Please try again later.');
+                break;
+            case 'auth/network-request-failed':
+                showError('Network error. Please check your connection.');
+                break;
+            default:
+                showError('Login failed. Please try again.');
+        }
+    }
+});
+
+onAuthStateChanged(auth, async (user) => {
+    if (user && sessionStorage.getItem('schoolId')) {
+        window.location.href = 'school-hub.html';
+    }
+});
+
+loadSchools();
     </script>
 
 </body>
