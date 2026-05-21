@@ -1006,6 +1006,9 @@
 
         let currentCourseId = null;
         let settingsInitialized = false;
+        let currentTextbookUnit = 'unit1';
+        let textbookUnits = null;
+        let textbookSectionsCache = {};
 
         // ========== SIDEBAR TOGGLE ==========
         window.toggleSidebar = function() {
@@ -1274,10 +1277,9 @@
     if (!container) return;
 
     if (type === 'textbook') {
-        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>📖 Textbook</h3></div><div id="chapter-list"></div><div id="chapter-content" style="margin-top:20px;"></div></div>`;
-        loadTextbookContent(currentCourseId);
-        return;
-    }
+    loadTextbookContent();
+    return;
+}
 
     if (type === 'exam-quiz' || type === 'topic-quiz') {
         container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${type === 'exam-quiz' ? '📝 Examination Quiz' : '🎯 Topic Quiz'}</h3></div><div id="quiz-content"></div></div>`;
@@ -2116,6 +2118,148 @@ window.convertTemperature = function() {
             }
         };
 
+// ========== TEXTBOOK UNITS ==========
+async function loadTextbookUnits() {
+    if (textbookUnits) return textbookUnits;
+    try {
+        const response = await fetch('./textbookUnits.json');
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        textbookUnits = await response.json();
+        console.log('✅ Textbook units loaded');
+        return textbookUnits;
+    } catch (error) {
+        console.error('❌ Error loading textbook units:', error);
+        return {};
+    }
+}
+
+function getTextbookTitle(courseId) {
+    if (!textbookUnits || !textbookUnits[courseId]) return 'Course Textbook';
+    return textbookUnits[courseId].textbookTitle;
+}
+
+function getTextbookUnits(courseId) {
+    if (!textbookUnits || !textbookUnits[courseId]) return [];
+    return textbookUnits[courseId].units;
+}
+
+function getCurrentUnitName() {
+    if (!currentTextbookUnit || !currentCourseId) return 'Current Unit';
+    const units = getTextbookUnits(currentCourseId);
+    const unit = units.find(u => u.id === currentTextbookUnit);
+    return unit ? unit.title : 'Unit';
+}
+
+        // ========== TEXTBOOK SECTIONS ==========
+async function loadTextbookSectionsData(courseId) {
+    if (textbookSectionsCache[courseId]) return textbookSectionsCache[courseId];
+    try {
+        const response = await fetch(`./textbookSections/${courseId}.json`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const sectionsData = await response.json();
+        textbookSectionsCache[courseId] = sectionsData;
+        console.log(`✅ Loaded sections for ${courseId}`);
+        return sectionsData;
+    } catch (error) {
+        console.error(`❌ Error loading sections for ${courseId}:`, error);
+        return {};
+    }
+}
+
+async function loadTextbookSections() {
+    const sectionsContainer = document.getElementById('textbook-sections');
+    if (!sectionsContainer) return;
+
+    sectionsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading sections...</p>';
+
+    try {
+        const courseSections = await loadTextbookSectionsData(currentCourseId);
+        const currentSections = courseSections[currentTextbookUnit];
+
+        if (!currentSections || currentSections.length === 0) {
+            sectionsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">No sections available for this unit.</p>';
+            return;
+        }
+
+        sectionsContainer.innerHTML = currentSections.map(section => `
+            <div class="textbook-section-item" onclick="loadTextbookSection('${section.path}', '${section.title.replace(/'/g, "\\'")}')" style="padding:12px;background:white;border-radius:8px;margin-bottom:6px;cursor:pointer;border:1px solid var(--border);transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                <div style="font-weight:600;color:var(--text-dark);">${section.title}</div>
+                <div style="font-size:0.8rem;color:var(--text-muted);">${section.description || ''}</div>
+            </div>
+        `).join('');
+
+    } catch (error) {
+        console.error('Error loading sections:', error);
+        sectionsContainer.innerHTML = '<p style="color:var(--danger);text-align:center;">Error loading sections.</p>';
+    }
+}
+
+window.loadTextbookSection = function(path, title) {
+    const content = document.getElementById('textbook-content');
+    if (!content) return;
+    content.innerHTML = `
+        <h4 style="color:var(--text-dark);margin-bottom:12px;">${title}</h4>
+        <p style="color:var(--text-muted);">Content loading for: ${path}</p>
+        <div style="margin-top:20px;">
+            <button class="btn btn-outline btn-sm" onclick="markChapterRead('${title}')"><i class="fas fa-check"></i> Mark as Read</button>
+        </div>
+    `;
+    updateCourseProgress(currentCourseId, 2, 'study');
+};
+
+window.markChapterRead = function(title) {
+    updateCourseProgress(currentCourseId, 5, 'study');
+    alert(`"${title}" marked as read! Progress updated.`);
+};
+
+function switchTextbookUnit(unit) {
+    currentTextbookUnit = unit;
+    loadTextbookContent();
+}
+
+        // ========== TEXTBOOK CONTENT ==========
+function loadTextbookContent() {
+    if (!currentCourseId) return;
+
+    const resourceContent = document.getElementById('resource-content');
+    if (!resourceContent) return;
+
+    const textbookTitle = getTextbookTitle(currentCourseId);
+    const units = getTextbookUnits(currentCourseId);
+
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3>📖 ${textbookTitle}</h3>
+                <button class="tool-back" onclick="document.getElementById('resource-content').innerHTML='';">
+                    <i class="fas fa-arrow-left"></i> Back
+                </button>
+            </div>
+            <div style="display:grid;grid-template-columns:250px 1fr;gap:20px;min-height:400px;">
+                <div style="border-right:1px solid var(--border);padding-right:16px;">
+                    <h4 style="color:var(--primary);margin-bottom:10px;">Units</h4>
+                    <div id="unit-buttons" style="display:flex;flex-direction:column;gap:6px;">
+                        ${units.length > 0 ? units.map(u => `
+                            <button onclick="switchTextbookUnit('${u.id}')" style="padding:10px;text-align:left;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:${currentTextbookUnit === u.id ? 'var(--accent-light)' : 'white'};font-family:'Inter',sans-serif;font-size:0.85rem;transition:all 0.2s;">
+                                ${u.title}
+                            </button>
+                        `).join('') : '<p style="color:var(--text-muted);font-size:0.85rem;">No units available.</p>'}
+                    </div>
+                    <h4 style="color:var(--primary);margin:16px 0 10px;">Sections</h4>
+                    <div id="textbook-sections"></div>
+                </div>
+                <div id="textbook-content" style="padding:16px;">
+                    <p style="color:var(--text-muted);text-align:center;padding:60px 20px;">Select a section to begin reading.</p>
+                </div>
+            </div>
+        </div>
+    `;
+
+    setTimeout(() => loadTextbookSections(), 100);
+}
+
+        
+        
         // ========== AUTH STATE ==========
         onAuthStateChanged(auth, async (user) => {
             if (!user) {
@@ -2140,6 +2284,8 @@ window.convertTemperature = function() {
                     userExists = true;
                 }
             }
+
+            await loadTextbookUnits();
 
             if (!userExists) {
                 sessionStorage.clear();
