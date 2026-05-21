@@ -1011,10 +1011,18 @@
 
         // ========== FIREBASE HELPERS ==========
         function userPath(path) {
-            return `schools/${schoolId}/users/${auth.currentUser?.uid}${path ? '/' + path : ''}`;
+            const uid = auth.currentUser?.uid;
+            if (!uid) return null;
+            return `schools/${schoolId}/users/${uid}${path ? '/' + path : ''}`;
+        }
+
+        function isAdmin() {
+            return sessionStorage.getItem('userRole') === 'admin';
         }
 
         async function getEnrolledCourses() {
+            // Admins don't have enrolled courses in the student collection
+            if (isAdmin()) return [];
             const ref = collection(db, userPath('enrolledCourses'));
             const snap = await getDocs(ref);
             return snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1024,6 +1032,18 @@
         async function updateDashboardStats() {
             const user = auth.currentUser;
             if (!user) return;
+            
+            // Admins see empty stats
+            if (isAdmin()) {
+                document.querySelector('#stats-grid').innerHTML = `
+                    <div class="stat-card"><div class="stat-value">0</div><div class="stat-label">Enrolled Courses</div></div>
+                    <div class="stat-card"><div class="stat-value">0%</div><div class="stat-label">Average Grade</div></div>
+                    <div class="stat-card"><div class="stat-value">0</div><div class="stat-label">Quizzes Completed</div></div>
+                    <div class="stat-card"><div class="stat-value">0</div><div class="stat-label">Study Days</div></div>
+                `;
+                return;
+            }
+
             const courses = await getEnrolledCourses();
             const enrolledCount = courses.length;
             const quizzes = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
@@ -1040,6 +1060,7 @@
         }
 
         async function calculateStudyDays() {
+            if (isAdmin()) return 0;
             const ref = collection(db, userPath('activities'));
             const snap = await getDocs(ref);
             const dates = new Set();
@@ -1050,6 +1071,12 @@
         async function updateRecentActivity() {
             const list = document.getElementById('activity-list');
             if (!list) return;
+            
+            if (isAdmin()) {
+                list.innerHTML = '<li class="activity-item"><div class="activity-icon"><i class="fas fa-info-circle"></i></div><div><strong>Admin preview mode</strong><br><small>Activity appears here for students</small></div></li>';
+                return;
+            }
+
             const ref = collection(db, userPath('activities'));
             const qr = query(ref, orderBy('timestamp', 'desc'), limit(5));
             const snap = await getDocs(qr);
@@ -1082,6 +1109,7 @@
         async function enrollCourse(courseId, title, description) {
             const user = auth.currentUser;
             if (!user) return;
+            if (isAdmin()) { alert('Admins cannot enroll in courses. This is a student feature.'); return; }
             await setDoc(doc(db, userPath(`enrolledCourses/${courseId}`)), {
                 title, description, enrolledAt: new Date().toISOString(), progress: 0, lastAccessed: new Date().toISOString()
             });
@@ -1095,6 +1123,10 @@
         async function updateMyCoursesDisplay() {
             const grid = document.getElementById('my-courses-grid');
             if (!grid) return;
+            if (isAdmin()) {
+                grid.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;"><i class="fas fa-eye" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>Admin preview — student courses appear here</p>';
+                return;
+            }
             const courses = await getEnrolledCourses();
             if (courses.length === 0) {
                 grid.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">No courses enrolled yet. Browse All Courses to get started.</p>';
@@ -1152,7 +1184,7 @@
         // ========== ACTIVITY LOGGING ==========
         async function logActivity(courseId, courseTitle, type) {
             const user = auth.currentUser;
-            if (!user) return;
+            if (!user || isAdmin()) return;
             const today = new Date().toISOString().split('T')[0];
             const ref = doc(db, userPath(`activities/${courseId}_${today}`));
             await setDoc(ref, { courseId, courseTitle, date: today, timestamp: new Date().toISOString(), activityCount: increment(1), lastActivityType: type }, { merge: true });
@@ -1160,7 +1192,7 @@
 
         async function updateCourseProgress(courseId, progress, activityType = 'study', courseTitle = '') {
             const user = auth.currentUser;
-            if (!user) return;
+            if (!user || isAdmin()) return;
             const ref = doc(db, userPath(`enrolledCourses/${courseId}`));
             const snap = await getDoc(ref);
             const data = snap.exists() ? snap.data() : {};
@@ -1183,6 +1215,11 @@
             const list = document.getElementById('course-progress-list');
             const perf = document.getElementById('overall-performance');
             if (!list || !perf) return;
+            if (isAdmin()) {
+                list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">Admin preview — student progress appears here</p>';
+                perf.innerHTML = '<div style="font-size:3.5rem;font-weight:800;color:var(--primary);">—</div><div style="color:var(--text-muted);">Admin View</div>';
+                return;
+            }
             const courses = await getEnrolledCourses();
             if (courses.length === 0) {
                 list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">No courses to track yet.</p>';
@@ -1333,47 +1370,44 @@
 
         // ========== AUTH STATE ==========
         onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-        sessionStorage.clear();
-        window.location.href = 'school-login.html';
-        return;
-    }
+            if (!user) {
+                sessionStorage.clear();
+                window.location.href = 'school-login.html';
+                return;
+            }
 
-    const currentRole = sessionStorage.getItem('userRole');
-    let userExists = false;
+            const currentRole = sessionStorage.getItem('userRole');
+            let userExists = false;
 
-    if (currentRole === 'admin') {
-        // Check schooladmins collection
-        const adminRef = doc(db, 'schooladmins', user.uid);
-        const adminSnap = await getDoc(adminRef);
-        if (adminSnap.exists() && adminSnap.data().schoolId === schoolId) {
-            userExists = true;
-        }
-    } else {
-        // Check schools/{schoolId}/users collection
-        const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-            userExists = true;
-        }
-    }
+            if (currentRole === 'admin') {
+                const adminRef = doc(db, 'schooladmins', user.uid);
+                const adminSnap = await getDoc(adminRef);
+                if (adminSnap.exists() && adminSnap.data().schoolId === schoolId) {
+                    userExists = true;
+                }
+            } else {
+                const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
+                const userSnap = await getDoc(userRef);
+                if (userSnap.exists()) {
+                    userExists = true;
+                }
+            }
 
-    if (!userExists) {
-        sessionStorage.clear();
-        await signOut(auth);
-        window.location.href = 'school-login.html';
-        return;
-    }
+            if (!userExists) {
+                sessionStorage.clear();
+                await signOut(auth);
+                window.location.href = 'school-login.html';
+                return;
+            }
 
-    updateUserProfileDisplay(user);
-    showPage('dashboard');
-    await updateDashboardStats();
-    await updateRecentActivity();
-    await updateMyCoursesDisplay();
-    await updateAllCoursesDisplay();
-    setupCourseSearch();
-});
-        
+            updateUserProfileDisplay(user);
+            showPage('dashboard');
+            await updateDashboardStats();
+            await updateRecentActivity();
+            await updateMyCoursesDisplay();
+            await updateAllCoursesDisplay();
+            setupCourseSearch();
+        });
     </script>
 </body>
 </html>
