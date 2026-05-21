@@ -1270,19 +1270,201 @@
 
         // ========== RESOURCES ==========
         window.openResource = function(type) {
-            const container = document.getElementById('resource-content');
-            if (!container) return;
-            const messages = {
-                'textbook': '<p>📖 Textbook content will load here for course: <strong>' + (currentCourseId || 'N/A') + '</strong></p>',
-                'exam-quiz': '<p>📝 Examination Quiz interface loading...</p>',
-                'topic-quiz': '<p>🎯 Topic Quiz interface loading...</p>',
-                'flashcards': '<p>🃏 Flashcards interface loading...</p>',
-                'videos': '<p>🎬 Video Lessons loading...</p>',
-                'past-questions': '<p>📚 Past Questions & Answers loading...</p>'
-            };
-            container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${messages[type]?.split('</strong>')[0]?.replace('<p>','') || 'Resource'}</h3></div>${messages[type] || '<p>Resource loading...</p>'}</div>`;
-        };
+    const container = document.getElementById('resource-content');
+    if (!container) return;
 
+    if (type === 'textbook') {
+        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>📖 Textbook</h3></div><div id="chapter-list"></div><div id="chapter-content" style="margin-top:20px;"></div></div>`;
+        loadTextbookContent(currentCourseId);
+        return;
+    }
+
+    if (type === 'exam-quiz' || type === 'topic-quiz') {
+        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${type === 'exam-quiz' ? '📝 Examination Quiz' : '🎯 Topic Quiz'}</h3></div><div id="quiz-content"></div></div>`;
+        startQuiz(type);
+        return;
+    }
+
+    if (type === 'flashcards') {
+        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>🃏 Flashcards</h3></div><div id="flashcard-content" style="text-align:center;"></div></div>`;
+        startFlashcards();
+        return;
+    }
+
+    const titles = { 'videos': '🎬 Video Lessons', 'past-questions': '📚 Past Questions & Answers' };
+    container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${titles[type] || 'Resource'}</h3></div><p style="color:var(--text-muted);text-align:center;padding:40px;">Coming soon.</p></div>`;
+};
+
+// ========== QUIZ ENGINE ==========
+let currentQuiz = null;
+let currentQuestionIndex = 0;
+let userAnswers = [];
+let correctAnswers = 0;
+
+function startQuiz(type) {
+    if (!currentCourseId) return;
+    const course = getCourseData(currentCourseId);
+    if (!course || !course.quizzes || course.quizzes.length === 0) {
+        document.getElementById('quiz-content').innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted);">No quizzes available for this course yet.</p>';
+        return;
+    }
+
+    currentQuiz = type === 'exam-quiz' ? course.quizzes[0] : (course.quizzes.length > 1 ? course.quizzes[1] : course.quizzes[0]);
+    currentQuestionIndex = 0;
+    userAnswers = [];
+    correctAnswers = 0;
+    displayQuestion();
+}
+
+function displayQuestion() {
+    if (!currentQuiz || currentQuestionIndex >= currentQuiz.questions.length) {
+        finishQuiz();
+        return;
+    }
+
+    const question = currentQuiz.questions[currentQuestionIndex];
+    const quizContent = document.getElementById('quiz-content');
+    if (!quizContent) return;
+
+    const progress = Math.round(((currentQuestionIndex + 1) / currentQuiz.questions.length) * 100);
+
+    quizContent.innerHTML = `
+        <div style="margin-bottom:16px;">
+            <div style="display:flex;justify-content:space-between;font-size:0.8rem;color:var(--text-muted);margin-bottom:6px;">
+                <span>Question ${currentQuestionIndex + 1} of ${currentQuiz.questions.length}</span>
+                <span>${progress}%</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>
+        </div>
+        <h4 style="color:var(--text-dark);margin-bottom:20px;">${question.text}</h4>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+            ${question.options.map((option, i) => `
+                <div class="quiz-option" onclick="selectOption(${i})" id="option-${i}" style="padding:14px;border:2px solid var(--border);border-radius:10px;cursor:pointer;transition:all 0.2s;background:${userAnswers[currentQuestionIndex] === i ? 'var(--accent-light)' : 'white'};">
+                    <strong>${String.fromCharCode(65 + i)}.</strong> ${option}
+                </div>
+            `).join('')}
+        </div>
+        <div style="display:flex;gap:10px;margin-top:20px;justify-content:space-between;">
+            <button class="btn btn-outline btn-sm" onclick="previousQuestion()" ${currentQuestionIndex === 0 ? 'disabled style="opacity:0.4;"' : ''}>
+                <i class="fas fa-arrow-left"></i> Previous
+            </button>
+            <button class="btn btn-accent btn-sm" onclick="nextQuestion()">
+                ${currentQuestionIndex === currentQuiz.questions.length - 1 ? 'Finish' : 'Next'} <i class="fas fa-arrow-right"></i>
+            </button>
+        </div>
+    `;
+}
+
+window.selectOption = function(optionIndex) {
+    userAnswers[currentQuestionIndex] = optionIndex;
+    displayQuestion();
+};
+
+function nextQuestion() {
+    if (currentQuestionIndex < currentQuiz.questions.length - 1) {
+        currentQuestionIndex++;
+        displayQuestion();
+    } else {
+        finishQuiz();
+    }
+}
+
+function previousQuestion() {
+    if (currentQuestionIndex > 0) {
+        currentQuestionIndex--;
+        displayQuestion();
+    }
+}
+
+function finishQuiz() {
+    if (!currentQuiz) return;
+
+    correctAnswers = 0;
+    currentQuiz.questions.forEach((question, index) => {
+        if (userAnswers[index] === question.correct) correctAnswers++;
+    });
+
+    const score = Math.round((correctAnswers / currentQuiz.questions.length) * 100);
+    const courseTitle = currentCourseId ? (getCourseData(currentCourseId)?.title || 'Course') : 'Course';
+    updateCourseProgress(currentCourseId, score, 'quiz', courseTitle);
+    updateDashboardStats();
+    updateRecentActivity();
+    if (document.getElementById('progress')?.classList.contains('active')) updateProgressDisplay();
+
+    const quizContent = document.getElementById('quiz-content');
+    if (!quizContent) return;
+
+    const grade = score >= 90 ? 'Excellent! 🎉' : score >= 70 ? 'Good Job! 👏' : score >= 50 ? 'Keep Trying! 💪' : 'Needs Work 📚';
+    const color = score >= 70 ? 'var(--success)' : score >= 50 ? '#f39c12' : 'var(--danger)';
+
+    quizContent.innerHTML = `
+        <div style="text-align:center;padding:20px;">
+            <div style="font-size:3rem;font-weight:800;color:${color};margin-bottom:10px;">${score}%</div>
+            <p style="font-size:1.1rem;font-weight:600;color:var(--text-dark);">${grade}</p>
+            <p style="color:var(--text-muted);margin-bottom:24px;">${correctAnswers} of ${currentQuiz.questions.length} correct</p>
+            <div style="display:flex;gap:10px;justify-content:center;">
+                <button class="btn btn-accent btn-sm" onclick="startQuiz('${currentQuiz === getCourseData(currentCourseId)?.quizzes[0] ? 'exam-quiz' : 'topic-quiz'}')"><i class="fas fa-redo"></i> Retry</button>
+                <button class="btn btn-outline btn-sm" onclick="openResource('textbook')"><i class="fas fa-book"></i> Back to Textbook</button>
+            </div>
+        </div>
+    `;
+}
+
+        // ========== TEXTBOOK ==========
+function loadTextbookContent(courseId) {
+    const course = getCourseData(courseId);
+    const chapterList = document.getElementById('chapter-list');
+    const chapterContent = document.getElementById('chapter-content');
+    if (!chapterList || !chapterContent) return;
+
+    if (!course || !course.chapters || course.chapters.length === 0) {
+        chapterList.innerHTML = '<p style="color:var(--text-muted);">No chapters available.</p>';
+        return;
+    }
+
+    chapterList.innerHTML = course.chapters.map((ch, i) => `
+        <div onclick="showChapter(${i})" style="padding:12px;background:white;border-radius:8px;margin-bottom:6px;cursor:pointer;border:1px solid var(--border);transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+            <strong>${i + 1}. ${ch.title}</strong>
+        </div>
+    `).join('');
+
+    showChapter(0);
+}
+
+window.showChapter = function(index) {
+    const course = getCourseData(currentCourseId);
+    if (!course || !course.chapters || !course.chapters[index]) return;
+    const chapter = course.chapters[index];
+    const chapterContent = document.getElementById('chapter-content');
+    if (!chapterContent) return;
+
+    chapterContent.innerHTML = `
+        <h4 style="color:var(--text-dark);margin-bottom:12px;">${chapter.title}</h4>
+        <p style="color:var(--text-gray);line-height:1.7;">${chapter.content || 'Content coming soon.'}</p>
+        <div style="margin-top:20px;display:flex;gap:10px;">
+            <button class="btn btn-outline btn-sm" onclick="markChapterRead(${index})"><i class="fas fa-check"></i> Mark as Read</button>
+        </div>
+    `;
+};
+
+window.markChapterRead = function(index) {
+    updateCourseProgress(currentCourseId, 5, 'study');
+    alert('Chapter marked as read! +5% progress.');
+};
+
+        // ========== FLASHCARDS ==========
+function startFlashcards() {
+    const course = getCourseData(currentCourseId);
+    const container = document.getElementById('flashcard-content');
+    if (!container) return;
+
+    if (!course || !course.flashcards || course.flashcards.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);padding:40px;">No flashcards available for this course yet.</p>';
+        return;
+    }
+    container.innerHTML = '<p style="color:var(--text-muted);padding:40px;">Flashcards coming soon.</p>';
+}
+        
         window.openTool = function(type) {
     const container = document.getElementById('tool-content');
     if (!container) return;
