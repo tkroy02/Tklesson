@@ -2369,11 +2369,18 @@ window.openResource = function(type) {
     }
     
     // 📝🎯 Quizzes
-    if (type === 'exam-quiz' || type === 'topic-quiz') {
-        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${type === 'exam-quiz' ? '📝 Examination Quiz' : '🎯 Topic Quiz'}</h3></div><div id="quiz-content"></div></div>`;
-        startQuiz(type);
-        return;
+    // In B2B's openResource() function, replace the quiz handling:
+if (type === 'exam-quiz' || type === 'topic-quiz') {
+    container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>${type === 'exam-quiz' ? '📝 Examination Quiz' : '🎯 Topic Quiz'}</h3></div><div id="quiz-content"></div></div>`;
+    
+    // ✅ Use B2C's topic quiz engine for both types
+    if (type === 'topic-quiz') {
+        loadTopicQuizzes(); // Load unit/quiz selection UI
+    } else {
+        startQuiz(type); // Keep legacy exam quiz for now
     }
+    return;
+}
     
     // 🃏 Flashcards
     if (type === 'flashcards') {
@@ -2676,7 +2683,71 @@ function getCourseData(courseId) {
     return courseData[courseId] || null;
 }
 
+// Add to B2B script (after getCourseData function)
 
+let quizUnitsCache = {};
+window.quizState = {
+    currentQuestions: [],
+    userAnswers: [],
+    currentQuestionIndex: 0,
+    isQuizComplete: false,
+    showResults: false,
+    quizTitle: '',
+    quizDifficulty: ''
+};
+
+// ✅ B2C's loadQuizUnitsData (adapted for B2B paths)
+async function loadQuizUnitsData(courseId) {
+    if (quizUnitsCache[courseId]) return quizUnitsCache[courseId];
+    try {
+        // B2B uses same JSON structure - paths remain relative
+        const response = await fetch(`./quizUnits/${courseId}.json`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const text = await response.text();
+        const cleanText = text.replace(/^\uFEFF/, '');
+        let unitsData = JSON.parse(cleanText);
+        
+        if (!Array.isArray(unitsData)) unitsData = [];
+        
+        const unitsWithQuizzes = unitsData.map(unit => ({
+            ...unit,
+            quizzes: generateQuizzes(unit.quizCount || 12)
+        }));
+        
+        quizUnitsCache[courseId] = unitsWithQuizzes;
+        return unitsWithQuizzes;
+    } catch (error) {
+        console.error(`❌ Error loading quiz units for ${courseId}:`, error);
+        return getFallbackUnits(courseId);
+    }
+}
+
+// ✅ B2C's getCourseUnits (replaces switch statement)
+async function getCourseUnits(courseId) {
+    const units = await loadQuizUnitsData(courseId);
+    if (!units || units.length === 0) {
+        return [{
+            id: 'placeholder-unit',
+            name: 'Course Content Coming Soon',
+            quizzes: [{ num: 1, difficulty: 'easy' }, { num: 2, difficulty: 'medium' }, { num: 3, difficulty: 'challenging' }]
+        }];
+    }
+    return units;
+}
+
+// ✅ B2C's generateQuizzes (keep your logic)
+function generateQuizzes(count) {
+    const quizzes = [];
+    for (let i = 1; i <= count; i++) {
+        let difficulty = 'medium';
+        if (i <= 4) difficulty = 'easy';
+        if (i >= 9) difficulty = 'challenging';
+        quizzes.push({ num: i, difficulty });
+    }
+    return quizzes;
+}
+       
 //.....................................//
 //..........TOOLS (Calculator, Formulas, Converter)..........//
 //.....................................//
@@ -4715,6 +4786,243 @@ window.loadPastQuestionsTopics = loadPastQuestionsTopics;
 window.loadPastQuestionsTopic = loadPastQuestionsTopic;
 window.closePastQuestions = closePastQuestions;
 
+//--------------------------------------------------------------------------------
+//------------------------ Topic Quiz Section-------------------------------------
+//---------------------------------------------------------------------------------
+
+// ✅ B2C's loadTopicQuizzes (adapted for B2B DOM structure)
+async function loadTopicQuizzes() {
+    const topicList = document.getElementById('quiz-content'); // B2B uses #quiz-content
+    const units = await getCourseUnits(currentCourseId);
+    
+    if (!units || !Array.isArray(units)) {
+        topicList.innerHTML = `
+            <div style="text-align:center;padding:40px;color:var(--text-muted);">
+                <i class="fas fa-exclamation-circle" style="font-size:3rem;display:block;margin-bottom:20px;opacity:0.4;"></i>
+                <h4>No quizzes available</h4>
+                <p>Quiz content for this course is coming soon!</p>
+            </div>`;
+        return;
+    }
+    
+    // ✅ Respect semester structure config (from your B2C code)
+    const usesSemesterStructure = categoryConfig?.courseStructures?.semester?.includes(currentCourseId) || false;
+    let html = '';
+    
+    if (usesSemesterStructure && units[0]?.units) {
+        // Nested semester → units structure
+        units.forEach(semester => {
+            html += `
+                <div class="semester-section" style="margin-bottom:40px;">
+                    <h3 style="color:var(--primary);font-size:1.4rem;margin-bottom:20px;border-left:4px solid var(--primary);padding-left:15px;">
+                        ${semester.name}
+                    </h3>
+                    ${semester.units.map(unit => renderQuizUnit(unit)).join('')}
+                </div>`;
+        });
+    } else {
+        // Standard flat structure
+        html = units.map(unit => renderQuizUnit(unit)).join('');
+    }
+    
+    topicList.innerHTML = html;
+}
+
+// Helper to render a single unit's quiz grid
+function renderQuizUnit(unit) {
+    return `
+        <div class="quiz-unit-container" style="margin-bottom:24px;padding:16px;background:var(--bg-card);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+            <div class="quiz-unit-title" style="font-weight:700;color:var(--text-dark);margin-bottom:12px;">${unit.name}</div>
+            ${unit.resources ? `
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+                ${unit.resources.map(r => `<span style="padding:4px 10px;background:var(--accent-light);border-radius:12px;font-size:0.8rem;color:var(--primary);">${r}</span>`).join('')}
+            </div>` : ''}
+            <div class="quiz-difficulty-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;">
+                ${unit.quizzes.map(quiz => `
+                    <div class="quiz-box ${quiz.difficulty}" 
+                         onclick="startTopicQuiz('${unit.id}', ${quiz.num}, '${quiz.difficulty}')"
+                         style="padding:10px;text-align:center;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;transition:var(--transition);">
+                        <div style="font-weight:600;font-size:0.9rem;">Quiz ${quiz.num}</div>
+                        <div style="font-size:0.75rem;color:var(--text-muted);text-transform:capitalize;">${quiz.difficulty}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+}
+
+        // ✅ B2C's startTopicQuiz (adapted for B2B container IDs)
+async function startTopicQuiz(unitId, quizNumber, difficulty) {
+    try {
+        const resourceContent = document.getElementById('resource-content');
+        resourceContent.innerHTML = `
+            <div class="tool-interface active">
+                <div class="tool-header">
+                    <h3 class="section-title">Loading Quiz...</h3>
+                    <button class="tool-back" onclick="openResource('topic-quiz')">
+                        <i class="fas fa-arrow-left"></i> Back to Topics
+                    </button>
+                </div>
+                <div style="text-align:center;padding:60px 20px;">
+                    <i class="fas fa-spinner fa-spin" style="font-size:2rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+                    <p style="color:var(--text-muted);">Preparing ${difficulty} quiz...</p>
+                </div>
+            </div>`;
+
+        const quizPath = getQuizPath(currentCourseId, unitId, quizNumber);
+        if (quizPath) {
+            const quizData = await loadQuizData(quizPath);
+            if (quizData?.questions?.length > 0) {
+                displayQuizWithData(quizData, unitId, quizNumber, difficulty);
+                return;
+            }
+        }
+        // Fallback
+        displayDefaultTopicQuiz(unitId, quizNumber, difficulty);
+    } catch (error) {
+        console.error('❌ Error starting topic quiz:', error);
+        displayDefaultTopicQuiz(unitId, quizNumber, difficulty);
+    }
+}
+
+function getQuizPath(courseId, unitId, quizNumber) {
+    if (!courseId || !unitId) return null;
+    const courseFolder = courseId.toLowerCase().replace(/\s+/g, '-');
+    const fileUnitId = unitId.replace('-', '');
+    return `quizzes/${courseFolder}/${fileUnitId}_quiz${quizNumber}.json`;
+}
+
+async function loadQuizData(path) {
+    try {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const text = await response.text();
+        const cleanText = text.replace(/^\uFEFF/, '');
+        return JSON.parse(cleanText);
+    } catch (error) {
+        console.error(`❌ Failed to load quiz: ${path}`, error);
+        return null;
+    }
+}
+
+        // ✅ B2C's displayQuizWithData (adapted for B2B styling)
+function displayQuizWithData(quizData, unitId, quizNumber, difficulty) {
+    const shouldShuffle = quizData.settings?.shuffleOptions !== false;
+    
+    const processedQuestions = (quizData.questions || []).map(question => {
+        const optionsWithIndices = question.options.map((opt, idx) => ({ text: opt, originalIndex: idx }));
+        const finalOptions = shouldShuffle ? shuffleArray(optionsWithIndices) : optionsWithIndices;
+        
+        // Handle both single and multiple response answers
+        let correctAnswerIndices = [];
+        if (question.type === 'multiple_response' && Array.isArray(question.answer)) {
+            correctAnswerIndices = question.answer.map(letter => 
+                typeof letter === 'string' ? letter.charCodeAt(0) - 65 : -1
+            ).filter(i => i >= 0);
+        } else if (question.answer && typeof question.answer === 'string') {
+            correctAnswerIndices = [question.answer.charCodeAt(0) - 65];
+        }
+        
+        const newCorrectIndices = correctAnswerIndices.map(origIdx => 
+            finalOptions.findIndex(opt => opt.originalIndex === origIdx)
+        ).filter(i => i >= 0);
+        
+        return {
+            ...question,
+            options: finalOptions.map(opt => opt.text),
+            originalOptions: question.options,
+            correctAnswerIndices: newCorrectIndices,
+            originalCorrectIndices: correctAnswerIndices,
+            isMultipleResponse: question.type === 'multiple_response'
+        };
+    });
+    
+    window.quizState = {
+        currentQuestions: processedQuestions,
+        userAnswers: new Array(processedQuestions.length).fill(null),
+        currentQuestionIndex: 0,
+        isQuizComplete: false,
+        showResults: false,
+        quizTitle: quizData.title || `Quiz ${quizNumber}`,
+        quizDifficulty: difficulty
+    };
+    
+    const resourceContent = document.getElementById('resource-content');
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">${window.quizState.quizTitle} - ${difficulty}</h3>
+                <button class="tool-back" onclick="openResource('topic-quiz')">
+                    <i class="fas fa-arrow-left"></i> Back to Topics
+                </button>
+            </div>
+            <div class="quiz-container">
+                <div style="background:var(--bg-card);padding:20px;border-radius:var(--border-radius-sm);margin-bottom:25px;">
+                    <h4 style="color:var(--primary);margin-bottom:10px;">${window.quizState.quizTitle}</h4>
+                    <p style="color:var(--text-muted);margin-bottom:0;">${quizData.subtitle || quizData.description || 'Test your knowledge.'}</p>
+                    ${quizData.duration ? `<div style="margin-top:10px;"><strong>Duration:</strong> ${quizData.duration} minutes</div>` : ''}
+                    <div style="margin-top:10px;font-size:0.9rem;color:var(--primary);">
+                        <i class="fas fa-random"></i> Options randomized per attempt
+                    </div>
+                </div>
+                <div id="quiz-questions-container"></div>
+                <div style="margin-top:30px;text-align:center;">
+                    <button class="btn btn-accent btn-sm" onclick="submitTopicQuiz()">
+                        <i class="fas fa-check-circle"></i> Submit Quiz
+                    </button>
+                </div>
+            </div>
+        </div>`;
+    
+    if (window.quizState.currentQuestions.length > 0) {
+        displayQuizQuestions(window.quizState.currentQuestions);
+    }
+}
+
+// Fisher-Yates shuffle
+function shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+// ✅ B2C's displayQuizQuestions (adapted for B2B)
+function displayQuizQuestions(questions) {
+    const container = document.getElementById('quiz-questions-container');
+    container.innerHTML = questions.map((question, index) => `
+        <div class="question" style="margin-bottom:24px;padding:20px;background:var(--bg-card);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+            <div class="question-text" style="font-weight:600;color:var(--text-dark);margin-bottom:15px;">
+                <strong>Question ${index + 1}:</strong> <span id="question-text-${index}">${renderMarkdown(question.question)}</span>
+            </div>
+            ${question.image ? `
+                <div style="text-align:center;margin:15px 0;">
+                    <img src="${question.image}" alt="Diagram" style="max-width:100%;height:auto;border-radius:8px;" onerror="this.style.display='none'">
+                </div>` : ''}
+            <div class="options" style="display:flex;flex-direction:column;gap:10px;">
+                ${question.options.map((option, optIdx) => `
+                    <div class="option" onclick="selectQuizOption(${index}, ${optIdx})" 
+                         style="padding:12px 15px;border:2px solid var(--border);border-radius:var(--border-radius-sm);cursor:pointer;transition:var(--transition);"
+                         id="option-${index}-${optIdx}">
+                        <span>${renderMarkdown(option)}</span>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="selection-status" style="margin-top:10px;font-size:0.9rem;color:var(--text-muted);display:none;" id="status-${index}">
+                <i class="fas fa-check"></i> Selected
+            </div>
+        </div>
+    `).join('');
+    
+    // Typeset MathJax after render
+    setTimeout(() => {
+        if (window.mathJaxReady && window.MathJax?.typesetPromise) {
+            MathJax.typesetPromise([container]).catch(console.warn);
+        }
+    }, 100);
+}
+        
 </script>
 </body>
 </html>
