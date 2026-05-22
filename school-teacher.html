@@ -1197,14 +1197,49 @@
         // ========== PROFILE ==========
         function updateUserProfileDisplay(user) {
     if (!user) return;
-    const name = user.displayName && user.displayName.trim() !== '' 
-        ? user.displayName 
-        : 'Teacher'; // Fallback to 'Teacher' instead of email prefix
-    const avatar = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-    document.getElementById('user-avatar').textContent = avatar;
-    document.getElementById('user-name').textContent = name;
-    document.getElementById('settings-avatar').textContent = avatar;
-    document.getElementById('settings-name').textContent = name;
+    
+    // First try Firebase Auth displayName
+    let name = user.displayName;
+    
+    // If not in Auth, we need to fetch from Firestore
+    if (!name || name.trim() === '') {
+        // We'll fetch it asynchronously
+        fetchTeacherDisplayName(user.uid).then(firestoreName => {
+            if (firestoreName) {
+                name = firestoreName;
+                updateUI(name);
+            } else {
+                // Final fallback - use email prefix but clean it up
+                name = user.email ? user.email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Teacher';
+                updateUI(name);
+            }
+        });
+    } else {
+        updateUI(name);
+    }
+    
+    function updateUI(displayName) {
+        const avatar = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        document.getElementById('user-avatar').textContent = avatar;
+        document.getElementById('user-name').textContent = displayName;
+        document.getElementById('settings-avatar').textContent = avatar;
+        document.getElementById('settings-name').textContent = displayName;
+    }
+}
+
+// Add this new helper function
+async function fetchTeacherDisplayName(uid) {
+    try {
+        const userRef = doc(db, `schools/${schoolId}/users/${uid}`);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+            const userData = userSnap.data();
+            return userData.displayName || null;
+        }
+    } catch (error) {
+        console.error('Error fetching display name:', error);
+    }
+    return null;
 }
 
         // ========== DASHBOARD ==========
@@ -1967,26 +2002,38 @@
         };
 
         // ========== AUTH STATE ==========
-        onAuthStateChanged(auth, async (user) => {
-            if (!user) {
-                sessionStorage.clear();
-                window.location.href = 'school-login.html';
-                return;
-            }
+        // ========== AUTH STATE ==========
+onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+        sessionStorage.clear();
+        window.location.href = 'school-login.html';
+        return;
+    }
 
-            const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
-            const userSnap = await getDoc(userRef);
-            if (!userSnap.exists() || userSnap.data().role !== 'teacher') {
-                sessionStorage.clear();
-                await signOut(auth);
-                window.location.href = 'school-login.html';
-                return;
-            }
+    const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
+    const userSnap = await getDoc(userRef);
+    if (!userSnap.exists() || userSnap.data().role !== 'teacher') {
+        sessionStorage.clear();
+        await signOut(auth);
+        window.location.href = 'school-login.html';
+        return;
+    }
 
-            updateUserProfileDisplay(user);
-            loadDashboard();
-            console.log('✅ Teacher Portal ready — School:', sessionStorage.getItem('schoolName'), '| Teacher:', user.displayName || user.email);
-        });
+    // Sync display name from Firestore to Auth if needed
+    const userData = userSnap.data();
+    if (userData.displayName && user.displayName !== userData.displayName) {
+        try {
+            await updateProfile(user, { displayName: userData.displayName });
+        } catch (error) {
+            console.error('Error syncing display name:', error);
+        }
+    }
+
+    updateUserProfileDisplay(user);
+    loadDashboard();
+    console.log('✅ Teacher Portal ready — School:', sessionStorage.getItem('schoolName'), '| Teacher:', userData.displayName || user.email);
+});
+        
     </script>
 </body>
 </html>
