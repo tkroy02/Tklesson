@@ -5970,7 +5970,6 @@ async function loadStudentGrades() {
     const user = auth.currentUser;
     if (!user) return;
 
-    // Admin has no grades
     if (isAdmin()) {
         container.innerHTML = `
             <div class="empty-state" style="text-align:center;padding:40px;">
@@ -5995,27 +5994,34 @@ async function loadStudentGrades() {
             return;
         }
 
-        // Step 2: For each subject, fetch the gradebook and pull this student's entry
+        // Build a map of subjectId -> subjectName & teacherName
+        const subjectMap = {};
+        subjectsSnap.docs.forEach(doc => {
+            subjectMap[doc.id] = {
+                name: doc.data().name || 'Unknown Subject',
+                teacherName: doc.data().teacherName || 'Teacher'
+            };
+        });
+
+        // Step 2: Query gradebooks that match these subjects
+        const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
+        const gradebooksSnap = await getDocs(gradebooksRef);
+        
         let gradeRows = [];
         
-        for (const subjectDoc of subjectsSnap.docs) {
-            const subjectData = subjectDoc.data();
-            const subjectName = subjectData.name || 'Unknown Subject';
-            const teacherName = subjectData.teacherName || 'Teacher';
+        gradebooksSnap.docs.forEach(doc => {
+            const data = doc.data();
+            const subjectId = data.subjectId;
             
-            // Fetch gradebook for this subject
-            const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectDoc.id}`);
-            const gradebookSnap = await getDoc(gradebookRef);
-            
-            if (gradebookSnap.exists()) {
-                const gradebookData = gradebookSnap.data();
-                const entries = gradebookData.entries || {};
+            // Only process if this gradebook belongs to one of the student's subjects
+            if (subjectId && subjectMap[subjectId]) {
+                const entries = data.entries || {};
                 const myEntry = entries[user.uid];
                 
                 if (myEntry) {
                     gradeRows.push({
-                        subjectName,
-                        teacherName,
+                        subjectName: subjectMap[subjectId].name,
+                        teacherName: subjectMap[subjectId].teacherName,
                         assessment1: myEntry.assessment1 ?? '—',
                         assessment2: myEntry.assessment2 ?? '—',
                         midterm: myEntry.midterm ?? '—',
@@ -6024,9 +6030,8 @@ async function loadStudentGrades() {
                     });
                 }
             }
-        }
+        });
 
-        // Step 3: Display results
         if (gradeRows.length === 0) {
             container.innerHTML = `
                 <div class="card">
