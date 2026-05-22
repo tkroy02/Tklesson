@@ -4715,6 +4715,758 @@ window.loadPastQuestionsTopics = loadPastQuestionsTopics;
 window.loadPastQuestionsTopic = loadPastQuestionsTopic;
 window.closePastQuestions = closePastQuestions;
 
+//.....................................//
+//..........TOPIC QUIZ (B2B Enhanced)..........//
+//.....................................//
+
+// Global quiz state - tracks current quiz session
+window.quizState = {
+    currentQuestions: [],
+    userAnswers: [],
+    currentQuestionIndex: 0,
+    isQuizComplete: false,
+    showResults: false,
+    quizTitle: '',
+    quizDifficulty: ''
+};
+
+// Cache for loaded quiz units data
+let quizUnitsCache = {};
+
+
+// Load and display the topic quiz selector for the current course
+async function loadTopicQuizzes() {
+    const topicList = document.getElementById('topic-list');
+    if (!topicList) return;
+    
+    try {
+        const units = await getCourseUnits(currentCourseId);
+        
+        // Handle empty/invalid units
+        if (!units || !Array.isArray(units) || units.length === 0) {
+            topicList.innerHTML = `
+                <div style="text-align:center;padding:40px;color:var(--text-muted);">
+                    <i class="fas fa-exclamation-circle" style="font-size:3rem;display:block;margin-bottom:20px;opacity:0.4;"></i>
+                    <h4>No quizzes available</h4>
+                    <p>Quiz content for this course is coming soon!</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Render units with quiz buttons
+        let html = '';
+        
+        units.forEach(unit => {
+            html += `
+                <div class="quiz-unit-container" style="margin-bottom:24px;">
+                    <div class="quiz-unit-title" style="font-weight:700;color:var(--text-dark);margin-bottom:12px;font-size:1.1rem;">
+                        ${unit.name}
+                    </div>
+                    <div class="quiz-difficulty-grid" style="display:flex;flex-wrap:wrap;gap:10px;">
+                        ${unit.quizzes.map(quiz => `
+                            <div class="quiz-box ${quiz.difficulty}" 
+                                 onclick="startTopicQuiz('${unit.id}', ${quiz.num}, '${quiz.difficulty}')"
+                                 style="padding:10px 16px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;transition:var(--transition);font-size:0.9rem;"
+                                 onmouseenter="this.style.borderColor='var(--accent)'"
+                                 onmouseleave="this.style.borderColor='var(--border)'">
+                                Quiz ${quiz.num}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        });
+        
+        topicList.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error loading topic quizzes:', error);
+        topicList.innerHTML = `
+            <div style="text-align:center;padding:40px;color:var(--danger);">
+                <i class="fas fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:10px;"></i>
+                <p>Unable to load quizzes. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+
+// Load quiz units data from JSON file (cached per course)
+async function loadQuizUnitsData(courseId) {
+    // Return cached data if available
+    if (quizUnitsCache[courseId]) {
+        return quizUnitsCache[courseId];
+    }
+    
+    try {
+        const response = await fetch(`./quizUnits/${courseId}.json`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        // Handle potential BOM in JSON file
+        const text = await response.text();
+        const cleanText = text.replace(/^\uFEFF/, '');
+        
+        let unitsData;
+        try {
+            unitsData = JSON.parse(cleanText);
+        } catch (parseError) {
+            console.error(`JSON parse error for ${courseId}:`, parseError);
+            return getFallbackUnits(courseId);
+        }
+        
+        // Validate and enhance with generated quizzes
+        if (!Array.isArray(unitsData)) {
+            unitsData = [];
+        }
+        
+        const unitsWithQuizzes = unitsData.map(unit => ({
+            ...unit,
+            quizzes: generateQuizzes(unit.quizCount || 12)
+        }));
+        
+        quizUnitsCache[courseId] = unitsWithQuizzes;
+        return unitsWithQuizzes;
+        
+    } catch (error) {
+        console.error(`Error loading quiz units for ${courseId}:`, error);
+        return getFallbackUnits(courseId);
+    }
+}
+
+
+// Fallback units when JSON fails to load
+function getFallbackUnits(courseId) {
+    return [
+        {
+            id: 'unit-1',
+            name: `${courseId.toUpperCase()} - Unit 1`,
+            quizCount: 12,
+            quizzes: generateQuizzes(12)
+        }
+    ];
+}
+
+
+// Get course units (main entry point)
+async function getCourseUnits(courseId) {
+    const units = await loadQuizUnitsData(courseId);
+    
+    if (!units || units.length === 0) {
+        return [
+            {
+                id: 'placeholder-unit',
+                name: 'Course Content Coming Soon',
+                quizzes: [
+                    { num: 1, difficulty: 'easy' },
+                    { num: 2, difficulty: 'medium' },
+                    { num: 3, difficulty: 'challenging' }
+                ]
+            }
+        ];
+    }
+    
+    return units;
+}
+
+
+// Generate quiz metadata with difficulty distribution
+function generateQuizzes(count) {
+    const quizzes = [];
+    for (let i = 1; i <= count; i++) {
+        let difficulty = 'medium';
+        if (i <= 4) difficulty = 'easy';
+        if (i >= 9) difficulty = 'challenging';
+        quizzes.push({ num: i, difficulty: difficulty });
+    }
+    return quizzes;
+}
+
+
+// Fisher-Yates shuffle for randomizing answer options
+function shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+
+// Build the path to a quiz JSON file
+function getQuizPath(courseId, unitId, quizNumber) {
+    if (!courseId || !unitId) return null;
+    const courseFolder = courseId.toLowerCase().replace(/\s+/g, '-');
+    const fileUnitId = unitId.replace('-', '');
+    return `quizzes/${courseFolder}/${fileUnitId}_quiz${quizNumber}.json`;
+}
+
+
+// Load quiz data from JSON file
+async function loadQuizData(quizPath) {
+    try {
+        const response = await fetch(quizPath);
+        if (!response.ok) {
+            throw new Error(`Failed to load: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Error loading quiz data:', error);
+        return null;
+    }
+}
+
+
+// Start a topic quiz: load questions and display interface
+async function startTopicQuiz(unitId, quizNumber, difficulty) {
+    try {
+        const resourceContent = document.getElementById('resource-content');
+        if (!resourceContent) return;
+        
+        // Show loading state
+        resourceContent.innerHTML = `
+            <div class="tool-interface active">
+                <div class="tool-header">
+                    <h3>Loading Quiz...</h3>
+                    <button class="tool-back" onclick="loadTopicQuizzes()">
+                        <i class="fas fa-arrow-left"></i> Back to Topics
+                    </button>
+                </div>
+                <div style="text-align:center;padding:60px 20px;">
+                    <i class="fas fa-spinner fa-spin" style="font-size:2rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+                    <p style="color:var(--text-muted);">Preparing ${difficulty} quiz...</p>
+                </div>
+            </div>
+        `;
+        
+        // Determine quiz path and attempt to load
+        const quizPath = getQuizPath(currentCourseId, unitId, quizNumber);
+        
+        if (quizPath) {
+            const quizData = await loadQuizData(quizPath);
+            
+            if (quizData && quizData.questions && quizData.questions.length > 0) {
+                displayQuizWithData(quizData, unitId, quizNumber, difficulty);
+                return;
+            }
+        }
+        
+        // Fallback to default quiz if load fails
+        displayDefaultTopicQuiz(unitId, quizNumber, difficulty);
+        
+    } catch (error) {
+        console.error('Error starting topic quiz:', error);
+        displayDefaultTopicQuiz(unitId, quizNumber, difficulty);
+    }
+}
+
+
+// Display quiz with loaded data (handles shuffling, multiple response, LaTeX)
+function displayQuizWithData(quizData, unitId, quizNumber, difficulty) {
+    // Check if option shuffling is enabled
+    const shouldShuffle = quizData.settings?.shuffleOptions !== false;
+    
+    // Process questions: shuffle options while preserving correct answer mapping
+    const processedQuestions = (quizData.questions || []).map(question => {
+        const optionsWithIndices = question.options.map((option, index) => ({
+            text: option,
+            originalIndex: index
+        }));
+        
+        const finalOptions = shouldShuffle 
+            ? shuffleArray(optionsWithIndices) 
+            : optionsWithIndices;
+        
+        // Handle both single-answer and multiple-response questions
+        let correctAnswerIndices = [];
+        
+        if (question.type === 'multiple_response' && Array.isArray(question.answer)) {
+            // Multiple response: convert ["A", "D"] → [0, 3]
+            correctAnswerIndices = question.answer
+                .map(letter => typeof letter === 'string' ? letter.charCodeAt(0) - 65 : -1)
+                .filter(index => index >= 0);
+        } else {
+            // Single answer: convert "C" → [2]
+            const answerLetter = question.answer;
+            if (answerLetter && typeof answerLetter === 'string') {
+                correctAnswerIndices = [answerLetter.charCodeAt(0) - 65];
+            }
+        }
+        
+        // Map correct answers to their new positions after shuffling
+        const newCorrectIndices = correctAnswerIndices
+            .map(originalIndex => finalOptions.findIndex(opt => opt.originalIndex === originalIndex))
+            .filter(index => index >= 0);
+        
+        return {
+            ...question,
+            options: finalOptions.map(opt => opt.text),
+            originalOptions: question.options,
+            correctAnswerIndices: newCorrectIndices,
+            originalCorrectIndices: correctAnswerIndices,
+            isMultipleResponse: question.type === 'multiple_response'
+        };
+    });
+    
+    // Initialize global quiz state
+    window.quizState = {
+        currentQuestions: processedQuestions,
+        userAnswers: new Array(processedQuestions.length).fill(null),
+        currentQuestionIndex: 0,
+        isQuizComplete: false,
+        showResults: false,
+        quizTitle: quizData.title || `Quiz ${quizNumber}`,
+        quizDifficulty: difficulty
+    };
+    
+    const resourceContent = document.getElementById('resource-content');
+    if (!resourceContent) return;
+    
+    // Render quiz interface
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3>${window.quizState.quizTitle} - ${difficulty}</h3>
+                <button class="tool-back" onclick="loadTopicQuizzes()">
+                    <i class="fas fa-arrow-left"></i> Back to Topics
+                </button>
+            </div>
+            
+            <div class="quiz-container">
+                <div class="quiz-info" style="background:var(--accent-light);padding:20px;border-radius:var(--border-radius-sm);margin-bottom:25px;">
+                    <h4 style="color:var(--primary);margin-bottom:10px;">${window.quizState.quizTitle}</h4>
+                    <p style="color:var(--text-gray);margin-bottom:0;">${quizData.subtitle || quizData.description || 'Test your knowledge on this topic.'}</p>
+                    ${quizData.duration ? `<div style="margin-top:10px;"><strong>Duration:</strong> ${quizData.duration} minutes</div>` : ''}
+                    <div style="margin-top:10px;font-size:0.9rem;color:var(--primary);">
+                        <i class="fas fa-random"></i> Options are randomized for each attempt
+                    </div>
+                    <div style="margin-top:5px;font-size:0.9rem;color:var(--text-muted);">
+                        <strong>Questions:</strong> ${window.quizState.currentQuestions.length}
+                    </div>
+                </div>
+                
+                <div id="quiz-questions-container"></div>
+                
+                <div class="quiz-actions" style="margin-top:30px;display:flex;justify-content:center;">
+                    <button class="btn btn-accent btn-sm" onclick="submitTopicQuiz()">
+                        <i class="fas fa-check-circle"></i> Submit Quiz
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Render questions if available
+    if (window.quizState.currentQuestions.length > 0) {
+        displayQuizQuestions(window.quizState.currentQuestions);
+    } else {
+        document.getElementById('quiz-questions-container').innerHTML = `
+            <div style="text-align:center;padding:40px 20px;color:var(--text-muted);">
+                <i class="fas fa-exclamation-circle" style="font-size:2rem;display:block;margin-bottom:10px;"></i>
+                <p>No questions available for this quiz.</p>
+            </div>
+        `;
+    }
+}
+
+
+// Render individual quiz questions with options
+function displayQuizQuestions(questions) {
+    const container = document.getElementById('quiz-questions-container');
+    if (!container) return;
+    
+    container.innerHTML = questions.map((question, index) => `
+        <div class="question" style="margin-bottom:24px;padding:20px;background:var(--bg-card);border-radius:var(--border-radius);border:1px solid var(--border);">
+            <div class="question-text" style="font-weight:600;color:var(--text-dark);margin-bottom:15px;">
+                <strong>Question ${index + 1}:</strong> <span id="question-text-${index}">${renderMarkdown(question.question)}</span>
+            </div>
+            
+            ${question.image ? `
+                <div class="question-image" style="text-align:center;margin:15px 0;">
+                    <img src="${question.image}" 
+                         alt="Question diagram" 
+                         style="max-width:100%;height:auto;border-radius:8px;"
+                         onerror="this.parentElement.style.display='none';">
+                </div>
+            ` : ''}
+            
+            <div class="options" style="display:flex;flex-direction:column;gap:10px;">
+                ${question.options.map((option, optionIndex) => `
+                    <div class="option" 
+                         onclick="selectQuizOption(${index}, ${optionIndex})" 
+                         id="option-${index}-${optionIndex}"
+                         style="padding:12px 15px;border:2px solid var(--border);border-radius:var(--border-radius-sm);cursor:pointer;transition:var(--transition);">
+                        <span>${renderMarkdown(option)}</span>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="selection-status" 
+                 style="margin-top:10px;font-size:0.9rem;color:var(--text-muted);display:none;" 
+                 id="status-${index}">
+                <i class="fas fa-check"></i> Selected
+            </div>
+        </div>
+    `).join('');
+    
+    // Typeset LaTeX after content renders
+    setTimeout(() => {
+        if (window.mathJaxReady && window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([container]).catch(err => {
+                console.warn('MathJax typeset failed:', err);
+            });
+        }
+    }, 100);
+}
+
+
+// Handle option selection (supports single and multiple response)
+function selectQuizOption(questionIndex, optionIndex) {
+    const question = window.quizState.currentQuestions[questionIndex];
+    
+    if (question.isMultipleResponse) {
+        // Toggle selection for multiple response
+        if (!Array.isArray(window.quizState.userAnswers[questionIndex])) {
+            window.quizState.userAnswers[questionIndex] = [];
+        }
+        
+        const answers = window.quizState.userAnswers[questionIndex];
+        const idx = answers.indexOf(optionIndex);
+        
+        if (idx === -1) {
+            answers.push(optionIndex);
+        } else {
+            answers.splice(idx, 1);
+        }
+    } else {
+        // Replace selection for single answer
+        window.quizState.userAnswers[questionIndex] = optionIndex;
+    }
+    
+    // Update UI visual feedback
+    const questionEl = document.querySelectorAll('.question')[questionIndex];
+    if (!questionEl) return;
+    
+    const options = questionEl.querySelectorAll('.option');
+    const statusEl = document.getElementById(`status-${questionIndex}`);
+    
+    if (question.isMultipleResponse) {
+        // Toggle visual state for clicked option
+        const optionEl = document.getElementById(`option-${questionIndex}-${optionIndex}`);
+        if (!optionEl) return;
+        
+        const isSelected = Array.isArray(window.quizState.userAnswers[questionIndex]) && 
+                          window.quizState.userAnswers[questionIndex].includes(optionIndex);
+        
+        optionEl.style.borderColor = isSelected ? 'var(--accent)' : 'var(--border)';
+        optionEl.style.background = isSelected ? 'var(--accent-light)' : 'var(--bg-card)';
+        
+        // Update status text
+        if (statusEl) {
+            const count = window.quizState.userAnswers[questionIndex].length;
+            statusEl.textContent = count > 0 ? `Selected: ${count}` : '';
+            statusEl.style.display = count > 0 ? 'block' : 'none';
+        }
+    } else {
+        // Clear all, highlight selected
+        options.forEach(opt => {
+            opt.style.borderColor = 'var(--border)';
+            opt.style.background = 'var(--bg-card)';
+        });
+        
+        options[optionIndex].style.borderColor = 'var(--accent)';
+        options[optionIndex].style.background = 'var(--accent-light)';
+        
+        if (statusEl) statusEl.style.display = 'block';
+    }
+}
+
+
+// Submit quiz and calculate results
+function submitTopicQuiz() {
+    if (!window.quizState.currentQuestions || window.quizState.currentQuestions.length === 0) {
+        alert('No quiz questions available to submit.');
+        return;
+    }
+    
+    // Check for unanswered questions
+    const unanswered = window.quizState.userAnswers.map((answer, i) => {
+        const q = window.quizState.currentQuestions[i];
+        if (q.isMultipleResponse) {
+            return (!Array.isArray(answer) || answer.length === 0) ? i + 1 : null;
+        }
+        return answer === null ? i + 1 : null;
+    }).filter(n => n !== null);
+    
+    if (unanswered.length > 0) {
+        const confirmSubmit = confirm(`You haven't answered questions: ${unanswered.join(', ')}. Submit anyway?`);
+        if (!confirmSubmit) return;
+    }
+    
+    // Calculate score
+    let correctCount = 0;
+    const results = [];
+    
+    window.quizState.currentQuestions.forEach((question, index) => {
+        const userAnswer = window.quizState.userAnswers[index];
+        let isCorrect = false;
+        let wasAnswered = false;
+        
+        if (question.isMultipleResponse) {
+            wasAnswered = Array.isArray(userAnswer) && userAnswer.length > 0;
+            if (wasAnswered) {
+                const userSorted = [...userAnswer].sort().join(',');
+                const correctSorted = [...question.correctAnswerIndices].sort().join(',');
+                isCorrect = userSorted === correctSorted;
+            }
+        } else {
+            wasAnswered = userAnswer !== null;
+            isCorrect = wasAnswered && userAnswer === question.correctAnswerIndices[0];
+        }
+        
+        if (isCorrect && wasAnswered) correctCount++;
+        
+        results.push({
+            question: question.question,
+            userAnswer: userAnswer,
+            correctAnswerIndices: question.correctAnswerIndices,
+            correctAnswerLetters: question.correctAnswerIndices.map(idx => String.fromCharCode(65 + idx)),
+            isMultipleResponse: question.isMultipleResponse,
+            isCorrect: isCorrect,
+            wasAnswered: wasAnswered,
+            explanation: question.explanation,
+            options: question.options
+        });
+    });
+    
+    const score = Math.round((correctCount / window.quizState.currentQuestions.length) * 100);
+    
+    // Update course progress in Firebase
+    if (typeof updateCourseProgress === 'function' && currentCourseId) {
+        updateCourseProgress(currentCourseId, score, 'quiz');
+    }
+    
+    // Display results
+    displayQuizResults(score, correctCount, results);
+}
+
+
+// Display quiz results with detailed feedback
+function displayQuizResults(score, correctAnswers, results) {
+    const resourceContent = document.getElementById('resource-content');
+    if (!resourceContent) return;
+    
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3>Quiz Results - ${window.quizState.quizTitle}</h3>
+                <button class="tool-back" onclick="loadTopicQuizzes()">
+                    <i class="fas fa-arrow-left"></i> Back to Topics
+                </button>
+            </div>
+            
+            <div class="quiz-container">
+                <div style="text-align:center;padding:30px;background:var(--accent-light);border-radius:var(--border-radius-sm);margin-bottom:30px;">
+                    <h3 style="color:var(--primary);margin-bottom:15px;">Quiz Complete!</h3>
+                    <div style="font-size:3rem;font-weight:800;color:${score >= 70 ? 'var(--success)' : 'var(--accent)'};margin-bottom:10px;">
+                        ${score}%
+                    </div>
+                    <p style="color:var(--text-gray);margin-bottom:10px;">
+                        You answered ${correctAnswers} out of ${results.length} questions correctly.
+                    </p>
+                    <p style="color:var(--text-muted);font-size:0.9rem;">
+                        ${results.filter(r => !r.wasAnswered).length} questions were not answered.
+                    </p>
+                </div>
+                
+                <div id="quiz-results-detailed">
+                    ${results.map((result, index) => {
+                        // Format user answer text
+                        let userAnswerText = 'Not answered';
+                        let userAnswerLetters = '';
+                        
+                        if (result.isMultipleResponse) {
+                            if (Array.isArray(result.userAnswer) && result.userAnswer.length > 0) {
+                                userAnswerText = result.userAnswer.map(idx => {
+                                    return result.options && result.options[idx] 
+                                        ? `${String.fromCharCode(65 + idx)}. ${renderMarkdown(result.options[idx])}` 
+                                        : `Option ${String.fromCharCode(65 + idx)}`;
+                                }).join('<br>');
+                                userAnswerLetters = result.userAnswer.map(idx => String.fromCharCode(65 + idx)).join(', ');
+                            }
+                        } else {
+                            if (result.userAnswer !== null && result.options && result.options[result.userAnswer]) {
+                                userAnswerText = renderMarkdown(result.options[result.userAnswer]);
+                                userAnswerLetters = String.fromCharCode(65 + result.userAnswer);
+                            }
+                        }
+                        
+                        // Format correct answer text
+                        let correctAnswerText = '';
+                        let correctAnswerLetters = '';
+                        
+                        if (result.isMultipleResponse) {
+                            if (Array.isArray(result.correctAnswerIndices) && result.correctAnswerIndices.length > 0) {
+                                correctAnswerText = result.correctAnswerIndices.map(idx => {
+                                    return result.options && result.options[idx] 
+                                        ? `${String.fromCharCode(65 + idx)}. ${renderMarkdown(result.options[idx])}` 
+                                        : `Option ${String.fromCharCode(65 + idx)}`;
+                                }).join('<br>');
+                                correctAnswerLetters = result.correctAnswerLetters.join(', ');
+                            }
+                        } else {
+                            if (result.correctAnswerIndices?.[0] !== undefined && result.options?.[result.correctAnswerIndices[0]] !== undefined) {
+                                correctAnswerText = renderMarkdown(result.options[result.correctAnswerIndices[0]]);
+                                correctAnswerLetters = result.correctAnswerLetters?.[0] || String.fromCharCode(65 + result.correctAnswerIndices[0]);
+                            }
+                        }
+                        
+                        const borderColor = result.isCorrect && result.wasAnswered 
+                            ? 'var(--success)' 
+                            : result.wasAnswered 
+                                ? 'var(--accent)' 
+                                : 'var(--warning)';
+                        
+                        return `
+                            <div class="question-result" style="margin-bottom:24px;padding:20px;background:var(--bg-card);border-radius:var(--border-radius);border:1px solid var(--border);border-left:4px solid ${borderColor};">
+                                <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:15px;">
+                                    <h4 style="color:var(--text-dark);margin:0;">Question ${index + 1}</h4>
+                                    ${!result.wasAnswered ? `
+                                        <span style="background:var(--warning);color:white;padding:4px 12px;border-radius:20px;font-size:0.8rem;font-weight:600;">Not Answered</span>
+                                    ` : `
+                                        <span style="background:${result.isCorrect ? 'var(--success)' : 'var(--accent)'};color:white;padding:4px 12px;border-radius:20px;font-size:0.8rem;font-weight:600;">
+                                            ${result.isCorrect ? 'Correct' : 'Incorrect'}
+                                        </span>
+                                    `}
+                                </div>
+                                
+                                <div class="question-text" style="margin-bottom:15px;">
+                                    ${renderMarkdown(result.question)}
+                                </div>
+                                
+                                <div style="margin-bottom:12px;">
+                                    <strong>Your answer:</strong> 
+                                    <span style="color:${result.wasAnswered ? (result.isCorrect ? 'var(--success)' : 'var(--accent)') : 'var(--warning)'}">
+                                        ${userAnswerLetters ? `<strong>${userAnswerLetters}</strong><br>` : ''}${userAnswerText}
+                                    </span>
+                                </div>
+                                
+                                <div style="margin-bottom:12px;">
+                                    <strong>Correct answer:</strong> 
+                                    <span style="color:var(--success)">
+                                        ${correctAnswerLetters ? `<strong>${correctAnswerLetters}</strong><br>` : ''}${correctAnswerText}
+                                    </span>
+                                </div>
+                                
+                                ${result.explanation ? `
+                                    <div style="padding:15px;background:var(--bg);border-radius:var(--border-radius-sm);margin-top:15px;">
+                                        <strong>Explanation:</strong> ${renderMarkdown(result.explanation)}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+                
+                <div class="quiz-actions" style="margin-top:30px;display:flex;gap:12px;justify-content:center;">
+                    <button class="btn btn-accent btn-sm" onclick="retakeQuiz()">
+                        <i class="fas fa-redo"></i> Retake Quiz
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="loadTopicQuizzes()">
+                        <i class="fas fa-list"></i> Back to Topics
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Typeset LaTeX in results
+    setTimeout(() => {
+        if (window.mathJaxReady && window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([resourceContent]).catch(err => {
+                console.warn('MathJax typeset failed:', err);
+            });
+        }
+    }, 100);
+}
+
+
+// Retake the current quiz (reset answers, keep questions)
+function retakeQuiz() {
+    window.quizState.userAnswers = new Array(window.quizState.currentQuestions.length).fill(null);
+    window.quizState.isQuizComplete = false;
+    window.quizState.showResults = false;
+    
+    // Re-display the quiz with same questions
+    displayQuizWithData({
+        title: window.quizState.quizTitle,
+        questions: window.quizState.currentQuestions
+    }, '', '', window.quizState.quizDifficulty);
+}
+
+
+// Display a default/fallback quiz when real data isn't available
+function displayDefaultTopicQuiz(unitId, quizNumber, difficulty) {
+    const defaultQuizData = {
+        title: `Quiz ${quizNumber} - ${difficulty}`,
+        questions: [
+            {
+                question: "This is a sample question. The actual quiz content for this topic is coming soon!",
+                options: ["Sample Option A", "Sample Option B", "Sample Option C", "Sample Option D"],
+                answer: "A",
+                explanation: "This is a sample explanation. In a real quiz, this would provide detailed reasoning."
+            }
+        ]
+    };
+    
+    displayQuizWithData(defaultQuizData, unitId, quizNumber, difficulty);
+}
+
+
+// Minimal markdown renderer that preserves $...$ for MathJax
+function renderMarkdown(text) {
+    if (!text) return '';
+    
+    return text
+        // Escape HTML to prevent XSS (but NOT $ delimiters for LaTeX)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        // Bold: **text**
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        // Italic: *text*
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        // Inline code: `code`
+        .replace(/`(.+?)`/g, '<code style="background:var(--bg);padding:2px 4px;border-radius:3px;">$1</code>')
+        // Line breaks
+        .replace(/\n/g, '<br>');
+}
+
+
+//.....................................//
+//..........GLOBAL FUNCTION EXPOSURE..........//
+//.....................................//
+// Expose all functions to window for inline onclick handlers
+window.loadTopicQuizzes = loadTopicQuizzes;
+window.loadQuizUnitsData = loadQuizUnitsData;
+window.getCourseUnits = getCourseUnits;
+window.generateQuizzes = generateQuizzes;
+window.shuffleArray = shuffleArray;
+window.getQuizPath = getQuizPath;
+window.loadQuizData = loadQuizData;
+window.startTopicQuiz = startTopicQuiz;
+window.displayQuizWithData = displayQuizWithData;
+window.displayQuizQuestions = displayQuizQuestions;
+window.selectQuizOption = selectQuizOption;
+window.submitTopicQuiz = submitTopicQuiz;
+window.displayQuizResults = displayQuizResults;
+window.retakeQuiz = retakeQuiz;
+window.displayDefaultTopicQuiz = displayDefaultTopicQuiz;
+window.renderMarkdown = renderMarkdown;
+        
 </script>
 </body>
 </html>
