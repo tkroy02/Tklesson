@@ -2514,38 +2514,74 @@ function switchTextbookUnit(unit) {
 }
 
         // ========== TEXTBOOK CONTENT ==========
+// ========== TEXTBOOK UNIT HELPERS ==========
+function generateUnitButtons(courseId, currentUnit) {
+    const units = getTextbookUnits(courseId);
+    if (units.length === 0) {
+        return `<p style="color: var(--text-muted); padding: 20px; text-align: center;">No units available for this course yet.</p>`;
+    }
+    return units.map(unit => `
+        <button class="unit-btn ${currentUnit === unit.id ? 'active' : ''}" onclick="switchTextbookUnit('${unit.id}')">
+            ${unit.title}
+        </button>
+    `).join('\n');
+}
+
+function getUnitNameById(courseId, unitId) {
+    const units = getTextbookUnits(courseId);
+    const unit = units.find(u => u.id === unitId);
+    return unit ? unit.title : 'Unit';
+}
+
+function getCurrentUnitName() {
+    if (!currentTextbookUnit || !currentCourseId) return 'Current Unit';
+    return getUnitNameById(currentCourseId, currentTextbookUnit);
+}
+
+// ========== SWITCH TEXTBOOK UNIT ==========
+function switchTextbookUnit(unit) {
+    currentTextbookUnit = unit;
+    loadTextbookContent();
+}
+window.switchTextbookUnit = switchTextbookUnit;
+
+// ========== LOAD TEXTBOOK CONTENT (REFACTORED) ==========
 function loadTextbookContent() {
-    if (!currentCourseId) return;
+    if (!currentCourseId) {
+        alert("Please select a course first.");
+        return;
+    }
 
     const resourceContent = document.getElementById('resource-content');
     if (!resourceContent) return;
 
     const textbookTitle = getTextbookTitle(currentCourseId);
-    const units = getTextbookUnits(currentCourseId);
 
     resourceContent.innerHTML = `
         <div class="tool-interface active">
             <div class="tool-header">
                 <h3>📖 ${textbookTitle}</h3>
                 <button class="tool-back" onclick="document.getElementById('resource-content').innerHTML='';">
-                    <i class="fas fa-arrow-left"></i> Back
+                    <i class="fas fa-arrow-left"></i> Back to Resources
                 </button>
             </div>
-            <div style="display:grid;grid-template-columns:250px 1fr;gap:20px;min-height:400px;">
-                <div style="border-right:1px solid var(--border);padding-right:16px;">
-                    <h4 style="color:var(--primary);margin-bottom:10px;">Units</h4>
-                    <div id="unit-buttons" style="display:flex;flex-direction:column;gap:6px;">
-                        ${units.length > 0 ? units.map(u => `
-                            <button onclick="switchTextbookUnit('${u.id}')" style="padding:10px;text-align:left;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:${currentTextbookUnit === u.id ? 'var(--accent-light)' : 'white'};font-family:'Inter',sans-serif;font-size:0.85rem;transition:all 0.2s;">
-                                ${u.title}
-                            </button>
-                        `).join('') : '<p style="color:var(--text-muted);font-size:0.85rem;">No units available.</p>'}
+            <div class="textbook-container">
+                <div class="textbook-sidebar">
+                    <div class="unit-selector">
+                        <h4>Select Unit</h4>
+                        <div class="unit-buttons">
+                            ${generateUnitButtons(currentCourseId, currentTextbookUnit)}
+                        </div>
                     </div>
-                    <h4 style="color:var(--primary);margin:16px 0 10px;">Sections</h4>
-                    <div id="textbook-sections"></div>
+                    <h4>${getCurrentUnitName()} Sections</h4>
+                    <div class="textbook-sections" id="textbook-sections"></div>
                 </div>
-                <div id="textbook-content" style="padding:16px;">
-                    <p style="color:var(--text-muted);text-align:center;padding:60px 20px;">Select a section to begin reading.</p>
+                <div class="textbook-content" id="textbook-content">
+                    <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                        <i class="fas fa-book-open" style="font-size: 2.5rem; display: block; margin-bottom: 15px; opacity: 0.4;"></i>
+                        <h4 style="color: var(--primary); margin-bottom: 10px;">${textbookTitle}</h4>
+                        <p>Select a section from the sidebar to start reading.</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2553,8 +2589,343 @@ function loadTextbookContent() {
 
     setTimeout(() => loadTextbookSections(), 100);
 }
+window.loadTextbookContent = loadTextbookContent;
 
-        
+// ========== LOAD TEXTBOOK SECTIONS ==========
+async function loadTextbookSections() {
+    const sectionsContainer = document.getElementById('textbook-sections');
+    if (!sectionsContainer) return;
+
+    sectionsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> Loading...</p>';
+
+    try {
+        const courseSections = await loadTextbookSectionsData(currentCourseId);
+        const currentSections = courseSections[currentTextbookUnit];
+
+        if (!currentSections || currentSections.length === 0) {
+            sectionsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">No sections available for this unit.</p>';
+            return;
+        }
+
+        sectionsContainer.innerHTML = '';
+        currentSections.forEach(section => {
+            const div = document.createElement('div');
+            div.className = 'textbook-section-item';
+            div.addEventListener('click', function() {
+                loadTextbookSection(section.path, section.title);
+            });
+            div.innerHTML = `
+                <div class="section-title">${section.title}</div>
+                <div class="section-description">${section.description || ''}</div>
+            `;
+            sectionsContainer.appendChild(div);
+        });
+
+    } catch (error) {
+        console.error('Error loading textbook sections:', error);
+        sectionsContainer.innerHTML = '<p style="color:var(--danger);text-align:center;">Error loading sections.</p>';
+    }
+}
+
+// ========== LOAD INDIVIDUAL TEXTBOOK SECTION ==========
+async function loadTextbookSection(sectionPath, sectionTitle) {
+    const contentArea = document.getElementById('textbook-content');
+    if (!contentArea) return;
+
+    contentArea.innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+            <i class="fas fa-spinner fa-spin" style="font-size: 2rem; display: block; margin-bottom: 15px; opacity: 0.4;"></i>
+            <p style="color: var(--text-muted);">Loading ${sectionTitle}...</p>
+        </div>
+    `;
+
+    try {
+        const response = await fetch(sectionPath);
+        if (!response.ok) throw new Error(`Failed to load: ${response.status}`);
+        const sectionData = await response.json();
+        displayTextbookSection(sectionData, sectionTitle);
+
+        if (currentCourseId) {
+            const courseTitle = getTextbookTitle(currentCourseId);
+            await logActivity(currentCourseId, courseTitle, 'study');
+        }
+
+    } catch (error) {
+        console.error('Error loading textbook section:', error);
+        contentArea.innerHTML = `
+            <div style="text-align: center; padding: 40px 20px; color: var(--danger);">
+                <i class="fas fa-exclamation-triangle" style="font-size: 2rem; display: block; margin-bottom: 15px;"></i>
+                <h4>Content Not Available</h4>
+                <p>Unable to load this section. Please try again later.</p>
+                <button class="btn btn-outline btn-sm" onclick="loadTextbookContent()">
+                    <i class="fas fa-arrow-left"></i> Back to Sections
+                </button>
+            </div>
+        `;
+    }
+}
+window.loadTextbookSection = loadTextbookSection;
+
+// ========== TYPESET MATH ==========
+function typesetMath(element, retries = 0, maxRetries = 50) {
+    if (window.mathJaxReady && window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise(element ? [element] : undefined)
+            .then(() => console.log('✅ MathJax typeset completed'))
+            .catch((err) => {
+                console.error('MathJax typeset error:', err);
+                if (retries < 3) setTimeout(() => typesetMath(element, retries + 1, maxRetries), 200);
+            });
+    } else if (retries < maxRetries) {
+        setTimeout(() => typesetMath(element, retries + 1, maxRetries), 100);
+    } else {
+        console.warn('⚠️ MathJax not ready after', maxRetries * 100, 'ms');
+    }
+}
+
+// ========== RENDER MATH STEP ==========
+function renderMathStep(step, equation, explanation = '') {
+    return `
+        <div class="math-step">
+            <div class="step-label">${step}</div>
+            <div class="eq eq-center">${equation}</div>
+            ${explanation ? `<div class="step-explanation">${explanation}</div>` : ''}
+        </div>
+    `;
+}
+
+// ========== RENDER TEXTBOOK CONTENT ==========
+function renderTextbookContent(content) {
+    if (Array.isArray(content)) {
+        return content.map(paragraph => `<div class="content-paragraph">${paragraph}</div>`).join('');
+    }
+    return `<div class="content-paragraph">${content}</div>`;
+}
+
+// ========== DISPLAY TEXTBOOK SECTION (THE BIG ONE) ==========
+function displayTextbookSection(sectionData, sectionTitle) {
+    const contentArea = document.getElementById('textbook-content');
+    if (!contentArea) return;
+
+    let htmlContent = `
+        <div class="textbook-section">
+            <div class="section-header">
+                <h2>${sectionTitle}</h2>
+                ${sectionData.expanded_description ? `<p class="section-subtitle">${sectionData.expanded_description}</p>` : ''}
+                ${sectionData.core_concept ? `
+                    <div style="background: var(--accent-light); padding: 20px; border-radius: var(--border-radius-sm); margin-top: 20px; border-left: 4px solid var(--primary);">
+                        <h4 style="color: var(--primary); margin-bottom: 10px;">Core Concept</h4>
+                        <p style="font-weight: 600; margin-bottom: 10px;">${sectionData.core_concept.principle}</p>
+                        <p style="color: var(--text-gray);">${sectionData.core_concept.explanation}</p>
+                        ${sectionData.core_concept.image ? `
+                            <div style="margin: 15px 0; text-align: center;">
+                                <img src="${sectionData.core_concept.image.src}" alt="${sectionData.core_concept.image.alt || 'Concept diagram'}"
+                                     style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border);"
+                                     onerror="this.style.display='none'">
+                                ${sectionData.core_concept.image.caption ? `<div style="margin-top: 8px; font-style: italic; color: var(--text-muted); font-size: 0.85rem;">${sectionData.core_concept.image.caption}</div>` : ''}
+                            </div>
+                        ` : ''}
+                    </div>
+                ` : ''}
+            </div>
+            <div class="section-content">
+    `;
+
+    if (sectionData.sections && Array.isArray(sectionData.sections)) {
+        sectionData.sections.forEach((section, index) => {
+            htmlContent += `
+                <div class="content-section">
+                    <h3>${section.section_title || `Section ${index + 1}`}</h3>
+            `;
+
+            // Section image
+            if (section.image) {
+                htmlContent += `
+                    <div style="margin: 15px 0 20px 0; text-align: center;">
+                        <img src="${section.image.src}" alt="${section.image.alt || 'Section diagram'}"
+                             style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border);"
+                             onerror="this.style.display='none'">
+                        ${section.image.caption ? `<div style="margin-top: 8px; font-style: italic; color: var(--text-muted); font-size: 0.85rem;">${section.image.caption}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Introduction
+            if (section.introduction) {
+                htmlContent += `
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-style: italic;">
+                        ${section.introduction}
+                    </div>
+                `;
+            }
+
+            // Key concept
+            if (section.key_concept) {
+                const kc = section.key_concept;
+                htmlContent += `
+                    <div style="background: #e8f4fd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2196F3;">
+                        <strong style="color: var(--primary);">Key Concept:</strong> ${typeof kc === 'object' ? kc.definition : kc}
+                    </div>
+                `;
+            }
+
+            // Worked examples
+            if (section.worked_examples) {
+                htmlContent += `<h4 style="color: var(--primary-dark); margin: 25px 0 15px 0;">Worked Examples:</h4>`;
+                section.worked_examples.forEach((example, exIdx) => {
+                    htmlContent += `
+                        <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid var(--border);">
+                            <h5 style="color: var(--primary); margin-bottom: 15px;">
+                                <i class="fas fa-calculator" style="margin-right: 8px;"></i>
+                                Example ${exIdx + 1}: ${example.title}
+                            </h5>
+                            <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                                <strong style="color: var(--primary-dark);">Problem:</strong> ${example.problem}
+                            </div>
+                    `;
+
+                    if (example.step_by_step) {
+                        example.step_by_step.forEach((step, stepIdx) => {
+                            htmlContent += `
+                                <div style="background: #f0f7ff; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid var(--primary-light);">
+                                    <strong>Step ${stepIdx + 1}:</strong> ${step.explanation}
+                                    ${step.calculation ? `<div style="background: white; padding: 8px; border-radius: 4px; margin-top: 5px; font-family: 'Courier New', monospace;">${step.calculation}</div>` : ''}
+                                </div>
+                            `;
+                        });
+                    }
+
+                    if (example.final_answer) {
+                        htmlContent += `
+                            <div style="background: #e8f5e8; padding: 12px; border-radius: 6px; margin: 15px 0; border-left: 4px solid #4caf50;">
+                                <strong style="color: #2e7d32;">Final Answer:</strong> ${example.final_answer}
+                            </div>
+                        `;
+                    }
+
+                    htmlContent += `</div>`;
+                });
+            }
+
+            // Classifications
+            if (section.classifications) {
+                htmlContent += `<h4 style="color: var(--primary-dark); margin: 25px 0 15px 0;">Methods:</h4>`;
+                section.classifications.forEach(classification => {
+                    htmlContent += `
+                        <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid var(--border);">
+                            <h5 style="color: var(--primary); margin-bottom: 10px;">${classification.type}</h5>
+                            <p><strong>When to use:</strong> ${classification.value}</p>
+                            ${classification.characteristics ? `<p><strong>Characteristics:</strong> ${classification.characteristics.join(', ')}</p>` : ''}
+                    `;
+                    if (classification.examples) {
+                        classification.examples.forEach(ex => {
+                            htmlContent += `
+                                <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-top: 8px;">
+                                    <strong>${ex.process}:</strong> ${ex.explanation}
+                                </div>
+                            `;
+                        });
+                    }
+                    htmlContent += `</div>`;
+                });
+            }
+
+            // Principles
+            if (section.principles) {
+                htmlContent += `<h4 style="color: var(--primary-dark); margin: 25px 0 15px 0;">Fundamental Principles:</h4>`;
+                section.principles.forEach(principle => {
+                    htmlContent += `
+                        <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid var(--border);">
+                            <h5 style="color: var(--primary); margin-bottom: 10px;">${principle.principle}</h5>
+                            <p><strong>Statement:</strong> ${principle.statement}</p>
+                            <p><strong>Application:</strong> ${principle.application}</p>
+                            ${principle.analogy ? `<div style="background: #fff3cd; padding: 10px; border-radius: 6px; margin-top: 10px; border-left: 4px solid #ffc107;"><strong>Analogy:</strong> ${principle.analogy}</div>` : ''}
+                        </div>
+                    `;
+                });
+            }
+
+            // Process flow
+            if (section.process_flow) {
+                htmlContent += `<h4 style="color: var(--primary-dark); margin: 25px 0 15px 0;">Process Flow:</h4>`;
+                section.process_flow.forEach(step => {
+                    htmlContent += `
+                        <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid var(--primary-light);">
+                            <h6 style="color: var(--primary-dark); margin-bottom: 5px;">Step ${step.step}: ${step.process}</h6>
+                            <p>${step.description}</p>
+                            ${step.result ? `<p><strong>Result:</strong> ${step.result}</p>` : ''}
+                        </div>
+                    `;
+                });
+            }
+
+            // Components
+            if (section.components) {
+                htmlContent += `<h4 style="color: var(--primary-dark); margin: 25px 0 15px 0;">Key Components:</h4>`;
+                htmlContent += `
+                    <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid var(--border);">
+                        <p><strong>Definition:</strong> ${section.components.definition}</p>
+                        ${section.components.equation ? `<p><strong>Equation:</strong> ${section.components.equation}</p>` : ''}
+                    </div>
+                `;
+            }
+
+            // Structure and function
+            if (section.structure) {
+                htmlContent += `<h5 style="color: var(--primary); margin: 15px 0 10px 0;">Structure:</h5>`;
+                section.structure.components.forEach(component => {
+                    htmlContent += `
+                        <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
+                            <strong>${component.part}:</strong> ${component.composition}
+                            ${component.function ? `<div><em>Function:</em> ${component.function}</div>` : ''}
+                        </div>
+                    `;
+                });
+            }
+
+            htmlContent += `</div>`; // Close content-section
+        });
+    }
+
+    htmlContent += `</div>`; // Close section-content
+
+    // Key terms
+    if (sectionData.key_terms && sectionData.key_terms.length > 0) {
+        htmlContent += `
+            <div class="key-points">
+                <h3><i class="fas fa-key"></i> Key Terms</h3>
+                <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                    ${sectionData.key_terms.map(term => `
+                        <span style="background: var(--primary); color: white; padding: 6px 12px; border-radius: 15px; font-size: 0.85rem;">${term}</span>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    // Summary
+    if (sectionData.summary) {
+        htmlContent += `
+            <div class="vocabulary">
+                <h3><i class="fas fa-file-alt"></i> Summary</h3>
+                <div class="vocab-grid">
+                    <div class="vocab-item">${sectionData.summary}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    htmlContent += `
+            <div class="section-navigation">
+                <button class="btn btn-outline btn-sm" onclick="loadTextbookContent()">
+                    <i class="fas fa-list"></i> Back to Sections
+                </button>
+            </div>
+        </div>
+    `;
+
+    contentArea.innerHTML = htmlContent;
+    setTimeout(() => typesetMath(contentArea), 100);
+}       
         
         // ========== AUTH STATE ==========
         onAuthStateChanged(auth, async (user) => {
