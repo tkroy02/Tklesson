@@ -5083,77 +5083,66 @@ async function loadQuizData(path) {
 }
 
         // ✅ B2C's displayQuizWithData (adapted for B2B styling)
+// ✅ CORRECTED: displayQuizWithData (strict local scoping)
 function displayQuizWithData(quizData, unitId, quizNumber, difficulty) {
     const shouldShuffle = quizData.settings?.shuffleOptions !== false;
     
-    const processedQuestions = (quizData.questions || []).map(question => {
-        const optionsWithIndices = question.options.map((opt, idx) => ({ text: opt, originalIndex: idx }));
-        const finalOptions = shouldShuffle ? shuffleArray(optionsWithIndices) : optionsWithIndices;
+    // 🔒 processedQuestions is LOCAL to this function only
+    const processedQuestions = (quizData.questions || []).map(q => {
+        const optsWithIdx = q.options.map((opt, i) => ({ text: opt, originalIndex: i }));
+        const finalOpts = shouldShuffle ? shuffleArray(optsWithIdx) : optsWithIdx;
         
-        // Handle both single and multiple response answers
-        let correctAnswerIndices = [];
-        if (question.type === 'multiple_response' && Array.isArray(question.answer)) {
-            correctAnswerIndices = question.answer.map(letter => 
-                typeof letter === 'string' ? letter.charCodeAt(0) - 65 : -1
-            ).filter(i => i >= 0);
-        } else if (question.answer && typeof question.answer === 'string') {
-            correctAnswerIndices = [question.answer.charCodeAt(0) - 65];
+        let correctIdxs = [];
+        if (q.type === 'multiple_response' && Array.isArray(q.answer)) {
+            correctIdxs = q.answer.map(l => (typeof l === 'string' ? l.charCodeAt(0) - 65 : -1)).filter(i => i >= 0);
+        } else if (q.answer && typeof q.answer === 'string') {
+            correctIdxs = [q.answer.charCodeAt(0) - 65];
         }
         
-        const newCorrectIndices = correctAnswerIndices.map(origIdx => 
-            finalOptions.findIndex(opt => opt.originalIndex === origIdx)
+        const newCorrectIdxs = correctIdxs.map(orig => 
+            finalOpts.findIndex(o => o.originalIndex === orig)
         ).filter(i => i >= 0);
         
-        return {
-            ...question,
-            options: finalOptions.map(opt => opt.text),
-            originalOptions: question.options,
-            correctAnswerIndices: newCorrectIndices,
-            originalCorrectIndices: correctAnswerIndices,
-            isMultipleResponse: question.type === 'multiple_response'
+        return { 
+            ...q, 
+            options: finalOpts.map(o => o.text), 
+            originalOptions: q.options, 
+            correctAnswerIndices: newCorrectIdxs, 
+            originalCorrectIndices: correctIdxs, 
+            isMultipleResponse: q.type === 'multiple_response' 
         };
     });
-    
-    window.quizState = {
-        currentQuestions: processedQuestions,
-        userAnswers: new Array(processedQuestions.length).fill(null),
-        currentQuestionIndex: 0,
-        isQuizComplete: false,
-        showResults: false,
-        quizTitle: quizData.title || `Quiz ${quizNumber}`,
-        quizDifficulty: difficulty
-    };
-    
-    const resourceContent = document.getElementById('resource-content');
-    resourceContent.innerHTML = `
+
+    // ✅ Save to GLOBAL state for all other functions to use
+    window.quizState.currentQuestions = processedQuestions;
+    window.quizState.userAnswers = new Array(processedQuestions.length).fill(null);
+    window.quizState.currentQuestionIndex = 0;
+    window.quizState.isQuizComplete = false;
+    window.quizState.showResults = false;
+    window.quizState.quizTitle = quizData.title || `Quiz ${quizNumber}`;
+    window.quizState.quizDifficulty = difficulty;
+
+    // Render UI
+    const rc = document.getElementById('resource-content');
+    rc.innerHTML = `
         <div class="tool-interface active">
             <div class="tool-header">
                 <h3 class="section-title">${window.quizState.quizTitle} - ${difficulty}</h3>
-                <button class="tool-back" onclick="openResource('topic-quiz')">
-                    <i class="fas fa-arrow-left"></i> Back to Topics
-                </button>
+                <button class="tool-back" onclick="openResource('topic-quiz')"><i class="fas fa-arrow-left"></i> Back to Topics</button>
             </div>
             <div class="quiz-container">
                 <div style="background:var(--bg-card);padding:20px;border-radius:var(--border-radius-sm);margin-bottom:25px;">
                     <h4 style="color:var(--primary);margin-bottom:10px;">${window.quizState.quizTitle}</h4>
-                    <p style="color:var(--text-muted);margin-bottom:0;">${quizData.subtitle || quizData.description || 'Test your knowledge.'}</p>
-                    ${quizData.duration ? `<div style="margin-top:10px;"><strong>Duration:</strong> ${quizData.duration} minutes</div>` : ''}
-                    <div style="margin-top:10px;font-size:0.9rem;color:var(--primary);">
-                        <i class="fas fa-random"></i> Options randomized per attempt
-                    </div>
+                    <p style="color:var(--text-muted);margin:0;">${quizData.subtitle || quizData.description || 'Test your knowledge.'}</p>
                 </div>
                 <div id="quiz-questions-container"></div>
                 <div style="margin-top:30px;text-align:center;">
-                    <button class="btn btn-accent btn-sm" onclick="submitTopicQuiz()">
-                        <i class="fas fa-check-circle"></i> Submit Quiz
-                    </button>
+                    <button class="btn btn-accent btn-sm" onclick="submitTopicQuiz()"><i class="fas fa-check-circle"></i> Submit Quiz</button>
                 </div>
             </div>
         </div>`;
-    
-    if (window.quizState.currentQuestions.length > 0) {
-        displayQuizQuestions(window.quizState.currentQuestions);
-    }
+        
+    if (processedQuestions.length > 0) displayQuizQuestions(processedQuestions);
 }
 
 // Fisher-Yates shuffle
