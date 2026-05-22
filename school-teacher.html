@@ -1709,89 +1709,142 @@
                 const columns = ['Homework 1', 'Homework 2', 'Midterm', 'Final'];
 
                 container.innerHTML = `
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                        <h3 class="section-title" style="margin:0;">📋 ${subjectName} — Official Grades</h3>
-                        <span style="font-size:0.8rem;color:var(--text-muted);">Click any cell to edit · Auto-saves</span>
-                    </div>
-                    <div class="gradebook-table-container">
-                        <table class="gradebook-table">
-                            <thead>
-                                <tr>
-                                    <th>Student Name</th>
-                                    ${columns.map(c => `<th>${c}</th>`).join('')}
-                                    <th>Grade</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${studentIds.map((sid, i) => {
-                                    const sname = studentNames[i] || 'Unknown';
-                                    const entry = entries[sid] || {};
-                                    return `
-                                        <tr>
-                                            <td class="student-name-cell">${sname}</td>
-                                            ${columns.map(col => {
-                                                const fieldKey = col.toLowerCase().replace(/\s+/g, '');
-                                                const value = entry[fieldKey] !== undefined ? entry[fieldKey] : '';
-                                                return `<td><input type="number" class="score-input" placeholder="—" min="0" max="100" value="${value}" onblur="saveGradebookScore('${subjectId}', '${sid}', '${fieldKey}', this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
-                                            }).join('')}
-                                            <td>
-                                                <select class="grade-select" onchange="saveGradebookGrade('${subjectId}', '${sid}', this.value)">
-                                                    <option value="">—</option>
-                                                    ${GRADE_OPTIONS.map(g => `<option value="${g}" ${entry.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
-                                                </select>
-                                            </td>
-                                        </tr>`;
-                                }).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px;">
+        <h3 class="section-title" style="margin:0;">📋 ${subjectName} — Official Grades</h3>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <span id="gradebook-save-status" style="font-size:0.8rem;color:var(--text-muted);"></span>
+            <button class="btn btn-primary btn-sm" onclick="saveAllGradebook('${subjectId}')">
+                <i class="fas fa-save"></i> Save Changes
+            </button>
+        </div>
+    </div>
+    <div class="gradebook-table-container">
+        <table class="gradebook-table">
+            <thead>
+                <tr>
+                    <th>Student Name</th>
+                    ${columns.map(c => `<th>${c}</th>`).join('')}
+                    <th>Grade</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${studentIds.map((sid, i) => {
+                    const sname = studentNames[i] || 'Unknown';
+                    const entry = entries[sid] || {};
+                    return `
+                        <tr>
+                            <td class="student-name-cell">${sname}</td>
+                            ${columns.map(col => {
+                                const fieldKey = col.toLowerCase().replace(/\s+/g, '');
+                                const value = entry[fieldKey] !== undefined ? entry[fieldKey] : '';
+                                return `<td><input type="number" class="score-input" placeholder="—" min="0" max="100" value="${value}" data-student="${sid}" data-field="${fieldKey}" onkeydown="if(event.key==='Enter')event.preventDefault()"></td>`;
+                            }).join('')}
+                            <td>
+                                <select class="grade-select" data-student="${sid}" data-field="grade">
+                                    <option value="">—</option>
+                                    ${GRADE_OPTIONS.map(g => `<option value="${g}" ${entry.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
+                                </select>
+                            </td>
+                        </tr>`;
+                }).join('')}
+            </tbody>
+        </table>
+    </div>
+`;
             } catch (error) {
                 console.error('Error loading gradebook:', error);
                 container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading gradebook.</p>';
             }
         };
 
-        window.saveGradebookScore = async function(subjectId, studentId, fieldKey, value) {
-            if (value === '' || value === null) return;
+        window.saveAllGradebook = async function(subjectId) {
+    const statusEl = document.getElementById('gradebook-save-status');
+    if (statusEl) statusEl.textContent = 'Saving...';
+
+    // Collect all current values from the table
+    const entries = {};
+    
+    // Get all score inputs
+    document.querySelectorAll('.score-input').forEach(input => {
+        const studentId = input.dataset.student;
+        const field = input.dataset.field;
+        const value = input.value.trim();
+        
+        if (!entries[studentId]) entries[studentId] = {};
+        
+        if (value === '') {
+            // Empty field — delete it so old value is removed
+            entries[studentId][field] = null;
+        } else {
             const numValue = parseInt(value);
-            if (isNaN(numValue) || numValue < 0 || numValue > 100) return;
-
-            const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
-            const snap = await getDoc(gradebookRef);
-
-            let entries = {};
-            if (snap.exists()) {
-                entries = snap.data().entries || {};
+            if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) {
+                entries[studentId][field] = numValue;
             }
+        }
+    });
+    
+    // Get all grade selects
+    document.querySelectorAll('.grade-select').forEach(select => {
+        const studentId = select.dataset.student;
+        const value = select.value;
+        
+        if (!entries[studentId]) entries[studentId] = {};
+        entries[studentId].grade = value || null;
+    });
 
-            if (!entries[studentId]) {
-                entries[studentId] = {};
+    // Clean up null values (remove fields that were cleared)
+    Object.keys(entries).forEach(sid => {
+        Object.keys(entries[sid]).forEach(field => {
+            if (entries[sid][field] === null) {
+                delete entries[sid][field];
             }
+        });
+        // Remove student entry if completely empty
+        if (Object.keys(entries[sid]).length === 0) {
+            delete entries[sid];
+        }
+    });
 
-            entries[studentId][fieldKey] = numValue;
-
-            await setDoc(gradebookRef, { entries: entries, updatedAt: new Date().toISOString() }, { merge: true });
-        };
-
-        window.saveGradebookGrade = async function(subjectId, studentId, grade) {
-            const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
-            const snap = await getDoc(gradebookRef);
-
-            let entries = {};
-            if (snap.exists()) {
-                entries = snap.data().entries || {};
+    try {
+        const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
+        const snap = await getDoc(gradebookRef);
+        
+        let existingEntries = {};
+        if (snap.exists()) {
+            existingEntries = snap.data().entries || {};
+        }
+        
+        // Merge: new values overwrite old, nulls remove fields
+        const mergedEntries = { ...existingEntries, ...entries };
+        
+        // Remove any student entries that are now empty
+        Object.keys(mergedEntries).forEach(sid => {
+            if (Object.keys(mergedEntries[sid]).length === 0) {
+                delete mergedEntries[sid];
             }
-
-            if (!entries[studentId]) {
-                entries[studentId] = {};
-            }
-
-            entries[studentId].grade = grade;
-
-            await setDoc(gradebookRef, { entries: entries, updatedAt: new Date().toISOString() }, { merge: true });
-        };
-
+        });
+        
+        await setDoc(gradebookRef, { 
+            entries: mergedEntries, 
+            updatedAt: new Date().toISOString() 
+        }, { merge: true });
+        
+        if (statusEl) {
+            statusEl.textContent = '✓ Saved';
+            statusEl.style.color = 'var(--success)';
+            setTimeout(() => {
+                statusEl.textContent = '';
+                statusEl.style.color = '';
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('Error saving gradebook:', error);
+        if (statusEl) {
+            statusEl.textContent = 'Error saving';
+            statusEl.style.color = 'var(--danger)';
+        }
+    }
+};
         // ========== SETTINGS ==========
         function loadSettings() {
             const user = auth.currentUser;
