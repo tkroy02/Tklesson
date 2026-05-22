@@ -5887,6 +5887,130 @@ window.loadTopicSelection = loadTopicSelection;
 window.startTopicStudy = startTopicStudy;
 window.showDifficultCardsReview = showDifficultCardsReview;
 window.markCardDifficult = markCardDifficult;
+
+// ========================================
+// STUDENT GRADES - Add this function near loadStudentAssignments
+// ========================================
+async function loadStudentGrades() {
+    const container = document.getElementById('student-grades-container');
+    if (!container) return;
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Admin has no grades
+    if (isAdmin()) {
+        container.innerHTML = `
+            <div class="empty-state" style="text-align:center;padding:40px;">
+                <i class="fas fa-eye" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>
+                <p style="color:var(--text-muted);">Admin preview — student grades appear here</p>
+            </div>`;
+        return;
+    }
+
+    try {
+        // Step 1: Find subjects this student belongs to
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', user.uid));
+        const subjectsSnap = await getDocs(subjectsQuery);
+
+        if (subjectsSnap.empty) {
+            container.innerHTML = `
+                <div class="empty-state" style="text-align:center;padding:40px;">
+                    <i class="fas fa-award" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>
+                    <p style="color:var(--text-muted);">You are not enrolled in any subjects yet.</p>
+                </div>`;
+            return;
+        }
+
+        // Step 2: For each subject, fetch the gradebook and pull this student's entry
+        let gradeRows = [];
+        
+        for (const subjectDoc of subjectsSnap.docs) {
+            const subjectData = subjectDoc.data();
+            const subjectName = subjectData.name || 'Unknown Subject';
+            const teacherName = subjectData.teacherName || 'Teacher';
+            
+            // Fetch gradebook for this subject
+            const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectDoc.id}`);
+            const gradebookSnap = await getDoc(gradebookRef);
+            
+            if (gradebookSnap.exists()) {
+                const gradebookData = gradebookSnap.data();
+                const entries = gradebookData.entries || {};
+                const myEntry = entries[user.uid];
+                
+                if (myEntry) {
+                    gradeRows.push({
+                        subjectName,
+                        teacherName,
+                        assessment1: myEntry.assessment1 ?? '—',
+                        assessment2: myEntry.assessment2 ?? '—',
+                        midterm: myEntry.midterm ?? '—',
+                        final: myEntry.final ?? '—',
+                        grade: myEntry.grade || '—'
+                    });
+                }
+            }
+        }
+
+        // Step 3: Display results
+        if (gradeRows.length === 0) {
+            container.innerHTML = `
+                <div class="card">
+                    <p style="color:var(--text-muted);text-align:center;padding:40px;">
+                        <i class="fas fa-clipboard-check" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>
+                        No grades available yet. Your teachers haven't posted any grades.
+                    </p>
+                </div>`;
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="card" style="overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+                    <thead>
+                        <tr style="background:var(--bg-sidebar);color:white;">
+                            <th style="padding:12px;text-align:left;border-radius:8px 0 0 0;">Subject</th>
+                            <th style="padding:12px;text-align:center;">Assessment 1</th>
+                            <th style="padding:12px;text-align:center;">Assessment 2</th>
+                            <th style="padding:12px;text-align:center;">Midterm</th>
+                            <th style="padding:12px;text-align:center;">Final</th>
+                            <th style="padding:12px;text-align:center;border-radius:0 8px 0 0;">Grade</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${gradeRows.map(row => `
+                            <tr style="border-bottom:1px solid var(--border);">
+                                <td style="padding:12px;">
+                                    <strong style="color:var(--text-dark);">${row.subjectName}</strong>
+                                    <br><small style="color:var(--text-muted);">${row.teacherName}</small>
+                                </td>
+                                <td style="padding:12px;text-align:center;">${row.assessment1}</td>
+                                <td style="padding:12px;text-align:center;">${row.assessment2}</td>
+                                <td style="padding:12px;text-align:center;">${row.midterm}</td>
+                                <td style="padding:12px;text-align:center;">${row.final}</td>
+                                <td style="padding:12px;text-align:center;">
+                                    <span style="background:var(--accent-light);color:var(--primary);padding:4px 12px;border-radius:50px;font-weight:700;font-size:0.85rem;">${row.grade}</span>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+            <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px;text-align:center;">
+                Grades posted by your teachers. Contact your teacher if you have questions.
+            </p>`;
+            
+    } catch (error) {
+        console.error('Error loading grades:', error);
+        container.innerHTML = `
+            <p style="color:var(--text-muted);text-align:center;padding:30px;">
+                <i class="fas fa-exclamation-circle" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>
+                Could not load grades. Please try again.
+            </p>`;
+    }
+}
         
 </script>
 </body>
