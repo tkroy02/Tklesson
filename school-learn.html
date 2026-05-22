@@ -2421,10 +2421,9 @@ if (type === 'topic-quiz') {
     
     // 🃏 Flashcards
     if (type === 'flashcards') {
-        container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>🃏 Flashcards</h3></div><div id="flashcard-content" style="text-align:center;"></div></div>`;
-        startFlashcards();
-        return;
-    }
+    startFlashcards();
+    return;
+}
     
     // 📚 Past Questions
     if (type === 'past-questions') {
@@ -5320,6 +5319,454 @@ window.getQuizPath = getQuizPath;
 window.loadQuizData = loadQuizData;
 window.shuffleArray = shuffleArray;
 
+//-------------------------------------------------------//
+//----------------FLASHCARDS!-------------------------//
+//------------------------------------------------------//
+
+        let flashcardPathsCache = null;
+let currentFlashcardData = null;
+let currentDeck = [];
+let currentTopicIndex = 0;
+let currentCardIndex = 0;
+let difficultCards = JSON.parse(localStorage.getItem('difficultCards')) || {};
+
+async function loadFlashcardPaths() {
+    if (flashcardPathsCache) return flashcardPathsCache;
+    try {
+        const response = await fetch('./flashcardPaths.json');
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        flashcardPathsCache = await response.json();
+        return flashcardPathsCache;
+    } catch (error) {
+        console.error('❌ Error loading flashcard paths:', error);
+        return {};
+    }
+}
+
+async function startFlashcards() {
+    if (!currentCourseId) return;
+    const resourceContent = document.getElementById('resource-content');
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">Loading Flashcards...</h3>
+                <button class="tool-back" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <div style="text-align:center;padding:60px 20px;">
+                <i class="fas fa-spinner fa-spin" style="font-size:2rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+                <p style="color:var(--text-muted);">Preparing your study session...</p>
+            </div>
+        </div>`;
+    
+    const flashcardData = await loadFlashcards(currentCourseId);
+    if (flashcardData && flashcardData.availableTopics) {
+        showTopicSelection(flashcardData);
+    } else {
+        showNoFlashcardsMessage();
+    }
+}
+
+async function loadFlashcards(courseId) {
+    try {
+        const flashcardPaths = await loadFlashcardPaths();
+        const coursePaths = flashcardPaths[courseId];
+        if (!coursePaths) {
+            console.warn(`No flashcard paths found for ${courseId}`);
+            return null;
+        }
+        const courseName = getTextbookTitle(courseId); // ← B2B uses this instead of getCourseDisplayName
+        return {
+            course: courseName,
+            availableTopics: Object.keys(coursePaths.topics).map(topicId => ({
+                id: topicId,
+                name: topicId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                path: coursePaths.topics[topicId]
+            })),
+            topicPaths: coursePaths.topics
+        };
+    } catch (error) {
+        console.error('Error loading flashcards:', error);
+        return null;
+    }
+}
+
+function showTopicSelection(flashcardData) {
+    const resourceContent = document.getElementById('resource-content');
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">🃏 ${flashcardData.course} - Flashcards</h3>
+                <button class="tool-back" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <p style="color:var(--text-muted);margin-bottom:24px;">Select a topic to start studying.</p>
+            <div class="courses-grid">
+                ${flashcardData.availableTopics.map(topic => `
+                    <div class="course-card" onclick="loadSpecificTopic('${topic.id}', '${topic.path}')">
+                        <h3>${topic.name}</h3>
+                        <p style="color:var(--text-muted);margin:10px 0;">
+                            Study ${topic.name.toLowerCase()} flashcards
+                        </p>
+                        <button class="btn btn-accent btn-sm" style="pointer-events:none;margin-top:10px;">
+                            <i class="fas fa-layer-group"></i> Study Now
+                        </button>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+}
+
+async function loadSpecificTopic(topicName, topicPath) {
+    try {
+        const resourceContent = document.getElementById('resource-content');
+        resourceContent.innerHTML = `
+            <div class="tool-interface active">
+                <div class="tool-header">
+                    <h3 class="section-title">Loading...</h3>
+                    <button class="tool-back" onclick="closeFlashcards()">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                </div>
+                <div style="text-align:center;padding:60px 20px;">
+                    <i class="fas fa-spinner fa-spin" style="font-size:2rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+                </div>
+            </div>`;
+
+        const response = await fetch(topicPath);
+        if (!response.ok) throw new Error(`Failed: ${response.status}`);
+        const topicData = await response.json();
+
+        // Log activity — B2B signature
+        if (currentCourseId) {
+            const courseTitle = getTextbookTitle(currentCourseId);
+            await logActivity(currentCourseId, courseTitle, 'flashcard');
+        }
+
+        initializeFlashcardUI(topicData);
+    } catch (error) {
+        console.error('❌ Error loading topic:', error);
+        showFlashcardError();
+    }
+}
+
+function initializeFlashcardUI(flashcardData) {
+    let topics = [];
+    if (flashcardData.cards && Array.isArray(flashcardData.cards)) {
+        topics = [{ topic_name: flashcardData.topic || 'Flashcards', cards: flashcardData.cards }];
+    } else if (flashcardData.topics) {
+        topics = flashcardData.topics;
+    } else if (flashcardData.flashcards) {
+        topics = flashcardData.flashcards.map(item => ({ topic_name: item.category, cards: item.cards }));
+    }
+
+    if (topics.length > 0 && topics[0].cards.length > 0) {
+        currentFlashcardData = { topics, course: getTextbookTitle(currentCourseId) };
+        currentTopicIndex = 0;
+        startTopicStudy(0);
+    } else {
+        showNoFlashcardsMessage();
+    }
+}
+
+function startTopicStudy(topicIndex) {
+    currentTopicIndex = topicIndex;
+    currentCardIndex = 0;
+    const topic = currentFlashcardData.topics[topicIndex];
+    currentDeck = [...topic.cards];
+
+    const resourceContent = document.getElementById('resource-content');
+    resourceContent.innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">${currentFlashcardData.course} - ${topic.topic_name}</h3>
+                <button class="tool-back" onclick="${currentFlashcardData.topics.length > 1 ? 'loadTopicSelection()' : 'closeFlashcards()'}">
+                    <i class="fas fa-arrow-left"></i> ${currentFlashcardData.topics.length > 1 ? 'Back to Topics' : 'Back to Course'}
+                </button>
+            </div>
+            <div class="flashcard-container">
+                <div class="flashcard-progress">
+                    <div class="progress-info">
+                        <span>Card ${currentCardIndex + 1} of ${currentDeck.length}</span>
+                        <span>Topic: ${topic.topic_name}</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width:${((currentCardIndex + 1) / currentDeck.length) * 100}%"></div>
+                    </div>
+                </div>
+                <div class="flashcard" id="current-flashcard">
+                    <div class="flashcard-front">
+                        <div class="flashcard-content">
+                            <h4>Question</h4>
+                            <div class="flashcard-text" id="flashcard-front-text"></div>
+                        </div>
+                        <div class="flashcard-hint">
+                            <i class="fas fa-lightbulb"></i> Click to reveal answer
+                        </div>
+                    </div>
+                    <div class="flashcard-back">
+                        <div class="flashcard-content">
+                            <h4>Answer</h4>
+                            <div class="flashcard-text" id="flashcard-back-text"></div>
+                        </div>
+                        <div class="flashcard-hint">
+                            <i class="fas fa-lightbulb"></i> Click to see question
+                        </div>
+                    </div>
+                </div>
+                <div class="flashcard-controls">
+                    <button class="btn btn-outline btn-sm" id="prev-card" ${currentCardIndex === 0 ? 'disabled' : ''}>
+                        <i class="fas fa-arrow-left"></i> Previous
+                    </button>
+                    <div class="card-actions">
+                        <button class="btn btn-outline btn-sm" id="mark-difficult">
+                            <i class="fas fa-exclamation-circle"></i> Difficult
+                        </button>
+                        <button class="btn btn-accent btn-sm" id="next-card">
+                            ${currentCardIndex === currentDeck.length - 1 ? 'Finish' : 'Next'}
+                            <i class="fas fa-arrow-right"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flashcard-stats">
+                    <div class="flashcard-stat-item">
+                        <span class="flashcard-stat-value">${currentCardIndex + 1}</span>
+                        <span class="flashcard-stat-label">Current</span>
+                    </div>
+                    <div class="flashcard-stat-item">
+                        <span class="flashcard-stat-value">${currentDeck.length}</span>
+                        <span class="flashcard-stat-label">Total</span>
+                    </div>
+                    <div class="flashcard-stat-item">
+                        <span class="flashcard-stat-value">${Math.round(((currentCardIndex + 1) / currentDeck.length) * 100)}%</span>
+                        <span class="flashcard-stat-label">Progress</span>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+
+    // Attach event listeners
+    document.getElementById('current-flashcard').addEventListener('click', () => 
+        flipCard(document.getElementById('current-flashcard')));
+    document.getElementById('prev-card').addEventListener('click', previousCard);
+    document.getElementById('next-card').addEventListener('click', nextCard);
+    document.getElementById('mark-difficult').addEventListener('click', markCardDifficult);
+
+    updateFlashcardView();
+}
+
+function flipCard(cardElement) {
+    cardElement.classList.toggle('flipped');
+    setTimeout(() => {
+        const frontText = document.getElementById('flashcard-front-text');
+        const backText = document.getElementById('flashcard-back-text');
+        if (window.MathJax && frontText && backText) {
+            MathJax.typesetPromise([frontText, backText]).catch(console.error);
+        }
+    }, 300);
+}
+
+function nextCard() {
+    if (currentCardIndex < currentDeck.length - 1) {
+        currentCardIndex++;
+        updateFlashcardView();
+    } else {
+        showDeckComplete();
+    }
+}
+
+function previousCard() {
+    if (currentCardIndex > 0) {
+        currentCardIndex--;
+        updateFlashcardView();
+    }
+}
+
+function updateFlashcardView() {
+    const progressFill = document.querySelector('.progress-fill');
+    if (progressFill) progressFill.style.width = `${((currentCardIndex + 1) / currentDeck.length) * 100}%`;
+
+    const progressInfo = document.querySelector('.progress-info span:first-child');
+    if (progressInfo) progressInfo.textContent = `Card ${currentCardIndex + 1} of ${currentDeck.length}`;
+
+    const frontText = document.getElementById('flashcard-front-text');
+    const backText = document.getElementById('flashcard-back-text');
+    if (frontText && backText) {
+        frontText.innerHTML = renderMarkdown(currentDeck[currentCardIndex].front);
+        backText.innerHTML = renderMarkdown(currentDeck[currentCardIndex].back);
+        setTimeout(() => {
+            if (window.MathJax) MathJax.typesetPromise([frontText, backText]).catch(console.error);
+        }, 50);
+    }
+
+    const flashcard = document.getElementById('current-flashcard');
+    if (flashcard) flashcard.classList.remove('flipped');
+
+    const prevButton = document.getElementById('prev-card');
+    const nextButton = document.getElementById('next-card');
+    if (prevButton) prevButton.disabled = currentCardIndex === 0;
+    if (nextButton) nextButton.innerHTML = currentCardIndex === currentDeck.length - 1 ?
+        'Finish <i class="fas fa-arrow-right"></i>' :
+        'Next <i class="fas fa-arrow-right"></i>';
+
+    // Update stats
+    const statValues = document.querySelectorAll('.flashcard-stat-value');
+    if (statValues.length >= 3) {
+        statValues[0].textContent = currentCardIndex + 1;
+        statValues[2].textContent = `${Math.round(((currentCardIndex + 1) / currentDeck.length) * 100)}%`;
+    }
+
+    // Update difficult button state
+    const difficultBtn = document.getElementById('mark-difficult');
+    if (difficultBtn) {
+        const cardId = `${currentCourseId}-${currentTopicIndex}-${currentCardIndex}`;
+        const isDifficult = difficultCards[cardId];
+        difficultBtn.innerHTML = isDifficult ?
+            '<i class="fas fa-check"></i> Marked' :
+            '<i class="fas fa-exclamation-circle"></i> Difficult';
+        difficultBtn.style.background = isDifficult ? 'var(--primary)' : '';
+        difficultBtn.style.color = isDifficult ? 'white' : '';
+        difficultBtn.onclick = markCardDifficult;
+    }
+}
+
+function markCardDifficult() {
+    const currentCard = currentDeck[currentCardIndex];
+    const cardId = `${currentCourseId}-${currentTopicIndex}-${currentCardIndex}`;
+    if (difficultCards[cardId]) {
+        delete difficultCards[cardId];
+    } else {
+        difficultCards[cardId] = {
+            card: currentCard,
+            topic: currentFlashcardData.topics[currentTopicIndex].topic_name,
+            markedAt: new Date().toISOString()
+        };
+    }
+    localStorage.setItem('difficultCards', JSON.stringify(difficultCards));
+    updateFlashcardView();
+}
+
+function showDeckComplete() {
+    const difficultCount = Object.keys(difficultCards).length;
+    document.getElementById('resource-content').innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">Study Session Complete! 🎉</h3>
+                <button class="tool-back" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <div style="text-align:center;padding:60px 20px;">
+                <i class="fas fa-check-circle" style="font-size:3rem;color:var(--success);display:block;margin-bottom:20px;"></i>
+                <h4 style="color:var(--primary);margin-bottom:10px;">Great Job!</h4>
+                <p style="color:var(--text-muted);margin-bottom:30px;">
+                    You've completed ${currentDeck.length} flashcards in 
+                    ${currentFlashcardData.topics[currentTopicIndex].topic_name}.
+                    ${difficultCount > 0 ? `<br>You have ${difficultCount} difficult cards to review.` : ''}
+                </p>
+                <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+                    <button class="btn btn-accent btn-sm" onclick="startTopicStudy(${currentTopicIndex})">
+                        <i class="fas fa-redo"></i> Study Again
+                    </button>
+                    ${difficultCount > 0 ? `
+                    <button class="btn btn-outline btn-sm" onclick="showDifficultCardsReview()">
+                        <i class="fas fa-fire"></i> Review Difficult (${difficultCount})
+                    </button>` : ''}
+                    <button class="btn btn-outline btn-sm" onclick="loadTopicSelection()">
+                        <i class="fas fa-list"></i> Choose Another Topic
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="closeFlashcards()">
+                        <i class="fas fa-home"></i> Back to Course
+                    </button>
+                </div>
+            </div>
+        </div>`;
+}
+
+async function loadTopicSelection() {
+    const flashcardData = await loadFlashcards(currentCourseId);
+    if (flashcardData && flashcardData.availableTopics) {
+        showTopicSelection(flashcardData);
+    } else {
+        showNoFlashcardsMessage();
+    }
+}
+
+function closeFlashcards() {
+    document.getElementById('resource-content').innerHTML = '';
+    currentFlashcardData = null;
+    currentDeck = [];
+}
+
+function showNoFlashcardsMessage() {
+    document.getElementById('resource-content').innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">🃏 Flashcards</h3>
+                <button class="tool-back" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <div style="text-align:center;padding:60px 20px;">
+                <i class="fas fa-book" style="font-size:2.5rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+                <h4 style="color:var(--primary);margin-bottom:10px;">No Flashcards Available</h4>
+                <p style="color:var(--text-muted);margin-bottom:30px;">Flashcards for this course are coming soon!</p>
+                <button class="btn btn-outline btn-sm" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+        </div>`;
+}
+
+function showFlashcardError() {
+    document.getElementById('resource-content').innerHTML = `
+        <div class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">🃏 Flashcards</h3>
+                <button class="tool-back" onclick="closeFlashcards()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <div style="text-align:center;padding:60px 20px;">
+                <i class="fas fa-exclamation-triangle" style="font-size:2.5rem;color:var(--danger);display:block;margin-bottom:15px;"></i>
+                <h4 style="color:var(--text-dark);margin-bottom:10px;">Loading Error</h4>
+                <p style="color:var(--text-muted);margin-bottom:30px;">Unable to load flashcards. Please try again.</p>
+                <button class="btn btn-accent btn-sm" onclick="startFlashcards()">
+                    <i class="fas fa-redo"></i> Try Again
+                </button>
+            </div>
+        </div>`;
+}
+
+function showDifficultCardsReview() {
+    const difficultCardsList = Object.values(difficultCards);
+    if (difficultCardsList.length === 0) {
+        alert('No difficult cards to review! 🎉');
+        return;
+    }
+    currentFlashcardData = {
+        course: getTextbookTitle(currentCourseId),
+        topics: [{
+            topic_name: 'Difficult Cards Review',
+            cards: difficultCardsList.map(item => item.card)
+        }]
+    };
+    currentTopicIndex = 0;
+    currentCardIndex = 0;
+    startTopicStudy(0);
+}
+
+// Expose to global scope
+window.startFlashcards = startFlashcards;
+window.closeFlashcards = closeFlashcards;
+window.loadSpecificTopic = loadSpecificTopic;
+window.loadTopicSelection = loadTopicSelection;
+window.startTopicStudy = startTopicStudy;
+window.showDifficultCardsReview = showDifficultCardsReview;
+window.markCardDifficult = markCardDifficult;
+        
 </script>
 </body>
 </html>
