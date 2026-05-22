@@ -2647,11 +2647,10 @@ window.openResource = function(type) {
     
 // 📝 Examination Quiz (old engine — fine to keep as-is)
 if (type === 'exam-quiz') {
-    container.innerHTML = `<div class="tool-interface"><div class="tool-header"><h3>📝 Examination Quiz</h3></div><div id="quiz-content"></div></div>`;
-    startQuiz(type);
+    openExamQuiz();
     return;
 }
-
+    
 // 🎯 Topic Quiz — route to the NEW B2C engine
 if (type === 'topic-quiz') {
     container.innerHTML = `
@@ -6101,6 +6100,541 @@ async function loadStudentGrades() {
             </p>`;
     }
 }
+
+        // ============================================
+// EXAM QUIZ SYSTEM - B2B
+// ============================================
+
+let examQuizConfigCache = null;
+
+async function loadExamQuizConfig() {
+    if (examQuizConfigCache) return examQuizConfigCache;
+    try {
+        const response = await fetch('./examQuizConfig.json');
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        examQuizConfigCache = await response.json();
+        console.log('✅ Exam quiz config loaded');
+        return examQuizConfigCache;
+    } catch (error) {
+        console.error('❌ Error loading exam quiz config:', error);
+        return {};
+    }
+}
+
+async function openExamQuiz() {
+    const courseTitle = getTextbookTitle(currentCourseId);
+    const config = await loadExamQuizConfig();
+    const courseConfig = config[currentCourseId] || { quizCount: 50 };
+
+    document.getElementById('resource-content').innerHTML = `
+        <div id="exam-quiz-section" class="tool-interface active">
+            <div class="tool-header">
+                <h3 class="section-title">📝 Examination Quiz - ${courseTitle}</h3>
+                <button class="tool-back" onclick="closeExamQuiz()">
+                    <i class="fas fa-arrow-left"></i> Back to Course
+                </button>
+            </div>
+            <div class="exam-quiz-container">
+                <div class="exam-info-section">
+                    <div class="exam-description" style="background:var(--bg-card);padding:20px;border-radius:var(--border-radius-sm);margin-bottom:24px;border:1px solid var(--border);">
+                        <h4 style="color:var(--primary);margin-bottom:8px;">${courseTitle} - Exam Practice</h4>
+                        <p style="color:var(--text-muted);margin:0;">Select from ${courseConfig.quizCount} exam-style practice quizzes. Each quiz simulates real exam conditions.</p>
+                    </div>
+                </div>
+                <div class="quiz-grid-container">
+                    <h4 style="color:var(--text-dark);margin-bottom:16px;">Select a Quiz</h4>
+                    <div class="quiz-grid" id="exam-quiz-grid"></div>
+                </div>
+            </div>
+        </div>`;
+
+    generateExamQuizButtons(currentCourseId);
+}
+
+async function generateExamQuizButtons(courseId) {
+    const quizGrid = document.getElementById('exam-quiz-grid');
+    quizGrid.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading quizzes...</div>';
+
+    const config = await loadExamQuizConfig();
+    const courseConfig = config[courseId] || { quizCount: 50 };
+
+    quizGrid.innerHTML = '';
+    for (let i = 1; i <= courseConfig.quizCount; i++) {
+        const btn = document.createElement('button');
+        btn.className = 'quiz-btn';
+        btn.textContent = `Quiz ${i}`;
+        btn.onclick = () => startExamQuiz(i, courseId);
+        quizGrid.appendChild(btn);
+    }
+}
+
+async function startExamQuiz(quizNumber, courseId) {
+    const quizPath = `quizzes/${courseId.toLowerCase()}/exam_quiz${quizNumber}.json`;
+
+    document.getElementById('exam-quiz-section').innerHTML = `
+        <div class="tool-header">
+            <h3 class="section-title">Loading Quiz ${quizNumber}...</h3>
+            <button class="tool-back" onclick="openExamQuiz()">
+                <i class="fas fa-times"></i> Cancel
+            </button>
+        </div>
+        <div style="text-align:center;padding:60px 20px;">
+            <i class="fas fa-spinner fa-spin" style="font-size:2rem;display:block;margin-bottom:15px;opacity:0.4;"></i>
+            <p style="color:var(--text-muted);">Preparing exam...</p>
+        </div>`;
+
+    try {
+        const response = await fetch(quizPath);
+        if (!response.ok) throw new Error('Quiz not found');
+
+        const data = await response.json();
+        const quizData = data.quiz || data;
+
+        let questions = quizData.questions;
+        if (quizData.settings?.shuffleQuestions) {
+            questions = shuffleArray([...questions]);
+        }
+
+        window.examQuizState = {
+            quizNumber,
+            courseId,
+            title: quizData.title,
+            timeLimit: quizData.settings?.timeLimit || '90',
+            questions: processExamQuestions(questions, quizData.settings?.shuffleOptions),
+            userAnswers: new Array(questions.length).fill(null),
+            startTime: Date.now()
+        };
+
+        displayExamQuiz();
+
+    } catch (error) {
+        console.error('Error loading exam quiz:', error);
+        showExamQuizError();
+    }
+}
+
+function processExamQuestions(questions, shuffleOptions = true) {
+    return questions.map(q => {
+        if (q.type === 'mcq' && shuffleOptions) {
+            const optionsWithIndex = q.options.map((opt, idx) => ({ opt, idx }));
+            const shuffled = shuffleArray(optionsWithIndex);
+            const originalAnswerIdx = q.answer.charCodeAt(0) - 65;
+            const newAnswerIdx = shuffled.findIndex(item => item.idx === originalAnswerIdx);
+            return {
+                ...q,
+                options: shuffled.map(item => item.opt),
+                correctAnswer: String.fromCharCode(65 + newAnswerIdx),
+                correctIndex: newAnswerIdx
+            };
+        }
+        if (q.type === 'multiple_response') {
+            const correctIndices = q.answer.map(letter => letter.charCodeAt(0) - 65);
+            return { ...q, correctAnswer: q.answer, correctIndices };
+        }
+        if (q.type === 'student_produced_response') {
+            return { ...q, correctAnswer: q.answer, acceptedFormats: q.acceptedFormats || q.answer };
+        }
+        if (q.type === 'mcq' && !shuffleOptions) {
+            const correctIndex = q.answer.charCodeAt(0) - 65;
+            return { ...q, correctAnswer: q.answer, correctIndex };
+        }
+        return q;
+    });
+}
+
+function displayExamQuiz() {
+    const state = window.examQuizState;
+
+    document.getElementById('exam-quiz-section').innerHTML = `
+        <div class="tool-header">
+            <h3 class="section-title">${state.title}</h3>
+            <div style="display:flex;gap:12px;align-items:center;">
+                <div style="background:var(--accent-light);padding:8px 15px;border-radius:var(--border-radius-sm);color:var(--primary);font-weight:600;">
+                    <i class="fas fa-clock"></i> <span id="exam-timer">${state.timeLimit}:00</span>
+                </div>
+                <button class="tool-back" onclick="exitExamQuiz()">
+                    <i class="fas fa-times"></i> Exit
+                </button>
+            </div>
+        </div>
+        <div class="quiz-container">
+            <div id="exam-questions-container"></div>
+            <div style="margin-top:30px;text-align:center;">
+                <button class="btn btn-accent btn-sm" onclick="submitExamQuiz()">
+                    <i class="fas fa-check-circle"></i> Submit Quiz
+                </button>
+            </div>
+        </div>`;
+
+    displayExamQuestions();
+    startExamTimer();
+}
+
+function displayExamQuestions() {
+    const state = window.examQuizState;
+    const container = document.getElementById('exam-questions-container');
+
+    container.innerHTML = state.questions.map((q, idx) => `
+        <div class="question" style="margin-bottom:24px;padding:20px;background:var(--bg-card);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+            <div style="font-weight:600;color:var(--text-dark);margin-bottom:15px;line-height:1.6;">
+                <strong>Question ${idx + 1}:</strong> ${renderMarkdown(q.question)}
+                ${q.type === 'multiple_response' ? `
+                    <div style="color:var(--primary);font-size:0.85rem;margin-top:6px;font-weight:500;">
+                        <i class="fas fa-info-circle"></i> Select ALL that apply
+                    </div>` : ''}
+                ${q.type === 'student_produced_response' ? `
+                    <div style="color:var(--primary);font-size:0.85rem;margin-top:6px;font-weight:500;">
+                        <i class="fas fa-pencil-alt"></i> Student-produced response
+                    </div>` : ''}
+            </div>
+
+            ${q.image ? `
+                <div style="text-align:center;margin:15px 0;">
+                    <img src="${q.image}" alt="Question diagram" style="max-width:100%;border-radius:8px;" onerror="this.style.display='none'">
+                </div>` : ''}
+
+            ${q.type === 'student_produced_response' ? `
+                <div style="max-width:320px;">
+                    <input type="text" id="fitb-${idx}" placeholder="Enter your answer"
+                        autocomplete="off" oninput="recordFitbAnswer(${idx}, this.value)"
+                        style="font-size:1.1rem;font-weight:600;padding:12px 15px;border:2px solid var(--border);border-radius:var(--border-radius-sm);width:100%;box-sizing:border-box;text-align:center;">
+                    <div style="font-size:0.8rem;color:var(--text-muted);margin-top:6px;">
+                        Enter a number, fraction, or decimal (e.g. 5, 1/2, .5)
+                    </div>
+                </div>` : `
+                <div class="options">
+                    ${q.options.map((opt, optIdx) => `
+                        <div class="option" onclick="selectExamOption(${idx}, ${optIdx}, '${q.type}')"
+                             id="exam-opt-${idx}-${optIdx}"
+                             style="padding:12px 15px;border:2px solid var(--border);border-radius:var(--border-radius-sm);cursor:pointer;transition:0.2s;margin-bottom:8px;background:white;">
+                            <strong>${String.fromCharCode(65 + optIdx)}.</strong> ${renderMarkdown(opt)}
+                        </div>`).join('')}
+                </div>`}
+
+            <div id="exam-status-${idx}" style="margin-top:8px;font-size:0.85rem;color:var(--text-muted);display:none;">
+                <i class="fas fa-check"></i> <span id="exam-status-text-${idx}">Selected</span>
+            </div>
+        </div>`).join('');
+
+    setTimeout(() => {
+        if (window.MathJax) MathJax.typesetPromise([container]).catch(console.error);
+    }, 100);
+}
+
+function recordFitbAnswer(questionIdx, value) {
+    window.examQuizState.userAnswers[questionIdx] = value.trim();
+    const statusDiv = document.getElementById(`exam-status-${questionIdx}`);
+    const statusText = document.getElementById(`exam-status-text-${questionIdx}`);
+    if (statusDiv) {
+        statusDiv.style.display = value.trim() ? 'block' : 'none';
+        if (statusText) statusText.textContent = `Answered: ${value.trim()}`;
+    }
+}
+
+function selectExamOption(questionIdx, optionIdx, questionType) {
+    const state = window.examQuizState;
+
+    if (questionType === 'multiple_response') {
+        if (!Array.isArray(state.userAnswers[questionIdx])) {
+            state.userAnswers[questionIdx] = [];
+        }
+        const answers = state.userAnswers[questionIdx];
+        const idx = answers.indexOf(optionIdx);
+        idx === -1 ? answers.push(optionIdx) : answers.splice(idx, 1);
+
+        const optElement = document.getElementById(`exam-opt-${questionIdx}-${optionIdx}`);
+        const isSelected = answers.includes(optionIdx);
+        optElement.style.borderColor = isSelected ? 'var(--primary)' : 'var(--border)';
+        optElement.style.background = isSelected ? 'var(--accent-light)' : 'white';
+
+        const statusDiv = document.getElementById(`exam-status-${questionIdx}`);
+        const statusText = document.getElementById(`exam-status-text-${questionIdx}`);
+        statusDiv.style.display = answers.length ? 'block' : 'none';
+        if (statusText) statusText.textContent = `Selected: ${answers.length}`;
+
+    } else {
+        state.userAnswers[questionIdx] = optionIdx;
+        const question = document.querySelectorAll('.question')[questionIdx];
+        question.querySelectorAll('.option').forEach(opt => {
+            opt.style.borderColor = 'var(--border)';
+            opt.style.background = 'white';
+        });
+        const selected = document.getElementById(`exam-opt-${questionIdx}-${optionIdx}`);
+        selected.style.borderColor = 'var(--primary)';
+        selected.style.background = 'var(--accent-light)';
+
+        const statusDiv = document.getElementById(`exam-status-${questionIdx}`);
+        statusDiv.style.display = 'block';
+    }
+}
+
+function startExamTimer() {
+    const timeLimit = window.examQuizState.timeLimit;
+    let seconds = parseInt(timeLimit) * 60;
+    const timerElement = document.getElementById('exam-timer');
+    if (!timerElement) return;
+
+    const timer = setInterval(() => {
+        if (seconds <= 0) {
+            clearInterval(timer);
+            alert("Time's up!");
+            submitExamQuiz();
+            return;
+        }
+        seconds--;
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        timerElement.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+    }, 1000);
+
+    window.examQuizTimer = timer;
+}
+
+function submitExamQuiz() {
+    const state = window.examQuizState;
+    if (window.examQuizTimer) clearInterval(window.examQuizTimer);
+
+    const unanswered = [];
+    state.userAnswers.forEach((ans, idx) => {
+        const q = state.questions[idx];
+        if (q.type === 'multiple_response') {
+            if (!Array.isArray(ans) || ans.length === 0) unanswered.push(idx + 1);
+        } else if (q.type === 'student_produced_response') {
+            if (!ans || ans === '') unanswered.push(idx + 1);
+        } else {
+            if (ans === null) unanswered.push(idx + 1);
+        }
+    });
+
+    if (unanswered.length > 0 && !confirm(`Unanswered: ${unanswered.join(', ')}. Submit anyway?`)) return;
+
+    let correct = 0;
+    const results = state.questions.map((q, idx) => {
+        const userAns = state.userAnswers[idx];
+        let isCorrect = false;
+
+        if (q.type === 'multiple_response') {
+            if (Array.isArray(userAns) && userAns.length > 0) {
+                isCorrect = [...userAns].sort().join(',') === [...q.correctIndices].sort().join(',');
+            }
+        } else if (q.type === 'student_produced_response') {
+            if (userAns) {
+                const accepted = (q.acceptedFormats || q.correctAnswer).map(v => v.toString().trim().toLowerCase());
+                isCorrect = accepted.includes(userAns.toString().trim().toLowerCase());
+            }
+        } else {
+            isCorrect = userAns === q.correctIndex;
+        }
+
+        if (isCorrect) correct++;
+
+        return {
+            question: q.question,
+            userAnswer: userAns,
+            correctAnswer: q.correctAnswer,
+            correctIndices: q.type === 'multiple_response' ? q.correctIndices : [q.correctIndex],
+            isCorrect,
+            type: q.type,
+            options: q.options,
+            explanation: q.explanation,
+            image: q.image,
+            acceptedFormats: q.acceptedFormats
+        };
+    });
+
+    const score = Math.round((correct / state.questions.length) * 100);
+
+    // B2B progress tracking
+    updateCourseProgress(currentCourseId, score, 'quiz', getTextbookTitle(currentCourseId));
+
+    displayExamResults(score, correct, results);
+}
+
+function displayExamResults(score, correct, results) {
+    const grade = score >= 90 ? 'Excellent! 🎉'
+        : score >= 70 ? 'Good Job! 👏'
+        : score >= 50 ? 'Keep Trying! 💪'
+        : 'Needs Work 📚';
+
+    const scoreColor = score >= 70 ? 'var(--success)'
+        : score >= 50 ? '#f39c12'
+        : 'var(--danger)';
+
+    const unansweredCount = results.filter(r => {
+        if (r.type === 'multiple_response') return !Array.isArray(r.userAnswer) || !r.userAnswer.length;
+        if (r.type === 'student_produced_response') return !r.userAnswer;
+        return r.userAnswer === null;
+    }).length;
+
+    document.getElementById('exam-quiz-section').innerHTML = `
+        <div class="tool-header">
+            <h3 class="section-title">Quiz Results - ${window.examQuizState.title}</h3>
+            <button class="tool-back" onclick="openExamQuiz()">
+                <i class="fas fa-arrow-left"></i> Back to Quizzes
+            </button>
+        </div>
+        <div class="quiz-container">
+
+            <!-- Score Summary -->
+            <div style="text-align:center;padding:30px;background:var(--bg-card);border-radius:var(--border-radius-sm);margin-bottom:30px;border:1px solid var(--border);">
+                <div style="font-size:3.5rem;font-weight:800;color:${scoreColor};margin-bottom:8px;">${score}%</div>
+                <p style="font-size:1.1rem;font-weight:600;color:var(--text-dark);margin-bottom:6px;">${grade}</p>
+                <p style="color:var(--text-muted);margin-bottom:4px;">
+                    You answered <strong>${correct}</strong> out of <strong>${results.length}</strong> questions correctly.
+                </p>
+                ${unansweredCount > 0 ? `
+                    <p style="color:var(--text-muted);">
+                        <i class="fas fa-exclamation-circle" style="color:#f39c12;"></i>
+                        ${unansweredCount} question${unansweredCount > 1 ? 's were' : ' was'} not answered.
+                    </p>` : ''}
+            </div>
+
+            <!-- Question Breakdown -->
+            <div id="exam-results-detailed">
+                ${results.map((r, idx) => {
+                    const status = r.isCorrect ? 'Correct' : (() => {
+                        if (r.type === 'multiple_response') return !Array.isArray(r.userAnswer) || !r.userAnswer.length ? 'Not Answered' : 'Incorrect';
+                        if (r.type === 'student_produced_response') return !r.userAnswer ? 'Not Answered' : 'Incorrect';
+                        return r.userAnswer === null ? 'Not Answered' : 'Incorrect';
+                    })();
+
+                    const statusColor = r.isCorrect ? 'var(--success)' : status === 'Not Answered' ? '#f39c12' : 'var(--danger)';
+                    const borderColor = statusColor;
+
+                    let userAnswerText = 'Not answered';
+                    let correctAnswerText = '';
+
+                    if (r.type === 'student_produced_response') {
+                        userAnswerText = r.userAnswer || 'Not answered';
+                        correctAnswerText = (r.acceptedFormats || r.correctAnswer).join(' or ');
+                    } else if (r.type === 'multiple_response') {
+                        if (Array.isArray(r.userAnswer) && r.userAnswer.length > 0) {
+                            userAnswerText = r.userAnswer.map(i => `${String.fromCharCode(65 + i)} ${renderMarkdown(r.options[i])}`).join(' or ');
+                        }
+                        correctAnswerText = r.correctIndices.map(i => `${String.fromCharCode(65 + i)} ${renderMarkdown(r.options[i])}`).join(' or ');
+                    } else {
+                        if (r.userAnswer !== null) {
+                            userAnswerText = `${String.fromCharCode(65 + r.userAnswer)} ${renderMarkdown(r.options[r.userAnswer])}`;
+                        }
+                        correctAnswerText = `${r.correctAnswer} ${renderMarkdown(r.options[r.correctIndices[0]])}`;
+                    }
+
+                    return `
+                        <div style="margin-bottom:24px;padding:20px;background:var(--bg-card);border-radius:var(--border-radius-sm);border:1px solid var(--border);border-left:4px solid ${borderColor};">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+                                <strong style="color:var(--text-dark);">Question ${idx + 1}</strong>
+                                <span style="padding:4px 12px;border-radius:12px;font-size:0.8rem;font-weight:600;background:${statusColor};color:white;">${status}</span>
+                            </div>
+
+                            <p style="color:var(--text-dark);line-height:1.7;margin-bottom:16px;">${renderMarkdown(r.question)}</p>
+
+                            ${r.image ? `
+                                <div style="text-align:center;margin-bottom:16px;">
+                                    <img src="${r.image}" style="max-width:100%;border-radius:8px;" onerror="this.style.display='none'">
+                                </div>` : ''}
+
+                            <div style="display:flex;flex-direction:column;gap:8px;font-size:0.9rem;">
+                                <div style="padding:10px;background:var(--bg);border-radius:6px;">
+                                    <strong>Your answer:</strong>
+                                    <span style="color:${r.isCorrect ? 'var(--success)' : 'var(--danger)'};">
+                                        ${userAnswerText}
+                                    </span>
+                                </div>
+                                ${!r.isCorrect ? `
+                                    <div style="padding:10px;background:#e8f5e8;border-radius:6px;">
+                                        <strong>Correct answer:</strong>
+                                        <span style="color:var(--success);">${correctAnswerText}</span>
+                                    </div>` : ''}
+                            </div>
+
+                            ${r.explanation ? `
+                                <div style="margin-top:12px;padding:12px;background:var(--accent-light);border-radius:6px;border-left:3px solid var(--primary);font-size:0.9rem;line-height:1.6;">
+                                    <strong style="color:var(--primary);">
+                                        <i class="fas fa-lightbulb"></i> Explanation:
+                                    </strong>
+                                    <div style="margin-top:6px;color:var(--text-gray);">${renderMarkdown(r.explanation)}</div>
+                                </div>` : ''}
+                        </div>`;
+                }).join('')}
+            </div>
+
+            <!-- Action Buttons -->
+            <div style="margin-top:30px;margin-bottom:40px;text-align:center;display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+                <button class="btn btn-accent btn-sm" onclick="startExamQuiz(${window.examQuizState.quizNumber}, '${window.examQuizState.courseId}')">
+                    <i class="fas fa-redo"></i> Retake Quiz
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="openExamQuiz()">
+                    <i class="fas fa-list"></i> Back to Quizzes
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="closeExamQuiz()">
+                    <i class="fas fa-home"></i> Back to Course
+                </button>
+            </div>
+        </div>`;
+
+    setTimeout(() => {
+        if (window.MathJax) MathJax.typesetPromise([document.getElementById('exam-quiz-section')]).catch(console.error);
+    }, 100);
+}
+
+function exitExamQuiz() {
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+        position:fixed;inset:0;background:rgba(0,0,0,0.5);
+        display:flex;align-items:center;justify-content:center;
+        z-index:9999;padding:20px;box-sizing:border-box;`;
+    modal.innerHTML = `
+        <div style="background:white;border-radius:12px;padding:30px;text-align:center;max-width:320px;width:100%;">
+            <h3 style="margin-bottom:10px;">Exit Quiz?</h3>
+            <p style="color:var(--text-muted);margin-bottom:20px;">Your progress will be lost.</p>
+            <div style="display:flex;gap:10px;">
+                <button class="btn btn-outline btn-sm" onclick="this.closest('[style*=fixed]').remove();" style="flex:1;">Stay</button>
+                <button class="btn btn-accent btn-sm" onclick="if(window.examQuizTimer)clearInterval(window.examQuizTimer);this.closest('[style*=fixed]').remove();openExamQuiz();" style="flex:1;">Exit</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+}
+
+function closeExamQuiz() {
+    if (window.examQuizTimer) clearInterval(window.examQuizTimer);
+    document.getElementById('resource-content').innerHTML = '';
+}
+
+function showExamQuizError() {
+    document.getElementById('exam-quiz-section').innerHTML = `
+        <div class="tool-header">
+            <h3 class="section-title">Quiz Not Available</h3>
+            <button class="tool-back" onclick="openExamQuiz()">
+                <i class="fas fa-arrow-left"></i> Back
+            </button>
+        </div>
+        <div style="text-align:center;padding:60px 20px;">
+            <i class="fas fa-exclamation-triangle" style="font-size:2.5rem;color:var(--danger);display:block;margin-bottom:15px;"></i>
+            <h4 style="color:var(--text-dark);margin-bottom:8px;">Quiz Not Available</h4>
+            <p style="color:var(--text-muted);margin-bottom:20px;">This quiz is coming soon.</p>
+            <button class="btn btn-outline btn-sm" onclick="openExamQuiz()">
+                <i class="fas fa-arrow-left"></i> Back to Quizzes
+            </button>
+        </div>`;
+}
+
+// Export to global scope
+window.loadExamQuizConfig = loadExamQuizConfig;
+window.openExamQuiz = openExamQuiz;
+window.generateExamQuizButtons = generateExamQuizButtons;
+window.startExamQuiz = startExamQuiz;
+window.displayExamQuiz = displayExamQuiz;
+window.displayExamQuestions = displayExamQuestions;
+window.selectExamOption = selectExamOption;
+window.recordFitbAnswer = recordFitbAnswer;
+window.submitExamQuiz = submitExamQuiz;
+window.exitExamQuiz = exitExamQuiz;
+window.closeExamQuiz = closeExamQuiz;
+window.showExamQuizError = showExamQuizError;
+
+// ============================================
+// END EXAM QUIZ SYSTEM - B2B
+// ============================================
         
 </script>
 </body>
