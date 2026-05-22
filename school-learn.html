@@ -5980,7 +5980,7 @@ async function loadStudentGrades() {
     }
 
     try {
-        // Step 1: Find subjects this student belongs to
+        // Step 1: Find subjects this student belongs to and collect their names
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', user.uid));
         const subjectsSnap = await getDocs(subjectsQuery);
@@ -5994,16 +5994,17 @@ async function loadStudentGrades() {
             return;
         }
 
-        // Build a map of subjectId -> subjectName & teacherName
-        const subjectMap = {};
+        const mySubjectNames = new Set();
+        const subjectTeachers = {};
         subjectsSnap.docs.forEach(doc => {
-            subjectMap[doc.id] = {
-                name: doc.data().name || 'Unknown Subject',
-                teacherName: doc.data().teacherName || 'Teacher'
-            };
+            const name = doc.data().name;
+            if (name) {
+                mySubjectNames.add(name);
+                subjectTeachers[name] = doc.data().teacherName || 'Teacher';
+            }
         });
 
-        // Step 2: Query gradebooks that match these subjects
+        // Step 2: Fetch all gradebooks, match by subjectName
         const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
         const gradebooksSnap = await getDocs(gradebooksRef);
         
@@ -6011,17 +6012,16 @@ async function loadStudentGrades() {
         
         gradebooksSnap.docs.forEach(doc => {
             const data = doc.data();
-            const subjectId = data.subjectId;
+            const gradebookSubjectName = data.subjectName;
             
-            // Only process if this gradebook belongs to one of the student's subjects
-            if (subjectId && subjectMap[subjectId]) {
+            if (gradebookSubjectName && mySubjectNames.has(gradebookSubjectName)) {
                 const entries = data.entries || {};
                 const myEntry = entries[user.uid];
                 
                 if (myEntry) {
                     gradeRows.push({
-                        subjectName: subjectMap[subjectId].name,
-                        teacherName: subjectMap[subjectId].teacherName,
+                        subjectName: gradebookSubjectName,
+                        teacherName: subjectTeachers[gradebookSubjectName],
                         assessment1: myEntry.assessment1 ?? '—',
                         assessment2: myEntry.assessment2 ?? '—',
                         midterm: myEntry.midterm ?? '—',
