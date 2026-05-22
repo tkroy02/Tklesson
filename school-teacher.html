@@ -1509,6 +1509,10 @@ async function fetchTeacherDisplayName(uid) {
                 return;
             }
 
+            // ---- ADD THIS ----
+            const remaining = 20 - assignments.length;
+            // ---- END ADD ----
+
             container.innerHTML = assignments.map(a => `
                 <div class="assignment-item">
                     <div>
@@ -1521,6 +1525,15 @@ async function fetchTeacherDisplayName(uid) {
                     </button>
                 </div>
             `).join('');
+
+            // ---- ADD THIS ----
+            if (remaining <= 5) {
+                container.innerHTML = `
+                    <div style="background:var(--gold-light);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:0.8rem;color:#856404;">
+                        ⚠️ ${remaining} assignment slot${remaining !== 1 ? 's' : ''} remaining. Oldest assignment will be removed when limit is reached.
+                    </div>` + container.innerHTML;
+            }
+            // ---- END ADD ----
         }
 
         window.openCreateAssignment = async function() {
@@ -1553,227 +1566,87 @@ async function fetchTeacherDisplayName(uid) {
             document.getElementById('create-assignment-modal').classList.remove('active');
         };
 
-        // ========== ASSIGNMENT CONFIG ==========
-const MAX_ASSIGNMENTS = 20;
-const ASSIGNMENTS_WARNING_THRESHOLD = 17; // Start warning at 17
+        window.sendAssignment = async function() {
+            const subjectId = document.getElementById('assignment-subject').value;
+            const title = document.getElementById('assignment-title').value.trim();
+            const description = document.getElementById('assignment-description').value.trim();
 
-// ========== SEND ASSIGNMENT (REWRITTEN) ==========
-window.sendAssignment = async function() {
-    const subjectId = document.getElementById('assignment-subject').value;
-    const title = document.getElementById('assignment-title').value.trim();
-    const description = document.getElementById('assignment-description').value.trim();
+            if (!subjectId) return alert('Please select a subject.');
+            if (!title) return alert('Please enter a title.');
+            if (!description) return alert('Please enter a description.');
 
-    if (!subjectId) return alert('Please select a subject.');
-    if (!title) return alert('Please enter a title.');
-    if (!description) return alert('Please enter a description.');
+            const subject = teacherSubjects.find(s => s.id === subjectId);
+            const studentCount = subject ? (subject.studentIds || []).length : 0;
 
-    const subject = teacherSubjects.find(s => s.id === subjectId);
-    const studentCount = subject ? (subject.studentIds || []).length : 0;
+            if (studentCount === 0) {
+                if (!confirm('This subject has no students. Send anyway?')) return;
+            }
 
-    if (studentCount === 0) {
-        if (!confirm('This subject has no students. Send anyway?')) return;
-    }
-
-    const user = auth.currentUser;
-    const teacherDocRef = doc(db, `schools/${schoolId}/teacherAssignments/${user.uid}`);
-    
-    try {
-        // Get current assignments
-        const snap = await getDoc(teacherDocRef);
-        let assignments = [];
-        
-        if (snap.exists()) {
-            assignments = snap.data().assignments || [];
-        }
-        
-        // Check if we're at the limit
-        let expungedAssignment = null;
-        if (assignments.length >= MAX_ASSIGNMENTS) {
-            // Show confirmation with warning
-            expungedAssignment = assignments[0]; // Oldest assignment (first in array)
-            const confirmed = confirm(
-                `⚠️ Assignment Limit Reached\n\n` +
-                `You have reached the maximum of ${MAX_ASSIGNMENTS} assignments.\n\n` +
-                `Your oldest assignment "${expungedAssignment.title}" (${expungedAssignment.subjectName}, sent ${getTimeAgo(expungedAssignment.createdAt)}) ` +
-                `will be permanently removed to make room for this new one.\n\n` +
-                `This action cannot be undone. Continue?`
-            );
+            const user = auth.currentUser;
             
-            if (!confirmed) return;
+            // ---- ADD THIS BLOCK ----
+            const existingAssignments = await getTeacherAssignments();
+            if (existingAssignments.length >= 20) {
+                const oldest = existingAssignments[existingAssignments.length - 1];
+                const confirmed = confirm(
+                    `⚠️ Assignment Limit Reached\n\n` +
+                    `Creating this assignment will permanently delete your oldest one:\n\n` +
+                    `"${oldest.title}" (${oldest.subjectName}, sent ${getTimeAgo(oldest.createdAt)})\n\n` +
+                    `Continue?`
+                );
+                if (!confirmed) return;
+            }
+            // ---- END ADD BLOCK ----
             
-            // Remove oldest (first element)
-            assignments.shift();
-        }
-        
-        // Create new assignment
-        const newAssignment = {
-            id: generateAssignmentId(),
-            subjectId: subjectId,
-            subjectName: subject ? subject.name : 'Unknown',
-            teacherId: user.uid,
-            teacherName: user.displayName || 'Teacher',
-            title: title,
-            description: description,
-            studentCount: studentCount,
-            createdAt: new Date().toISOString()
-        };
-        
-        // Add to end of array (newest last)
-        assignments.push(newAssignment);
-        
-        // Save back to Firestore
-        await setDoc(teacherDocRef, {
-            assignments: assignments,
-            updatedAt: new Date().toISOString(),
-            teacherName: user.displayName || 'Teacher',
-            teacherEmail: user.email
-        });
-        
-        // Show success message
-        let message = `✅ Assignment sent to ${studentCount} student${studentCount !== 1 ? 's' : ''}!`;
-        if (expungedAssignment) {
-            message += `\n\n🗑️ Oldest assignment "${expungedAssignment.title}" was removed.`;
-        } else if (assignments.length >= ASSIGNMENTS_WARNING_THRESHOLD) {
-            const remaining = MAX_ASSIGNMENTS - assignments.length;
-            message += `\n\n⚠️ You can send ${remaining} more assignment${remaining !== 1 ? 's' : ''} before older ones start being removed.`;
-        }
-        
-        alert(message);
-        
-        closeCreateAssignment();
-        await loadAssignments();
-        await loadDashboard();
-        
-    } catch (error) {
-        console.error('Error sending assignment:', error);
-        alert('❌ Error sending assignment. Please try again.');
-    }
-};
-
-// Helper to generate unique assignment IDs
-function generateAssignmentId() {
-    return 'asgn_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-// ========== GET TEACHER ASSIGNMENTS (REWRITTEN) ==========
-async function getTeacherAssignments() {
-    const user = auth.currentUser;
-    if (!user) return [];
-    
-    try {
-        const teacherDocRef = doc(db, `schools/${schoolId}/teacherAssignments/${user.uid}`);
-        const snap = await getDoc(teacherDocRef);
-        
-        if (snap.exists()) {
-            const assignments = snap.data().assignments || [];
-            // Return in reverse order (newest first for display)
-            return assignments.slice().reverse();
-        }
-    } catch (error) {
-        console.error('Error getting assignments:', error);
-    }
-    
-    return [];
-}
-
-// ========== LOAD ASSIGNMENTS (UPDATED) ==========
-async function loadAssignments() {
-    const assignments = await getTeacherAssignments();
-    const container = document.getElementById('assignments-list');
-
-    if (assignments.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-clipboard-list"></i>
-                <p>No assignments sent yet.</p>
-                <p style="font-size:0.85rem;">You can send up to ${MAX_ASSIGNMENTS} assignments.</p>
-            </div>`;
-        return;
-    }
-
-    const remaining = MAX_ASSIGNMENTS - assignments.length;
-    
-    container.innerHTML = `
-        ${remaining <= 3 && remaining > 0 ? `
-            <div style="background:var(--gold-light);padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:0.85rem;color:#856404;display:flex;align-items:center;gap:8px;">
-                <i class="fas fa-exclamation-triangle"></i>
-                <span><strong>${remaining} slot${remaining !== 1 ? 's' : ''} remaining.</strong> After that, your oldest assignment will be removed when you create a new one.</span>
-            </div>
-        ` : ''}
-        ${remaining === 0 ? `
-            <div style="background:#fde8e8;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:0.85rem;color:#c0392b;display:flex;align-items:center;gap:8px;">
-                <i class="fas fa-exclamation-circle"></i>
-                <span><strong>Assignment limit reached.</strong> Creating a new assignment will permanently delete your oldest one.</span>
-            </div>
-        ` : ''}
-        ${assignments.map((a, index) => `
-            <div class="assignment-item">
-                <div>
-                    <div class="assignment-subject">${a.subjectName || 'Unknown subject'}</div>
-                    <div class="assignment-title">${a.title}</div>
-                    <div class="assignment-meta">Sent to ${a.studentCount || 0} students · ${getTimeAgo(a.createdAt)}</div>
-                </div>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <span style="font-size:0.7rem;color:var(--text-muted);">#${assignments.length - index}</span>
-                    <button class="btn btn-outline btn-sm" onclick="viewAssignmentDetail('${a.id}')">
-                        <i class="fas fa-eye"></i> View
-                    </button>
-                </div>
-            </div>
-        `).join('')}
-    `;
-}
-
-// ========== DELETE SINGLE ASSIGNMENT ==========
-window.deleteAssignment = async function(assignmentId) {
-    if (!confirm('Are you sure you want to delete this assignment? This cannot be undone.')) return;
-    
-    const user = auth.currentUser;
-    const teacherDocRef = doc(db, `schools/${schoolId}/teacherAssignments/${user.uid}`);
-    
-    try {
-        const snap = await getDoc(teacherDocRef);
-        if (snap.exists()) {
-            let assignments = snap.data().assignments || [];
-            assignments = assignments.filter(a => a.id !== assignmentId);
-            
-            await setDoc(teacherDocRef, {
-                assignments: assignments,
-                updatedAt: new Date().toISOString()
+            const teacherDisplayName = user.displayName && user.displayName.trim() !== '' 
+                ? user.displayName 
+                : 'Teacher';
+                
+            const assignmentRef = doc(collection(db, `schools/${schoolId}/assignments`));
+            await setDoc(assignmentRef, {
+                subjectId: subjectId,
+                subjectName: subject ? subject.name : 'Unknown',
+                teacherId: user.uid,
+                teacherName: teacherDisplayName,
+                title: title,
+                description: description,
+                studentCount: studentCount,
+                createdAt: new Date().toISOString()
             });
-            
+
+            // ---- ADD THIS LINE ----
+            await enforceAssignmentLimit(user.uid);
+            // ---- END ADD ----
+
+            closeCreateAssignment();
             await loadAssignments();
             await loadDashboard();
-        }
-    } catch (error) {
-        console.error('Error deleting assignment:', error);
-        alert('❌ Error deleting assignment.');
-    }
-};
+            alert(`Assignment sent to ${studentCount} student${studentCount !== 1 ? 's' : ''}!`);
+        };
 
-// ========== VIEW ASSIGNMENT DETAIL ==========
-window.viewAssignmentDetail = function(assignmentId) {
-    const user = auth.currentUser;
-    const teacherDocRef = doc(db, `schools/${schoolId}/teacherAssignments/${user.uid}`);
-    
-    getDoc(teacherDocRef).then(snap => {
-        if (snap.exists()) {
-            const assignments = snap.data().assignments || [];
-            const assignment = assignments.find(a => a.id === assignmentId);
+        window.viewAssignmentDetail = function(assignmentId) {
+            alert('Assignment detail view coming soon.');
+        };
+
+        // ---- ADD THIS ENTIRE FUNCTION (put it after viewAssignmentDetail) ----
+        async function enforceAssignmentLimit(teacherUid) {
+            const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
+            const q = query(
+                assignmentsRef, 
+                where('teacherId', '==', teacherUid),
+                orderBy('createdAt', 'asc'),
+                limit(50)
+            );
+            const snap = await getDocs(q);
             
-            if (assignment) {
-                alert(
-                    `📋 Assignment Details\n\n` +
-                    `Subject: ${assignment.subjectName}\n` +
-                    `Title: ${assignment.title}\n` +
-                    `Students: ${assignment.studentCount}\n` +
-                    `Sent: ${getTimeAgo(assignment.createdAt)}\n\n` +
-                    `Description:\n${assignment.description}`
-                );
+            if (snap.docs.length > 20) {
+                const toDelete = snap.docs.length - 20;
+                for (let i = 0; i < toDelete; i++) {
+                    await deleteDoc(doc(db, `schools/${schoolId}/assignments/${snap.docs[i].id}`));
+                }
             }
         }
-    });
-};
+        // ---- END ADD ----
 
         // ========== QUIZ GRADES (existing) ==========
         window.viewGrades = async function(subjectId, subjectName) {
