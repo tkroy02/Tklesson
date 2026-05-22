@@ -2463,52 +2463,43 @@ async function updateAllCoursesDisplay() {
     const grid = document.getElementById('all-courses-grid');
     if (!grid) return;
 
-    // Try to fetch Firestore courses (optional enhancement)
+    // 1️⃣ Fetch Firestore courses (optional fallback)
     let fsCourses = [];
     try {
         const ref = collection(db, 'courses');
         const snap = await getDocs(ref);
         fsCourses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (e) {
-        console.warn('⚠️ Firestore unavailable — using hardcoded catalog only');
+        console.warn('⚠️ Firestore unavailable, using hardcoded catalog');
     }
 
-    // If no Firestore courses, keep hardcoded HTML as-is (do nothing)
-    if (fsCourses.length === 0) return;
-
-    // Get existing hardcoded course IDs from DOM
-    const existingIds = new Set(
-        Array.from(grid.querySelectorAll('.course-card button'))
-            .map(btn => {
-                const onclick = btn.getAttribute('onclick') || '';
-                const match = onclick.match(/enrollCourse\('([^']+)'[^)]*\)/);
-                return match ? match[1] : null;
-            })
-            .filter(id => id)
-    );
-
-    // Append ONLY new courses from Firestore
-    const newCourses = fsCourses.filter(c => !existingIds.has(c.id));
+    const HARDCODED_COURSES = [
+  { id: 'ap-physics-1', title: 'AP Physics 1', description: 'College-level physics covering kinematics, dynamics, circular motion, energy, momentum, simple harmonic motion, and rotational motion.' },
+  // ... include all 25 courses from your HTML, including 'sat-preparation'
+];
     
-    if (newCourses.length > 0) {
-        const esc = str => String(str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        
-        const newCards = newCourses.map(c => `
-            <div class="course-card">
-                <h3>${c.title}</h3>
-                <p>${c.description || 'No description'}</p>
-                <button class="btn btn-accent btn-sm"
-                        onclick="enrollCourse('${esc(c.id)}','${esc(c.title)}','${esc(c.description)}')">
-                    Enroll Now
-                </button>
-            </div>
-        `).join('');
-        
-        grid.insertAdjacentHTML('beforeend', newCards);
+    // 2️⃣ Merge: Hardcoded catalog + Firestore overrides
+    const fsMap = new Map(fsCourses.map(c => [c.id, c]));
+    const combined = [];
+
+    // Prioritize hardcoded catalog, apply Firestore data if available
+    for (const hc of HARDCODED_COURSES) {
+        combined.push(fsMap.has(hc.id) ? { ...hc, ...fsMap.get(hc.id) } : hc);
     }
-}
-window.updateAllCoursesDisplay = updateAllCoursesDisplay;
-        
+
+    // Add any Firestore-only courses (future-proofing)
+    for (const fc of fsCourses) {
+        if (!combined.find(c => c.id === fc.id)) {
+            combined.push(fc);
+        }
+    }
+
+    // Empty state
+    if (combined.length === 0) {
+        grid.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">No courses available.</p>';
+        return;
+    }
+
     // Safe quote escaping for onclick
     const esc = str => String(str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
@@ -2523,7 +2514,7 @@ window.updateAllCoursesDisplay = updateAllCoursesDisplay;
             </button>
         </div>
     `).join('');
-
+}
 window.updateAllCoursesDisplay = updateAllCoursesDisplay;
 
 function setupCourseSearch() {
