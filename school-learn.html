@@ -1291,6 +1291,7 @@ if (isAdmin()) {
 };
 
         // ========== STUDENT ASSIGNMENTS ==========
+                // ========== STUDENT ASSIGNMENTS (NO INDEX VERSION) ==========
         async function loadStudentAssignments() {
             const container = document.getElementById('student-assignments-list');
             if (!container) return;
@@ -1299,34 +1300,38 @@ if (isAdmin()) {
             if (!user) return;
 
             try {
-                // Get all assignments for this school
-                const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
-                const snap = await getDocs(assignmentsRef);
-                const allAssignments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-                if (allAssignments.length === 0) {
-                    container.innerHTML = `
-                        <p style="color: var(--text-muted); text-align: center; padding: 30px;">
-                            <i class="fas fa-clipboard-list" style="font-size: 2rem; display: block; margin-bottom: 10px; opacity: 0.4;"></i>
-                            No assignments yet.
-                        </p>`;
-                    return;
-                }
-
-                // Get student's enrolled subjects by checking all subjects for their UID
+                // Find which subjects this student belongs to
                 const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
                 const subjectsSnap = await getDocs(subjectsRef);
-                const mySubjectIds = new Set();
+                const mySubjectIds = [];
                 
                 subjectsSnap.docs.forEach(doc => {
                     const data = doc.data();
                     if (data.studentIds && data.studentIds.includes(user.uid)) {
-                        mySubjectIds.add(doc.id);
+                        mySubjectIds.push(doc.id);
                     }
                 });
 
-                // Filter assignments for subjects the student is enrolled in
-                const myAssignments = allAssignments.filter(a => mySubjectIds.has(a.subjectId));
+                if (mySubjectIds.length === 0) {
+                    container.innerHTML = `
+                        <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                            <i class="fas fa-clipboard-list" style="font-size: 2rem; display: block; margin-bottom: 10px; opacity: 0.4;"></i>
+                            You are not enrolled in any subjects yet.
+                        </p>`;
+                    return;
+                }
+
+                // Fetch assignments for each subject individually (no index needed)
+                let myAssignments = [];
+                for (const subjectId of mySubjectIds) {
+                    const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
+                    const q = query(assignmentsRef, where('subjectId', '==', subjectId));
+                    const snap = await getDocs(q);
+                    snap.docs.forEach(d => myAssignments.push({ id: d.id, ...d.data() }));
+                }
+
+                // Sort newest first in JavaScript
+                myAssignments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
                 if (myAssignments.length === 0) {
                     container.innerHTML = `
@@ -1337,23 +1342,16 @@ if (isAdmin()) {
                     return;
                 }
 
-                // Sort newest first
-                myAssignments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
                 container.innerHTML = myAssignments.map(a => `
-                    <div class="assignment-item" style="padding: 16px; border: 1px solid var(--border); border-radius: var(--border-radius-sm); margin-bottom: 12px; background: var(--bg-card);">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
-                            <div style="flex: 1;">
-                                <div style="font-size: 0.75rem; color: var(--primary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px;">
-                                    ${a.subjectName || 'Subject'}
-                                </div>
-                                <h4 style="color: var(--text-dark); margin: 0 0 6px 0; font-size: 1rem;">${a.title}</h4>
-                                <p style="color: var(--text-gray); font-size: 0.9rem; line-height: 1.5; margin: 0 0 8px 0;">${a.description}</p>
-                                <div style="font-size: 0.78rem; color: var(--text-muted);">
-                                    <i class="fas fa-chalkboard-teacher"></i> ${a.teacherName || 'Teacher'} · 
-                                    <i class="fas fa-clock"></i> ${getTimeAgo(a.createdAt)}
-                                </div>
-                            </div>
+                    <div style="padding: 16px; border: 1px solid var(--border); border-radius: var(--border-radius-sm); margin-bottom: 12px; background: var(--bg-card);">
+                        <div style="font-size: 0.75rem; color: var(--primary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px;">
+                            ${a.subjectName || 'Subject'}
+                        </div>
+                        <h4 style="color: var(--text-dark); margin: 0 0 6px 0; font-size: 1rem;">${a.title}</h4>
+                        <p style="color: var(--text-gray); font-size: 0.9rem; line-height: 1.5; margin: 0 0 8px 0;">${a.description}</p>
+                        <div style="font-size: 0.78rem; color: var(--text-muted);">
+                            <i class="fas fa-chalkboard-teacher"></i> ${a.teacherName || 'Teacher'} · 
+                            <i class="fas fa-clock"></i> ${getTimeAgo(a.createdAt)}
                         </div>
                     </div>
                 `).join('');
