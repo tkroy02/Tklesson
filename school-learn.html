@@ -2179,6 +2179,9 @@
 <!-- ========================================
      MY GRADES PAGE
      ======================================== -->
+<!-- ========================================
+     MY GRADES PAGE
+     ======================================== -->
 <div id="grades" class="page">
     <div class="page-header">
         <h1 class="page-title">My Grades</h1>
@@ -2187,6 +2190,30 @@
             <span>Student</span>
         </div>
     </div>
+
+    <!-- Term + Year selectors -->
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px;align-items:flex-end;">
+        <div class="form-group" style="max-width:200px;margin-bottom:0;">
+            <label>Term</label>
+            <select id="student-term-select" class="form-input" onchange="loadStudentGrades()">
+                <option value="fall-semester">Fall Semester</option>
+                <option value="spring-semester">Spring Semester</option>
+                <option value="winter-semester">Winter Semester</option>
+                <option value="september-term">September Term</option>
+                <option value="january-term">January Term</option>
+                <option value="may-term">May Term</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+            <label>Year</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeStudentYear(-1)" style="padding:6px 10px;font-size:1rem;">&#8722;</button>
+                <span id="student-year-display" style="font-weight:600;font-size:1rem;min-width:44px;text-align:center;"></span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeStudentYear(1)" style="padding:6px 10px;font-size:1rem;">&#43;</button>
+            </div>
+        </div>
+    </div>
+
     <div id="student-grades-container">
         <p style="color: var(--text-muted); text-align: center; padding: 40px;">
             <i class="fas fa-award" style="font-size: 2.5rem; display: block; margin-bottom: 15px; opacity: 0.3;"></i>
@@ -6309,7 +6336,27 @@ async function loadStudentGrades() {
         return;
     }
 
+    // Read selected term + year
+    const term = document.getElementById('student-term-select').value;
+    const year = document.getElementById('student-year-display').textContent.trim();
+    if (!year) return; // Not initialized yet
+
+    const termLabels = {
+        'fall-semester': 'Fall Semester',
+        'spring-semester': 'Spring Semester',
+        'winter-semester': 'Winter Semester',
+        'september-term': 'September Term',
+        'january-term': 'January Term',
+        'may-term': 'May Term'
+    };
+
+    container.innerHTML = `
+        <p style="color:var(--text-muted);text-align:center;padding:20px;">
+            <i class="fas fa-spinner fa-spin"></i> Loading grades...
+        </p>`;
+
     try {
+        // Get all subjects this student is enrolled in
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', user.uid));
         const subjectsSnap = await getDocs(subjectsQuery);
@@ -6325,49 +6372,55 @@ async function loadStudentGrades() {
 
         const mySubjectNames = new Set();
         const subjectTeachers = {};
-        subjectsSnap.docs.forEach(doc => {
-            const name = doc.data().name;
+        subjectsSnap.docs.forEach(d => {
+            const name = d.data().name;
             if (name) {
                 mySubjectNames.add(name);
-                subjectTeachers[name] = doc.data().teacherName || 'Teacher';
+                subjectTeachers[name] = d.data().teacherName || 'Teacher';
             }
         });
 
+        // Fetch ALL gradebook records and filter by term + year + this student
         const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
         const gradebooksSnap = await getDocs(gradebooksRef);
-        
+
         let gradeRows = [];
-        
-        gradebooksSnap.docs.forEach(doc => {
-            const data = doc.data();
+
+        gradebooksSnap.docs.forEach(d => {
+            const data = d.data();
+
+            // Only include records matching selected term + year
+            if (data.term !== term || String(data.year) !== String(year)) return;
+
             const gradebookSubjectName = data.subjectName;
-            
-            if (gradebookSubjectName && mySubjectNames.has(gradebookSubjectName)) {
-                const entries = data.entries || {};
-                const myEntry = entries[user.uid];
-                
-                if (myEntry) {
-                    gradeRows.push({
-                        subjectName: gradebookSubjectName,
-                        teacherName: subjectTeachers[gradebookSubjectName],
-                        assessment1: myEntry.assessment1 ?? '—',
-                        assessment2: myEntry.assessment2 ?? '—',
-                        midterm: myEntry.midterm ?? '—',
-                        final: myEntry.final ?? '—',
-                        grade: myEntry.grade || '—'
-                    });
-                }
-            }
+            if (!gradebookSubjectName || !mySubjectNames.has(gradebookSubjectName)) return;
+
+            const entries = data.entries || {};
+            const myEntry = entries[user.uid];
+            if (!myEntry) return;
+
+            gradeRows.push({
+                subjectName: gradebookSubjectName,
+                teacherName: subjectTeachers[gradebookSubjectName] || 'Teacher',
+                assessment1: myEntry.assessment1 ?? '—',
+                assessment2: myEntry.assessment2 ?? '—',
+                midterm: myEntry.midterm ?? '—',
+                final: myEntry.final ?? '—',
+                grade: myEntry.grade || '—'
+            });
         });
 
         if (gradeRows.length === 0) {
             container.innerHTML = `
                 <p style="color:var(--text-muted);text-align:center;padding:40px;">
                     <i class="fas fa-clipboard-check" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>
-                    No grades available yet.
+                    No grades found for <strong>${termLabels[term]} ${year}</strong>.
                 </p>`;
             return;
         }
+
+        // Sort alphabetically by subject name
+        gradeRows.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
 
         container.innerHTML = `
             <div style="overflow-x:auto;">
@@ -6389,10 +6442,10 @@ async function loadStudentGrades() {
                                     <strong style="color:var(--text-dark);">${row.subjectName}</strong>
                                     <br><small style="color:var(--text-muted);">${row.teacherName}</small>
                                 </td>
-                                <td style="padding:14px;text-align:center;">${row.assessment1}</td>
-                                <td style="padding:14px;text-align:center;">${row.assessment2}</td>
-                                <td style="padding:14px;text-align:center;">${row.midterm}</td>
-                                <td style="padding:14px;text-align:center;">${row.final}</td>
+                                <td style="padding:14px;text-align:center;">${row.assessment1 !== '—' ? row.assessment1 + '%' : '—'}</td>
+                                <td style="padding:14px;text-align:center;">${row.assessment2 !== '—' ? row.assessment2 + '%' : '—'}</td>
+                                <td style="padding:14px;text-align:center;">${row.midterm !== '—' ? row.midterm + '%' : '—'}</td>
+                                <td style="padding:14px;text-align:center;">${row.final !== '—' ? row.final + '%' : '—'}</td>
                                 <td style="padding:14px;text-align:center;">
                                     <span style="background:var(--accent-light);color:var(--primary);padding:6px 14px;border-radius:50px;font-weight:700;">${row.grade}</span>
                                 </td>
@@ -6402,9 +6455,9 @@ async function loadStudentGrades() {
                 </table>
             </div>
             <p style="font-size:0.75rem;color:var(--text-muted);margin-top:10px;text-align:center;">
-                Grades posted by your teachers.
+                Grades for <strong>${termLabels[term]} ${year}</strong> · posted by your teachers
             </p>`;
-            
+
     } catch (error) {
         console.error('Error loading grades:', error);
         container.innerHTML = `
@@ -6414,7 +6467,21 @@ async function loadStudentGrades() {
     }
 }
 
-        // ============================================
+window.changeStudentYear = function(delta) {
+    const yearDisplay = document.getElementById('student-year-display');
+    const current = parseInt(yearDisplay.textContent) || new Date().getFullYear();
+    yearDisplay.textContent = current + delta;
+    loadStudentGrades();
+};
+
+// Initialize student year display on first load
+const studentYearDisplay = document.getElementById('student-year-display');
+if (studentYearDisplay && !studentYearDisplay.textContent.trim()) {
+    studentYearDisplay.textContent = new Date().getFullYear();
+}
+loadStudentGrades();
+        
+// ============================================
 // EXAM QUIZ SYSTEM - B2B
 // ============================================
 
