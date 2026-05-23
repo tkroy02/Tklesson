@@ -1852,6 +1852,7 @@ window.closeGrades = function() {
 
 
 // ========== GRADEBOOK ==========
+// ========== GRADEBOOK ==========
 async function loadGradebookSelector() {
     const subjects = await getTeacherSubjects();
     teacherSubjects = subjects;
@@ -1916,7 +1917,7 @@ window.loadGradebook = async function() {
         const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${gradebookKey}`);
         const gradebookSnap = await getDoc(gradebookRef);
 
-        // ✅ No gradebook yet — prompt teacher to create one
+        // No gradebook yet — prompt teacher to create one
         if (!gradebookSnap.exists()) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -1930,11 +1931,12 @@ window.loadGradebook = async function() {
             return;
         }
 
-        // ✅ Gradebook exists — read roster and entries from the snapshot
+        // Gradebook exists — read roster and entries from the snapshot
         const gradebookData = gradebookSnap.data();
         const studentIds = gradebookData.studentIds || [];
         const studentNames = gradebookData.studentNames || [];
         const entries = gradebookData.entries || {};
+
         const columns = ['Assessment 1', 'Assessment 2', 'Assessment 3', 'Midterm', 'Final'];
 
         if (studentIds.length === 0) {
@@ -1962,6 +1964,7 @@ window.loadGradebook = async function() {
                         <tr>
                             <th>Student Name</th>
                             ${columns.map(c => `<th>${c}</th>`).join('')}
+                            <th>Average</th>
                             <th>Grade</th>
                         </tr>
                     </thead>
@@ -1969,6 +1972,15 @@ window.loadGradebook = async function() {
                         ${studentIds.map((sid, i) => {
                             const sname = studentNames[i] || 'Unknown';
                             const entry = entries[sid] || {};
+
+                            const scores = columns.map(col => {
+                                const key = col.toLowerCase().replace(/\s+/g, '');
+                                return entry[key];
+                            }).filter(v => v !== undefined && v !== '');
+                            const avg = scores.length
+                                ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)
+                                : '—';
+
                             return `
                                 <tr>
                                     <td class="student-name-cell">${sname}</td>
@@ -1977,6 +1989,9 @@ window.loadGradebook = async function() {
                                         const value = entry[fieldKey] !== undefined ? entry[fieldKey] : '';
                                         return `<td><input type="number" class="score-input" placeholder="—" min="0" max="100" value="${value}" data-student="${sid}" data-field="${fieldKey}" onkeydown="if(event.key==='Enter')event.preventDefault()"></td>`;
                                     }).join('')}
+                                    <td>
+                                        <span class="student-avg" data-student="${sid}">${avg}</span>
+                                    </td>
                                     <td>
                                         <select class="grade-select" data-student="${sid}" data-field="grade">
                                             <option value="">—</option>
@@ -1988,6 +2003,20 @@ window.loadGradebook = async function() {
                     </tbody>
                 </table>
             </div>`;
+
+        // Live average update as scores are typed
+        document.querySelectorAll('.score-input').forEach(input => {
+            input.addEventListener('input', () => {
+                const sid = input.dataset.student;
+                const inputs = document.querySelectorAll(`.score-input[data-student="${sid}"]`);
+                const scores = [...inputs].map(i => parseFloat(i.value)).filter(v => !isNaN(v));
+                const avg = scores.length
+                    ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)
+                    : '—';
+                const avgEl = document.querySelector(`.student-avg[data-student="${sid}"]`);
+                if (avgEl) avgEl.textContent = avg;
+            });
+        });
 
     } catch (error) {
         console.error('Error loading gradebook:', error);
@@ -2073,14 +2102,15 @@ window.saveAllGradebook = async function(subjectId, subjectName, term, year) {
         });
 
         await setDoc(gradebookRef, {
-    subjectName,
-    term,
-    year,
-    studentIds: snap.exists() ? (snap.data().studentIds || []) : [],
-    studentNames: snap.exists() ? (snap.data().studentNames || []) : [],
-    entries: mergedEntries,
-    updatedAt: new Date().toISOString()
-});
+            subjectName,
+            term,
+            year,
+            studentIds: snap.exists() ? (snap.data().studentIds || []) : [],
+            studentNames: snap.exists() ? (snap.data().studentNames || []) : [],
+            entries: mergedEntries,
+            updatedAt: new Date().toISOString()
+        });
+
         if (statusEl) {
             statusEl.textContent = '✓ Saved';
             statusEl.style.color = 'var(--success)';
