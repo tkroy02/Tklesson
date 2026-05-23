@@ -2709,6 +2709,7 @@ function showPage(pageId, element = null) {
     if (pageId === 'progress') updateProgressDisplay();
     if (pageId === 'assignments') loadStudentAssignments();
     if (pageId === 'grades') loadStudentGrades();      
+    if (pageId === 'enrolment') loadEnrolment();
     if (pageId === 'dashboard') {
         updateDashboardStats();
         updateRecentActivity();
@@ -7401,7 +7402,145 @@ window.watchVideo = watchVideo;
 // ============================================
 // END VIDEO LESSONS - B2B
 // ============================================
-        
+
+// =============================================//
+// ===== ENROLMENT STARTS HERE ==================//
+// ==============================================//
+
+// ========== ENROLMENT ==========
+async function loadEnrolment() {
+    const container = document.getElementById('enrolment-list');
+    container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
+        <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+        Loading enrolment information...
+    </p>`;
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+        // 1. Get all subjects in this school
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsSnap = await getDocs(subjectsRef);
+        const allSubjects = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        // 2. Get student's enrolment requests
+        const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
+        const q = query(enrolmentsRef, where('studentId', '==', user.uid));
+        const enrolSnap = await getDocs(q);
+        const myEnrolments = enrolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        // Build sets for quick lookup
+        const enrolledSubjectIds = new Set();
+        const pendingSubjectIds = new Set();
+        myEnrolments.forEach(e => {
+            if (e.status === 'enrolled') enrolledSubjectIds.add(e.subjectId);
+            if (e.status === 'pending') pendingSubjectIds.add(e.subjectId);
+        });
+
+        // 3. Available subjects: not enrolled, not pending
+        const availableSubjects = allSubjects.filter(s => 
+            !enrolledSubjectIds.has(s.id) && !pendingSubjectIds.has(s.id)
+        );
+
+        // 4. Render available subjects
+        let html = '';
+        if (availableSubjects.length > 0) {
+            html += `<h3 style="margin-bottom: 12px;">Available Courses</h3>`;
+            availableSubjects.forEach(s => {
+                html += `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+                    <div>
+                        <strong>${s.name}</strong>
+                        <div style="font-size:0.8rem;color:var(--text-muted);">Teacher: ${s.teacherName || 'Unknown'}</div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="requestEnrolment('${s.id}', '${s.name.replace(/'/g, "\\'")}', '${s.teacherId}')">
+                        <i class="fas fa-plus"></i> Enrol
+                    </button>
+                </div>`;
+            });
+        } else {
+            html += `<div class="empty-state">
+                <i class="fas fa-check-circle"></i>
+                <p>No courses available for enrolment right now.</p>
+            </div>`;
+        }
+
+        // 5. Render my requests
+        html += `<h3 style="margin-top: 24px; margin-bottom: 12px;">My Requests</h3>`;
+        if (myEnrolments.length === 0) {
+            html += `<div class="empty-state">
+                <i class="fas fa-clock"></i>
+                <p>You haven't requested enrolment in any courses yet.</p>
+            </div>`;
+        } else {
+            myEnrolments.forEach(e => {
+                const statusColor = e.status === 'enrolled' ? 'var(--success)' : 
+                                   e.status === 'pending' ? '#f39c12' : 'var(--danger)';
+                const statusIcon = e.status === 'enrolled' ? 'fa-check-circle' :
+                                   e.status === 'pending' ? 'fa-clock' : 'fa-times-circle';
+                html += `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+                    <div>
+                        <strong>${e.subjectName}</strong>
+                        <div style="font-size:0.8rem;color:var(--text-muted);">
+                            Requested: ${new Date(e.requestedAt).toLocaleDateString()}
+                        </div>
+                    </div>
+                    <span style="color:${statusColor};font-weight:600;display:flex;align-items:center;gap:6px;">
+                        <i class="fas ${statusIcon}"></i> ${e.status.charAt(0).toUpperCase() + e.status.slice(1)}
+                    </span>
+                </div>`;
+            });
+        }
+
+        container.innerHTML = html;
+
+    } catch (error) {
+        console.error('Error loading enrolment:', error);
+        container.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading enrolment. Please try again.</p>`;
+    }
+}
+
+async function requestEnrolment(subjectId, subjectName, teacherId) {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Get student's display name
+    let studentName = user.displayName || 'Student';
+    const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
+    const userSnap = await getDoc(userRef);
+    if (userSnap.exists() && userSnap.data().displayName) {
+        studentName = userSnap.data().displayName;
+    }
+
+    try {
+        const enrolmentRef = doc(collection(db, `schools/${schoolId}/enrolments`));
+        await setDoc(enrolmentRef, {
+            studentId: user.uid,
+            studentName: studentName,
+            subjectId: subjectId,
+            subjectName: subjectName,
+            teacherId: teacherId,
+            status: 'pending',
+            requestedAt: new Date().toISOString()
+        });
+
+        await loadEnrolment(); // Refresh the page
+    } catch (error) {
+        console.error('Error requesting enrolment:', error);
+        alert('Error requesting enrolment. Please try again.');
+    }
+}
+
+// Make functions globally accessible
+window.loadEnrolment = loadEnrolment;
+window.requestEnrolment = requestEnrolment;
+
+// =====================================//
+//======ENROLMENT ENDS HERE ===============//
+// =======================================//
+
 </script>
 </body>
 </html>
