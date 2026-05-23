@@ -5875,6 +5875,10 @@ function generateQuizzes(count) {
 // 4️⃣ Start quiz flow
 async function startTopicQuiz(unitId, quizNumber, difficulty) {
     try {
+        // ✅ Store for use in submitTopicQuiz
+        window.quizState.currentUnitId = unitId;
+        window.quizState.currentQuizNumber = quizNumber;
+ 
         const resourceContent = document.getElementById('resource-content');
         resourceContent.innerHTML = `
             <div class="tool-interface active">
@@ -5889,7 +5893,7 @@ async function startTopicQuiz(unitId, quizNumber, difficulty) {
                     <p style="color:var(--text-muted);">Preparing ${difficulty} quiz...</p>
                 </div>
             </div>`;
-
+ 
         const quizPath = getQuizPath(currentCourseId, unitId, quizNumber);
         if (quizPath) {
             const quizData = await loadQuizData(quizPath);
@@ -6078,16 +6082,16 @@ function selectQuizOption(qIdx, oIdx) {
 // 8️⃣ Submit & score
 function submitTopicQuiz() {
     if (!window.quizState.currentQuestions?.length) return alert('No questions loaded.');
-    
+ 
     const unanswered = window.quizState.currentQuestions.reduce((arr, q, i) => {
         const a = window.quizState.userAnswers[i];
         const isEmpty = q.isMultipleResponse ? (!Array.isArray(a) || !a.length) : a === null;
         if (isEmpty) arr.push(i + 1);
         return arr;
     }, []);
-
+ 
     if (unanswered.length && !confirm(`Unanswered questions: ${unanswered.join(', ')}. Submit anyway?`)) return;
-
+ 
     let correct = 0;
     const results = window.quizState.currentQuestions.map((q, i) => {
         const ua = window.quizState.userAnswers[i];
@@ -6100,16 +6104,35 @@ function submitTopicQuiz() {
             isCorrect = answered && ua === q.correctAnswerIndices[0];
         }
         if (isCorrect) correct++;
-        return { question: q.question, userAnswer: ua, correctIndices: q.correctAnswerIndices, options: q.options, explanation: q.explanation, isMultipleResponse: q.isMultipleResponse, isCorrect, answered };
+        return {
+            question: q.question,
+            userAnswer: ua,
+            correctIndices: q.correctAnswerIndices,
+            options: q.options,
+            explanation: q.explanation,
+            isMultipleResponse: q.isMultipleResponse,
+            isCorrect,
+            answered
+        };
     });
-
+    
     const score = Math.round((correct / results.length) * 100);
     window.quizState.isQuizComplete = true;
     window.quizState.showResults = true;
-    
+ 
     if (typeof updateCourseProgress === 'function') {
         updateCourseProgress(currentCourseId, score, 'quiz', getTextbookTitle(currentCourseId));
     }
+ 
+    // ✅ Save attempt to Firestore
+    const quizPath = getQuizPath(currentCourseId, window.quizState.currentUnitId, window.quizState.currentQuizNumber);
+    saveQuizAttempt({
+        quizPath,
+        score,
+        totalQuestions: results.length,
+        correctAnswers: correct
+    });
+ 
     displayQuizResults(score, correct, results);
 }
 
@@ -6264,6 +6287,90 @@ function displayDefaultTopicQuiz(unitId, quizNumber, difficulty) {
     displayQuizWithData(defaultQuizData, unitId, quizNumber, difficulty);
 }
 
+// ========================================
+// 🎯 QUIZ ATTEMPT TRACKING
+// ========================================
+ 
+// Convert quizPath to human-readable label
+// e.g. "quizzes/algebra2/unit1_quiz1.json" → "Algebra 2 Unit 1 Quiz 1"
+function quizPathToLabel(quizPath) {
+    if (!quizPath) return 'Unknown Quiz';
+    const filename = quizPath.split('/').pop().replace('.json', ''); // unit1_quiz1
+    const courseFolder = quizPath.split('/')[1] || '';              // algebra2
+ 
+    // Convert courseFolder: "algebra2" → "Algebra 2"
+    const courseLabel = courseFolder
+        .replace(/([a-z])(\d)/g, '$1 $2')   // algebra2 → algebra 2
+        .replace(/(\d)([a-z])/gi, '$1 $2')  // handle any digit-letter joins
+        .split(' ')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+ 
+    // Convert filename: "unit1_quiz1" → "Unit 1 Quiz 1"
+    const fileLabel = filename
+        .split('_')
+        .map(part => part
+            .replace(/([a-z])(\d)/g, '$1 $2')
+            .split(' ')
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ')
+        )
+        .join(' ');
+ 
+    return `${courseLabel} ${fileLabel}`;
+}
+
+        // Save a quiz attempt to Firestore
+async function saveQuizAttempt({ quizPath, score, totalQuestions, correctAnswers }) {
+    try {
+        const user = auth.currentUser;
+        if (!user) return;
+ 
+        // Get student's displayName from users collection
+        const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
+        const userSnap = await getDoc(userRef);
+        const studentName = userSnap.exists()
+            ? (userSnap.data().displayName || user.displayName || 'Student')
+            : (user.displayName || 'Student');
+ 
+        // Find which subject this student belongs to that matches the current course
+        // Match by studentName across subjects
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsSnap = await getDocs(subjectsRef);
+        let subjectName = 'Unknown Subject';
+        let subjectId = null;
+ 
+        subjectsSnap.docs.forEach(d => {
+            const data = d.data();
+            const names = data.studentNames || [];
+            if (names.includes(studentName)) {
+                subjectName = data.name || 'Unknown Subject';
+                subjectId = d.id;
+            }
+        });
+ 
+        const quizLabel = quizPathToLabel(quizPath);
+ 
+        const attemptRef = doc(collection(db, `schools/${schoolId}/quizAttempts`));
+        await setDoc(attemptRef, {
+            studentId: user.uid,
+            studentName,
+            subjectId,
+            subjectName,
+            quizPath,
+            quizLabel,
+            score,
+            totalQuestions,
+            correctAnswers,
+            attemptedAt: new Date().toISOString()
+        });
+ 
+        console.log(`✅ Quiz attempt saved: ${quizLabel} — ${score}%`);
+    } catch (error) {
+        console.error('❌ Error saving quiz attempt:', error);
+    }
+}
+        
 // ✅ Export all functions to global scope (required for module + inline onclick)
 window.loadTopicQuizzes = loadTopicQuizzes;
 window.startTopicQuiz = startTopicQuiz;
