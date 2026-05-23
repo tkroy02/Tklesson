@@ -2407,6 +2407,7 @@
         import { getAuth, onAuthStateChanged, signOut, updateProfile, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, updateDoc, query, where, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { ..., arrayUnion } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
@@ -2949,47 +2950,67 @@ async function loadStudentAssignments() {
     if (!user) return;
     
     try {
-        // Step 1: Find subjects the student is enrolled in
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', user.uid));
         const subjectsSnap = await getDocs(subjectsQuery);
         const mySubjectIds = subjectsSnap.docs.map(doc => doc.id);
         
-        // Empty state: not enrolled in any subjects
         if (mySubjectIds.length === 0) {
             container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;"><i class="fas fa-clipboard-list" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>You are not enrolled in any subjects yet.</p>';
             return;
         }
         
-        // Step 2: Fetch assignments for each enrolled subject
         let myAssignments = [];
         for (const subjectId of mySubjectIds) {
             const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
             const q = query(assignmentsRef, where('subjectId', '==', subjectId));
             const snap = await getDocs(q);
-            snap.docs.forEach(d => myAssignments.push({ id: d.id, ...d.data() }));
+            snap.docs.forEach(d => {
+                const data = d.data();
+                const deletedFor = data.deletedFor || [];
+                if (!deletedFor.includes(user.uid)) {
+                    myAssignments.push({ id: d.id, ...data });
+                }
+            });
         }
         
-        // Step 3: Sort by creation date (newest first)
         myAssignments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         
-        // Empty state: no assignments found
         if (myAssignments.length === 0) {
             container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;"><i class="fas fa-clipboard-list" style="font-size:2rem;display:block;margin-bottom:10px;opacity:0.4;"></i>No assignments from your teachers yet.</p>';
             return;
         }
         
-        // Step 4: Render assignments as styled cards
-        container.innerHTML = myAssignments.map(a => `
-            <div style="padding:16px;border:1px solid var(--border);border-radius:var(--border-radius-sm);margin-bottom:12px;background:var(--bg-card);">
-                <div style="font-size:0.75rem;color:var(--primary);font-weight:600;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:4px;">${a.subjectName || 'Subject'}</div>
-                <h4 style="color:var(--text-dark);margin:0 0 6px 0;font-size:1rem;">${a.title}</h4>
-                <p style="color:var(--text-gray);font-size:0.9rem;line-height:1.5;margin:0 0 8px 0;">${a.description}</p>
-                <div style="font-size:0.78rem;color:var(--text-muted);">
-                    <i class="fas fa-chalkboard-teacher"></i> ${a.teacherName || 'Teacher'} · 
-                    <i class="fas fa-clock"></i> ${getTimeAgo(a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt))}
+        const MAX_VISIBLE = 40;
+        const displayed = myAssignments.slice(0, MAX_VISIBLE);
+        const hiddenCount = myAssignments.length - MAX_VISIBLE;
+        
+        container.innerHTML = `
+            ${hiddenCount > 0 ? `
+                <div style="background:var(--gold-light);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:0.8rem;color:#856404;">
+                    ⚠️ Showing ${MAX_VISIBLE} most recent. ${hiddenCount} older assignment${hiddenCount !== 1 ? 's' : ''} not shown.
                 </div>
-            </div>`).join('');
+            ` : ''}
+            <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+                ${displayed.map(a => `
+                    <div class="assignment-card" id="assignment-${a.id}" style="padding:16px;border:1px solid var(--border);border-radius:var(--border-radius-sm);margin-bottom:12px;background:var(--bg-card);position:relative;transition:all 0.3s ease;">
+                        <button onclick="deleteStudentAssignment('${a.id}', '${a.title.replace(/'/g, "\\'")}')" 
+                                style="position:absolute;top:10px;right:10px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.85rem;padding:4px 8px;border-radius:6px;transition:all 0.2s;"
+                                onmouseover="this.style.color='var(--danger)';this.style.background='#fde8e8';" 
+                                onmouseout="this.style.color='var(--text-muted)';this.style.background='none';"
+                                title="Remove from my view">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                        <div style="font-size:0.75rem;color:var(--primary);font-weight:600;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:4px;padding-right:30px;">${a.subjectName || 'Subject'}</div>
+                        <h4 style="color:var(--text-dark);margin:0 0 6px 0;font-size:1rem;padding-right:30px;">${a.title}</h4>
+                        <p style="color:var(--text-gray);font-size:0.9rem;line-height:1.5;margin:0 0 8px 0;">${a.description}</p>
+                        <div style="font-size:0.78rem;color:var(--text-muted);">
+                            <i class="fas fa-chalkboard-teacher"></i> ${a.teacherName || 'Teacher'} · 
+                            <i class="fas fa-clock"></i> ${getTimeAgo(a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt))}
+                        </div>
+                    </div>`).join('')}
+            </div>
+        `;
             
     } catch (error) {
         console.error('Error loading assignments:', error);
@@ -2997,6 +3018,40 @@ async function loadStudentAssignments() {
     }
 }
 
+
+//.....................................//
+//..........DELETE STUDENT ASSIGNMENT (SOFT)..........//
+//.....................................//
+
+window.deleteStudentAssignment = async function(assignmentId, assignmentTitle) {
+    if (!confirm(`Remove "${assignmentTitle}" from your view?\n\nThis only hides it for you. Your teacher and classmates will still see it.`)) return;
+    
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    try {
+        const assignmentRef = doc(db, `schools/${schoolId}/assignments/${assignmentId}`);
+        await updateDoc(assignmentRef, {
+            deletedFor: arrayUnion(user.uid)
+        });
+        
+        // Slide out animation
+        const card = document.getElementById(`assignment-${assignmentId}`);
+        if (card) {
+            card.style.opacity = '0';
+            card.style.transform = 'translateX(20px)';
+            card.style.maxHeight = '0';
+            card.style.padding = '0';
+            card.style.marginBottom = '0';
+            card.style.border = 'none';
+            card.style.overflow = 'hidden';
+            setTimeout(() => card.remove(), 300);
+        }
+    } catch (error) {
+        console.error('Error hiding assignment:', error);
+        alert('Could not remove assignment. Please try again.');
+    }
+};
         //.....................................//
 //..........QUIZ ENGINE..........//
 //.....................................//
