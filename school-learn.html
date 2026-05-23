@@ -2807,54 +2807,139 @@ async function updateCourseProgress(courseId, progress, activityType = 'study', 
 }
 window.updateCourseProgress = updateCourseProgress;
 
-//.....................................//
-//..........PROGRESS DISPLAY..........//
-//.....................................//
-
+// ========================================
+// PROGRESS DISPLAY — FULL B2C STYLE
+// ========================================
 async function updateProgressDisplay() {
-    const list = document.getElementById('course-progress-list');
-    const perf = document.getElementById('overall-performance');
-    if (!list || !perf) return;
+    const courseCards = document.getElementById('progress-course-cards');
+    const gradesSummary = document.getElementById('progress-grades-summary');
     
-    // Admin view: show preview placeholders
+    if (!courseCards || !gradesSummary) return;
+
+    // Admin view
     if (isAdmin()) {
-        list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">Admin preview — student progress appears here</p>';
-        perf.innerHTML = '<div style="font-size:3.5rem;font-weight:800;color:var(--primary);">—</div><div style="color:var(--text-muted);">Admin View</div>';
+        courseCards.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;grid-column:1/-1;">Admin preview — student progress appears here</p>';
+        gradesSummary.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">Admin preview</p>';
+        document.getElementById('stat-courses').textContent = '—';
+        document.getElementById('stat-avg-grade').textContent = '—';
+        document.getElementById('stat-quizzes').textContent = '—';
+        document.getElementById('stat-study-days').textContent = '—';
         return;
     }
-    
+
     const courses = await getEnrolledCourses();
-    
-    // Empty state: no courses to track
-    if (courses.length === 0) {
-        list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">No courses to track yet.</p>';
-        perf.innerHTML = '<div style="font-size:3.5rem;font-weight:800;color:var(--primary);">0%</div><div style="color:var(--text-muted);">Average Grade</div>';
-        return;
-    }
-    
-    // Render individual course progress bars
-    list.innerHTML = courses.map(c => `
-        <div style="margin-bottom:16px;">
-            <div style="display:flex;justify-content:space-between;font-size:0.85rem;">
-                <span>${c.title}</span>
-                <span style="font-weight:600;">${c.progress || 0}%</span>
-            </div>
-            <div class="progress-bar"><div class="progress-fill" style="width:${c.progress || 0}%"></div></div>
-        </div>`).join('');
-    
-    // Calculate overall average grade
-    const coursesWithScores = courses.filter(c => c.averageScore);
-    const avg = coursesWithScores.length
-        ? coursesWithScores.reduce((s, c) => s + c.averageScore, 0) / coursesWithScores.length
+
+    // ---- STATS ROW ----
+    const enrolledCount = courses.length;
+    const quizzes = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
+    const withScores = courses.filter(c => c.averageScore != null);
+    const avg = withScores.length 
+        ? Math.round(withScores.reduce((s, c) => s + c.averageScore, 0) / withScores.length) 
         : 0;
-    
-    perf.innerHTML = `<div style="font-size:3.5rem;font-weight:800;color:var(--primary);">${Math.round(avg)}%</div><div style="color:var(--text-muted);">Average Grade</div>`;
+    const studyDays = await calculateStudyDays();
+
+    document.getElementById('stat-courses').textContent = enrolledCount;
+    document.getElementById('stat-avg-grade').textContent = avg + '%';
+    document.getElementById('stat-quizzes').textContent = quizzes;
+    document.getElementById('stat-study-days').textContent = studyDays;
+
+    // ---- COURSE PERFORMANCE CARDS ----
+    if (courses.length === 0) {
+        courseCards.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;grid-column:1/-1;">No courses enrolled yet. Start learning to see your progress!</p>';
+    } else {
+        courseCards.innerHTML = courses.map(c => {
+            const score = c.averageScore || 0;
+            const scoreClass = score >= 80 ? 'high' : score >= 50 ? 'mid' : 'low';
+            const quizScores = c.quizScores || [];
+            const recentScores = quizScores.slice(-5);
+            
+            return `
+                <div class="progress-course-card">
+                    <div class="progress-course-header">
+                        <h4>${c.title}</h4>
+                        <div class="progress-course-score ${score > 0 ? scoreClass : ''}">${score}%</div>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width:${c.progress || 0}%"></div>
+                    </div>
+                    <div class="progress-course-meta">
+                        <span><i class="fas fa-check-circle"></i> ${c.completedQuizzes || 0} quizzes</span>
+                        <span><i class="fas fa-chart-line"></i> ${c.progress || 0}% complete</span>
+                        ${recentScores.length > 0 ? `
+                            <span style="width:100%;margin-top:4px;">
+                                <i class="fas fa-history"></i> Recent: ${recentScores.map(s => s + '%').join(' → ')}
+                            </span>
+                        ` : ''}
+                    </div>
+                </div>`;
+        }).join('');
+    }
+
+    // ---- TEACHER GRADEBOOK SUMMARY ----
+    try {
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', auth.currentUser.uid));
+        const subjectsSnap = await getDocs(subjectsQuery);
+        const mySubjectNames = new Set();
+        const subjectTeachers = {};
+        
+        subjectsSnap.docs.forEach(doc => {
+            const name = doc.data().name;
+            if (name) {
+                mySubjectNames.add(name);
+                subjectTeachers[name] = doc.data().teacherName || 'Teacher';
+            }
+        });
+
+        const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
+        const gradebooksSnap = await getDocs(gradebooksRef);
+        
+        let gradeEntries = [];
+        gradebooksSnap.docs.forEach(doc => {
+            const data = doc.data();
+            if (data.subjectName && mySubjectNames.has(data.subjectName)) {
+                const entry = (data.entries || {})[auth.currentUser.uid];
+                if (entry && entry.grade) {
+                    gradeEntries.push({
+                        subject: data.subjectName,
+                        teacher: subjectTeachers[data.subjectName] || 'Teacher',
+                        grade: entry.grade,
+                        score: entry.final ?? entry.midterm ?? '—'
+                    });
+                }
+            }
+        });
+
+        if (gradeEntries.length > 0) {
+            const gradeValues = { 'A+': 4.3, 'A': 4.0, 'A-': 3.7, 'B+': 3.3, 'B': 3.0, 'B-': 2.7, 'C+': 2.3, 'C': 2.0, 'C-': 1.7, 'D': 1.0, 'F': 0 };
+            const gpaTotal = gradeEntries.reduce((sum, g) => sum + (gradeValues[g.grade] || 0), 0);
+            const gpa = gradeEntries.length > 0 ? (gpaTotal / gradeEntries.length).toFixed(1) : '—';
+            
+            gradesSummary.innerHTML = `
+                <div class="gpa-display">
+                    <div class="gpa-value">${gpa}</div>
+                    <div class="gpa-label">Grade Point Average</div>
+                    <div class="gpa-subjects">
+                        ${gradeEntries.map(g => `
+                            <span class="gpa-subject-chip">${g.subject}: ${g.grade}</span>
+                        `).join('')}
+                    </div>
+                </div>`;
+        } else {
+            gradesSummary.innerHTML = `
+                <p style="color:var(--text-muted);text-align:center;padding:20px;">
+                    <i class="fas fa-clipboard-check" style="font-size:1.5rem;display:block;margin-bottom:8px;opacity:0.4;"></i>
+                    No official grades posted yet.
+                </p>`;
+        }
+    } catch (error) {
+        console.error('Error loading grades summary:', error);
+        gradesSummary.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">Could not load grades summary.</p>';
+    }
 }
 window.updateProgressDisplay = updateProgressDisplay;
 
-
-
-        //.....................................//
+//.....................................//
 //..........RESOURCES ROUTER..........//
 //.....................................//
 
