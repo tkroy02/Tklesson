@@ -7721,6 +7721,197 @@ window.watchVideo = watchVideo;
 // ============================================
 // END VIDEO LESSONS - B2B
 // ============================================
+
+// ========================================
+// 🎓 ENROLMENT — STUDENT SIDE
+// ========================================
+
+window.loadEnrolmentPage = async function() {
+    const container = document.getElementById('enrolment-list');
+    container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading...</p>';
+
+    try {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        // Get student's display name
+        const userRef = doc(db, 'schools/' + schoolId + '/users/' + user.uid);
+        const userSnap = await getDoc(userRef);
+        const studentName = userSnap.exists()
+            ? (userSnap.data().displayName || user.displayName || 'Student')
+            : (user.displayName || 'Student');
+
+        // Get all subjects in the school
+        const subjectsRef = collection(db, 'schools/' + schoolId + '/subjects');
+        const subjectsSnap = await getDocs(subjectsRef);
+        const allSubjects = subjectsSnap.docs.map(function(d) {
+            return { id: d.id, ...d.data() };
+        });
+
+        // Get this student's enrolments
+        const enrolmentsRef = collection(db, 'schools/' + schoolId + '/enrolments');
+        const enrolmentsQ = query(enrolmentsRef, where('studentId', '==', user.uid));
+        const enrolmentsSnap = await getDocs(enrolmentsQ);
+
+        const enrolmentsBySubject = {};
+        enrolmentsSnap.docs.forEach(function(d) {
+            const data = d.data();
+            enrolmentsBySubject[data.subjectId] = { id: d.id, ...data };
+        });
+
+        // Split subjects into: enrolled, pending, rejected, available
+        const enrolledSubjects = [];
+        const pendingSubjects = [];
+        const availableSubjects = [];
+
+        allSubjects.forEach(function(s) {
+            const enrolment = enrolmentsBySubject[s.id];
+            if (enrolment) {
+                if (enrolment.status === 'enrolled') enrolledSubjects.push({ subject: s, enrolment });
+                else if (enrolment.status === 'pending') pendingSubjects.push({ subject: s, enrolment });
+                else if (enrolment.status === 'rejected') availableSubjects.push({ subject: s, enrolment });
+            } else {
+                // Not enrolled or requested — show as available
+                // But skip if already in studentIds (added manually by teacher)
+                if ((s.studentIds || []).includes(user.uid)) {
+                    enrolledSubjects.push({ subject: s, enrolment: null });
+                } else {
+                    availableSubjects.push({ subject: s, enrolment: null });
+                }
+            }
+        });
+
+        let html = '';
+
+        // MY SUBJECTS
+        if (enrolledSubjects.length > 0) {
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-check-circle" style="margin-right:6px;color:var(--success);"></i>My Subjects (' + enrolledSubjects.length + ')' +
+                '</div>' +
+                '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;">';
+
+            enrolledSubjects.forEach(function(item, i) {
+                const s = item.subject;
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;' + (i > 0 ? 'border-top:1px solid var(--border);' : '') + 'flex-wrap:wrap;gap:8px;">' +
+                    '<div>' +
+                        '<div style="font-weight:600;color:var(--text-dark);">📘 ' + s.name + '</div>' +
+                        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px);">' +
+                            '<i class="fas fa-chalkboard-teacher" style="margin-right:4px;"></i>' + (s.teacherName || 'Teacher') +
+                        '</div>' +
+                    '</div>' +
+                    '<span style="padding:4px 10px;background:var(--success);color:white;border-radius:10px;font-size:0.75rem;font-weight:600;">Enrolled</span>' +
+                '</div>';
+            });
+
+            html += '</div></div>';
+        }
+
+        // PENDING REQUESTS
+        if (pendingSubjects.length > 0) {
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-clock" style="margin-right:6px;color:#f39c12;"></i>Pending Approval (' + pendingSubjects.length + ')' +
+                '</div>' +
+                '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;">';
+
+            pendingSubjects.forEach(function(item, i) {
+                const s = item.subject;
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;' + (i > 0 ? 'border-top:1px solid var(--border);' : '') + 'flex-wrap:wrap;gap:8px;">' +
+                    '<div>' +
+                        '<div style="font-weight:600;color:var(--text-dark);">📘 ' + s.name + '</div>' +
+                        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">' +
+                            '<i class="fas fa-chalkboard-teacher" style="margin-right:4px;"></i>' + (s.teacherName || 'Teacher') +
+                        '</div>' +
+                    '</div>' +
+                    '<span style="padding:4px 10px;background:#f39c12;color:white;border-radius:10px;font-size:0.75rem;font-weight:600;">Pending</span>' +
+                '</div>';
+            });
+
+            html += '</div></div>';
+        }
+
+        // AVAILABLE SUBJECTS
+        if (availableSubjects.length > 0) {
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-book-open" style="margin-right:6px;color:var(--primary);"></i>Available Subjects (' + availableSubjects.length + ')' +
+                '</div>' +
+                '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;">';
+
+            availableSubjects.forEach(function(item, i) {
+                const s = item.subject;
+                const wasRejected = item.enrolment && item.enrolment.status === 'rejected';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;' + (i > 0 ? 'border-top:1px solid var(--border);' : '') + 'flex-wrap:wrap;gap:8px;">' +
+                    '<div>' +
+                        '<div style="font-weight:600;color:var(--text-dark);">📘 ' + s.name + '</div>' +
+                        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">' +
+                            '<i class="fas fa-chalkboard-teacher" style="margin-right:4px;"></i>' + (s.teacherName || 'Teacher') +
+                            (wasRejected ? ' · <span style="color:var(--danger);">Previously rejected</span>' : '') +
+                        '</div>' +
+                    '</div>' +
+                    '<button class="btn btn-primary btn-sm" onclick="requestEnrolment(\'' + s.id + '\', \'' + s.name.replace(/'/g, "\\'") + '\', \'' + s.teacherId + '\', \'' + (s.teacherName || 'Teacher').replace(/'/g, "\\'") + '\', \'' + studentName.replace(/'/g, "\\'") + '\', \'' + user.uid + '\', ' + (item.enrolment ? '\'' + item.enrolment.id + '\'' : 'null') + ')">' +
+                        '<i class="fas fa-plus"></i> ' + (wasRejected ? 'Request Again' : 'Enrol') +
+                    '</button>' +
+                '</div>';
+            });
+
+            html += '</div></div>';
+        }
+
+        if (enrolledSubjects.length === 0 && pendingSubjects.length === 0 && availableSubjects.length === 0) {
+            html = '<div class="empty-state">' +
+                '<i class="fas fa-book-open"></i>' +
+                '<p>No subjects available in your school yet.</p>' +
+                '<p style="font-size:0.85rem;">Check back once your teacher has created subjects.</p>' +
+            '</div>';
+        }
+
+        container.innerHTML = html;
+
+    } catch (error) {
+        console.error('❌ Error loading enrolment page:', error);
+        container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading enrolment information.</p>';
+    }
+};
+
+// Request enrolment into a subject
+window.requestEnrolment = async function(subjectId, subjectName, teacherId, teacherName, studentName, studentId, existingEnrolmentId) {
+    try {
+        if (existingEnrolmentId) {
+            // Re-request: update existing rejected enrolment
+            const enrolmentRef = doc(db, 'schools/' + schoolId + '/enrolments/' + existingEnrolmentId);
+            await updateDoc(enrolmentRef, {
+                status: 'pending',
+                requestedAt: new Date().toISOString(),
+                resolvedAt: null
+            });
+        } else {
+            // New request
+            const enrolmentRef = doc(collection(db, 'schools/' + schoolId + '/enrolments'));
+            await setDoc(enrolmentRef, {
+                studentId,
+                studentName,
+                subjectId,
+                subjectName,
+                teacherId,
+                teacherName,
+                status: 'pending',
+                requestedAt: new Date().toISOString(),
+                resolvedAt: null
+            });
+        }
+
+        await loadEnrolmentPage();
+
+    } catch (error) {
+        console.error('❌ Error requesting enrolment:', error);
+        alert('Error submitting enrolment request. Please try again.');
+    }
+};
+
+window.loadEnrolmentPage = window.loadEnrolmentPage;
+window.requestEnrolment = window.requestEnrolment;
         
 </script>
 </body>
