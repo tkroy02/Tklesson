@@ -2470,7 +2470,7 @@
     </div>
 </div>
 
-    <!-- ========================================
+   <!-- ========================================
      PAGE: Enrolment
      ======================================== -->
 <div id="enrolment" class="page">
@@ -2481,17 +2481,43 @@
             <span>Student</span>
         </div>
     </div>
+
+    <!-- Search Box -->
+    <div class="form-group" style="margin-bottom: 16px;">
+        <div style="position: relative;">
+            <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+            <input type="text" id="enrolment-search" class="form-input" 
+                   placeholder="Search available courses..." 
+                   oninput="filterEnrolmentCourses()"
+                   style="padding-left: 40px;">
+        </div>
+    </div>
+
+    <!-- Scrollable Available Courses -->
     <div class="card" style="margin-bottom: 20px;">
-        <h3 class="section-title">Course Enrolment</h3>
-        <div id="enrolment-list">
+        <h3 class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+            Available Courses
+            <span id="available-count" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;"></span>
+        </h3>
+        <div id="available-courses-list" style="max-height: 400px; overflow-y: auto; padding-right: 4px;">
             <p style="color: var(--text-muted); text-align: center; padding: 30px;">
-                <i class="fas fa-user-check" style="font-size: 2rem; display: block; margin-bottom: 10px; opacity: 0.4;"></i>
-                Loading enrolment information...
+                <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+                Loading available courses...
+            </p>
+        </div>
+    </div>
+
+    <!-- Scrollable My Requests -->
+    <div class="card">
+        <h3 class="section-title">My Enrolment Requests</h3>
+        <div id="my-enrolments-list" style="max-height: 300px; overflow-y: auto; padding-right: 4px;">
+            <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+                Loading your requests...
             </p>
         </div>
     </div>
 </div>
-
     
 <!-- ========================================
      MY GRADES PAGE
@@ -7506,31 +7532,40 @@ window.watchVideo = watchVideo;
 // ========================================
 // 🏫 SCHOOL ENROLMENT — STUDENT SIDE
 // ========================================
-async function loadEnrolment() {
-    const container = document.getElementById('enrolment-list');
-    if (!container) return;
+let allAvailableSubjects = [];
 
-    container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
+async function loadEnrolment() {
+    const availableContainer = document.getElementById('available-courses-list');
+    const requestsContainer = document.getElementById('my-enrolments-list');
+    const countSpan = document.getElementById('available-count');
+    
+    if (!availableContainer || !requestsContainer) return;
+
+    availableContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
         <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
-        Loading enrolment information...
+        Loading available courses...
+    </p>`;
+    requestsContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
+        <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+        Loading your requests...
     </p>`;
 
     const user = auth.currentUser;
     if (!user) return;
 
     try {
-        // 1. Get all subjects in this school (teacher-created)
+        // 1. Get all subjects in this school
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsSnap = await getDocs(subjectsRef);
         const allSubjects = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // 2. Get student's own enrolment requests
+        // 2. Get student's enrolment requests
         const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
         const q = query(enrolmentsRef, where('studentId', '==', user.uid));
         const enrolSnap = await getDocs(q);
         const myEnrolments = enrolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // Build sets of subject IDs the student is already enrolled in or pending
+        // Build sets for quick lookup
         const enrolledSubjectIds = new Set();
         const pendingSubjectIds = new Set();
         myEnrolments.forEach(e => {
@@ -7538,78 +7573,101 @@ async function loadEnrolment() {
             if (e.status === 'pending') pendingSubjectIds.add(e.subjectId);
         });
 
-        // 3. Available subjects: those not already enrolled/pending
-        const availableSubjects = allSubjects.filter(s => 
+        // 3. Available subjects
+        allAvailableSubjects = allSubjects.filter(s => 
             !enrolledSubjectIds.has(s.id) && !pendingSubjectIds.has(s.id)
         );
 
-        // 4. Render the UI
-        let html = '';
+        // 4. Render available courses
+        renderAvailableCourses(allAvailableSubjects);
+        if (countSpan) countSpan.textContent = `${allAvailableSubjects.length} course${allAvailableSubjects.length !== 1 ? 's' : ''}`;
 
-        // -- Available Courses section --
-        if (availableSubjects.length > 0) {
-            html += `<h3 style="margin-bottom: 12px;">Available Courses</h3>`;
-            availableSubjects.forEach(s => {
-                html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
-                    <div>
-                        <strong>${s.name}</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);">Teacher: ${s.teacherName || 'Unknown'}</div>
-                    </div>
-                    <button class="btn btn-primary btn-sm" onclick="requestEnrolment('${s.id}', '${s.name.replace(/'/g, "\\'")}', '${s.teacherId}')">
-                        <i class="fas fa-plus"></i> Enrol
-                    </button>
-                </div>`;
-            });
-        } else {
-            html += `<div class="empty-state">
-                <i class="fas fa-check-circle"></i>
-                <p>No courses available for enrolment right now.</p>
-            </div>`;
-        }
-
-        // -- My Requests section --
-        html += `<h3 style="margin-top: 24px; margin-bottom: 12px;">My Requests</h3>`;
+        // 5. Render my requests
         if (myEnrolments.length === 0) {
-            html += `<div class="empty-state">
+            requestsContainer.innerHTML = `<div class="empty-state">
                 <i class="fas fa-clock"></i>
                 <p>You haven't requested enrolment in any courses yet.</p>
             </div>`;
         } else {
-            myEnrolments.forEach(e => {
+            requestsContainer.innerHTML = myEnrolments.map(e => {
                 const statusColor = e.status === 'enrolled' ? 'var(--success)' : 
                                    e.status === 'pending' ? '#f39c12' : 'var(--danger)';
                 const statusIcon = e.status === 'enrolled' ? 'fa-check-circle' :
                                    e.status === 'pending' ? 'fa-clock' : 'fa-times-circle';
-                html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
-                    <div>
-                        <strong>${e.subjectName}</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);">
-                            Requested: ${new Date(e.requestedAt).toLocaleDateString()}
+                return `
+                <div class="enrolment-item">
+                    <div class="course-info">
+                        <div class="course-name">${e.subjectName}</div>
+                        <div class="course-meta">
+                            <i class="fas fa-calendar"></i> ${new Date(e.requestedAt).toLocaleDateString()}
                         </div>
                     </div>
-                    <span style="color:${statusColor};font-weight:600;display:flex;align-items:center;gap:6px;">
+                    <span class="enrolment-status status-${e.status}">
                         <i class="fas ${statusIcon}"></i> ${e.status.charAt(0).toUpperCase() + e.status.slice(1)}
                     </span>
                 </div>`;
-            });
+            }).join('');
         }
-
-        container.innerHTML = html;
 
     } catch (error) {
         console.error('Error loading enrolment:', error);
-        container.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading enrolment. Please try again.</p>`;
+        availableContainer.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading courses.</p>`;
+        requestsContainer.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading requests.</p>`;
     }
 }
 window.loadEnrolment = loadEnrolment;
+
+function renderAvailableCourses(subjects) {
+    const container = document.getElementById('available-courses-list');
+    if (!container) return;
+
+    if (subjects.length === 0) {
+        container.innerHTML = `<div class="empty-state">
+            <i class="fas fa-check-circle"></i>
+            <p>No courses available for enrolment right now.</p>
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = subjects.map(s => `
+        <div class="enrolment-item">
+            <div class="course-info">
+                <div class="course-name">${s.name}</div>
+                <div class="course-meta">
+                    <i class="fas fa-chalkboard-teacher"></i> ${s.teacherName || 'Unknown'}
+                </div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="requestEnrolment('${s.id}', '${s.name.replace(/'/g, "\\'")}', '${s.teacherId}')">
+                <i class="fas fa-plus"></i> Enrol
+            </button>
+        </div>
+    `).join('');
+}
+
+function filterEnrolmentCourses() {
+    const query = document.getElementById('enrolment-search').value.toLowerCase().trim();
+    const countSpan = document.getElementById('available-count');
+    
+    if (!query) {
+        renderAvailableCourses(allAvailableSubjects);
+        if (countSpan) countSpan.textContent = `${allAvailableSubjects.length} course${allAvailableSubjects.length !== 1 ? 's' : ''}`;
+        return;
+    }
+
+    const filtered = allAvailableSubjects.filter(s => 
+        s.name.toLowerCase().includes(query) || 
+        (s.teacherName && s.teacherName.toLowerCase().includes(query))
+    );
+    
+    renderAvailableCourses(filtered);
+    if (countSpan) countSpan.textContent = `${filtered.length} of ${allAvailableSubjects.length} course${filtered.length !== 1 ? 's' : ''}`;
+}
+window.filterEnrolmentCourses = filterEnrolmentCourses;
 
 async function requestEnrolment(subjectId, subjectName, teacherId) {
     const user = auth.currentUser;
     if (!user) return;
 
-    // Get student's display name (from Firestore or fallback)
     let studentName = user.displayName || 'Student';
     try {
         const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
@@ -7631,16 +7689,13 @@ async function requestEnrolment(subjectId, subjectName, teacherId) {
             requestedAt: new Date().toISOString()
         });
 
-        await loadEnrolment(); // refresh the UI
+        await loadEnrolment();
     } catch (error) {
         console.error('Error requesting enrolment:', error);
         alert('Error requesting enrolment. Please try again.');
     }
 }
-        
-// Make functions globally accessible
 window.requestEnrolment = requestEnrolment;
-
 // =====================================//
 //======ENROLMENT ENDS HERE ===============//
 // =======================================//
