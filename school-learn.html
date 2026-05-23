@@ -2195,55 +2195,34 @@
     </div>
 </div>
     
-<!-- ========================================
-     PAGE: Progress Tracking
-     ======================================== -->
-<!-- ========================================
-     PROGRESS PAGE — REPLACED
+    <!-- ========================================
+     PROGRESS PAGE
      ======================================== -->
 <div id="progress" class="page">
     <div class="page-header">
-        <h1 class="page-title">My Progress</h1>
+        <h1 class="page-title">Progress Tracking</h1>
         <div class="user-info">
             <div class="user-avatar">ST</div>
             <span>Student</span>
         </div>
     </div>
 
-    <!-- Overall Stats Row -->
-    <div class="stats-grid" id="progress-stats">
-        <div class="stat-card">
-            <div class="stat-value" id="stat-courses">0</div>
-            <div class="stat-label">Enrolled Courses</div>
+    <div class="dashboard-grid">
+        <!-- Left Card: Course Progress -->
+        <div class="card">
+            <h3 class="section-title">Course Progress</h3>
+            <div id="course-progress-list">
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">Loading...</p>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-avg-grade">0%</div>
-            <div class="stat-label">Average Quiz Score</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-quizzes">0</div>
-            <div class="stat-label">Quizzes Completed</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-study-days">0</div>
-            <div class="stat-label">Study Days</div>
-        </div>
-    </div>
 
-    <!-- Course Performance Cards -->
-    <h3 class="section-title" style="margin-top: 8px;">Course Performance</h3>
-    <div class="courses-grid" id="course-progress-list">
-        <p style="color: var(--text-muted); text-align: center; padding: 40px; grid-column: 1 / -1;">
-            Loading your progress...
-        </p>
-    </div>
-
-    <!-- Teacher Gradebook GPA Summary -->
-    <h3 class="section-title" style="margin-top: 24px;">Official Grades</h3>
-    <div class="card" id="overall-performance">
-        <p style="color: var(--text-muted); text-align: center; padding: 20px;">
-            Loading grades...
-        </p>
+        <!-- Right Card: Overall Performance -->
+        <div class="card">
+            <h3 class="section-title">Overall Performance</h3>
+            <div id="overall-performance">
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">Loading...</p>
+            </div>
+        </div>
     </div>
 </div>
     
@@ -2808,136 +2787,106 @@ async function updateCourseProgress(courseId, progress, activityType = 'study', 
 window.updateCourseProgress = updateCourseProgress;
 
 // ========================================
-// PROGRESS DISPLAY — FULL B2C STYLE
+// PROGRESS DISPLAY — B2C STYLE
 // ========================================
 async function updateProgressDisplay() {
-    const courseCards = document.getElementById('progress-course-cards');
-    const gradesSummary = document.getElementById('progress-grades-summary');
-    
-    if (!courseCards || !gradesSummary) return;
+    const list = document.getElementById('course-progress-list');
+    const perf = document.getElementById('overall-performance');
+    if (!list || !perf) return;
 
     // Admin view
     if (isAdmin()) {
-        courseCards.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;grid-column:1/-1;">Admin preview — student progress appears here</p>';
-        gradesSummary.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">Admin preview</p>';
-        document.getElementById('stat-courses').textContent = '—';
-        document.getElementById('stat-avg-grade').textContent = '—';
-        document.getElementById('stat-quizzes').textContent = '—';
-        document.getElementById('stat-study-days').textContent = '—';
+        list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;">Admin preview — student progress appears here</p>';
+        perf.innerHTML = '<div style="text-align:center;padding:30px;"><div style="font-size:4rem;font-weight:800;color:var(--primary);">—</div><div style="color:var(--text-muted);">Admin View</div></div>';
         return;
     }
 
     const courses = await getEnrolledCourses();
 
-    // ---- STATS ROW ----
-    const enrolledCount = courses.length;
-    const quizzes = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
-    const withScores = courses.filter(c => c.averageScore != null);
-    const avg = withScores.length 
-        ? Math.round(withScores.reduce((s, c) => s + c.averageScore, 0) / withScores.length) 
-        : 0;
-    const studyDays = await calculateStudyDays();
-
-    document.getElementById('stat-courses').textContent = enrolledCount;
-    document.getElementById('stat-avg-grade').textContent = avg + '%';
-    document.getElementById('stat-quizzes').textContent = quizzes;
-    document.getElementById('stat-study-days').textContent = studyDays;
-
-    // ---- COURSE PERFORMANCE CARDS ----
+    // ---- LEFT: Course progress bars ----
     if (courses.length === 0) {
-        courseCards.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;grid-column:1/-1;">No courses enrolled yet. Start learning to see your progress!</p>';
+        list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;">No courses enrolled yet.</p>';
     } else {
-        courseCards.innerHTML = courses.map(c => {
-            const score = c.averageScore || 0;
-            const scoreClass = score >= 80 ? 'high' : score >= 50 ? 'mid' : 'low';
-            const quizScores = c.quizScores || [];
-            const recentScores = quizScores.slice(-5);
-            
+        // Fetch teacher grades for letter grades
+        let gradeMap = {};
+        try {
+            const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+            const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', auth.currentUser.uid));
+            const subjectsSnap = await getDocs(subjectsQuery);
+            const mySubjectNames = new Set();
+            subjectsSnap.docs.forEach(doc => {
+                const name = doc.data().name;
+                if (name) mySubjectNames.add(name);
+            });
+
+            const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
+            const gradebooksSnap = await getDocs(gradebooksRef);
+            gradebooksSnap.docs.forEach(doc => {
+                const data = doc.data();
+                if (data.subjectName && mySubjectNames.has(data.subjectName)) {
+                    const entry = (data.entries || {})[auth.currentUser.uid];
+                    if (entry && entry.grade) {
+                        gradeMap[data.subjectName] = entry.grade;
+                    }
+                }
+            });
+        } catch (e) {
+            console.warn('Could not fetch grades for progress:', e);
+        }
+
+        list.innerHTML = courses.map(c => {
+            const progress = c.progress || 0;
+            const avgScore = c.averageScore || 0;
+            const letterGrade = gradeMap[c.title] || (avgScore >= 90 ? 'A+' : avgScore >= 80 ? 'A' : avgScore >= 70 ? 'B' : avgScore >= 60 ? 'C' : avgScore > 0 ? 'D' : '');
+            const gradeDisplay = letterGrade ? ` • ${letterGrade}` : '';
+
             return `
-                <div class="progress-course-card">
-                    <div class="progress-course-header">
-                        <h4>${c.title}</h4>
-                        <div class="progress-course-score ${score > 0 ? scoreClass : ''}">${score}%</div>
+                <div style="margin-bottom: 25px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: 500;">${c.title}</span>
+                        <span style="font-weight: 600; color: var(--primary);">${progress}%${gradeDisplay}</span>
                     </div>
                     <div class="progress-bar">
-                        <div class="progress-fill" style="width:${c.progress || 0}%"></div>
-                    </div>
-                    <div class="progress-course-meta">
-                        <span><i class="fas fa-check-circle"></i> ${c.completedQuizzes || 0} quizzes</span>
-                        <span><i class="fas fa-chart-line"></i> ${c.progress || 0}% complete</span>
-                        ${recentScores.length > 0 ? `
-                            <span style="width:100%;margin-top:4px;">
-                                <i class="fas fa-history"></i> Recent: ${recentScores.map(s => s + '%').join(' → ')}
-                            </span>
-                        ` : ''}
+                        <div class="progress-fill" style="width: ${progress}%"></div>
                     </div>
                 </div>`;
         }).join('');
     }
 
-    // ---- TEACHER GRADEBOOK SUMMARY ----
-    try {
-        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
-        const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', auth.currentUser.uid));
-        const subjectsSnap = await getDocs(subjectsQuery);
-        const mySubjectNames = new Set();
-        const subjectTeachers = {};
-        
-        subjectsSnap.docs.forEach(doc => {
-            const name = doc.data().name;
-            if (name) {
-                mySubjectNames.add(name);
-                subjectTeachers[name] = doc.data().teacherName || 'Teacher';
-            }
-        });
+    // ---- RIGHT: Overall performance ----
+    const withScores = courses.filter(c => c.averageScore != null);
+    const avg = withScores.length
+        ? Math.round(withScores.reduce((s, c) => s + c.averageScore, 0) / withScores.length)
+        : 0;
+    const quizzes = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
+    const studyDays = await calculateStudyDays();
 
-        const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
-        const gradebooksSnap = await getDocs(gradebooksRef);
-        
-        let gradeEntries = [];
-        gradebooksSnap.docs.forEach(doc => {
-            const data = doc.data();
-            if (data.subjectName && mySubjectNames.has(data.subjectName)) {
-                const entry = (data.entries || {})[auth.currentUser.uid];
-                if (entry && entry.grade) {
-                    gradeEntries.push({
-                        subject: data.subjectName,
-                        teacher: subjectTeachers[data.subjectName] || 'Teacher',
-                        grade: entry.grade,
-                        score: entry.final ?? entry.midterm ?? '—'
-                    });
-                }
-            }
-        });
-
-        if (gradeEntries.length > 0) {
-            const gradeValues = { 'A+': 4.3, 'A': 4.0, 'A-': 3.7, 'B+': 3.3, 'B': 3.0, 'B-': 2.7, 'C+': 2.3, 'C': 2.0, 'C-': 1.7, 'D': 1.0, 'F': 0 };
-            const gpaTotal = gradeEntries.reduce((sum, g) => sum + (gradeValues[g.grade] || 0), 0);
-            const gpa = gradeEntries.length > 0 ? (gpaTotal / gradeEntries.length).toFixed(1) : '—';
-            
-            gradesSummary.innerHTML = `
-                <div class="gpa-display">
-                    <div class="gpa-value">${gpa}</div>
-                    <div class="gpa-label">Grade Point Average</div>
-                    <div class="gpa-subjects">
-                        ${gradeEntries.map(g => `
-                            <span class="gpa-subject-chip">${g.subject}: ${g.grade}</span>
-                        `).join('')}
-                    </div>
-                </div>`;
-        } else {
-            gradesSummary.innerHTML = `
-                <p style="color:var(--text-muted);text-align:center;padding:20px;">
-                    <i class="fas fa-clipboard-check" style="font-size:1.5rem;display:block;margin-bottom:8px;opacity:0.4;"></i>
-                    No official grades posted yet.
-                </p>`;
-        }
-    } catch (error) {
-        console.error('Error loading grades summary:', error);
-        gradesSummary.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">Could not load grades summary.</p>';
-    }
+    perf.innerHTML = `
+        <div style="text-align: center; padding: 30px 20px;">
+            <div style="font-size: 4rem; font-weight: 800; color: var(--primary); margin-bottom: 10px;">${avg}%</div>
+            <div style="color: var(--text-muted); font-size: 1.1rem; margin-bottom: 30px;">Average Grade</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left;">
+                <div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">Quizzes Completed</div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${quizzes}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">Study Days</div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${studyDays}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">Enrolled Courses</div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${courses.length}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">Teacher Grades</div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${Object.keys(gradeMap).length || 0}</div>
+                </div>
+            </div>
+        </div>`;
 }
 window.updateProgressDisplay = updateProgressDisplay;
+
 
 //.....................................//
 //..........RESOURCES ROUTER..........//
