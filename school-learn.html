@@ -2786,82 +2786,102 @@ async function updateCourseProgress(courseId, progress, activityType = 'study', 
 }
 window.updateCourseProgress = updateCourseProgress;
 
+// ========================================
+// PROGRESS DISPLAY — B2C STYLE
+// ========================================
 async function updateProgressDisplay() {
     const list = document.getElementById('course-progress-list');
     const perf = document.getElementById('overall-performance');
     if (!list || !perf) return;
 
     if (isAdmin()) {
-        list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">Admin preview — student progress appears here</p>';
+        list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;">Admin preview — student progress appears here</p>';
         perf.innerHTML = '<div style="text-align:center;padding:30px;"><div style="font-size:4rem;font-weight:800;color:var(--primary);">—</div><div style="color:var(--text-muted);">Admin View</div></div>';
         return;
     }
 
     const courses = await getEnrolledCourses();
 
+    // ---- LEFT: Course progress bars ----
     if (courses.length === 0) {
-        list.innerHTML = '<p style="color:var(--text-muted);padding:20px;">No courses to track yet.</p>';
-        perf.innerHTML = '<div style="text-align:center;padding:30px;"><div style="font-size:4rem;font-weight:800;color:var(--primary);">0%</div><div style="color:var(--text-muted);">Average Score</div></div>';
-        return;
+        list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:30px;">No courses enrolled yet.</p>';
+    } else {
+        list.innerHTML = courses.map(c => {
+            const progress = c.progress || 0;
+            const avgScore = c.averageScore || 0;
+            const completedQuizzes = c.completedQuizzes || 0;
+            const lastAccessed = c.lastAccessed
+                ? new Date(c.lastAccessed).toLocaleDateString()
+                : null;
+
+            const letterGrade = avgScore >= 90 ? 'A+' :
+                                avgScore >= 80 ? 'A' :
+                                avgScore >= 70 ? 'B' :
+                                avgScore >= 60 ? 'C' :
+                                avgScore > 0  ? 'F' : '';
+
+            const gradeColor = letterGrade === 'A+' || letterGrade === 'A' ? 'var(--success)'
+                : letterGrade === 'B' ? 'var(--primary)'
+                : letterGrade === 'C' ? 'var(--gold)'
+                : letterGrade === 'F' ? 'var(--danger)'
+                : 'var(--text-muted)';
+
+            return `
+                <div style="margin-bottom:24px;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+                        <span style="font-weight:600;color:var(--text-dark);font-size:0.95rem;">${c.title}</span>
+                        <span style="font-size:0.85rem;font-weight:600;">
+                            <span style="color:var(--primary);">${progress}%</span>
+                            <span style="color:var(--text-muted);"> • </span>
+                            <span style="color:var(--text-muted);">${avgScore}%</span>
+                            <span style="color:var(--text-muted);"> • </span>
+                            <span style="color:${gradeColor};">${letterGrade || '—'}</span>
+                        </span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width:${progress}%"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-top:5px;font-size:0.75rem;color:var(--text-muted);">
+                        <span><i class="fas fa-check-circle"></i> ${completedQuizzes}/200 quizzes completed</span>
+                        ${lastAccessed ? `<span>Last: ${lastAccessed}</span>` : ''}
+                    </div>
+                </div>`;
+        }).join('');
     }
 
-    const totalQuizzes = 200;
-    const quizzesCompleted = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
-    const totalProgress = courses.reduce((s, c) => s + (c.progress || 0), 0);
-    const overallProgress = courses.length > 0 ? Math.round(totalProgress / courses.length) : 0;
-    const withScores = courses.filter(c => c.averageScore != null);
+    // ---- RIGHT: Overall Performance ----
+    const withScores = courses.filter(c => c.averageScore != null && c.averageScore > 0);
     const avgScore = withScores.length
         ? Math.round(withScores.reduce((s, c) => s + c.averageScore, 0) / withScores.length)
         : 0;
+
+    const overallProgress = courses.length
+        ? Math.round(courses.reduce((s, c) => s + (c.progress || 0), 0) / courses.length)
+        : 0;
+
+    const totalQuizzes = courses.reduce((s, c) => s + (c.completedQuizzes || 0), 0);
     const studyDays = await calculateStudyDays();
 
-    list.innerHTML = courses.map(c => {
-        const progress = c.progress || 0;
-        const score = c.averageScore || 0;
-        const completed = c.completedQuizzes || 0;
-        const lastAccessed = c.lastAccessed ? new Date(c.lastAccessed).toLocaleDateString() : 'N/A';
-
-        const letterGrade = score >= 90 ? 'A'
-            : score >= 80 ? 'B'
-            : score >= 70 ? 'C'
-            : score >= 60 ? 'D'
-            : 'F';
-
-        return `
-            <div style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
-                <div style="font-weight: 600; color: var(--text-dark); margin-bottom: 4px;">${c.title}</div>
-                <div style="font-size: 0.85rem; color: var(--primary); font-weight: 500; margin-bottom: 6px;">
-                    ${progress}% • ${score}% • ${letterGrade}
-                </div>
-                <div class="progress-bar" style="margin-bottom: 6px;">
-                    <div class="progress-fill" style="width: ${progress}%"></div>
-                </div>
-                <div style="font-size: 0.8rem; color: var(--text-muted);">
-                    ${completed}/${totalQuizzes} quizzes completed • Last: ${lastAccessed}
-                </div>
-            </div>`;
-    }).join('');
-
     perf.innerHTML = `
-        <div style="text-align: center; padding: 20px;">
-            <div style="font-size: 4rem; font-weight: 800; color: var(--primary); margin-bottom: 5px;">${avgScore}%</div>
-            <div style="color: var(--text-muted); font-size: 1rem; margin-bottom: 25px;">Average Score</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; text-align: left;">
-                <div>
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">Enrolled Courses</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: var(--primary);">${courses.length}</div>
+        <div style="text-align:center;padding:20px 10px;">
+            <div style="font-size:4rem;font-weight:800;color:var(--primary);margin-bottom:4px;">${avgScore}%</div>
+            <div style="color:var(--text-muted);font-size:1rem;margin-bottom:28px;">Average Score</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;text-align:left;">
+                <div style="padding:14px;background:var(--bg);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+                    <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:4px;">Enrolled Courses</div>
+                    <div style="font-size:1.6rem;font-weight:700;color:var(--primary);">${courses.length}</div>
                 </div>
-                <div>
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">Quizzes Completed</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: var(--primary);">${quizzesCompleted}</div>
+                <div style="padding:14px;background:var(--bg);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+                    <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:4px;">Quizzes Completed</div>
+                    <div style="font-size:1.6rem;font-weight:700;color:var(--primary);">${totalQuizzes}</div>
                 </div>
-                <div>
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">Overall Progress</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: var(--primary);">${overallProgress}%</div>
+                <div style="padding:14px;background:var(--bg);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+                    <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:4px;">Overall Progress</div>
+                    <div style="font-size:1.6rem;font-weight:700;color:var(--primary);">${overallProgress}%</div>
                 </div>
-                <div>
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">Current Streak</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: var(--primary);">${studyDays} days</div>
+                <div style="padding:14px;background:var(--bg);border-radius:var(--border-radius-sm);border:1px solid var(--border);">
+                    <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:4px;">Study Days</div>
+                    <div style="font-size:1.6rem;font-weight:700;color:var(--primary);">${studyDays}</div>
                 </div>
             </div>
         </div>`;
