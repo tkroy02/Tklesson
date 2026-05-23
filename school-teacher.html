@@ -2402,6 +2402,220 @@ onAuthStateChanged(auth, async (user) => {
 
 //=================COLLECTION TOPIC QUIZZES=================================//
 
+// ========================================
+// 🎓 ENROLMENT — TEACHER SIDE
+// ========================================
+
+// Load enrolment page and update badge
+window.loadEnrolment = async function() {
+    const container = document.getElementById('enrolment-content');
+    container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading enrolment requests...</p>';
+
+    try {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        // Get all enrolments for this teacher's subjects
+        const enrolmentsRef = collection(db, 'schools/' + schoolId + '/enrolments');
+        const q = query(enrolmentsRef, where('teacherId', '==', user.uid));
+        const snap = await getDocs(q);
+
+        if (snap.empty) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                    '<i class="fas fa-user-check"></i>' +
+                    '<p>No enrolment requests at this time.</p>' +
+                '</div>';
+            updateEnrolmentBadge(0);
+            return;
+        }
+
+        // Group by status: pending first, then enrolled, then rejected
+        const pending = [];
+        const enrolled = [];
+        const rejected = [];
+
+        snap.docs.forEach(function(d) {
+            const data = { id: d.id, ...d.data() };
+            if (data.status === 'pending') pending.push(data);
+            else if (data.status === 'enrolled') enrolled.push(data);
+            else if (data.status === 'rejected') rejected.push(data);
+        });
+
+        updateEnrolmentBadge(pending.length);
+
+        let html = '';
+
+        // Pending requests
+        if (pending.length > 0) {
+            // Group pending by subjectName
+            const grouped = {};
+            pending.forEach(function(e) {
+                if (!grouped[e.subjectName]) grouped[e.subjectName] = [];
+                grouped[e.subjectName].push(e);
+            });
+
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-clock" style="margin-right:6px;color:#f39c12;"></i>Pending Requests (' + pending.length + ')' +
+                '</div>';
+
+            Object.keys(grouped).sort().forEach(function(subjectName) {
+                const requests = grouped[subjectName];
+                html += '<div style="margin-bottom:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;">' +
+                    '<div style="padding:12px 18px;background:var(--bg-card);border-bottom:1px solid var(--border);font-weight:600;color:var(--text-dark);">' +
+                        '<i class="fas fa-book-open" style="margin-right:8px;color:var(--primary);"></i>' + subjectName +
+                    '</div>';
+
+                requests.forEach(function(e) {
+                    const date = new Date(e.requestedAt).toLocaleDateString('en-US', {
+                        month: 'short', day: 'numeric', year: 'numeric'
+                    });
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-top:1px solid var(--border);flex-wrap:wrap;gap:10px;">' +
+                        '<div>' +
+                            '<div style="font-weight:500;color:var(--text-dark);">' +
+                                '<i class="fas fa-user-graduate" style="color:var(--text-muted);margin-right:8px;"></i>' + e.studentName +
+                            '</div>' +
+                            '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">Requested ' + date + '</div>' +
+                        '</div>' +
+                        '<div style="display:flex;gap:8px;">' +
+                            '<button class="btn btn-primary btn-sm" onclick="resolveEnrolment(\'' + e.id + '\', \'' + e.studentId + '\', \'' + e.studentName.replace(/'/g, "\\'") + '\', \'' + e.subjectId + '\', \'' + e.subjectName.replace(/'/g, "\\'") + '\', \'enrolled\')">' +
+                                '<i class="fas fa-check"></i> Approve' +
+                            '</button>' +
+                            '<button class="btn btn-danger btn-sm" onclick="resolveEnrolment(\'' + e.id + '\', \'' + e.studentId + '\', \'' + e.studentName.replace(/'/g, "\\'") + '\', \'' + e.subjectId + '\', \'' + e.subjectName.replace(/'/g, "\\'") + '\', \'rejected\')">' +
+                                '<i class="fas fa-times"></i> Reject' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>';
+                });
+
+                html += '</div>';
+            });
+
+            html += '</div>';
+        }
+
+        // Enrolled
+        if (enrolled.length > 0) {
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-check-circle" style="margin-right:6px;color:var(--success);"></i>Enrolled (' + enrolled.length + ')' +
+                '</div>' +
+                '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;">';
+
+            enrolled.forEach(function(e, i) {
+                const date = new Date(e.resolvedAt).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric'
+                });
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;' + (i > 0 ? 'border-top:1px solid var(--border);' : '') + 'flex-wrap:wrap;gap:8px;">' +
+                    '<div>' +
+                        '<div style="font-weight:500;color:var(--text-dark);">' +
+                            '<i class="fas fa-user-graduate" style="color:var(--text-muted);margin-right:8px;"></i>' + e.studentName +
+                        '</div>' +
+                        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">' + e.subjectName + ' · Enrolled ' + date + '</div>' +
+                    '</div>' +
+                    '<span style="padding:4px 10px;background:var(--success);color:white;border-radius:10px;font-size:0.75rem;font-weight:600;">Enrolled</span>' +
+                '</div>';
+            });
+
+            html += '</div></div>';
+        }
+
+        // Rejected
+        if (rejected.length > 0) {
+            html += '<div style="margin-bottom:28px;">' +
+                '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;">' +
+                    '<i class="fas fa-times-circle" style="margin-right:6px;color:var(--danger);"></i>Rejected (' + rejected.length + ')' +
+                '</div>' +
+                '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;">';
+
+            rejected.forEach(function(e, i) {
+                const date = new Date(e.resolvedAt).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric'
+                });
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;' + (i > 0 ? 'border-top:1px solid var(--border);' : '') + 'flex-wrap:wrap;gap:8px;">' +
+                    '<div>' +
+                        '<div style="font-weight:500;color:var(--text-dark);">' +
+                            '<i class="fas fa-user-graduate" style="color:var(--text-muted);margin-right:8px;"></i>' + e.studentName +
+                        '</div>' +
+                        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">' + e.subjectName + ' · Rejected ' + date + '</div>' +
+                    '</div>' +
+                    '<span style="padding:4px 10px;background:var(--danger);color:white;border-radius:10px;font-size:0.75rem;font-weight:600;">Rejected</span>' +
+                '</div>';
+            });
+
+            html += '</div></div>';
+        }
+
+        container.innerHTML = html;
+
+    } catch (error) {
+        console.error('❌ Error loading enrolments:', error);
+        container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading enrolment requests.</p>';
+    }
+};
+
+// Approve or reject an enrolment request
+window.resolveEnrolment = async function(enrolmentId, studentId, studentName, subjectId, subjectName, status) {
+    try {
+        const enrolmentRef = doc(db, 'schools/' + schoolId + '/enrolments/' + enrolmentId);
+        await updateDoc(enrolmentRef, {
+            status: status,
+            resolvedAt: new Date().toISOString()
+        });
+
+        // If approved, add student to subject
+        if (status === 'enrolled') {
+            const subjectRef = doc(db, 'schools/' + schoolId + '/subjects/' + subjectId);
+            await updateDoc(subjectRef, {
+                studentIds: arrayUnion(studentId),
+                studentNames: arrayUnion(studentName)
+            });
+        }
+
+        // Reload enrolment page
+        await loadEnrolment();
+        await loadDashboard();
+
+    } catch (error) {
+        console.error('❌ Error resolving enrolment:', error);
+        alert('Error processing request. Please try again.');
+    }
+};
+
+// Update the badge on the sidebar and page title
+function updateEnrolmentBadge(count) {
+    const badge = document.getElementById('enrolment-badge');
+    if (!badge) return;
+    if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = 'inline-block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+// Check pending enrolments on page load to show badge
+window.checkEnrolmentBadge = async function() {
+    try {
+        const user = auth.currentUser;
+        if (!user) return;
+        const enrolmentsRef = collection(db, 'schools/' + schoolId + '/enrolments');
+        const q = query(enrolmentsRef,
+            where('teacherId', '==', user.uid),
+            where('status', '==', 'pending')
+        );
+        const snap = await getDocs(q);
+        updateEnrolmentBadge(snap.size);
+    } catch (error) {
+        console.error('❌ Error checking enrolment badge:', error);
+    }
+};
+
+window.loadEnrolment = window.loadEnrolment;
+window.resolveEnrolment = window.resolveEnrolment;
+window.checkEnrolmentBadge = window.checkEnrolmentBadge;
+
         
     </script>
 </body>
