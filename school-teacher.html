@@ -1305,8 +1305,8 @@ if (assignments.length === 0 && subjects.length === 0) {
             const subjects = await getTeacherSubjects();
             teacherSubjects = subjects;
 
-            const container = document.getElementById('student-grades-table');
-            
+            const container = document.getElementById('subjects-container');
+
             if (subjects.length === 0) {
                 container.innerHTML = `
                     <div class="empty-state">
@@ -1521,16 +1521,18 @@ window.deleteSubject = async function(subjectId, subjectName) {
     if (!confirm(`Delete "${subjectName}"?\n\nThis will permanently delete the subject, all enrolled students, and all gradebook data for this subject.\n\nThis cannot be undone.`)) return;
 
     try {
+        // Delete the subject document
         await deleteDoc(doc(db, `schools/${schoolId}/subjects/${subjectId}`));
 
+        // Delete the gradebook — find it by subjectName
         const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
         const gradebooksSnap = await getDocs(gradebooksRef);
         
-        for (const gradeDoc of gradebooksSnap.docs) {
+        gradebooksSnap.docs.forEach(async (gradeDoc) => {
             if (gradeDoc.data().subjectName === subjectName) {
                 await deleteDoc(doc(db, `schools/${schoolId}/gradebooks/${gradeDoc.id}`));
             }
-        }
+        });
 
         await loadMyClass();
         await loadDashboard();
@@ -1556,40 +1558,47 @@ window.deleteSubject = async function(subjectId, subjectName) {
 
     const remaining = 40 - assignments.length;
 
-    let html = '';
+ async function loadAssignments() {
+    const assignments = await getTeacherAssignments();
+    const container = document.getElementById('assignments-list');
 
-    if (remaining <= 5) {
-        html += `
-            <div style="background:var(--gold-light);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:0.8rem;color:#856404;">
-                ⚠️ ${remaining} assignment slot${remaining !== 1 ? 's' : ''} remaining. Oldest assignment will be removed when limit is reached.
+    if (assignments.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-clipboard-list"></i>
+                <p>No assignments sent yet.</p>
             </div>`;
+        return;
     }
 
-    html += `<div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">`;
+    const remaining = 40 - assignments.length;
 
-    assignments.forEach(a => {
-        html += `
-            <div class="assignment-item">
-                <div>
-                    <div class="assignment-subject">${a.subjectName || 'Unknown subject'}</div>
-                    <div class="assignment-title">${a.title}</div>
-                    <div class="assignment-meta">Sent to ${a.studentCount || 0} students · ${getTimeAgo(a.createdAt)}</div>
+    container.innerHTML = `
+        ${remaining <= 5 ? `
+            <div style="background:var(--gold-light);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:0.8rem;color:#856404;">
+                ⚠️ ${remaining} assignment slot${remaining !== 1 ? 's' : ''} remaining. Oldest assignment will be removed when limit is reached.
+            </div>
+        ` : ''}
+        <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+            ${assignments.map(a => `
+                <div class="assignment-item">
+                    <div>
+                        <div class="assignment-subject">${a.subjectName || 'Unknown subject'}</div>
+                        <div class="assignment-title">${a.title}</div>
+                        <div class="assignment-meta">Sent to ${a.studentCount || 0} students · ${getTimeAgo(a.createdAt)}</div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="btn btn-outline btn-sm" onclick="viewAssignmentDetail('${a.id}')">
+                            <i class="fas fa-eye"></i> View
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteAssignment('${a.id}', '${a.title.replace(/'/g, "\\'")}')" title="Delete assignment">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
                 </div>
-                <div style="display:flex;gap:6px;align-items:center;">
-                    <button class="btn btn-outline btn-sm" onclick="viewAssignmentDetail('${a.id}')">
-                        <i class="fas fa-eye"></i> View
-                    </button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteAssignment('${a.id}', '${a.title.replace(/'/g, "\\'")}')" title="Delete assignment">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </div>`;
-    });
-
-    html += `</div>`;
-
-    container.innerHTML = html;
-}
+            `).join('')}
+        </div>`;
+}}
             
         window.openCreateAssignment = async function() {
             const subjects = await getTeacherSubjects();
@@ -1892,26 +1901,17 @@ window.deleteSubject = async function(subjectId, subjectName) {
                 // Fixed columns
                 const columns = ['Assessment 1', 'Assessment 2', 'Midterm', 'Final'];
 
-container.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px;">
-        <h3 class="section-title" style="margin:0;">📋 ${subjectName} — Official Grades</h3>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <select id="gradebook-term-type" style="padding:6px 10px;border:2px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:0.8rem;">
-                <option value="">Term</option>
-                <option value="Fall">Fall</option>
-                <option value="Spring">Spring</option>
-                <option value="September">September</option>
-                <option value="January">January</option>
-                <option value="May">May</option>
-            </select>
-            <input type="number" id="gradebook-term-year" placeholder="Year" min="2024" max="2035" value="${new Date().getFullYear()}" style="width:70px;padding:6px 8px;border:2px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:0.8rem;">
-            <span id="gradebook-save-status" style="font-size:0.8rem;color:var(--text-muted);"></span>
-            <button class="btn btn-primary btn-sm" onclick="saveAllGradebook('${subjectId}', '${subjectName.replace(/'/g, "\\'")}')">
-                <i class="fas fa-save"></i> Save Changes
-            </button>
-        </div>
-    </div>
-    <div class="gradebook-table-container">
+                container.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px;">
+                        <h3 class="section-title" style="margin:0;">📋 ${subjectName} — Official Grades</h3>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span id="gradebook-save-status" style="font-size:0.8rem;color:var(--text-muted);"></span>
+                            <button class="btn btn-primary btn-sm" onclick="saveAllGradebook('${subjectId}', '${subjectName.replace(/'/g, "\\'")}')">
+                                <i class="fas fa-save"></i> Save Changes
+                            </button>
+                        </div>
+                    </div>
+                    <div class="gradebook-table-container">
                         <table class="gradebook-table">
                             <thead>
                                 <tr>
@@ -1950,12 +1950,9 @@ container.innerHTML = `
         };
 
                 window.saveAllGradebook = async function(subjectId, subjectName) {
-    const statusEl = document.getElementById('gradebook-save-status');
-    if (statusEl) statusEl.textContent = 'Saving...';
+            const statusEl = document.getElementById('gradebook-save-status');
+            if (statusEl) statusEl.textContent = 'Saving...';
 
-    const termType = document.getElementById('gradebook-term-type')?.value || '';
-    const termYear = document.getElementById('gradebook-term-year')?.value || '';
-    const term = termType && termYear ? `${termType} ${termYear}` : '';
             const newEntries = {};
 
             document.querySelectorAll('.score-input').forEach(input => {
@@ -1990,70 +1987,55 @@ container.innerHTML = `
             });
 
             try {
-        const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
-        const snap = await getDoc(gradebookRef);
+                const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
+                const snap = await getDoc(gradebookRef);
 
-        let existingEntries = {};
-        if (snap.exists()) {
-            existingEntries = snap.data().entries || {};
-        }
-
-        const mergedEntries = { ...existingEntries };
-
-        Object.keys(newEntries).forEach(sid => {
-            if (!mergedEntries[sid]) mergedEntries[sid] = {};
-            Object.keys(newEntries[sid]).forEach(field => {
-                if (newEntries[sid][field] === '__DELETE__') {
-                    delete mergedEntries[sid][field];
-                } else {
-                    mergedEntries[sid][field] = newEntries[sid][field];
+                let existingEntries = {};
+                if (snap.exists()) {
+                    existingEntries = snap.data().entries || {};
                 }
-            });
-            if (Object.keys(mergedEntries[sid]).length === 0) {
-                delete mergedEntries[sid];
+
+                // Merge: start with existing, then apply new values
+                const mergedEntries = { ...existingEntries };
+
+                Object.keys(newEntries).forEach(sid => {
+                    if (!mergedEntries[sid]) mergedEntries[sid] = {};
+
+                    Object.keys(newEntries[sid]).forEach(field => {
+                        if (newEntries[sid][field] === '__DELETE__') {
+                            delete mergedEntries[sid][field];
+                        } else {
+                            mergedEntries[sid][field] = newEntries[sid][field];
+                        }
+                    });
+
+                    // If student has no fields left, remove them entirely
+                    if (Object.keys(mergedEntries[sid]).length === 0) {
+                        delete mergedEntries[sid];
+                    }
+                });
+
+                await setDoc(gradebookRef, {
+    subjectName: subjectName,
+    entries: mergedEntries,
+    updatedAt: new Date().toISOString()
+});
+                if (statusEl) {
+                    statusEl.textContent = '✓ Saved';
+                    statusEl.style.color = 'var(--success)';
+                    setTimeout(() => {
+                        statusEl.textContent = '';
+                        statusEl.style.color = '';
+                    }, 2000);
+                }
+            } catch (error) {
+                console.error('Error saving gradebook:', error);
+                if (statusEl) {
+                    statusEl.textContent = 'Error saving';
+                    statusEl.style.color = 'var(--danger)';
+                }
             }
-        });
-
-        await setDoc(gradebookRef, {
-            subjectName: subjectName,
-            term: term,
-            entries: mergedEntries,
-            updatedAt: new Date().toISOString()
-        });
-
-        if (statusEl) {
-            statusEl.textContent = '✓ Saved';
-            statusEl.style.color = 'var(--success)';
-            setTimeout(() => {
-                statusEl.textContent = '';
-                statusEl.style.color = '';
-            }, 2000);
-        }
-    } catch (error) {
-        console.error('Error saving gradebook:', error);
-        if (statusEl) {
-            statusEl.textContent = 'Error saving';
-            statusEl.style.color = 'var(--danger)';
-        }
-    }
-};
-
-// Load existing term into the inputs
-const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${subjectId}`);
-const gradebookSnap = await getDoc(gradebookRef);
-const existingTerm = gradebookSnap.exists() ? (gradebookSnap.data().term || '') : '';
-const filterType = document.getElementById('grade-term-type')?.value || '';
-const filterYear = document.getElementById('grade-term-year')?.value || '';
-
-if (existingTerm) {
-    const parts = existingTerm.split(' ');
-    setTimeout(() => {
-        const typeSelect = document.getElementById('gradebook-term-type');
-        const yearInput = document.getElementById('gradebook-term-year');
-        if (typeSelect && parts[0]) typeSelect.value = parts[0];
-        if (yearInput && parts[1]) yearInput.value = parts[1];
-    }, 50);
-}
+        };
         
         // ========== SETTINGS ==========
         function loadSettings() {
