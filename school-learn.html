@@ -7408,8 +7408,13 @@ window.watchVideo = watchVideo;
 // ==============================================//
 
 // ========== ENROLMENT ==========
+// ========================================
+// 🏫 SCHOOL ENROLMENT — STUDENT SIDE
+// ========================================
 async function loadEnrolment() {
     const container = document.getElementById('enrolment-list');
+    if (!container) return;
+
     container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
         <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
         Loading enrolment information...
@@ -7419,18 +7424,18 @@ async function loadEnrolment() {
     if (!user) return;
 
     try {
-        // 1. Get all subjects in this school
+        // 1. Get all subjects in this school (teacher-created)
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsSnap = await getDocs(subjectsRef);
         const allSubjects = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // 2. Get student's enrolment requests
+        // 2. Get student's own enrolment requests
         const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
         const q = query(enrolmentsRef, where('studentId', '==', user.uid));
         const enrolSnap = await getDocs(q);
         const myEnrolments = enrolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // Build sets for quick lookup
+        // Build sets of subject IDs the student is already enrolled in or pending
         const enrolledSubjectIds = new Set();
         const pendingSubjectIds = new Set();
         myEnrolments.forEach(e => {
@@ -7438,18 +7443,20 @@ async function loadEnrolment() {
             if (e.status === 'pending') pendingSubjectIds.add(e.subjectId);
         });
 
-        // 3. Available subjects: not enrolled, not pending
+        // 3. Available subjects: those not already enrolled/pending
         const availableSubjects = allSubjects.filter(s => 
             !enrolledSubjectIds.has(s.id) && !pendingSubjectIds.has(s.id)
         );
 
-        // 4. Render available subjects
+        // 4. Render the UI
         let html = '';
+
+        // -- Available Courses section --
         if (availableSubjects.length > 0) {
             html += `<h3 style="margin-bottom: 12px;">Available Courses</h3>`;
             availableSubjects.forEach(s => {
                 html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
                     <div>
                         <strong>${s.name}</strong>
                         <div style="font-size:0.8rem;color:var(--text-muted);">Teacher: ${s.teacherName || 'Unknown'}</div>
@@ -7466,7 +7473,7 @@ async function loadEnrolment() {
             </div>`;
         }
 
-        // 5. Render my requests
+        // -- My Requests section --
         html += `<h3 style="margin-top: 24px; margin-bottom: 12px;">My Requests</h3>`;
         if (myEnrolments.length === 0) {
             html += `<div class="empty-state">
@@ -7480,7 +7487,7 @@ async function loadEnrolment() {
                 const statusIcon = e.status === 'enrolled' ? 'fa-check-circle' :
                                    e.status === 'pending' ? 'fa-clock' : 'fa-times-circle';
                 html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
                     <div>
                         <strong>${e.subjectName}</strong>
                         <div style="font-size:0.8rem;color:var(--text-muted);">
@@ -7501,18 +7508,21 @@ async function loadEnrolment() {
         container.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading enrolment. Please try again.</p>`;
     }
 }
+window.loadEnrolment = loadEnrolment;
 
 async function requestEnrolment(subjectId, subjectName, teacherId) {
     const user = auth.currentUser;
     if (!user) return;
 
-    // Get student's display name
+    // Get student's display name (from Firestore or fallback)
     let studentName = user.displayName || 'Student';
-    const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
-    const userSnap = await getDoc(userRef);
-    if (userSnap.exists() && userSnap.data().displayName) {
-        studentName = userSnap.data().displayName;
-    }
+    try {
+        const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists() && userSnap.data().displayName) {
+            studentName = userSnap.data().displayName;
+        }
+    } catch (e) { /* use fallback */ }
 
     try {
         const enrolmentRef = doc(collection(db, `schools/${schoolId}/enrolments`));
@@ -7526,15 +7536,14 @@ async function requestEnrolment(subjectId, subjectName, teacherId) {
             requestedAt: new Date().toISOString()
         });
 
-        await loadEnrolment(); // Refresh the page
+        await loadEnrolment(); // refresh the UI
     } catch (error) {
         console.error('Error requesting enrolment:', error);
         alert('Error requesting enrolment. Please try again.');
     }
 }
-
+        
 // Make functions globally accessible
-window.loadEnrolment = loadEnrolment;
 window.requestEnrolment = requestEnrolment;
 
 // =====================================//
