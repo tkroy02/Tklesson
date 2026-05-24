@@ -4906,7 +4906,7 @@ async function initializeSettings() {
         ? new Date(user.metadata.creationTime).toLocaleDateString()
         : 'Unknown';
     
-       // Populate notification toggles
+    // Populate notification toggles
     document.getElementById('email-notifications').checked = userSettings.notifications.email;
     document.getElementById('quiz-reminders').checked = userSettings.notifications.quizReminders;
     document.getElementById('study-goals').checked = userSettings.notifications.studyGoals;
@@ -4915,10 +4915,19 @@ async function initializeSettings() {
     // Load 2FA preference — Firestore first, fall back to localStorage
     if (user) {
         try {
-            const studentDoc = await getDoc(doc(db, 'students', user.uid));
-            if (studentDoc.exists() && studentDoc.data().twoFactorEnabled !== undefined) {
-                userSettings.security.twoFactor = studentDoc.data().twoFactorEnabled;
-                saveSettings(); // Sync to localStorage
+            let twoFactorDoc;
+            // Check schooladmins first
+            const adminDoc = await getDoc(doc(db, 'schooladmins', user.uid));
+            if (adminDoc.exists()) {
+                twoFactorDoc = adminDoc;
+            } else if (schoolId) {
+                // Check school users (teachers and students)
+                twoFactorDoc = await getDoc(doc(db, 'schools', schoolId, 'users', user.uid));
+            }
+            
+            if (twoFactorDoc && twoFactorDoc.exists() && twoFactorDoc.data().twoFactorEnabled !== undefined) {
+                userSettings.security.twoFactor = twoFactorDoc.data().twoFactorEnabled;
+                saveSettings();
             }
         } catch (error) {
             console.error('Error loading 2FA preference:', error);
@@ -4934,13 +4943,21 @@ async function initializeSettings() {
     document.getElementById('quiz-reminders').onchange = e => { userSettings.notifications.quizReminders = e.target.checked; saveSettings(); };
     document.getElementById('study-goals').onchange = e => { userSettings.notifications.studyGoals = e.target.checked; saveSettings(); };
     document.getElementById('theme-selector').onchange = e => { userSettings.preferences.theme = e.target.value; saveSettings(); };
-        document.getElementById('two-factor-toggle').onchange = async (e) => {
+    
+    document.getElementById('two-factor-toggle').onchange = async (e) => {
         const enabled = e.target.checked;
         const user = auth.currentUser;
         
         if (!user) return;
         
         if (enabled) {
+            // Check that otplib is loaded
+            if (typeof otplib === 'undefined') {
+                alert('Security library is still loading. Please try again in a moment.');
+                e.target.checked = false;
+                return;
+            }
+            
             // Generate a secret and show QR code
             const secret = otplib.authenticator.generateSecret();
             const otpauth = otplib.authenticator.keyuri(
@@ -4961,14 +4978,20 @@ async function initializeSettings() {
         } else {
             // Disable 2FA
             try {
-                await setDoc(
-                    doc(db, 'students', user.uid),
-                    { 
+                // Save to the correct collection
+                const adminDoc = await getDoc(doc(db, 'schooladmins', user.uid));
+                if (adminDoc.exists()) {
+                    await setDoc(doc(db, 'schooladmins', user.uid), { 
                         twoFactorEnabled: false,
                         twoFactorSecret: null
-                    },
-                    { merge: true }
-                );
+                    }, { merge: true });
+                } else if (schoolId) {
+                    await setDoc(doc(db, 'schools', schoolId, 'users', user.uid), { 
+                        twoFactorEnabled: false,
+                        twoFactorSecret: null
+                    }, { merge: true });
+                }
+                
                 userSettings.security.twoFactor = false;
                 saveSettings();
             } catch (error) {
@@ -4980,13 +5003,23 @@ async function initializeSettings() {
     };
 }
 
-// Save, getInitials, openEditProfile, closeEditProfile, saveProfile, changePassword, logout — all unchanged below
-
 
 // Save settings to localStorage
 function saveSettings() {
     localStorage.setItem('userSettings', JSON.stringify(userSettings));
 }
+
+
+// Generate 2-letter initials from a name
+function getInitials(name) {
+    return name
+        .split(' ')
+        .map(n => n[0])
+        .join('')
+        .toUpperCase()
+        .substring(0, 2);
+}
+
 
 // ===== 2FA SETUP FUNCTIONS =====
 
@@ -4995,7 +5028,6 @@ function showQRCodeModal(otpauth, secret) {
     document.getElementById('manual-secret').textContent = secret;
     document.getElementById('totp-verification-code').value = '';
     
-    // Generate QR code
     const container = document.getElementById('qrcode-container');
     container.innerHTML = '';
     new QRCode(container, {
@@ -5022,7 +5054,12 @@ window.verify2FASetup = async function() {
         return;
     }
     
-    // Verify the code
+    // Check that otplib is loaded
+    if (typeof otplib === 'undefined') {
+        alert('Security library is still loading. Please try again.');
+        return;
+    }
+    
     const isValid = otplib.authenticator.check(code, secret);
     
     if (!isValid) {
@@ -5030,16 +5067,20 @@ window.verify2FASetup = async function() {
         return;
     }
     
-    // Save to Firestore
     try {
-        await setDoc(
-            doc(db, 'students', user.uid),
-            {
+        // Save to the correct collection
+        const adminDoc = await getDoc(doc(db, 'schooladmins', user.uid));
+        if (adminDoc.exists()) {
+            await setDoc(doc(db, 'schooladmins', user.uid), {
                 twoFactorEnabled: true,
                 twoFactorSecret: secret
-            },
-            { merge: true }
-        );
+            }, { merge: true });
+        } else if (schoolId) {
+            await setDoc(doc(db, 'schools', schoolId, 'users', user.uid), {
+                twoFactorEnabled: true,
+                twoFactorSecret: secret
+            }, { merge: true });
+        }
         
         userSettings.security.twoFactor = true;
         saveSettings();
@@ -5052,17 +5093,6 @@ window.verify2FASetup = async function() {
         alert('Failed to enable 2FA. Please try again.');
     }
 };
-
-        
-// Generate 2-letter initials from a name
-function getInitials(name) {
-    return name
-        .split(' ')
-        .map(n => n[0])
-        .join('')
-        .toUpperCase()
-        .substring(0, 2);
-}
 
 
 // Open Edit Profile modal and pre-fill fields
@@ -5087,7 +5117,6 @@ window.saveProfile = async function() {
     const displayName = document.getElementById('edit-display-name').value.trim();
     const initials = document.getElementById('edit-avatar-initials').value.trim();
     
-    // Validate input
     if (!displayName || initials.length !== 2) {
         return alert('Please fill all fields correctly.');
     }
@@ -5095,17 +5124,14 @@ window.saveProfile = async function() {
     const user = auth.currentUser;
     if (!user) return;
     
-    // Update Firebase Auth profile
     await updateProfile(user, { displayName });
     
-    // Update Firestore user document
     await setDoc(doc(db, userPath()), {
         displayName,
         email: user.email,
         lastUpdated: new Date().toISOString()
     }, { merge: true });
     
-    // Refresh UI
     updateUserProfileDisplay(user);
     closeEditProfile();
     showPage('settings');
@@ -5130,7 +5156,6 @@ window.changePassword = async function() {
     const newPassword = document.getElementById('new-password').value;
     const confirmPassword = document.getElementById('confirm-password').value;
     
-    // Validate input
     if (!currentPassword || !newPassword || !confirmPassword) {
         return alert('Fill all fields.');
     }
@@ -5145,18 +5170,13 @@ window.changePassword = async function() {
     if (!user || !user.email) return;
     
     try {
-        // Re-authenticate before sensitive operation
         const credential = EmailAuthProvider.credential(user.email, currentPassword);
         await reauthenticateWithCredential(user, credential);
-        
-        // Update password
         await updatePassword(user, newPassword);
         
-        // Update local settings with timestamp
         userSettings.security.passwordLastChanged = new Date().toISOString();
         saveSettings();
         
-        // Update UI
         document.getElementById('password-last-changed').textContent = new Date().toLocaleDateString();
         closeChangePassword();
         alert('Password updated!');
@@ -5197,12 +5217,10 @@ function applyTheme(theme) {
     localStorage.setItem('theme', theme);
 }
 
-// Hook up the select in Settings
 document.getElementById('theme-selector').addEventListener('change', function() {
     applyTheme(this.value);
 });
 
-// Call on load
 initTheme();
         
 //.....................................//
