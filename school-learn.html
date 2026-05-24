@@ -2885,7 +2885,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut, updateProfile, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, updateDoc, query, where, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, getDocs, setDoc, deleteDoc, updateDoc, query, where, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { arrayUnion } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
@@ -4870,12 +4870,26 @@ async function initializeSettings() {
         ? new Date(user.metadata.creationTime).toLocaleDateString()
         : 'Unknown';
     
-    // Populate notification toggles
+       // Populate notification toggles
     document.getElementById('email-notifications').checked = userSettings.notifications.email;
     document.getElementById('quiz-reminders').checked = userSettings.notifications.quizReminders;
     document.getElementById('study-goals').checked = userSettings.notifications.studyGoals;
     document.getElementById('theme-selector').value = userSettings.preferences.theme;
+    
+    // Load 2FA preference — Firestore first, fall back to localStorage
+    if (user) {
+        try {
+            const studentDoc = await getDoc(doc(db, 'students', user.uid));
+            if (studentDoc.exists() && studentDoc.data().twoFactorEnabled !== undefined) {
+                userSettings.security.twoFactor = studentDoc.data().twoFactorEnabled;
+                saveSettings(); // Sync to localStorage
+            }
+        } catch (error) {
+            console.error('Error loading 2FA preference:', error);
+        }
+    }
     document.getElementById('two-factor-toggle').checked = userSettings.security.twoFactor;
+    
     if (userSettings.security.passwordLastChanged) {
         document.getElementById('password-last-changed').textContent = new Date(userSettings.security.passwordLastChanged).toLocaleDateString();
     }
@@ -4884,7 +4898,29 @@ async function initializeSettings() {
     document.getElementById('quiz-reminders').onchange = e => { userSettings.notifications.quizReminders = e.target.checked; saveSettings(); };
     document.getElementById('study-goals').onchange = e => { userSettings.notifications.studyGoals = e.target.checked; saveSettings(); };
     document.getElementById('theme-selector').onchange = e => { userSettings.preferences.theme = e.target.value; saveSettings(); };
-    document.getElementById('two-factor-toggle').onchange = e => { userSettings.security.twoFactor = e.target.checked; saveSettings(); };
+    document.getElementById('two-factor-toggle').onchange = async (e) => {
+        const enabled = e.target.checked;
+        userSettings.security.twoFactor = enabled;
+        saveSettings(); // Keep localStorage as fallback
+        
+        const user = auth.currentUser;
+        if (!user) return;
+        
+        try {
+            await setDoc(
+                doc(db, 'students', user.uid),
+                { twoFactorEnabled: enabled },
+                { merge: true }
+            );
+        } catch (error) {
+            console.error('Failed to save 2FA preference:', error);
+            // Revert toggle on failure
+            e.target.checked = !enabled;
+            userSettings.security.twoFactor = !enabled;
+            saveSettings();
+            alert('Failed to update. Please try again.');
+        }
+    };
 }
 
 // Save, getInitials, openEditProfile, closeEditProfile, saveProfile, changePassword, logout — all unchanged below
