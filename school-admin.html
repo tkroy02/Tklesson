@@ -652,15 +652,33 @@
         <h1 class="page-title">All Courses</h1>
     </div>
     <div class="card">
-        <h3 style="margin-bottom: 20px; color: var(--primary);">Courses Across All Teachers</h3>
-        <table>
-            <thead>
-                <tr><th>Subject</th><th>Teacher</th><th>Students</th><th>Created</th><th>Actions</th></tr>
-            </thead>
-            <tbody id="courses-table-body">
-                <tr><td colspan="5" style="text-align: center;">Loading courses...</td></tr>
-            </tbody>
-        </table>
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 250px; position: relative;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                <input type="text" id="course-search" class="form-input" 
+                       placeholder="Search by subject or teacher..." 
+                       oninput="filterCourses()"
+                       style="padding-left: 40px;">
+            </div>
+            <span id="course-count" style="font-size: 0.85rem; color: var(--text-muted; white-space: nowrap;"></span>
+        </div>
+        <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="cursor: pointer; position: sticky; top: 0; z-index: 1;" onclick="sortCourses('name')">Subject <i class="fas fa-sort"></i></th>
+                        <th style="cursor: pointer; position: sticky; top: 0; z-index: 1;" onclick="sortCourses('teacher')">Teacher <i class="fas fa-sort"></i></th>
+                        <th style="cursor: pointer; position: sticky; top: 0; z-index: 1;" onclick="sortCourses('students')">Students <i class="fas fa-sort"></i></th>
+                        <th style="cursor: pointer; position: sticky; top: 0; z-index: 1;" onclick="sortCourses('created')">Created <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="courses-table-body">
+                    <tr><td colspan="5" style="text-align: center;">Loading courses...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="courses-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
     </div>
 </div>
         
@@ -1452,67 +1470,150 @@ window.goToTeacherPage = function(page) {
 
         //===================COURSE MATTERS ===============//
 
-        async function loadAllCourses() {
+        // Course management state
+let allCourses = [];
+let filteredCourses = [];
+let courseSortField = 'created';
+let courseSortDirection = 'desc';
+let coursePage = 1;
+const coursesPerPage = 30;
+
+async function loadAllCourses() {
     const tbody = document.getElementById('courses-table-body');
     try {
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsSnap = await getDocs(subjectsRef);
-        const subjects = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        allCourses = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         
-        if (subjects.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No courses created yet.</td></tr>';
-            return;
-        }
-        
-        // Sort by creation date, newest first
-        subjects.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        
-        tbody.innerHTML = subjects.map(s => {
-            const studentCount = (s.studentIds || []).length;
-            const created = s.createdAt ? new Date(s.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
-            return `
-                <tr>
-                    <td><strong>${s.name}</strong></td>
-                    <td>${s.teacherName || 'Unknown'}</td>
-                    <td><span class="badge badge-student">${studentCount} student${studentCount !== 1 ? 's' : ''}</span></td>
-                    <td>${created}</td>
-                    <td>
-                        <button class="btn btn-outline btn-sm" onclick="viewSubjectStudents('${s.id}', '${s.name.replace(/'/g, "\\'")}')">
-                            <i class="fas fa-users"></i> View Students
-                        </button>
-                    </td>
-                </tr>`;
-        }).join('');
-        
+        sortCourseData();
+        filterCourses();
     } catch (error) {
         console.error('Error loading courses:', error);
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading courses.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading courses. Please refresh.</td></tr>';
     }
 }
 
-window.viewSubjectStudents = async function(subjectId, subjectName) {
-    try {
-        const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
-        const subjectSnap = await getDoc(subjectRef);
-        if (!subjectSnap.exists()) {
-            alert('Subject not found.');
-            return;
+function sortCourseData() {
+    allCourses.sort((a, b) => {
+        let valA, valB;
+        
+        switch (courseSortField) {
+            case 'name':
+                valA = (a.name || '').toLowerCase();
+                valB = (b.name || '').toLowerCase();
+                break;
+            case 'teacher':
+                valA = (a.teacherName || '').toLowerCase();
+                valB = (b.teacherName || '').toLowerCase();
+                break;
+            case 'students':
+                valA = (a.studentIds || []).length;
+                valB = (b.studentIds || []).length;
+                break;
+            case 'created':
+                valA = a.createdAt || '';
+                valB = b.createdAt || '';
+                break;
         }
         
-        const data = subjectSnap.data();
-        const studentNames = data.studentNames || [];
-        
-        if (studentNames.length === 0) {
-            alert(`"${subjectName}" has no students enrolled.`);
-            return;
-        }
-        
-        alert(`Students in "${subjectName}" (${studentNames.length}):\n\n${studentNames.join('\n')}`);
-    } catch (error) {
-        console.error('Error viewing students:', error);
-        alert('Error loading student list.');
+        if (valA < valB) return courseSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return courseSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+window.sortCourses = function(field) {
+    if (courseSortField === field) {
+        courseSortDirection = courseSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        courseSortField = field;
+        courseSortDirection = 'asc';
     }
+    sortCourseData();
+    coursePage = 1;
+    filterCourses();
 };
+
+window.filterCourses = function() {
+    const searchQuery = document.getElementById('course-search')?.value?.toLowerCase()?.trim() || '';
+    
+    if (searchQuery) {
+        filteredCourses = allCourses.filter(c => 
+            (c.name || '').toLowerCase().includes(searchQuery) ||
+            (c.teacherName || '').toLowerCase().includes(searchQuery)
+        );
+    } else {
+        filteredCourses = [...allCourses];
+    }
+    
+    coursePage = 1;
+    renderCoursePage();
+};
+
+function renderCoursePage() {
+    const tbody = document.getElementById('courses-table-body');
+    const countSpan = document.getElementById('course-count');
+    const paginationDiv = document.getElementById('courses-pagination');
+    
+    if (countSpan) {
+        countSpan.textContent = filteredCourses.length !== allCourses.length 
+            ? `${filteredCourses.length} of ${allCourses.length} courses`
+            : `${allCourses.length} course${allCourses.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (filteredCourses.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No courses found.</td></tr>';
+        if (paginationDiv) paginationDiv.innerHTML = '';
+        return;
+    }
+    
+    const totalPages = Math.ceil(filteredCourses.length / coursesPerPage);
+    const start = (coursePage - 1) * coursesPerPage;
+    const pageCourses = filteredCourses.slice(start, start + coursesPerPage);
+    
+    tbody.innerHTML = pageCourses.map(c => {
+        const studentCount = (c.studentIds || []).length;
+        const created = c.createdAt ? new Date(c.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        return `
+            <tr>
+                <td><strong>${c.name}</strong></td>
+                <td>${c.teacherName || 'Unknown'}</td>
+                <td><span class="badge badge-student">${studentCount} student${studentCount !== 1 ? 's' : ''}</span></td>
+                <td>${created}</td>
+                <td>
+                    <button class="btn btn-outline btn-sm" onclick="viewSubjectStudents('${c.id}', '${c.name.replace(/'/g, "\\'")}')">
+                        <i class="fas fa-users"></i> View
+                    </button>
+                </td>
+            </tr>`;
+    }).join('');
+    
+    if (paginationDiv && totalPages > 1) {
+        let pagHTML = '';
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToCoursePage(${coursePage - 1})" ${coursePage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= coursePage - 2 && i <= coursePage + 2)) {
+                pagHTML += `<button class="btn btn-sm ${i === coursePage ? 'btn-accent' : 'btn-outline'}" onclick="goToCoursePage(${i})">${i}</button>`;
+            } else if (i === coursePage - 3 || i === coursePage + 3) {
+                pagHTML += `<span style="padding: 0 4px;">...</span>`;
+            }
+        }
+        
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToCoursePage(${coursePage + 1})" ${coursePage === totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        paginationDiv.innerHTML = pagHTML;
+    } else if (paginationDiv) {
+        paginationDiv.innerHTML = '';
+    }
+}
+
+window.goToCoursePage = function(page) {
+    const totalPages = Math.ceil(filteredCourses.length / coursesPerPage);
+    if (page < 1 || page > totalPages) return;
+    coursePage = page;
+    renderCoursePage();
+};
+        
     </script>
 </body>
 </html>
