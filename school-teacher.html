@@ -1104,6 +1104,28 @@
     <!-- MAIN CONTENT -->
     <main class="main-content">
 
+        <!-- ==================== NOTIFICATION BELL ==================== -->
+    <div style="position: fixed; top: 20px; right: 28px; z-index: 250;">
+        <button id="notification-bell" onclick="toggleNotifications()" 
+                style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; box-shadow: var(--shadow-sm); transition: var(--transition);">
+            <i class="fas fa-bell" style="font-size: 1.1rem; color: var(--text-gray);"></i>
+            <span id="bell-badge" style="display: none; position: absolute; top: -4px; right: -4px; background: var(--danger); color: white; font-size: 0.65rem; font-weight: 700; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; line-height: 1;">0</span>
+        </button>
+        
+        <div id="notifications-dropdown" style="display: none; position: absolute; top: 52px; right: 0; width: 360px; max-height: 400px; overflow-y: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--border-radius-sm); box-shadow: var(--shadow-lg); z-index: 260;">
+            <div style="padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="margin: 0; font-size: 0.9rem; font-weight: 700; color: var(--text-dark);">Notifications</h4>
+                <button onclick="markAllNotificationsRead()" style="background: none; border: none; color: var(--accent); font-size: 0.75rem; cursor: pointer; font-weight: 600;">Mark all read</button>
+            </div>
+            <div id="notifications-list">
+                <p style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 0.85rem;">
+                    <i class="fas fa-bell-slash" style="display: block; font-size: 1.5rem; margin-bottom: 8px; opacity: 0.4;"></i>
+                    No notifications yet
+                </p>
+            </div>
+        </div>
+    </div>
+
         <!-- ==================== DASHBOARD ==================== -->
         <div id="dashboard" class="page active">
             <div class="page-header">
@@ -1628,6 +1650,7 @@
         });
     } else {
         updateUI(name);
+        startNotificationListener();
     }
     
     function updateUI(displayName) {
@@ -3043,6 +3066,124 @@ window.checkEnrolmentBadge = async function() {
         console.error('❌ Error checking enrolment badge:', error);
     }
 };
+
+        // ========================================
+// 🔔 NOTIFICATION SYSTEM
+// ========================================
+
+let notificationsListener = null;
+
+function startNotificationListener() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Stop previous listener if exists
+    if (notificationsListener) notificationsListener();
+
+    const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
+    const q = query(enrolmentsRef, where('teacherId', '==', user.uid), where('status', '==', 'pending'));
+
+    notificationsListener = onSnapshot(q, (snap) => {
+        const count = snap.size;
+        updateBellBadge(count);
+        
+        // Store notifications for dropdown
+        const notifications = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        updateNotificationsDropdown(notifications);
+        
+        // Also update enrolment badge
+        updateEnrolmentBadge(count);
+    }, (error) => {
+        console.error('Notification listener error:', error);
+    });
+}
+
+function updateBellBadge(count) {
+    const badge = document.getElementById('bell-badge');
+    if (!badge) return;
+    
+    if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : count;
+        badge.style.display = 'flex';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function updateNotificationsDropdown(notifications) {
+    const list = document.getElementById('notifications-list');
+    if (!list) return;
+
+    if (notifications.length === 0) {
+        list.innerHTML = `
+            <p style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 0.85rem;">
+                <i class="fas fa-check-circle" style="display: block; font-size: 1.5rem; margin-bottom: 8px; opacity: 0.4;"></i>
+                All caught up!
+            </p>`;
+        return;
+    }
+
+    list.innerHTML = notifications.map(n => {
+        const date = n.requestedAt ? new Date(n.requestedAt).toLocaleDateString('en-US', {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) : '';
+        return `
+        <div style="padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: var(--transition);" 
+             onclick="showPage('enrolment', document.querySelector('.sidebar-menu a[onclick*=\"enrolment\"]')); toggleNotifications();"
+             onmouseover="this.style.background='var(--accent-light)'" 
+             onmouseout="this.style.background=''">
+            <div style="display: flex; align-items: flex-start; gap: 10px;">
+                <div style="background: var(--gold-light); border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                    <i class="fas fa-user-plus" style="color: #b8860b; font-size: 0.75rem;"></i>
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 0.82rem; font-weight: 600; color: var(--text-dark); margin-bottom: 2px;">
+                        New enrolment request
+                    </div>
+                    <div style="font-size: 0.75rem; color: var(--text-gray);">
+                        <strong>${n.studentName}</strong> wants to join <strong>${n.subjectName}</strong>
+                    </div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
+                        <i class="fas fa-clock"></i> ${date}
+                    </div>
+                </div>
+                <span style="width: 8px; height: 8px; background: var(--danger); border-radius: 50%; flex-shrink: 0; margin-top: 4px;"></span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+window.toggleNotifications = function() {
+    const dropdown = document.getElementById('notifications-dropdown');
+    if (!dropdown) return;
+    
+    if (dropdown.style.display === 'none' || !dropdown.style.display) {
+        dropdown.style.display = 'block';
+    } else {
+        dropdown.style.display = 'none';
+    }
+};
+
+window.markAllNotificationsRead = function() {
+    // For now, just close the dropdown. Teachers manage requests from the enrolment tab.
+    const dropdown = document.getElementById('notifications-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
+};
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(event) {
+    const bell = document.getElementById('notification-bell');
+    const dropdown = document.getElementById('notifications-dropdown');
+    if (!bell || !dropdown) return;
+    
+    if (!bell.contains(event.target) && !dropdown.contains(event.target)) {
+        dropdown.style.display = 'none';
+    }
+});
+
+// Start the listener when auth state is ready
+// Add this line inside your existing onAuthStateChanged, after updateUserProfileDisplay(user):
+// startNotificationListener();
         
     </script>
 </body>
