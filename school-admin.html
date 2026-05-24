@@ -572,25 +572,42 @@
         </div>
 
         <!-- Manage Students Page -->
-        <div id="students" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Manage Students</h1>
-                <button class="btn btn-gold btn-sm" onclick="openAddUserModal('student')">
-                    <i class="fas fa-plus"></i> Add Student
-                </button>
+        <!-- Manage Students Page -->
+<div id="students" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Manage Students</h1>
+        <button class="btn btn-gold btn-sm" onclick="openAddUserModal('student')">
+            <i class="fas fa-plus"></i> Add Student
+        </button>
+    </div>
+    <div class="card">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 250px; position: relative;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                <input type="text" id="student-search" class="form-input" 
+                       placeholder="Search by name or email..." 
+                       oninput="filterStudents()"
+                       style="padding-left: 40px;">
             </div>
-            <div class="card">
-                <h3 style="margin-bottom: 20px; color: var(--primary);">All Students</h3>
-                <table>
-                    <thead>
-                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th>
-                    </thead>
-                    <tbody id="students-table-body">
-                        <tr><td colspan="5" style="text-align: center;">Loading students...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <span id="student-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;"></span>
         </div>
+        <table>
+            <thead>
+                <tr>
+                    <th style="cursor: pointer;" onclick="sortStudents('name')">Name <i class="fas fa-sort"></i></th>
+                    <th style="cursor: pointer;" onclick="sortStudents('email')">Email <i class="fas fa-sort"></i></th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="students-table-body">
+                <tr><td colspan="5" style="text-align: center;">Loading students...</td></tr>
+            </tbody>
+        </table>
+        <div id="students-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
+    </div>
+</div>
 
         <!-- Manage Teachers Page (Role: Teacher, not Tutor) -->
         <div id="teachers" class="page">
@@ -920,39 +937,142 @@
         };
 
         // Load students
-        async function loadStudents() {
-            const tbody = document.getElementById('students-table-body');
-            try {
-                const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'student'));
-                const querySnapshot = await getDocs(q);
-                const students = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                
-                if (students.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No students yet. Click "Add Student" to get started.</td></tr>';
-                    return;
-                }
-                
-                tbody.innerHTML = students.map(student => `
-                    <tr>
-                        <td><strong>${student.displayName || 'N/A'}</strong></td>
-                        <td>${student.email || 'N/A'}</td>
-                        <td><span class="badge badge-student">Student</span></td>
-                        <td><span class="badge badge-active">Active</span></td>
-                        <td>
-                            <button class="btn btn-outline btn-sm" onclick="resetPassword('${student.email}')" title="Reset Password">
-                                <i class="fas fa-key"></i>
-                            </button>
-                            <button class="btn btn-danger btn-sm" onclick="removeUser('${student.id}', '${student.displayName || student.email}')" title="Remove">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </td>
-                    </tr>
-                `).join('');
-            } catch (error) {
-                console.error('Error loading students:', error);
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading students. Please refresh.</td></tr>';
+       // Student management state
+let allStudents = [];
+let filteredStudents = [];
+let studentSortField = 'name';
+let studentSortDirection = 'asc';
+let studentPage = 1;
+const studentsPerPage = 50;
+
+async function loadStudents() {
+    const tbody = document.getElementById('students-table-body');
+    try {
+        const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'student'));
+        const querySnapshot = await getDocs(q);
+        allStudents = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        // Default sort by name
+        sortStudentData();
+        filterStudents();
+    } catch (error) {
+        console.error('Error loading students:', error);
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading students. Please refresh.</td></tr>';
+    }
+}
+
+function sortStudentData() {
+    allStudents.sort((a, b) => {
+        let valA, valB;
+        
+        if (studentSortField === 'name') {
+            valA = (a.displayName || '').toLowerCase();
+            valB = (b.displayName || '').toLowerCase();
+        } else if (studentSortField === 'email') {
+            valA = (a.email || '').toLowerCase();
+            valB = (b.email || '').toLowerCase();
+        }
+        
+        if (valA < valB) return studentSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return studentSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+window.sortStudents = function(field) {
+    if (studentSortField === field) {
+        studentSortDirection = studentSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        studentSortField = field;
+        studentSortDirection = 'asc';
+    }
+    sortStudentData();
+    studentPage = 1;
+    filterStudents();
+};
+
+window.filterStudents = function() {
+    const searchQuery = document.getElementById('student-search')?.value?.toLowerCase()?.trim() || '';
+    
+    if (searchQuery) {
+        filteredStudents = allStudents.filter(s => 
+            (s.displayName || '').toLowerCase().includes(searchQuery) ||
+            (s.email || '').toLowerCase().includes(searchQuery)
+        );
+    } else {
+        filteredStudents = [...allStudents];
+    }
+    
+    studentPage = 1;
+    renderStudentPage();
+};
+
+function renderStudentPage() {
+    const tbody = document.getElementById('students-table-body');
+    const countSpan = document.getElementById('student-count');
+    const paginationDiv = document.getElementById('students-pagination');
+    
+    // Update count
+    if (countSpan) {
+        countSpan.textContent = filteredStudents.length !== allStudents.length 
+            ? `${filteredStudents.length} of ${allStudents.length} students`
+            : `${allStudents.length} student${allStudents.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (filteredStudents.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No students found.</td></tr>';
+        if (paginationDiv) paginationDiv.innerHTML = '';
+        return;
+    }
+    
+    // Paginate
+    const totalPages = Math.ceil(filteredStudents.length / studentsPerPage);
+    const start = (studentPage - 1) * studentsPerPage;
+    const pageStudents = filteredStudents.slice(start, start + studentsPerPage);
+    
+    tbody.innerHTML = pageStudents.map(student => `
+        <tr>
+            <td><strong>${student.displayName || 'N/A'}</strong></td>
+            <td>${student.email || 'N/A'}</td>
+            <td><span class="badge badge-student">Student</span></td>
+            <td><span class="badge badge-active">Active</span></td>
+            <td>
+                <button class="btn btn-outline btn-sm" onclick="resetPassword('${student.email}')" title="Reset Password">
+                    <i class="fas fa-key"></i>
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="removeUser('${student.id}', '${(student.displayName || student.email).replace(/'/g, "\\'")}')" title="Remove">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        </tr>
+    `).join('');
+    
+    // Render pagination
+    if (paginationDiv && totalPages > 1) {
+        let pagHTML = '';
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToStudentPage(${studentPage - 1})" ${studentPage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= studentPage - 2 && i <= studentPage + 2)) {
+                pagHTML += `<button class="btn btn-sm ${i === studentPage ? 'btn-accent' : 'btn-outline'}" onclick="goToStudentPage(${i})">${i}</button>`;
+            } else if (i === studentPage - 3 || i === studentPage + 3) {
+                pagHTML += `<span style="padding: 0 4px;">...</span>`;
             }
         }
+        
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToStudentPage(${studentPage + 1})" ${studentPage === totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        paginationDiv.innerHTML = pagHTML;
+    } else if (paginationDiv) {
+        paginationDiv.innerHTML = '';
+    }
+}
+
+window.goToStudentPage = function(page) {
+    const totalPages = Math.ceil(filteredStudents.length / studentsPerPage);
+    if (page < 1 || page > totalPages) return;
+    studentPage = page;
+    renderStudentPage();
+};
 
         // Load teachers
         async function loadTeachers() {
