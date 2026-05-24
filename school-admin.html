@@ -558,23 +558,37 @@
                 </div>
             </div>
 
-            <div class="card">
-                <h3 style="margin-bottom: 20px; color: var(--primary);">Quick Actions</h3>
-                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                    <button class="btn btn-accent" onclick="openAddUserModal('student')">
-                        <i class="fas fa-user-plus"></i> Add Student
-                    </button>
-                    <button class="btn btn-accent" onclick="openAddUserModal('teacher')">
-                        <i class="fas fa-chalkboard-user"></i> Add Teacher
-                    </button>
-                    <button class="btn btn-outline" onclick="showPage('subscription')">
-                        <i class="fas fa-credit-card"></i> Manage Subscription
-                    </button>
-                </div>
-            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+    <!-- Quick Actions -->
+    <div class="card">
+        <h3 style="margin-bottom: 20px; color: var(--primary);">Quick Actions</h3>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <button class="btn btn-accent" onclick="openAddUserModal('student')">
+                <i class="fas fa-user-plus"></i> Add Student
+            </button>
+            <button class="btn btn-accent" onclick="openAddUserModal('teacher')">
+                <i class="fas fa-chalkboard-user"></i> Add Teacher
+            </button>
+            <button class="btn btn-outline" onclick="showPage('subscription')">
+                <i class="fas fa-credit-card"></i> Subscription
+            </button>
         </div>
+    </div>
 
-        <!-- Manage Students Page -->
+    <!-- Recent Activity Feed -->
+    <div class="card">
+        <h3 style="margin-bottom: 20px; color: var(--primary);">
+            <i class="fas fa-clock"></i> Recent Activity
+        </h3>
+        <div id="activity-feed" style="max-height: 350px; overflow-y: auto; padding-right: 4px;">
+            <p style="text-align: center; padding: 30px; color: var(--text-muted);">
+                <i class="fas fa-spinner fa-pulse"></i> Loading activity...
+            </p>
+        </div>
+    </div>
+</div>
+
+            
         <!-- Manage Students Page -->
 <div id="students" class="page">
     <div class="page-header">
@@ -2288,6 +2302,128 @@ window.viewAssignmentDetail = function(assignmentId) {
         `Description:\n${assignment.description || 'No description'}`
     );
 };
+
+//====================================================================================//
+//==================================ACTIVITY FEED==================================//
+//====================================================================================//
+
+async function loadActivityFeed() {
+    const feed = document.getElementById('activity-feed');
+    if (!feed) return;
+    
+    try {
+        const activities = [];
+        
+        // Fetch recent users
+        const usersRef = collection(db, `schools/${schoolId}/users`);
+        const usersSnap = await getDocs(usersRef);
+        usersSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data.createdAt) {
+                activities.push({
+                    type: data.role === 'teacher' ? 'teacher_added' : 'student_added',
+                    icon: data.role === 'teacher' ? 'fa-chalkboard-user' : 'fa-user-graduate',
+                    color: data.role === 'teacher' ? 'var(--accent)' : 'var(--success)',
+                    text: `<strong>${data.displayName || data.email}</strong> joined as ${data.role}`,
+                    time: new Date(data.createdAt).getTime()
+                });
+            }
+        });
+        
+        // Fetch recent subjects
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsSnap = await getDocs(subjectsRef);
+        subjectsSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data.createdAt) {
+                activities.push({
+                    type: 'subject_created',
+                    icon: 'fa-book-open',
+                    color: 'var(--gold)',
+                    text: `<strong>${data.teacherName || 'Teacher'}</strong> created <strong>${data.name}</strong>`,
+                    time: new Date(data.createdAt).getTime()
+                });
+            }
+        });
+        
+        // Fetch recent enrolments
+        const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
+        const enrolmentsSnap = await getDocs(enrolmentsRef);
+        enrolmentsSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data.requestedAt) {
+                activities.push({
+                    type: 'enrolment',
+                    icon: data.status === 'enrolled' ? 'fa-check-circle' : data.status === 'pending' ? 'fa-clock' : 'fa-times-circle',
+                    color: data.status === 'enrolled' ? 'var(--success)' : data.status === 'pending' ? '#f39c12' : 'var(--danger)',
+                    text: `<strong>${data.studentName || 'Student'}</strong> ${data.status} in <strong>${data.subjectName || 'subject'}</strong>`,
+                    time: new Date(data.requestedAt).getTime()
+                });
+            }
+        });
+        
+        // Fetch recent assignments
+        const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
+        const assignmentsSnap = await getDocs(assignmentsRef);
+        assignmentsSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data.createdAt) {
+                activities.push({
+                    type: 'assignment',
+                    icon: 'fa-paper-plane',
+                    color: 'var(--primary)',
+                    text: `<strong>${data.teacherName || 'Teacher'}</strong> sent <strong>${data.title}</strong> to ${data.studentCount || 0} students`,
+                    time: new Date(data.createdAt).getTime()
+                });
+            }
+        });
+        
+        // Sort by time, newest first, take top 20
+        activities.sort((a, b) => b.time - a.time);
+        const recent = activities.slice(0, 20);
+        
+        if (recent.length === 0) {
+            feed.innerHTML = `<p style="text-align: center; padding: 30px; color: var(--text-muted);">
+                <i class="fas fa-inbox" style="display: block; font-size: 2rem; margin-bottom: 10px; opacity: 0.3;"></i>
+                No activity yet
+            </p>`;
+            return;
+        }
+        
+        feed.innerHTML = recent.map(a => {
+            const timeAgo = getTimeAgoText(a.time);
+            return `
+                <div style="display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: flex-start;">
+                    <div style="background: ${a.color}15; border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        <i class="fas ${a.icon}" style="color: ${a.color}; font-size: 0.8rem;"></i>
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 0.85rem; color: var(--text-dark); line-height: 1.4;">${a.text}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">${timeAgo}</div>
+                    </div>
+                </div>`;
+        }).join('');
+        
+    } catch (error) {
+        console.error('Error loading activity feed:', error);
+        feed.innerHTML = '<p style="text-align: center; padding: 30px; color: var(--danger);">Error loading activity.</p>';
+    }
+}
+
+function getTimeAgoText(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return `${days}d ago`;
+    return new Date(timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
         
     </script>
 </body>
