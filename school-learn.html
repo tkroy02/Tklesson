@@ -3255,57 +3255,55 @@ async function updateCourseProgress(courseId, progress, activityType = 'study', 
     
     // If quiz completed, update quiz-specific fields
     if (activityType === 'quiz') {
-    const newCompletedQuizzes = (data.completedQuizzes || 0) + 1;
-    const quizBasedProgress = Math.min(newCompletedQuizzes * 0.5, 100); // 0.5% per quiz
+        const newCompletedQuizzes = (data.completedQuizzes || 0) + 1;
+        const quizBasedProgress = Math.min(newCompletedQuizzes * 0.5, 100);
 
-    update.completedQuizzes = newCompletedQuizzes;
-    update.progress = quizBasedProgress;  // ← progress based on count, not score
+        update.completedQuizzes = newCompletedQuizzes;
+        update.progress = quizBasedProgress;
 
-    const scores = [...(data.quizScores || []), progress]; // progress here = quiz score
-    update.quizScores = scores;
-    update.averageScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-}
+        const scores = [...(data.quizScores || []), progress];
+        update.quizScores = scores;
+        update.averageScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    }
     
     await updateDoc(ref, update);
+    
+    // Also save individual attempt to school quizAttempts for teacher/admin monitoring
+    if (activityType === 'quiz' && schoolId) {
+        try {
+            const studentName = user.displayName || data.displayName || user.email || 'Student';
+            const subjectName = courseTitle || data.title || courseId;
+            const quizLabel = window.quizState?.quizTitle || 'Quiz';
+            
+            const attemptRef = doc(collection(db, `schools/${schoolId}/quizAttempts`));
+            await setDoc(attemptRef, {
+                studentId: user.uid,
+                studentName: studentName,
+                subjectName: subjectName,
+                quizLabel: quizLabel,
+                quizPath: window.quizState?.quizTitle || '',
+                score: progress,
+                correctAnswers: window.quizState?.currentQuestions ? 
+                    window.quizState.currentQuestions.filter((q, i) => {
+                        const ua = window.quizState.userAnswers[i];
+                        return q.isMultipleResponse 
+                            ? (Array.isArray(ua) && [...ua].sort().join(',') === [...q.correctAnswerIndices].sort().join(','))
+                            : ua === q.correctAnswerIndices[0];
+                    }).length : 0,
+                totalQuestions: window.quizState?.currentQuestions?.length || 0,
+                attemptedAt: new Date().toISOString()
+            });
+        } catch (e) {
+            console.warn('⚠️ Failed to save quiz attempt for monitoring:', e);
+        }
+    }
+    
     await logActivity(courseId, courseTitle || data.title, activityType);
     updateDashboardStats();
     updateRecentActivity();
 }
 
-// Also save individual attempt to school quizAttempts for teacher/admin monitoring
-if (activityType === 'quiz' && schoolId) {
-    try {
-        const studentName = user.displayName || data.displayName || user.email || 'Student';
-        const subjectName = courseTitle || data.title || courseId;
-        
-        // Get the quiz label from the global quiz state
-        const quizLabel = window.quizState?.quizTitle || 'Quiz';
-        
-        const attemptRef = doc(collection(db, `schools/${schoolId}/quizAttempts`));
-        await setDoc(attemptRef, {
-            studentId: user.uid,
-            studentName: studentName,
-            subjectName: subjectName,
-            quizLabel: quizLabel,
-            quizPath: window.quizState?.quizTitle || '',
-            score: progress,
-            correctAnswers: window.quizState?.currentQuestions ? 
-                window.quizState.currentQuestions.filter((q, i) => {
-                    const ua = window.quizState.userAnswers[i];
-                    return q.isMultipleResponse 
-                        ? (Array.isArray(ua) && [...ua].sort().join(',') === [...q.correctAnswerIndices].sort().join(','))
-                        : ua === q.correctAnswerIndices[0];
-                }).length : 0,
-            totalQuestions: window.quizState?.currentQuestions?.length || 0,
-            attemptedAt: new Date().toISOString()
-        });
-    } catch (e) {
-        console.warn('⚠️ Failed to save quiz attempt for monitoring:', e);
-    }
-}
-        
 window.updateCourseProgress = updateCourseProgress;
-
 // ========================================
 // PROGRESS DISPLAY — B2C STYLE
 // ========================================
