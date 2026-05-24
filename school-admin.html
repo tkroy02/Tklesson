@@ -516,6 +516,7 @@
             <li><a href="#" onclick="showPage('teachers', this)"><i class="fas fa-chalkboard-user"></i> Manage Teachers</a></li>
             <li><a href="#" onclick="showPage('courses', this)"><i class="fas fa-book-open"></i> All Courses</a></li>
             <li><a href="#" onclick="showPage('enrolments', this)"><i class="fas fa-user-check"></i> Enrolments</a></li>
+            <li><a href="#" onclick="showPage('gradebooks', this)"><i class="fas fa-table"></i> Gradebooks</a></li>
             <li><a href="#" onclick="showPage('subscription', this)"><i class="fas fa-credit-card"></i> Subscription</a></li>
             <li><a href="#" onclick="showPage('settings', this)"><i class="fas fa-cog"></i> School Settings</a></li>
             <li><a href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Log Out</a></li>
@@ -725,6 +726,60 @@
         <div id="enrolments-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
     </div>
 </div>
+
+
+        <!-- Gradebooks Page -->
+<div id="gradebooks" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Gradebook Viewer</h1>
+    </div>
+    
+    <!-- Selectors -->
+    <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap;">
+        <div class="form-group" style="max-width: 250px; margin-bottom: 0;">
+            <label>Teacher</label>
+            <select id="gradebook-teacher-select" class="form-input" onchange="onGradebookTeacherChange()">
+                <option value="">-- Select a teacher --</option>
+            </select>
+        </div>
+        <div class="form-group" style="max-width: 250px; margin-bottom: 0;">
+            <label>Subject</label>
+            <select id="gradebook-subject-select" class="form-input" onchange="loadAdminGradebook()" disabled>
+                <option value="">-- Select a subject --</option>
+            </select>
+        </div>
+        <div class="form-group" style="max-width: 200px; margin-bottom: 0;">
+            <label>Term</label>
+            <select id="admin-gradebook-term" class="form-input" onchange="loadAdminGradebook()">
+                <option value="fall-semester">Fall Semester</option>
+                <option value="spring-semester">Spring Semester</option>
+                <option value="winter-semester">Winter Semester</option>
+                <option value="september-term">September Term</option>
+                <option value="january-term">January Term</option>
+                <option value="may-term">May Term</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label>Year</label>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeAdminGradebookYear(-1)" style="padding: 6px 10px;">−</button>
+                <span id="admin-gradebook-year" style="font-weight: 600; min-width: 44px; text-align: center;"></span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeAdminGradebookYear(1)" style="padding: 6px 10px;">+</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3 style="margin-bottom: 20px; color: var(--primary);" id="gradebook-title">Select a teacher and subject to view grades</h3>
+        <div id="admin-gradebook-content">
+            <p style="text-align: center; padding: 40px; color: var(--text-muted);">
+                <i class="fas fa-table" style="display: block; font-size: 2.5rem; margin-bottom: 15px; opacity: 0.3;"></i>
+                Choose a teacher, then a subject to view their gradebook
+            </p>
+        </div>
+    </div>
+</div>
+        
         
         <!-- Subscription Page -->
         <div id="subscription" class="page">
@@ -886,6 +941,7 @@
             if (pageId === 'settings') loadSchoolSettings();
             if (pageId === 'courses') loadAllCourses();
             if (pageId === 'enrolments') loadAllEnrolments();
+            if (pageId === 'gradebooks') loadGradebookTeachers();
             
             document.getElementById('sidebar').classList.remove('open');
         };
@@ -1849,6 +1905,172 @@ window.goToEnrolmentPage = function(page) {
     if (page < 1 || page > totalPages) return;
     enrolmentPage = page;
     renderEnrolmentPage();
+};
+
+// ==============================================================================  //
+// ======================== GRADE MATTERS ======================================//
+// ============================================================================== //
+
+// Gradebook viewer state
+let adminGradebookYear = new Date().getFullYear();
+let allTeachersList = [];
+
+async function loadGradebookTeachers() {
+    const yearSpan = document.getElementById('admin-gradebook-year');
+    if (yearSpan) yearSpan.textContent = adminGradebookYear;
+    
+    const teacherSelect = document.getElementById('gradebook-teacher-select');
+    try {
+        const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'teacher'));
+        const snap = await getDocs(q);
+        allTeachersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        teacherSelect.innerHTML = '<option value="">-- Select a teacher --</option>' +
+            allTeachersList.map(t => `<option value="${t.id}">${t.displayName || t.email || 'Unknown'}</option>`).join('');
+    } catch (error) {
+        console.error('Error loading teachers:', error);
+        teacherSelect.innerHTML = '<option value="">Error loading teachers</option>';
+    }
+}
+
+window.onGradebookTeacherChange = async function() {
+    const teacherId = document.getElementById('gradebook-teacher-select').value;
+    const subjectSelect = document.getElementById('gradebook-subject-select');
+    const content = document.getElementById('admin-gradebook-content');
+    
+    if (!teacherId) {
+        subjectSelect.innerHTML = '<option value="">-- Select a subject --</option>';
+        subjectSelect.disabled = true;
+        content.innerHTML = `<p style="text-align: center; padding: 40px; color: var(--text-muted);">
+            <i class="fas fa-arrow-up" style="display: block; font-size: 2rem; margin-bottom: 10px; opacity: 0.3;"></i>
+            Select a teacher to see their subjects
+        </p>`;
+        return;
+    }
+    
+    try {
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const q = query(subjectsRef, where('teacherId', '==', teacherId));
+        const snap = await getDocs(q);
+        const subjects = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        if (subjects.length === 0) {
+            subjectSelect.innerHTML = '<option value="">No subjects found</option>';
+            subjectSelect.disabled = true;
+            content.innerHTML = `<p style="text-align: center; padding: 40px; color: var(--text-muted);">This teacher has no subjects yet.</p>`;
+            return;
+        }
+        
+        subjectSelect.innerHTML = '<option value="">-- Select a subject --</option>' +
+            subjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+        subjectSelect.disabled = false;
+    } catch (error) {
+        console.error('Error loading subjects:', error);
+        subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
+    }
+};
+
+window.loadAdminGradebook = async function() {
+    const subjectId = document.getElementById('gradebook-subject-select').value;
+    const term = document.getElementById('admin-gradebook-term').value;
+    const year = document.getElementById('admin-gradebook-year').textContent;
+    const title = document.getElementById('gradebook-title');
+    const content = document.getElementById('admin-gradebook-content');
+    
+    if (!subjectId) {
+        content.innerHTML = `<p style="text-align: center; padding: 40px; color: var(--text-muted);">Select a subject to view its gradebook.</p>`;
+        return;
+    }
+    
+    content.innerHTML = '<p style="text-align: center; padding: 30px;">Loading gradebook...</p>';
+    
+    try {
+        const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
+        const subjectSnap = await getDoc(subjectRef);
+        const subjectData = subjectSnap.data();
+        const subjectName = subjectData?.name || 'Subject';
+        
+        title.textContent = `${subjectName} — Gradebook`;
+        
+        const gradebookKey = `${subjectId}_${term}_${year}`;
+        const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${gradebookKey}`);
+        const gradebookSnap = await getDoc(gradebookRef);
+        
+        if (!gradebookSnap.exists()) {
+            content.innerHTML = `<p style="text-align: center; padding: 40px; color: var(--text-muted);">
+                <i class="fas fa-info-circle" style="display: block; font-size: 2rem; margin-bottom: 10px; opacity: 0.3;"></i>
+                No gradebook found for this term/year.
+            </p>`;
+            return;
+        }
+        
+        const data = gradebookSnap.data();
+        const studentIds = data.studentIds || [];
+        const studentNames = data.studentNames || [];
+        const entries = data.entries || {};
+        const columns = ['Assessment 1', 'Assessment 2', 'Assessment 3', 'Midterm', 'Final'];
+        
+        if (studentIds.length === 0) {
+            content.innerHTML = '<p style="text-align: center; padding: 40px; color: var(--text-muted);">No students in this gradebook.</p>';
+            return;
+        }
+        
+        content.innerHTML = `
+            <div style="overflow-x: auto;">
+                <table style="min-width: 800px;">
+                    <thead>
+                        <tr>
+                            <th>Student</th>
+                            ${columns.map(c => `<th>${c}</th>`).join('')}
+                            <th>Average</th>
+                            <th>Grade</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${studentIds.map((sid, i) => {
+                            const sname = studentNames[i] || 'Unknown';
+                            const entry = entries[sid] || {};
+                            
+                            const scores = columns.map(col => {
+                                const key = col.toLowerCase().replace(/\s+/g, '');
+                                return entry[key];
+                            }).filter(v => v !== undefined && v !== '');
+                            
+                            const avg = scores.length
+                                ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)
+                                : '—';
+                            
+                            const grade = entry.grade || '—';
+                            const gradeColor = grade === 'A+' || grade === 'A' || grade === 'A-' ? 'var(--success)' :
+                                              grade === 'B+' || grade === 'B' || grade === 'B-' ? 'var(--accent)' :
+                                              grade === 'C+' || grade === 'C' || grade === 'C-' ? '#f39c12' :
+                                              grade === 'D' || grade === 'F' ? 'var(--danger)' : 'var(--text-muted)';
+                            
+                            return `
+                                <tr>
+                                    <td><strong>${sname}</strong></td>
+                                    ${columns.map(col => {
+                                        const key = col.toLowerCase().replace(/\s+/g, '');
+                                        const val = entry[key] !== undefined ? entry[key] : '—';
+                                        return `<td style="text-align: center;">${val}</td>`;
+                                    }).join('')}
+                                    <td style="text-align: center; font-weight: 600;">${avg}</td>
+                                    <td style="text-align: center; font-weight: 700; color: ${gradeColor};">${grade}</td>
+                                </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (error) {
+        console.error('Error loading gradebook:', error);
+        content.innerHTML = '<p style="text-align: center; padding: 30px; color: var(--danger);">Error loading gradebook.</p>';
+    }
+};
+
+window.changeAdminGradebookYear = function(delta) {
+    adminGradebookYear += delta;
+    document.getElementById('admin-gradebook-year').textContent = adminGradebookYear;
+    loadAdminGradebook();
 };
         
     </script>
