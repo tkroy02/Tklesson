@@ -516,6 +516,7 @@
             <li><a href="#" onclick="showPage('enrolments', this)"><i class="fas fa-user-check"></i> Enrolments</a></li>
             <li><a href="#" onclick="showPage('gradebooks', this)"><i class="fas fa-table"></i> Gradebooks</a></li>
             <li><a href="#" onclick="showPage('assignments-log', this)"><i class="fas fa-tasks"></i> Assignments</a></li>
+            <li><a href="#" onclick="showPage('quiz-monitor', this)"><i class="fas fa-chart-bar"></i> Quiz Monitor</a></li>
             <li><a href="#" onclick="showPage('subscription', this)"><i class="fas fa-credit-card"></i> Subscription</a></li>
             <li><a href="#" onclick="showPage('settings', this)"><i class="fas fa-cog"></i> School Settings</a></li>
             <li><a href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Log Out</a></li>
@@ -866,6 +867,42 @@
         <div id="assignment-log-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
     </div>
 </div>
+
+
+<!-- Quiz Monitor Page -->
+<div id="quiz-monitor" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Self-Study Quiz Monitor</h1>
+    </div>
+    <div class="card">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="max-width: 300px; margin-bottom: 0;">
+                <label>Select Student</label>
+                <select id="quiz-monitor-student-select" class="form-input" onchange="loadQuizMonitor()">
+                    <option value="">-- Select a student --</option>
+                </select>
+            </div>
+            <span id="quiz-monitor-count" style="font-size: 0.85rem; color: var(--text-muted); padding-bottom: 12px;"></span>
+        </div>
+        <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="position: sticky; top: 0; z-index: 1;">Student</th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Subject</th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Quiz</th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Score</th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Correct</th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Date</th>
+                    </tr>
+                </thead>
+                <tbody id="quiz-monitor-body">
+                    <tr><td colspan="6" style="text-align: center;">Select a student to view their quiz attempts.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
         
         
         <!-- Subscription Page -->
@@ -1030,6 +1067,7 @@ window.showPage = function(pageId, element = null) {
     if (pageId === 'enrolments') loadAllEnrolments();
     if (pageId === 'gradebooks') loadGradebookTeachers();
     if (pageId === 'assignments-log') loadAssignmentLog();
+    if (pageId === 'quiz-monitor') loadQuizMonitorStudents();
     
     document.getElementById('sidebar').classList.remove('open');
 };
@@ -2643,6 +2681,81 @@ window.bulkRemoveTeachers = async function() {
     loadTeachers();
     loadOverview();
 };     
+
+//==================================================================================//
+//=====================================QUIZ MONITORING ==============================//
+//===================================================================================//
+
+// Quiz Monitor state
+async function loadQuizMonitorStudents() {
+    const select = document.getElementById('quiz-monitor-student-select');
+    try {
+        const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'student'));
+        const snap = await getDocs(q);
+        const students = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        select.innerHTML = '<option value="">-- Select a student --</option>' +
+            students.map(s => `<option value="${s.id}">${s.displayName || s.email || 'Unknown'}</option>`).join('');
+    } catch (error) {
+        console.error('Error loading students:', error);
+        select.innerHTML = '<option value="">Error loading students</option>';
+    }
+}
+
+async function loadQuizMonitor() {
+    const studentId = document.getElementById('quiz-monitor-student-select').value;
+    const tbody = document.getElementById('quiz-monitor-body');
+    const countSpan = document.getElementById('quiz-monitor-count');
+    
+    if (!studentId) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Select a student to view their quiz attempts.</td></tr>';
+        if (countSpan) countSpan.textContent = '';
+        return;
+    }
+    
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Loading quiz attempts...</td></tr>';
+    
+    try {
+        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
+        const q = query(attemptsRef, where('studentId', '==', studentId));
+        const snap = await getDocs(q);
+        const attempts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        // Sort newest first
+        attempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
+        
+        if (countSpan) {
+            countSpan.textContent = `${attempts.length} attempt${attempts.length !== 1 ? 's' : ''}`;
+        }
+        
+        if (attempts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">No quiz attempts found for this student.</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = attempts.map(a => {
+            const date = a.attemptedAt ? new Date(a.attemptedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+            const scoreColor = a.score >= 70 ? 'var(--success)' : a.score >= 50 ? '#f39c12' : 'var(--danger)';
+            const score = a.score != null ? `${a.score}%` : '—';
+            const correct = a.correctAnswers != null && a.totalQuestions != null ? `${a.correctAnswers}/${a.totalQuestions}` : '—';
+            
+            return `
+                <tr>
+                    <td><strong>${a.studentName || 'Unknown'}</strong></td>
+                    <td>${a.subjectName || '—'}</td>
+                    <td>${a.quizLabel || a.quizPath || '—'}</td>
+                    <td><span style="font-weight: 700; color: ${scoreColor};">${score}</span></td>
+                    <td>${correct}</td>
+                    <td>${date}</td>
+                </tr>`;
+        }).join('');
+        
+    } catch (error) {
+        console.error('Error loading quiz attempts:', error);
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--danger);">Error loading quiz attempts.</td></tr>';
+    }
+}
+window.loadQuizMonitor = loadQuizMonitor;
         
     </script>
 </body>
