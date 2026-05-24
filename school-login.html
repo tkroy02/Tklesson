@@ -390,12 +390,6 @@
             margin-bottom: 20px;
         }
 
-        .two-factor-overlay .instruction {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-            margin-bottom: 24px;
-        }
-
         .two-factor-overlay .cancel-link {
             background: none;
             border: none;
@@ -476,12 +470,12 @@
                     </div>
                     <h3>Two-Factor Authentication</h3>
                     <p style="color: var(--text-muted); margin-bottom: 16px;">
-                        A verification code has been sent to
+                        Enter the 6-digit code from your authenticator app for
                     </p>
                     <p class="verification-email" id="two-factor-email-display"></p>
                     
                     <div class="form-group" style="text-align: left;">
-                        <label for="two-factor-code">Enter 6-Digit Code</label>
+                        <label for="two-factor-code">6-Digit Code</label>
                         <input 
                             type="text" 
                             id="two-factor-code" 
@@ -493,10 +487,6 @@
                             autocomplete="one-time-code"
                         >
                     </div>
-                    
-                    <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 20px;">
-                        Code expires in 10 minutes
-                    </p>
                     
                     <button class="btn-login" id="verify-2fa-button" style="margin-bottom: 12px;">
                         <span class="spinner"></span>
@@ -598,6 +588,9 @@
             .catch(err => console.error("Footer load error:", err));
     </script>
 
+    <!-- TOTP Library -->
+    <script src="https://cdn.jsdelivr.net/npm/otplib@12.0.1/dist/otplib.min.js"></script>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -605,7 +598,6 @@
             getAuth, 
             signInWithEmailAndPassword, 
             onAuthStateChanged,
-            sendEmailVerification,
             signOut
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { 
@@ -613,8 +605,7 @@
             collection, 
             getDocs, 
             doc, 
-            getDoc,
-            setDoc
+            getDoc
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
@@ -653,16 +644,9 @@
         let allSchools = [];
         let detectedSchool = null;
 
-        // ===== UTILITY FUNCTIONS =====
-        
-        function generateCode() {
-            return Math.floor(100000 + Math.random() * 900000).toString();
-        }
-
         // ===== SCHOOL LIST =====
 
         async function loadSchools() {
-            // Check sessionStorage cache first
             const cached = sessionStorage.getItem('schoolListCache');
             if (cached) {
                 allSchools = JSON.parse(cached);
@@ -670,7 +654,6 @@
                 return;
             }
 
-            // Fall back to Firestore fetch
             try {
                 const schoolsRef = collection(db, 'schools');
                 const snapshot = await getDocs(schoolsRef);
@@ -690,10 +673,7 @@
                 });
 
                 allSchools.sort((a, b) => a.name.localeCompare(b.name));
-                
-                // Save to cache
                 sessionStorage.setItem('schoolListCache', JSON.stringify(allSchools));
-                
                 console.log(`Loaded ${allSchools.length} schools from server`);
             } catch (error) {
                 console.error('Error loading schools:', error);
@@ -841,7 +821,6 @@
             loginForm.style.display = 'none';
             document.querySelector('.divider').style.display = 'none';
             document.querySelector('.login-links').style.display = 'none';
-            // Clear any previous code input
             document.getElementById('two-factor-code').value = '';
         }
 
@@ -869,14 +848,13 @@
             }
             
             if (!enteredCode || enteredCode.length !== 6) {
-                showError('Please enter the 6-digit verification code.');
+                showError('Please enter the 6-digit code from your authenticator app.');
                 btn.classList.remove('loading');
                 btn.disabled = false;
                 return;
             }
             
             try {
-                // Check code from Firestore
                 const studentDoc = await getDoc(doc(db, 'students', user.uid));
                 
                 if (!studentDoc.exists()) {
@@ -886,42 +864,25 @@
                     return;
                 }
                 
-                const data = studentDoc.data();
-                const storedCode = data.twoFactorCode;
-                const expiry = data.twoFactorCodeExpiry;
+                const secret = studentDoc.data().twoFactorSecret;
                 
-                if (!storedCode || !expiry) {
-                    showError('No verification code found. Please log in again.');
+                if (!secret) {
+                    showError('2FA not properly configured. Please contact support.');
                     btn.classList.remove('loading');
                     btn.disabled = false;
                     return;
                 }
                 
-                if (Date.now() > expiry) {
-                    showError('Verification code has expired. Please log in again.');
+                const isValid = otplib.authenticator.check(enteredCode, secret);
+                
+                if (!isValid) {
+                    showError('Invalid code. Please try again.');
                     btn.classList.remove('loading');
                     btn.disabled = false;
                     return;
                 }
                 
-                if (enteredCode !== storedCode) {
-                    showError('Incorrect code. Please try again.');
-                    btn.classList.remove('loading');
-                    btn.disabled = false;
-                    return;
-                }
-                
-                // Code is correct — clear it from Firestore
-                await setDoc(
-                    doc(db, 'students', user.uid),
-                    {
-                        twoFactorCode: null,
-                        twoFactorCodeExpiry: null
-                    },
-                    { merge: true }
-                );
-                
-                // Restore session from pending storage
+                // Code is correct — restore session
                 sessionStorage.setItem('schoolId', sessionStorage.getItem('pendingSchoolId'));
                 sessionStorage.setItem('userRole', sessionStorage.getItem('pendingUserRole'));
                 sessionStorage.setItem('userDisplayName', sessionStorage.getItem('pendingDisplayName'));
@@ -930,11 +891,9 @@
                 sessionStorage.setItem('schoolName', sessionStorage.getItem('pendingSchoolName'));
                 sessionStorage.setItem('schoolLocation', sessionStorage.getItem('pendingSchoolLocation'));
                 
-                // Clear pending data
                 ['pendingSchoolId','pendingUserRole','pendingDisplayName','pendingEmail','pendingUid','pendingSchoolName','pendingSchoolLocation']
                     .forEach(key => sessionStorage.removeItem(key));
                 
-                // Redirect
                 window.location.href = 'school-hub.html';
                 
             } catch (error) {
@@ -946,7 +905,6 @@
         });
 
         cancel2faButton.addEventListener('click', async function() {
-            // Clear pending data
             ['pendingSchoolId','pendingUserRole','pendingDisplayName','pendingEmail','pendingUid','pendingSchoolName','pendingSchoolLocation']
                 .forEach(key => sessionStorage.removeItem(key));
 
@@ -1046,34 +1004,6 @@
                     try {
                         const studentDoc = await getDoc(doc(db, 'students', user.uid));
                         if (studentDoc.exists() && studentDoc.data().twoFactorEnabled === true) {
-                            // Generate one-time code
-                            const code = generateCode();
-                            const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-                            
-                            // Store code in Firestore
-                            await setDoc(
-                                doc(db, 'students', user.uid),
-                                {
-                                    twoFactorCode: code,
-                                    twoFactorCodeExpiry: expiresAt
-                                },
-                                { merge: true }
-                            );
-                            
-                            // Send verification email (ignore rate-limit errors)
-                            try {
-                                await sendEmailVerification(user);
-                            } catch (e) {
-                                if (e.code !== 'auth/too-many-requests') {
-                                    console.error('Failed to send 2FA email:', e);
-                                }
-                            }
-                            
-                            // Store code in sessionStorage so we can display it
-                            // (In production, the code would be sent via a proper email service)
-                            sessionStorage.setItem('twoFactorCode', code);
-                            
-                            // Store pending session
                             sessionStorage.setItem('pendingSchoolId', finalSchoolId);
                             sessionStorage.setItem('pendingUserRole', userRole);
                             sessionStorage.setItem('pendingDisplayName', userData.displayName || user.email);
@@ -1087,11 +1017,10 @@
                             loginButton.classList.remove('loading');
                             loginButton.disabled = false;
                             showTwoFactorOverlay(user.email);
-                            return; // Stop here — don't redirect yet
+                            return;
                         }
                     } catch (e) {
                         console.error('Error checking 2FA status:', e);
-                        // If 2FA check fails, proceed with normal login
                     }
                 }
 
@@ -1108,7 +1037,6 @@
 
                 console.log('✅ Login successful — Role:', userRole, '| School:', schoolData.name);
 
-                // ========== STEP 6: Redirect to hub ==========
                 window.location.href = 'school-hub.html';
 
             } catch (error) {
