@@ -2460,12 +2460,13 @@ function renderGradesTables(grouped) {
 
 window.viewGrades = async function(subjectId, subjectName) {
     const container = document.getElementById('subjects-container');
-    container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading quiz grades...</p>';
+    container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading...</p>';
 
     try {
         const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
         const subjectSnap = await getDoc(subjectRef);
         const studentIds = subjectSnap.exists() ? (subjectSnap.data().studentIds || []) : [];
+        const studentNames = subjectSnap.exists() ? (subjectSnap.data().studentNames || []) : [];
 
         if (studentIds.length === 0) {
             container.innerHTML =
@@ -2480,38 +2481,7 @@ window.viewGrades = async function(subjectId, subjectName) {
             return;
         }
 
-        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
-        const allAttempts = [];
-        
-        for (const sid of studentIds) {
-            const q = query(attemptsRef, where('studentId', '==', sid));
-            const snap = await getDocs(q);
-            snap.docs.forEach(d => allAttempts.push({ id: d.id, ...d.data() }));
-        }
-
-        if (allAttempts.length === 0) {
-            container.innerHTML =
-                '<div class="empty-state">' +
-                    '<i class="fas fa-chart-bar"></i>' +
-                    '<h4>' + subjectName + '</h4>' +
-                    '<p>No quiz attempts yet from enrolled students.</p>' +
-                    '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
-                        '<i class="fas fa-arrow-left"></i> Back to My Class' +
-                    '</button>' +
-                '</div>';
-            return;
-        }
-
-        allAttempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
-
-        const grouped = {};
-        allAttempts.forEach(a => {
-            const label = a.quizLabel || a.quizPath || 'Unknown Quiz';
-            if (!grouped[label]) grouped[label] = [];
-            grouped[label].push(a);
-        });
-
-        let html =
+        container.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px;">' +
                 '<h3 class="section-title" style="margin:0;">📊 ' + subjectName + ' — Quiz Grades</h3>' +
                 '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
@@ -2519,23 +2489,94 @@ window.viewGrades = async function(subjectId, subjectName) {
                 '</button>' +
             '</div>' +
             '<div class="form-group" style="max-width:300px;margin-bottom:16px;">' +
-                '<div style="position:relative;">' +
-                    '<i class="fas fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);"></i>' +
-                    '<input type="text" id="quiz-grade-search" class="form-input" placeholder="Search student or quiz..." oninput="filterQuizGrades()" style="padding-left:36px;">' +
-                '</div>' +
+                '<label>Select Student</label>' +
+                '<select id="teacher-quiz-student-select" class="form-input" onchange="loadTeacherStudentQuizzes(\'' + subjectId + '\')">' +
+                    '<option value="">-- Select a student --</option>' +
+                    studentIds.map((sid, i) => '<option value="' + sid + '">' + (studentNames[i] || 'Unknown') + '</option>').join('') +
+                '</select>' +
             '</div>' +
-            '<div id="quiz-grades-container" style="max-height:550px;overflow-y:auto;padding-right:4px;">' +
-    renderGradesTables(grouped) +
-'</div>';
-
-        container.innerHTML = html;
-
-        // Store for search filtering
-        window._quizGradesGrouped = grouped;
+            '<div id="teacher-quiz-results" style="max-height:550px;overflow-y:auto;padding-right:4px;">' +
+                '<p style="text-align:center;padding:30px;color:var(--text-muted);">Select a student to view their quiz attempts.</p>' +
+            '</div>';
 
     } catch (error) {
-        console.error('❌ Error loading quiz grades:', error);
-        container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading grades.</p>';
+        console.error('❌ Error:', error);
+        container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading.</p>';
+    }
+};
+
+window.loadTeacherStudentQuizzes = async function(subjectId) {
+    const studentId = document.getElementById('teacher-quiz-student-select').value;
+    const resultsContainer = document.getElementById('teacher-quiz-results');
+    
+    if (!studentId) {
+        resultsContainer.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted);">Select a student to view their quiz attempts.</p>';
+        return;
+    }
+    
+    resultsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading quiz attempts...</p>';
+    
+    try {
+        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
+        const q = query(attemptsRef, where('studentId', '==', studentId));
+        const snap = await getDocs(q);
+        const attempts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        attempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
+        
+        if (attempts.length === 0) {
+            resultsContainer.innerHTML = '<div class="empty-state"><i class="fas fa-chart-bar"></i><p>No quiz attempts found for this student.</p></div>';
+            return;
+        }
+        
+        // Group by quiz label
+        const grouped = {};
+        attempts.forEach(a => {
+            const label = a.quizLabel || a.quizPath || 'Unknown Quiz';
+            if (!grouped[label]) grouped[label] = [];
+            grouped[label].push(a);
+        });
+        
+        let html = '';
+        Object.keys(grouped).sort().forEach(function(label) {
+            const groupAttempts = grouped[label];
+            
+            let rows = '';
+            groupAttempts.forEach(function(a, i) {
+                const scoreColor = a.score >= 70 ? 'var(--success)' : a.score >= 50 ? '#f39c12' : 'var(--danger)';
+                const date = new Date(a.attemptedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                rows +=
+                    '<tr style="border-top:1px solid var(--border);background:' + (i % 2 === 0 ? 'var(--bg)' : 'var(--bg-card)') + ';">' +
+                        '<td data-label="Score" style="padding:10px 14px;text-align:center;font-weight:700;color:' + scoreColor + ';">' + a.score + '%</td>' +
+                        '<td data-label="Correct" style="padding:10px 14px;text-align:center;color:var(--text-muted);">' + a.correctAnswers + '/' + a.totalQuestions + '</td>' +
+                        '<td data-label="Date" style="padding:10px 14px;font-size:0.85rem;color:var(--text-muted);">' + date + '</td>' +
+                    '</tr>';
+            });
+            
+            html +=
+                '<div style="margin-bottom:20px;border:1px solid var(--border);border-radius:12px;overflow:hidden;">' +
+                    '<div style="padding:12px 16px;background:var(--bg-card);border-bottom:1px solid var(--border);font-weight:600;color:var(--text-dark);font-size:0.95rem;">' +
+                        '<i class="fas fa-clipboard-check" style="color:var(--primary);margin-right:8px;"></i>' + label +
+                        '<span style="font-size:0.8rem;color:var(--text-muted);margin-left:8px;">(' + groupAttempts.length + ' attempt' + (groupAttempts.length !== 1 ? 's' : '') + ')</span>' +
+                    '</div>' +
+                    '<table style="width:100%;border-collapse:collapse;">' +
+                        '<thead>' +
+                            '<tr style="background:var(--bg-secondary);font-size:0.8rem;color:var(--text-muted);">' +
+                                '<th style="padding:8px 14px;text-align:center;">Score</th>' +
+                                '<th style="padding:8px 14px;text-align:center;">Correct</th>' +
+                                '<th style="padding:8px 14px;text-align:left;">Date</th>' +
+                            '</tr>' +
+                        '</thead>' +
+                        '<tbody>' + rows + '</tbody>' +
+                    '</table>' +
+                '</div>';
+        });
+        
+        resultsContainer.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error loading quiz attempts:', error);
+        resultsContainer.innerHTML = '<p style="color:var(--danger);text-align:center;padding:20px;">Error loading.</p>';
     }
 };
 
