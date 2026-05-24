@@ -517,6 +517,7 @@
             <li><a href="#" onclick="showPage('courses', this)"><i class="fas fa-book-open"></i> All Courses</a></li>
             <li><a href="#" onclick="showPage('enrolments', this)"><i class="fas fa-user-check"></i> Enrolments</a></li>
             <li><a href="#" onclick="showPage('gradebooks', this)"><i class="fas fa-table"></i> Gradebooks</a></li>
+            <li><a href="#" onclick="showPage('assignments-log', this)"><i class="fas fa-tasks"></i> Assignments</a></li>
             <li><a href="#" onclick="showPage('subscription', this)"><i class="fas fa-credit-card"></i> Subscription</a></li>
             <li><a href="#" onclick="showPage('settings', this)"><i class="fas fa-cog"></i> School Settings</a></li>
             <li><a href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Log Out</a></li>
@@ -779,6 +780,44 @@
         </div>
     </div>
 </div>
+
+
+    <!-- Assignments Log Page -->
+<div id="assignments-log" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Assignment Log</h1>
+    </div>
+    <div class="card">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 220px; position: relative;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                <input type="text" id="assignment-log-search" class="form-input" 
+                       placeholder="Search by title, subject, or teacher..." 
+                       oninput="filterAssignmentLog()"
+                       style="padding-left: 40px;">
+            </div>
+            <span id="assignment-log-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;"></span>
+        </div>
+        <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortAssignmentLog('title')">Title <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortAssignmentLog('subject')">Subject <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortAssignmentLog('teacher')">Teacher <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortAssignmentLog('students')">Students <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortAssignmentLog('date')">Sent <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="assignment-log-body">
+                    <tr><td colspan="6" style="text-align: center;">Loading assignments...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="assignment-log-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
+    </div>
+</div>
         
         
         <!-- Subscription Page -->
@@ -942,6 +981,7 @@
             if (pageId === 'courses') loadAllCourses();
             if (pageId === 'enrolments') loadAllEnrolments();
             if (pageId === 'gradebooks') loadGradebookTeachers();
+            if (pageId === 'assignments-log') loadAssignmentLog();
             
             document.getElementById('sidebar').classList.remove('open');
         };
@@ -2071,6 +2111,182 @@ window.changeAdminGradebookYear = function(delta) {
     adminGradebookYear += delta;
     document.getElementById('admin-gradebook-year').textContent = adminGradebookYear;
     loadAdminGradebook();
+};
+
+// ========================================================================================//
+// ==================================== ASSIGNMENT LOG ====================================//
+// ========================================================================================//
+
+        // Assignment log state
+let allAssignments = [];
+let filteredAssignments = [];
+let assignmentSortField = 'date';
+let assignmentSortDirection = 'desc';
+let assignmentPage = 1;
+const assignmentsPerPage = 30;
+
+async function loadAssignmentLog() {
+    const tbody = document.getElementById('assignment-log-body');
+    try {
+        const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
+        const assignmentsSnap = await getDocs(assignmentsRef);
+        allAssignments = assignmentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        sortAssignmentData();
+        filterAssignmentLog();
+    } catch (error) {
+        console.error('Error loading assignments:', error);
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--danger);">Error loading assignments.</td></tr>';
+    }
+}
+
+function sortAssignmentData() {
+    allAssignments.sort((a, b) => {
+        let valA, valB;
+        
+        switch (assignmentSortField) {
+            case 'title':
+                valA = (a.title || '').toLowerCase();
+                valB = (b.title || '').toLowerCase();
+                break;
+            case 'subject':
+                valA = (a.subjectName || '').toLowerCase();
+                valB = (b.subjectName || '').toLowerCase();
+                break;
+            case 'teacher':
+                valA = (a.teacherName || '').toLowerCase();
+                valB = (b.teacherName || '').toLowerCase();
+                break;
+            case 'students':
+                valA = a.studentCount || 0;
+                valB = b.studentCount || 0;
+                break;
+            case 'date':
+                valA = a.createdAt || '';
+                valB = b.createdAt || '';
+                break;
+        }
+        
+        if (valA < valB) return assignmentSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return assignmentSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+window.sortAssignmentLog = function(field) {
+    if (assignmentSortField === field) {
+        assignmentSortDirection = assignmentSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        assignmentSortField = field;
+        assignmentSortDirection = 'asc';
+    }
+    sortAssignmentData();
+    assignmentPage = 1;
+    filterAssignmentLog();
+};
+
+window.filterAssignmentLog = function() {
+    const searchQuery = document.getElementById('assignment-log-search')?.value?.toLowerCase()?.trim() || '';
+    
+    if (searchQuery) {
+        filteredAssignments = allAssignments.filter(a => 
+            (a.title || '').toLowerCase().includes(searchQuery) ||
+            (a.subjectName || '').toLowerCase().includes(searchQuery) ||
+            (a.teacherName || '').toLowerCase().includes(searchQuery)
+        );
+    } else {
+        filteredAssignments = [...allAssignments];
+    }
+    
+    assignmentPage = 1;
+    renderAssignmentLogPage();
+};
+
+function renderAssignmentLogPage() {
+    const tbody = document.getElementById('assignment-log-body');
+    const countSpan = document.getElementById('assignment-log-count');
+    const paginationDiv = document.getElementById('assignment-log-pagination');
+    
+    if (countSpan) {
+        countSpan.textContent = filteredAssignments.length !== allAssignments.length 
+            ? `${filteredAssignments.length} of ${allAssignments.length} assignments`
+            : `${allAssignments.length} assignment${allAssignments.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (filteredAssignments.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">No assignments found.</td></tr>';
+        if (paginationDiv) paginationDiv.innerHTML = '';
+        return;
+    }
+    
+    const totalPages = Math.ceil(filteredAssignments.length / assignmentsPerPage);
+    const start = (assignmentPage - 1) * assignmentsPerPage;
+    const pageAssignments = filteredAssignments.slice(start, start + assignmentsPerPage);
+    
+    tbody.innerHTML = pageAssignments.map(a => {
+        const date = a.createdAt ? new Date(a.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+        const studentCount = a.studentCount || 0;
+        
+        return `
+            <tr>
+                <td><strong>${a.title || 'Untitled'}</strong></td>
+                <td>${a.subjectName || 'Unknown'}</td>
+                <td>${a.teacherName || 'Unknown'}</td>
+                <td><span class="badge badge-student">${studentCount} student${studentCount !== 1 ? 's' : ''}</span></td>
+                <td>${date}</td>
+                <td>
+                    <button class="btn btn-outline btn-sm" onclick="viewAssignmentDetail('${a.id}')">
+                        <i class="fas fa-eye"></i> View
+                    </button>
+                </td>
+            </tr>`;
+    }).join('');
+    
+    if (paginationDiv && totalPages > 1) {
+        let pagHTML = '';
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToAssignmentPage(${assignmentPage - 1})" ${assignmentPage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= assignmentPage - 2 && i <= assignmentPage + 2)) {
+                pagHTML += `<button class="btn btn-sm ${i === assignmentPage ? 'btn-accent' : 'btn-outline'}" onclick="goToAssignmentPage(${i})">${i}</button>`;
+            } else if (i === assignmentPage - 3 || i === assignmentPage + 3) {
+                pagHTML += `<span style="padding: 0 4px;">...</span>`;
+            }
+        }
+        
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToAssignmentPage(${assignmentPage + 1})" ${assignmentPage === totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        paginationDiv.innerHTML = pagHTML;
+    } else if (paginationDiv) {
+        paginationDiv.innerHTML = '';
+    }
+}
+
+window.goToAssignmentPage = function(page) {
+    const totalPages = Math.ceil(filteredAssignments.length / assignmentsPerPage);
+    if (page < 1 || page > totalPages) return;
+    assignmentPage = page;
+    renderAssignmentLogPage();
+};
+
+window.viewAssignmentDetail = function(assignmentId) {
+    const assignment = allAssignments.find(a => a.id === assignmentId);
+    if (!assignment) {
+        alert('Assignment not found.');
+        return;
+    }
+    
+    const date = assignment.createdAt ? new Date(assignment.createdAt).toLocaleString('en-US', {
+        month: 'long', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    }) : 'Unknown';
+    
+    alert(
+        `📋 ${assignment.title}\n\n` +
+        `Subject: ${assignment.subjectName || 'Unknown'}\n` +
+        `Teacher: ${assignment.teacherName || 'Unknown'}\n` +
+        `Sent to: ${assignment.studentCount || 0} student(s)\n` +
+        `Date: ${date}\n\n` +
+        `Description:\n${assignment.description || 'No description'}`
+    );
 };
         
     </script>
