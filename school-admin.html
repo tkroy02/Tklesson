@@ -515,6 +515,7 @@
             <li><a href="#" onclick="showPage('students', this)"><i class="fas fa-user-graduate"></i> Manage Students</a></li>
             <li><a href="#" onclick="showPage('teachers', this)"><i class="fas fa-chalkboard-user"></i> Manage Teachers</a></li>
             <li><a href="#" onclick="showPage('courses', this)"><i class="fas fa-book-open"></i> All Courses</a></li>
+            <li><a href="#" onclick="showPage('enrolments', this)"><i class="fas fa-user-check"></i> Enrolments</a></li>
             <li><a href="#" onclick="showPage('subscription', this)"><i class="fas fa-credit-card"></i> Subscription</a></li>
             <li><a href="#" onclick="showPage('settings', this)"><i class="fas fa-cog"></i> School Settings</a></li>
             <li><a href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Log Out</a></li>
@@ -681,7 +682,49 @@
         <div id="courses-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
     </div>
 </div>
-        
+
+
+        <!-- Enrolments Page -->
+<div id="enrolments" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Enrolment Monitor</h1>
+    </div>
+    <div class="card">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px; position: relative;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                <input type="text" id="enrolment-search" class="form-input" 
+                       placeholder="Search student or subject..." 
+                       oninput="filterEnrolments()"
+                       style="padding-left: 40px;">
+            </div>
+            <select id="enrolment-status-filter" class="form-input" onchange="filterEnrolments()" style="max-width: 160px;">
+                <option value="all">All Status</option>
+                <option value="pending">Pending</option>
+                <option value="enrolled">Enrolled</option>
+                <option value="rejected">Rejected</option>
+            </select>
+            <span id="enrolment-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;"></span>
+        </div>
+        <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortEnrolments('student')">Student <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortEnrolments('subject')">Subject <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortEnrolments('teacher')">Teacher <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortEnrolments('status')">Status <i class="fas fa-sort"></i></th>
+                        <th style="position: sticky; top: 0; z-index: 1; cursor: pointer;" onclick="sortEnrolments('date')">Date <i class="fas fa-sort"></i></th>
+                    </tr>
+                </thead>
+                <tbody id="enrolments-table-body">
+                    <tr><td colspan="5" style="text-align: center;">Loading enrolments...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="enrolments-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
+    </div>
+</div>
         
         <!-- Subscription Page -->
         <div id="subscription" class="page">
@@ -842,6 +885,7 @@
             if (pageId === 'subscription') loadSubscription();
             if (pageId === 'settings') loadSchoolSettings();
             if (pageId === 'courses') loadAllCourses();
+            if (pageId === 'enrolments') loadAllEnrolments();
             
             document.getElementById('sidebar').classList.remove('open');
         };
@@ -1636,6 +1680,162 @@ window.goToCoursePage = function(page) {
         console.error('Error viewing students:', error);
         alert('Error loading student list.');
     }
+};
+        //=====================================================================//
+        //==========================ENROLMENT SECTION========================//
+        //===================================================================//
+
+
+        // Enrolment management state
+let allEnrolments = [];
+let filteredEnrolments = [];
+let enrolmentSortField = 'date';
+let enrolmentSortDirection = 'desc';
+let enrolmentPage = 1;
+const enrolmentsPerPage = 30;
+
+async function loadAllEnrolments() {
+    const tbody = document.getElementById('enrolments-table-body');
+    try {
+        const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
+        const enrolmentsSnap = await getDocs(enrolmentsRef);
+        allEnrolments = enrolmentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        sortEnrolmentData();
+        filterEnrolments();
+    } catch (error) {
+        console.error('Error loading enrolments:', error);
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading enrolments. Please refresh.</td></tr>';
+    }
+}
+
+function sortEnrolmentData() {
+    allEnrolments.sort((a, b) => {
+        let valA, valB;
+        
+        switch (enrolmentSortField) {
+            case 'student':
+                valA = (a.studentName || '').toLowerCase();
+                valB = (b.studentName || '').toLowerCase();
+                break;
+            case 'subject':
+                valA = (a.subjectName || '').toLowerCase();
+                valB = (b.subjectName || '').toLowerCase();
+                break;
+            case 'teacher':
+                valA = (a.teacherId || '').toLowerCase();
+                valB = (b.teacherId || '').toLowerCase();
+                break;
+            case 'status':
+                valA = a.status || '';
+                valB = b.status || '';
+                break;
+            case 'date':
+                valA = a.requestedAt || '';
+                valB = b.requestedAt || '';
+                break;
+        }
+        
+        if (valA < valB) return enrolmentSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return enrolmentSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+window.sortEnrolments = function(field) {
+    if (enrolmentSortField === field) {
+        enrolmentSortDirection = enrolmentSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        enrolmentSortField = field;
+        enrolmentSortDirection = 'asc';
+    }
+    sortEnrolmentData();
+    enrolmentPage = 1;
+    filterEnrolments();
+};
+
+window.filterEnrolments = function() {
+    const searchQuery = document.getElementById('enrolment-search')?.value?.toLowerCase()?.trim() || '';
+    const statusFilter = document.getElementById('enrolment-status-filter')?.value || 'all';
+    
+    filteredEnrolments = [...allEnrolments];
+    
+    if (statusFilter !== 'all') {
+        filteredEnrolments = filteredEnrolments.filter(e => e.status === statusFilter);
+    }
+    
+    if (searchQuery) {
+        filteredEnrolments = filteredEnrolments.filter(e => 
+            (e.studentName || '').toLowerCase().includes(searchQuery) ||
+            (e.subjectName || '').toLowerCase().includes(searchQuery)
+        );
+    }
+    
+    enrolmentPage = 1;
+    renderEnrolmentPage();
+};
+
+function renderEnrolmentPage() {
+    const tbody = document.getElementById('enrolments-table-body');
+    const countSpan = document.getElementById('enrolment-count');
+    const paginationDiv = document.getElementById('enrolments-pagination');
+    
+    if (countSpan) {
+        countSpan.textContent = filteredEnrolments.length !== allEnrolments.length 
+            ? `${filteredEnrolments.length} of ${allEnrolments.length} enrolments`
+            : `${allEnrolments.length} enrolment${allEnrolments.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (filteredEnrolments.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No enrolments found.</td></tr>';
+        if (paginationDiv) paginationDiv.innerHTML = '';
+        return;
+    }
+    
+    const totalPages = Math.ceil(filteredEnrolments.length / enrolmentsPerPage);
+    const start = (enrolmentPage - 1) * enrolmentsPerPage;
+    const pageEnrolments = filteredEnrolments.slice(start, start + enrolmentsPerPage);
+    
+    tbody.innerHTML = pageEnrolments.map(e => {
+        const date = e.requestedAt ? new Date(e.requestedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        const statusClass = e.status === 'enrolled' ? 'badge-active' : e.status === 'pending' ? '' : '';
+        const statusColor = e.status === 'enrolled' ? 'var(--success)' : e.status === 'pending' ? '#f39c12' : 'var(--danger)';
+        const statusBg = e.status === 'enrolled' ? 'rgba(25,135,84,0.08)' : e.status === 'pending' ? 'rgba(240,180,41,0.08)' : 'rgba(220,53,69,0.08)';
+        
+        return `
+            <tr>
+                <td><strong>${e.studentName || 'Unknown'}</strong></td>
+                <td>${e.subjectName || 'Unknown'}</td>
+                <td>Teacher ID: ${(e.teacherId || '').substring(0, 8)}...</td>
+                <td><span class="badge ${statusClass}" style="background: ${statusBg}; color: ${statusColor}; border: 1px solid ${statusColor}20;">${e.status.charAt(0).toUpperCase() + e.status.slice(1)}</span></td>
+                <td>${date}</td>
+            </tr>`;
+    }).join('');
+    
+    if (paginationDiv && totalPages > 1) {
+        let pagHTML = '';
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToEnrolmentPage(${enrolmentPage - 1})" ${enrolmentPage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= enrolmentPage - 2 && i <= enrolmentPage + 2)) {
+                pagHTML += `<button class="btn btn-sm ${i === enrolmentPage ? 'btn-accent' : 'btn-outline'}" onclick="goToEnrolmentPage(${i})">${i}</button>`;
+            } else if (i === enrolmentPage - 3 || i === enrolmentPage + 3) {
+                pagHTML += `<span style="padding: 0 4px;">...</span>`;
+            }
+        }
+        
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToEnrolmentPage(${enrolmentPage + 1})" ${enrolmentPage === totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        paginationDiv.innerHTML = pagHTML;
+    } else if (paginationDiv) {
+        paginationDiv.innerHTML = '';
+    }
+}
+
+window.goToEnrolmentPage = function(page) {
+    const totalPages = Math.ceil(filteredEnrolments.length / enrolmentsPerPage);
+    if (page < 1 || page > totalPages) return;
+    enrolmentPage = page;
+    renderEnrolmentPage();
 };
         
     </script>
