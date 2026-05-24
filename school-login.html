@@ -855,16 +855,24 @@
             }
             
             try {
-                const studentDoc = await getDoc(doc(db, 'students', user.uid));
+                const pendingRole = sessionStorage.getItem('pendingUserRole');
+                const pendingSchoolId = sessionStorage.getItem('pendingSchoolId');
+                let twoFactorDoc;
                 
-                if (!studentDoc.exists()) {
+                if (pendingRole === 'admin') {
+                    twoFactorDoc = await getDoc(doc(db, 'schooladmins', user.uid));
+                } else {
+                    twoFactorDoc = await getDoc(doc(db, 'schools', pendingSchoolId, 'users', user.uid));
+                }
+                
+                if (!twoFactorDoc.exists()) {
                     showError('Account not found. Please try again.');
                     btn.classList.remove('loading');
                     btn.disabled = false;
                     return;
                 }
                 
-                const secret = studentDoc.data().twoFactorSecret;
+                const secret = twoFactorDoc.data().twoFactorSecret;
                 
                 if (!secret) {
                     showError('2FA not properly configured. Please contact support.');
@@ -999,29 +1007,33 @@
                 const schoolDoc = await getDoc(schoolRef);
                 const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
 
-                // ========== STEP 4: Check 2FA for students ==========
-                if (userRole === 'student') {
-                    try {
-                        const studentDoc = await getDoc(doc(db, 'students', user.uid));
-                        if (studentDoc.exists() && studentDoc.data().twoFactorEnabled === true) {
-                            sessionStorage.setItem('pendingSchoolId', finalSchoolId);
-                            sessionStorage.setItem('pendingUserRole', userRole);
-                            sessionStorage.setItem('pendingDisplayName', userData.displayName || user.email);
-                            sessionStorage.setItem('pendingEmail', user.email);
-                            sessionStorage.setItem('pendingUid', user.uid);
-                            sessionStorage.setItem('pendingSchoolName', schoolData.name || 'Your School');
-                            sessionStorage.setItem('pendingSchoolLocation',
-                                [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
-                            );
-
-                            loginButton.classList.remove('loading');
-                            loginButton.disabled = false;
-                            showTwoFactorOverlay(user.email);
-                            return;
-                        }
-                    } catch (e) {
-                        console.error('Error checking 2FA status:', e);
+                // ========== STEP 4: Check 2FA for all users ==========
+                try {
+                    let twoFactorDoc;
+                    if (userRole === 'admin') {
+                        twoFactorDoc = await getDoc(doc(db, 'schooladmins', user.uid));
+                    } else {
+                        twoFactorDoc = await getDoc(doc(db, 'schools', finalSchoolId, 'users', user.uid));
                     }
+                    
+                    if (twoFactorDoc.exists() && twoFactorDoc.data().twoFactorEnabled === true) {
+                        sessionStorage.setItem('pendingSchoolId', finalSchoolId);
+                        sessionStorage.setItem('pendingUserRole', userRole);
+                        sessionStorage.setItem('pendingDisplayName', userData.displayName || user.email);
+                        sessionStorage.setItem('pendingEmail', user.email);
+                        sessionStorage.setItem('pendingUid', user.uid);
+                        sessionStorage.setItem('pendingSchoolName', schoolData.name || 'Your School');
+                        sessionStorage.setItem('pendingSchoolLocation',
+                            [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
+                        );
+
+                        loginButton.classList.remove('loading');
+                        loginButton.disabled = false;
+                        showTwoFactorOverlay(user.email);
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Error checking 2FA status:', e);
                 }
 
                 // ========== STEP 5: Store session ==========
