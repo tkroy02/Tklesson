@@ -23,6 +23,9 @@
     <script src="https://tklesson.com/resources-loader.js"></script>
     <script>loadCommonResources();</script>
 
+<script src="https://cdn.jsdelivr.net/npm/otplib@12.0.1/dist/otplib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
     <!-- In your <head>, BEFORE loading MathJax -->
 <script>
   window.MathJax = {
@@ -2856,6 +2859,39 @@
     </div>
 </div>
 
+<!-- 2FA Setup Modal -->
+<div id="two-factor-setup-modal" class="modal">
+    <div class="modal-content" style="max-width: 450px; text-align: center;">
+        <div class="modal-header">
+            <h3>Set Up Two-Factor Authentication</h3>
+            <button class="modal-close" onclick="cancel2FASetup()">&times;</button>
+        </div>
+        <p style="color: var(--text-muted); margin-bottom: 16px;">
+            Scan this QR code with Google Authenticator, Authy, or any TOTP app.
+        </p>
+        <div id="qrcode-container" style="display: flex; justify-content: center; margin-bottom: 16px;"></div>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">
+            Or enter this code manually:
+        </p>
+        <code id="manual-secret" style="background: #f0f4ff; padding: 8px 16px; border-radius: 8px; font-size: 0.85rem; word-break: break-all; display: block; margin-bottom: 20px;"></code>
+        <div class="form-group" style="text-align: left;">
+            <label for="totp-verification-code">Enter the 6-digit code from your app to verify:</label>
+            <input 
+                type="text" 
+                id="totp-verification-code" 
+                class="form-input" 
+                placeholder="000000" 
+                maxlength="6"
+                inputmode="numeric"
+            >
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline btn-sm" onclick="cancel2FASetup()">Cancel</button>
+            <button class="btn btn-accent btn-sm" onclick="verify2FASetup()">Verify & Enable</button>
+        </div>
+    </div>
+</div>
+    
 <!-- Change Password Modal -->
 <div id="change-password-modal" class="modal">
     <div class="modal-content">
@@ -4898,27 +4934,48 @@ async function initializeSettings() {
     document.getElementById('quiz-reminders').onchange = e => { userSettings.notifications.quizReminders = e.target.checked; saveSettings(); };
     document.getElementById('study-goals').onchange = e => { userSettings.notifications.studyGoals = e.target.checked; saveSettings(); };
     document.getElementById('theme-selector').onchange = e => { userSettings.preferences.theme = e.target.value; saveSettings(); };
-    document.getElementById('two-factor-toggle').onchange = async (e) => {
+        document.getElementById('two-factor-toggle').onchange = async (e) => {
         const enabled = e.target.checked;
-        userSettings.security.twoFactor = enabled;
-        saveSettings(); // Keep localStorage as fallback
-        
         const user = auth.currentUser;
+        
         if (!user) return;
         
-        try {
-            await setDoc(
-                doc(db, 'students', user.uid),
-                { twoFactorEnabled: enabled },
-                { merge: true }
+        if (enabled) {
+            // Generate a secret and show QR code
+            const secret = otplib.authenticator.generateSecret();
+            const otpauth = otplib.authenticator.keyuri(
+                user.email,
+                'Tklesson',
+                secret
             );
-        } catch (error) {
-            console.error('Failed to save 2FA preference:', error);
-            // Revert toggle on failure
-            e.target.checked = !enabled;
-            userSettings.security.twoFactor = !enabled;
-            saveSettings();
-            alert('Failed to update. Please try again.');
+            
+            // Store the secret temporarily for verification
+            sessionStorage.setItem('pending2FASecret', secret);
+            
+            // Show QR code modal
+            showQRCodeModal(otpauth, secret);
+            
+            // Don't save yet — wait for verification
+            e.target.checked = false;
+            
+        } else {
+            // Disable 2FA
+            try {
+                await setDoc(
+                    doc(db, 'students', user.uid),
+                    { 
+                        twoFactorEnabled: false,
+                        twoFactorSecret: null
+                    },
+                    { merge: true }
+                );
+                userSettings.security.twoFactor = false;
+                saveSettings();
+            } catch (error) {
+                console.error('Failed to disable 2FA:', error);
+                e.target.checked = true;
+                alert('Failed to disable. Please try again.');
+            }
         }
     };
 }
@@ -4931,7 +4988,72 @@ function saveSettings() {
     localStorage.setItem('userSettings', JSON.stringify(userSettings));
 }
 
+// ===== 2FA SETUP FUNCTIONS =====
 
+function showQRCodeModal(otpauth, secret) {
+    document.getElementById('two-factor-setup-modal').classList.add('active');
+    document.getElementById('manual-secret').textContent = secret;
+    document.getElementById('totp-verification-code').value = '';
+    
+    // Generate QR code
+    const container = document.getElementById('qrcode-container');
+    container.innerHTML = '';
+    new QRCode(container, {
+        text: otpauth,
+        width: 200,
+        height: 200
+    });
+}
+
+window.cancel2FASetup = function() {
+    document.getElementById('two-factor-setup-modal').classList.remove('active');
+    sessionStorage.removeItem('pending2FASecret');
+};
+
+window.verify2FASetup = async function() {
+    const code = document.getElementById('totp-verification-code').value.trim();
+    const secret = sessionStorage.getItem('pending2FASecret');
+    const user = auth.currentUser;
+    
+    if (!secret || !user) return;
+    
+    if (!code || code.length !== 6) {
+        alert('Please enter the 6-digit code from your app.');
+        return;
+    }
+    
+    // Verify the code
+    const isValid = otplib.authenticator.check(code, secret);
+    
+    if (!isValid) {
+        alert('Invalid code. Please try again.');
+        return;
+    }
+    
+    // Save to Firestore
+    try {
+        await setDoc(
+            doc(db, 'students', user.uid),
+            {
+                twoFactorEnabled: true,
+                twoFactorSecret: secret
+            },
+            { merge: true }
+        );
+        
+        userSettings.security.twoFactor = true;
+        saveSettings();
+        document.getElementById('two-factor-toggle').checked = true;
+        sessionStorage.removeItem('pending2FASecret');
+        document.getElementById('two-factor-setup-modal').classList.remove('active');
+        alert('Two-factor authentication enabled!');
+    } catch (error) {
+        console.error('Failed to save 2FA:', error);
+        alert('Failed to enable 2FA. Please try again.');
+    }
+};
+
+        
 // Generate 2-letter initials from a name
 function getInitials(name) {
     return name
