@@ -2360,111 +2360,109 @@ function renderGradesTables(grouped) {
 
 window.viewGrades = async function(subjectId, subjectName) {
     const container = document.getElementById('subjects-container');
-    
-    // Get enrolled students for this subject
-    const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
-    const subjectSnap = await getDoc(subjectRef);
-    
-    if (!subjectSnap.exists()) {
-        alert('Subject not found.');
-        return;
-    }
-    
-    const data = subjectSnap.data();
-    const studentIds = data.studentIds || [];
-    const studentNames = data.studentNames || [];
-    
-    if (studentIds.length === 0) {
-        container.innerHTML =
-            '<div class="empty-state">' +
-                '<i class="fas fa-chart-bar"></i>' +
-                '<h4>' + subjectName + '</h4>' +
-                '<p>No students enrolled yet.</p>' +
+    container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading quiz grades...</p>';
+
+    try {
+        const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
+        const subjectSnap = await getDoc(subjectRef);
+        const studentIds = subjectSnap.exists() ? (subjectSnap.data().studentIds || []) : [];
+
+        if (studentIds.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                    '<i class="fas fa-chart-bar"></i>' +
+                    '<h4>' + subjectName + '</h4>' +
+                    '<p>No students enrolled in this subject.</p>' +
+                    '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
+                        '<i class="fas fa-arrow-left"></i> Back to My Class' +
+                    '</button>' +
+                '</div>';
+            return;
+        }
+
+        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
+        const allAttempts = [];
+        
+        for (const sid of studentIds) {
+            const q = query(attemptsRef, where('studentId', '==', sid));
+            const snap = await getDocs(q);
+            snap.docs.forEach(d => allAttempts.push({ id: d.id, ...d.data() }));
+        }
+
+        if (allAttempts.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                    '<i class="fas fa-chart-bar"></i>' +
+                    '<h4>' + subjectName + '</h4>' +
+                    '<p>No quiz attempts yet from enrolled students.</p>' +
+                    '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
+                        '<i class="fas fa-arrow-left"></i> Back to My Class' +
+                    '</button>' +
+                '</div>';
+            return;
+        }
+
+        allAttempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
+
+        const grouped = {};
+        allAttempts.forEach(a => {
+            const label = a.quizLabel || a.quizPath || 'Unknown Quiz';
+            if (!grouped[label]) grouped[label] = [];
+            grouped[label].push(a);
+        });
+
+        let html =
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px;">' +
+                '<h3 class="section-title" style="margin:0;">📊 ' + subjectName + ' — Quiz Grades</h3>' +
                 '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
                     '<i class="fas fa-arrow-left"></i> Back to My Class' +
                 '</button>' +
+            '</div>' +
+            '<div class="form-group" style="max-width:300px;margin-bottom:16px;">' +
+                '<div style="position:relative;">' +
+                    '<i class="fas fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);"></i>' +
+                    '<input type="text" id="quiz-grade-search" class="form-input" placeholder="Search student or quiz..." oninput="filterQuizGrades()" style="padding-left:36px;">' +
+                '</div>' +
+            '</div>' +
+            '<div id="quiz-grades-container">' +
+                renderGradesTables(grouped) +
             '</div>';
-        return;
+
+        container.innerHTML = html;
+
+        // Store for search filtering
+        window._quizGradesGrouped = grouped;
+
+    } catch (error) {
+        console.error('❌ Error loading quiz grades:', error);
+        container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading grades.</p>';
     }
-    
-    // Build student selector and results area
-    container.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
-            <h3 class="section-title" style="margin:0;">📊 ${subjectName} — Quiz Grades</h3>
-            <button class="btn btn-outline btn-sm" onclick="loadMyClass()">
-                <i class="fas fa-arrow-left"></i> Back to My Class
-            </button>
-        </div>
-        <div class="form-group" style="max-width:300px;margin-bottom:16px;">
-            <label>Select Student</label>
-            <select id="teacher-quiz-student-select" class="form-input" onchange="loadTeacherQuizAttempts('${subjectId}')">
-                <option value="">-- Select a student --</option>
-                ${studentIds.map((sid, i) => `<option value="${sid}">${studentNames[i] || 'Unknown'}</option>`).join('')}
-            </select>
-        </div>
-        <div id="teacher-quiz-results">
-            <p style="text-align:center;padding:30px;color:var(--text-muted);">Select a student to view their quiz attempts.</p>
-        </div>`;
 };
 
-window.loadTeacherQuizAttempts = async function(subjectId) {
-    const studentId = document.getElementById('teacher-quiz-student-select').value;
-    const resultsContainer = document.getElementById('teacher-quiz-results');
+window.filterQuizGrades = function() {
+    const query = document.getElementById('quiz-grade-search')?.value?.toLowerCase()?.trim() || '';
+    const container = document.getElementById('quiz-grades-container');
+    const grouped = window._quizGradesGrouped || {};
     
-    if (!studentId) {
-        resultsContainer.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted);">Select a student to view their quiz attempts.</p>';
+    if (!query) {
+        container.innerHTML = renderGradesTables(grouped);
         return;
     }
     
-    resultsContainer.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading quiz attempts...</p>';
+    const filtered = {};
+    Object.keys(grouped).forEach(label => {
+        const matching = grouped[label].filter(a =>
+            (a.studentName || '').toLowerCase().includes(query) ||
+            (a.quizLabel || '').toLowerCase().includes(query) ||
+            (label || '').toLowerCase().includes(query)
+        );
+        if (matching.length > 0) filtered[label] = matching;
+    });
     
-    try {
-        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
-        const q = query(attemptsRef, where('studentId', '==', studentId));
-        const snap = await getDocs(q);
-        const attempts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        
-        attempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
-        
-        if (attempts.length === 0) {
-            resultsContainer.innerHTML = '<div class="empty-state"><i class="fas fa-chart-bar"></i><p>No quiz attempts found for this student.</p></div>';
-            return;
-        }
-        
-        resultsContainer.innerHTML = `
-            <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:12px;">${attempts.length} attempt${attempts.length !== 1 ? 's' : ''}</p>
-            <div style="max-height:400px;overflow-y:auto;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Quiz</th>
-                            <th>Subject</th>
-                            <th>Score</th>
-                            <th>Correct</th>
-                            <th>Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${attempts.map(a => {
-                            const date = a.attemptedAt ? new Date(a.attemptedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-                            const scoreColor = a.score >= 70 ? 'var(--success)' : a.score >= 50 ? '#f39c12' : 'var(--danger)';
-                            const score = a.score != null ? `${a.score}%` : '—';
-                            const correct = a.correctAnswers != null && a.totalQuestions != null ? `${a.correctAnswers}/${a.totalQuestions}` : '—';
-                            return `
-                                <tr>
-                                    <td data-label="Quiz"><strong>${a.quizLabel || a.quizPath || '—'}</strong></td>
-                                    <td data-label="Subject">${a.subjectName || '—'}</td>
-                                    <td data-label="Score"><span style="font-weight:700;color:${scoreColor};">${score}</span></td>
-                                    <td data-label="Correct">${correct}</td>
-                                    <td data-label="Date">${date}</td>
-                                </tr>`;
-                        }).join('')}
-                    </tbody>
-                </table>
-            </div>`;
-    } catch (error) {
-        console.error('Error loading quiz attempts:', error);
-        resultsContainer.innerHTML = '<p style="color:var(--danger);text-align:center;padding:20px;">Error loading quiz attempts.</p>';
+    if (Object.keys(filtered).length === 0) {
+        container.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted);">No matching quiz results.</p>';
+    } else {
+        container.innerHTML = renderGradesTables(filtered);
     }
 };
         
