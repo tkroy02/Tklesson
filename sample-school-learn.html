@@ -2470,7 +2470,7 @@
     </div>
 </div>
 
-    <!-- ========================================
+   <!-- ========================================
      PAGE: Enrolment
      ======================================== -->
 <div id="enrolment" class="page">
@@ -2481,17 +2481,73 @@
             <span>Student</span>
         </div>
     </div>
+
+    <!-- Term & Year Selector -->
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px;align-items:flex-end;">
+        <div class="form-group" style="max-width:200px;margin-bottom:0;">
+            <label>Term</label>
+            <select id="enrolment-term-select" class="form-input" onchange="filterEnrolmentByPeriod()">
+                <option value="all">All Terms</option>
+                <option value="fall">Fall</option>
+                <option value="spring">Spring</option>
+                <option value="winter">Winter</option>
+                <option value="summer">Summer</option>
+                <option value="september">September Term</option>
+                <option value="january">January Term</option>
+                <option value="may">May Term</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+            <label>Year</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeEnrolmentYear(-1)" style="padding:6px 10px;font-size:1rem;">−</button>
+                <span id="enrolment-year-display" style="font-weight:600;font-size:1rem;min-width:44px;text-align:center;"></span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeEnrolmentYear(1)" style="padding:6px 10px;font-size:1rem;">+</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search Box -->
+    <div class="form-group" style="margin-bottom: 16px;">
+        <div style="position: relative;">
+            <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+            <input type="text" id="enrolment-search" class="form-input" 
+                   placeholder="Search available courses..." 
+                   oninput="filterEnrolmentCourses()"
+                   style="padding-left: 40px;">
+        </div>
+    </div>
+
+    <!-- Collapsible Available Courses -->
     <div class="card" style="margin-bottom: 20px;">
-        <h3 class="section-title">Course Enrolment</h3>
-        <div id="enrolment-list">
+        <h3 class="section-title" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleAvailableCourses()">
+            <span>
+                Available Courses
+                <span id="available-count" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;"></span>
+            </span>
+            <i id="available-chevron" class="fas fa-chevron-up" style="transition: transform 0.3s;"></i>
+        </h3>
+        <div id="available-courses-wrapper" style="max-height: 400px; overflow: hidden; transition: max-height 0.3s ease;">
+            <div id="available-courses-list" style="max-height: 400px; overflow-y: auto; padding-right: 4px;">
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                    <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+                    Loading available courses...
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- My Requests -->
+    <div class="card">
+        <h3 class="section-title">My Enrolment Requests</h3>
+        <div id="my-enrolments-list" style="max-height: 300px; overflow-y: auto; padding-right: 4px;">
             <p style="color: var(--text-muted); text-align: center; padding: 30px;">
-                <i class="fas fa-user-check" style="font-size: 2rem; display: block; margin-bottom: 10px; opacity: 0.4;"></i>
-                Loading enrolment information...
+                <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+                Loading your requests...
             </p>
         </div>
     </div>
 </div>
-
     
 <!-- ========================================
      MY GRADES PAGE
@@ -7506,110 +7562,209 @@ window.watchVideo = watchVideo;
 // ========================================
 // 🏫 SCHOOL ENROLMENT — STUDENT SIDE
 // ========================================
-async function loadEnrolment() {
-    const container = document.getElementById('enrolment-list');
-    if (!container) return;
+let allAvailableSubjects = [];
+let allMyEnrolments = [];
 
-    container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
+async function loadEnrolment() {
+    const availableContainer = document.getElementById('available-courses-list');
+    const requestsContainer = document.getElementById('my-enrolments-list');
+    const countSpan = document.getElementById('available-count');
+    const yearDisplay = document.getElementById('enrolment-year-display');
+    
+    if (!availableContainer || !requestsContainer) return;
+
+    // Set default year if not already set
+    if (yearDisplay && !yearDisplay.textContent) {
+        yearDisplay.textContent = new Date().getFullYear();
+    }
+
+    availableContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
         <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
-        Loading enrolment information...
+        Loading available courses...
+    </p>`;
+    requestsContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 30px;">
+        <i class="fas fa-spinner fa-pulse" style="font-size: 2rem; display: block; margin-bottom: 10px;"></i>
+        Loading your requests...
     </p>`;
 
     const user = auth.currentUser;
     if (!user) return;
 
     try {
-        // 1. Get all subjects in this school (teacher-created)
+        // 1. Get all subjects in this school
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
         const subjectsSnap = await getDocs(subjectsRef);
         const allSubjects = subjectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // 2. Get student's own enrolment requests
+        // 2. Get student's enrolment requests
         const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
         const q = query(enrolmentsRef, where('studentId', '==', user.uid));
         const enrolSnap = await getDocs(q);
-        const myEnrolments = enrolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        allMyEnrolments = enrolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        // Build sets of subject IDs the student is already enrolled in or pending
+        // Build sets for quick lookup
         const enrolledSubjectIds = new Set();
         const pendingSubjectIds = new Set();
-        myEnrolments.forEach(e => {
+        allMyEnrolments.forEach(e => {
             if (e.status === 'enrolled') enrolledSubjectIds.add(e.subjectId);
             if (e.status === 'pending') pendingSubjectIds.add(e.subjectId);
         });
 
-        // 3. Available subjects: those not already enrolled/pending
-        const availableSubjects = allSubjects.filter(s => 
+        // 3. Available subjects (unfiltered)
+        allAvailableSubjects = allSubjects.filter(s => 
             !enrolledSubjectIds.has(s.id) && !pendingSubjectIds.has(s.id)
         );
 
-        // 4. Render the UI
-        let html = '';
+        // 4. Apply period filter and render
+        filterEnrolmentByPeriod();
 
-        // -- Available Courses section --
-        if (availableSubjects.length > 0) {
-            html += `<h3 style="margin-bottom: 12px;">Available Courses</h3>`;
-            availableSubjects.forEach(s => {
-                html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
-                    <div>
-                        <strong>${s.name}</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);">Teacher: ${s.teacherName || 'Unknown'}</div>
-                    </div>
-                    <button class="btn btn-primary btn-sm" onclick="requestEnrolment('${s.id}', '${s.name.replace(/'/g, "\\'")}', '${s.teacherId}')">
-                        <i class="fas fa-plus"></i> Enrol
-                    </button>
-                </div>`;
-            });
-        } else {
-            html += `<div class="empty-state">
-                <i class="fas fa-check-circle"></i>
-                <p>No courses available for enrolment right now.</p>
-            </div>`;
-        }
+    } catch (error) {
+        console.error('Error loading enrolment:', error);
+        availableContainer.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading courses.</p>`;
+        requestsContainer.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading requests.</p>`;
+    }
+}
+window.loadEnrolment = loadEnrolment;
 
-        // -- My Requests section --
-        html += `<h3 style="margin-top: 24px; margin-bottom: 12px;">My Requests</h3>`;
-        if (myEnrolments.length === 0) {
-            html += `<div class="empty-state">
+function getEnrolmentPeriod() {
+    const term = document.getElementById('enrolment-term-select')?.value || 'all';
+    const year = document.getElementById('enrolment-year-display')?.textContent?.trim() || '';
+    return { term, year };
+}
+
+function subjectMatchesPeriod(subjectName, term, year) {
+    if (term === 'all' && !year) return true;
+    
+    const name = subjectName.toLowerCase();
+    let matches = true;
+    
+    if (term !== 'all') {
+        // Handle multi-word terms like "september term"
+        const termMapping = {
+            'fall': 'fall',
+            'spring': 'spring',
+            'winter': 'winter',
+            'summer': 'summer',
+            'september': 'september',
+            'january': 'january',
+            'may': 'may'
+        };
+        const searchTerm = termMapping[term] || term;
+        matches = matches && name.includes(searchTerm);
+    }
+    if (year) {
+        matches = matches && name.includes(year);
+    }
+    
+    return matches;
+}
+
+function filterEnrolmentByPeriod() {
+    const { term, year } = getEnrolmentPeriod();
+    const countSpan = document.getElementById('available-count');
+    const requestsContainer = document.getElementById('my-enrolments-list');
+    
+    // Filter available courses
+    const filteredAvailable = allAvailableSubjects.filter(s => 
+        subjectMatchesPeriod(s.name, term, year)
+    );
+    
+    // Also apply search filter if active
+    const searchQuery = document.getElementById('enrolment-search')?.value?.toLowerCase()?.trim() || '';
+    const finalAvailable = searchQuery 
+        ? filteredAvailable.filter(s => 
+            s.name.toLowerCase().includes(searchQuery) || 
+            (s.teacherName && s.teacherName.toLowerCase().includes(searchQuery))
+          )
+        : filteredAvailable;
+    
+    renderAvailableCourses(finalAvailable);
+    if (countSpan) {
+        countSpan.textContent = finalAvailable.length !== allAvailableSubjects.length
+            ? `${finalAvailable.length} of ${allAvailableSubjects.length} course${finalAvailable.length !== 1 ? 's' : ''}`
+            : `${allAvailableSubjects.length} course${allAvailableSubjects.length !== 1 ? 's' : ''}`;
+    }
+    
+    // Filter requests
+    const filteredRequests = allMyEnrolments.filter(e => 
+        subjectMatchesPeriod(e.subjectName, term, year)
+    );
+    if (requestsContainer) {
+        if (filteredRequests.length === 0) {
+            requestsContainer.innerHTML = `<div class="empty-state">
                 <i class="fas fa-clock"></i>
-                <p>You haven't requested enrolment in any courses yet.</p>
+                <p>No enrolment requests for this period.</p>
             </div>`;
         } else {
-            myEnrolments.forEach(e => {
+            requestsContainer.innerHTML = filteredRequests.map(e => {
                 const statusColor = e.status === 'enrolled' ? 'var(--success)' : 
                                    e.status === 'pending' ? '#f39c12' : 'var(--danger)';
                 const statusIcon = e.status === 'enrolled' ? 'fa-check-circle' :
                                    e.status === 'pending' ? 'fa-clock' : 'fa-times-circle';
-                html += `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-card);">
-                    <div>
-                        <strong>${e.subjectName}</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);">
-                            Requested: ${new Date(e.requestedAt).toLocaleDateString()}
+                return `
+                <div class="enrolment-item">
+                    <div class="course-info">
+                        <div class="course-name">${e.subjectName}</div>
+                        <div class="course-meta">
+                            <i class="fas fa-calendar"></i> ${new Date(e.requestedAt).toLocaleDateString()}
                         </div>
                     </div>
-                    <span style="color:${statusColor};font-weight:600;display:flex;align-items:center;gap:6px;">
+                    <span class="enrolment-status status-${e.status}">
                         <i class="fas ${statusIcon}"></i> ${e.status.charAt(0).toUpperCase() + e.status.slice(1)}
                     </span>
                 </div>`;
-            });
+            }).join('');
         }
-
-        container.innerHTML = html;
-
-    } catch (error) {
-        console.error('Error loading enrolment:', error);
-        container.innerHTML = `<p style="color:var(--danger);text-align:center;padding:30px;">Error loading enrolment. Please try again.</p>`;
     }
 }
-window.loadEnrolment = loadEnrolment;
+window.filterEnrolmentByPeriod = filterEnrolmentByPeriod;
+
+function changeEnrolmentYear(delta) {
+    const yearDisplay = document.getElementById('enrolment-year-display');
+    if (!yearDisplay) return;
+    const current = parseInt(yearDisplay.textContent) || new Date().getFullYear();
+    yearDisplay.textContent = current + delta;
+    filterEnrolmentByPeriod();
+}
+window.changeEnrolmentYear = changeEnrolmentYear;
+
+function renderAvailableCourses(subjects) {
+    const container = document.getElementById('available-courses-list');
+    if (!container) return;
+
+    if (subjects.length === 0) {
+        container.innerHTML = `<div class="empty-state">
+            <i class="fas fa-check-circle"></i>
+            <p>No courses available for enrolment right now.</p>
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = subjects.map(s => `
+        <div class="enrolment-item">
+            <div class="course-info">
+                <div class="course-name">${s.name}</div>
+                <div class="course-meta">
+                    <i class="fas fa-chalkboard-teacher"></i> ${s.teacherName || 'Unknown'}
+                </div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="requestEnrolment('${s.id}', '${s.name.replace(/'/g, "\\'")}', '${s.teacherId}')">
+                <i class="fas fa-plus"></i> Enrol
+            </button>
+        </div>
+    `).join('');
+}
+
+function filterEnrolmentCourses() {
+    // Now delegates to period filter which also checks search
+    filterEnrolmentByPeriod();
+}
+window.filterEnrolmentCourses = filterEnrolmentCourses;
 
 async function requestEnrolment(subjectId, subjectName, teacherId) {
     const user = auth.currentUser;
     if (!user) return;
 
-    // Get student's display name (from Firestore or fallback)
     let studentName = user.displayName || 'Student';
     try {
         const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
@@ -7631,15 +7786,29 @@ async function requestEnrolment(subjectId, subjectName, teacherId) {
             requestedAt: new Date().toISOString()
         });
 
-        await loadEnrolment(); // refresh the UI
+        await loadEnrolment();
     } catch (error) {
         console.error('Error requesting enrolment:', error);
         alert('Error requesting enrolment. Please try again.');
     }
 }
-        
-// Make functions globally accessible
 window.requestEnrolment = requestEnrolment;
+
+function toggleAvailableCourses() {
+    const wrapper = document.getElementById('available-courses-wrapper');
+    const chevron = document.getElementById('available-chevron');
+    
+    if (!wrapper || !chevron) return;
+    
+    if (wrapper.style.maxHeight === '0px') {
+        wrapper.style.maxHeight = '400px';
+        chevron.style.transform = 'rotate(0deg)';
+    } else {
+        wrapper.style.maxHeight = '0px';
+        chevron.style.transform = 'rotate(180deg)';
+    }
+}
+window.toggleAvailableCourses = toggleAvailableCourses;
 
 // =====================================//
 //======ENROLMENT ENDS HERE ===============//
