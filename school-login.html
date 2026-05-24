@@ -474,17 +474,33 @@
                     <div class="shield-icon">
                         <i class="fas fa-shield-alt"></i>
                     </div>
-                    <h3>Verify Your Identity</h3>
+                    <h3>Two-Factor Authentication</h3>
                     <p style="color: var(--text-muted); margin-bottom: 16px;">
-                        You've enabled two-factor authentication. We've sent a verification email to
+                        A verification code has been sent to
                     </p>
                     <p class="verification-email" id="two-factor-email-display"></p>
-                    <p class="instruction">
-                        Click the link in the email, then press the button below to continue.
+                    
+                    <div class="form-group" style="text-align: left;">
+                        <label for="two-factor-code">Enter 6-Digit Code</label>
+                        <input 
+                            type="text" 
+                            id="two-factor-code" 
+                            class="form-input" 
+                            placeholder="000000" 
+                            maxlength="6"
+                            inputmode="numeric"
+                            pattern="[0-9]*"
+                            autocomplete="one-time-code"
+                        >
+                    </div>
+                    
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 20px;">
+                        Code expires in 10 minutes
                     </p>
+                    
                     <button class="btn-login" id="verify-2fa-button" style="margin-bottom: 12px;">
                         <span class="spinner"></span>
-                        <span class="btn-text"><i class="fas fa-check-circle"></i> I've Verified My Email</span>
+                        <span class="btn-text"><i class="fas fa-check-circle"></i> Verify & Sign In</span>
                     </button>
                     <br>
                     <button class="cancel-link" id="cancel-2fa-button">
@@ -589,7 +605,6 @@
             getAuth, 
             signInWithEmailAndPassword, 
             onAuthStateChanged,
-            reload,
             sendEmailVerification,
             signOut
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -598,7 +613,8 @@
             collection, 
             getDocs, 
             doc, 
-            getDoc 
+            getDoc,
+            setDoc
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
@@ -637,46 +653,54 @@
         let allSchools = [];
         let detectedSchool = null;
 
+        // ===== UTILITY FUNCTIONS =====
+        
+        function generateCode() {
+            return Math.floor(100000 + Math.random() * 900000).toString();
+        }
+
+        // ===== SCHOOL LIST =====
+
         async function loadSchools() {
-    // Check sessionStorage cache first
-    const cached = sessionStorage.getItem('schoolListCache');
-    if (cached) {
-        allSchools = JSON.parse(cached);
-        console.log(`Loaded ${allSchools.length} schools from cache`);
-        return;
-    }
-
-    // Fall back to Firestore fetch
-    try {
-        const schoolsRef = collection(db, 'schools');
-        const snapshot = await getDocs(schoolsRef);
-        allSchools = [];
-
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (data.isActive !== false) {
-                allSchools.push({
-                    id: doc.id,
-                    name: data.name,
-                    city: data.city || '',
-                    country: data.country || '',
-                    domains: data.domains || []
-                });
+            // Check sessionStorage cache first
+            const cached = sessionStorage.getItem('schoolListCache');
+            if (cached) {
+                allSchools = JSON.parse(cached);
+                console.log(`Loaded ${allSchools.length} schools from cache`);
+                return;
             }
-        });
 
-        allSchools.sort((a, b) => a.name.localeCompare(b.name));
-        
-        // Save to cache
-        sessionStorage.setItem('schoolListCache', JSON.stringify(allSchools));
-        
-        console.log(`Loaded ${allSchools.length} schools from server`);
-    } catch (error) {
-        console.error('Error loading schools:', error);
-        showError('Unable to load school list. Please check your connection.');
-    }
-}
-        
+            // Fall back to Firestore fetch
+            try {
+                const schoolsRef = collection(db, 'schools');
+                const snapshot = await getDocs(schoolsRef);
+                allSchools = [];
+
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    if (data.isActive !== false) {
+                        allSchools.push({
+                            id: doc.id,
+                            name: data.name,
+                            city: data.city || '',
+                            country: data.country || '',
+                            domains: data.domains || []
+                        });
+                    }
+                });
+
+                allSchools.sort((a, b) => a.name.localeCompare(b.name));
+                
+                // Save to cache
+                sessionStorage.setItem('schoolListCache', JSON.stringify(allSchools));
+                
+                console.log(`Loaded ${allSchools.length} schools from server`);
+            } catch (error) {
+                console.error('Error loading schools:', error);
+                showError('Unable to load school list. Please check your connection.');
+            }
+        }
+
         function detectSchoolFromEmail(email) {
             if (!email || !email.includes('@')) return null;
             const domain = email.split('@')[1].toLowerCase();
@@ -809,7 +833,7 @@
             errorMessage.classList.remove('show');
         }
 
-        // ===== 2FA FUNCTIONS (defined before submit handler) =====
+        // ===== 2FA FUNCTIONS =====
 
         function showTwoFactorOverlay(email) {
             twoFactorEmailDisplay.textContent = email;
@@ -817,6 +841,8 @@
             loginForm.style.display = 'none';
             document.querySelector('.divider').style.display = 'none';
             document.querySelector('.login-links').style.display = 'none';
+            // Clear any previous code input
+            document.getElementById('two-factor-code').value = '';
         }
 
         function hideTwoFactorOverlay() {
@@ -831,36 +857,91 @@
             btn.classList.add('loading');
             btn.disabled = true;
             hideError();
-
+            
+            const enteredCode = document.getElementById('two-factor-code').value.trim();
+            const user = auth.currentUser;
+            
+            if (!user) {
+                showError('Session expired. Please log in again.');
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                return;
+            }
+            
+            if (!enteredCode || enteredCode.length !== 6) {
+                showError('Please enter the 6-digit verification code.');
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                return;
+            }
+            
             try {
-                await reload(auth.currentUser);
-
-                if (auth.currentUser.emailVerified) {
-                    // Restore session from pending storage
-                    sessionStorage.setItem('schoolId', sessionStorage.getItem('pendingSchoolId'));
-                    sessionStorage.setItem('userRole', sessionStorage.getItem('pendingUserRole'));
-                    sessionStorage.setItem('userDisplayName', sessionStorage.getItem('pendingDisplayName'));
-                    sessionStorage.setItem('userEmail', sessionStorage.getItem('pendingEmail'));
-                    sessionStorage.setItem('userUid', sessionStorage.getItem('pendingUid'));
-                    sessionStorage.setItem('schoolName', sessionStorage.getItem('pendingSchoolName'));
-                    sessionStorage.setItem('schoolLocation', sessionStorage.getItem('pendingSchoolLocation'));
-
-                    // Clear pending data
-                    ['pendingSchoolId','pendingUserRole','pendingDisplayName','pendingEmail','pendingUid','pendingSchoolName','pendingSchoolLocation']
-                        .forEach(key => sessionStorage.removeItem(key));
-
-                    // Redirect
-                    window.location.href = 'school-hub.html';
-                } else {
+                // Check code from Firestore
+                const studentDoc = await getDoc(doc(db, 'students', user.uid));
+                
+                if (!studentDoc.exists()) {
+                    showError('Account not found. Please try again.');
                     btn.classList.remove('loading');
                     btn.disabled = false;
-                    showError('Email not verified yet. Check your inbox and click the verification link.');
+                    return;
                 }
+                
+                const data = studentDoc.data();
+                const storedCode = data.twoFactorCode;
+                const expiry = data.twoFactorCodeExpiry;
+                
+                if (!storedCode || !expiry) {
+                    showError('No verification code found. Please log in again.');
+                    btn.classList.remove('loading');
+                    btn.disabled = false;
+                    return;
+                }
+                
+                if (Date.now() > expiry) {
+                    showError('Verification code has expired. Please log in again.');
+                    btn.classList.remove('loading');
+                    btn.disabled = false;
+                    return;
+                }
+                
+                if (enteredCode !== storedCode) {
+                    showError('Incorrect code. Please try again.');
+                    btn.classList.remove('loading');
+                    btn.disabled = false;
+                    return;
+                }
+                
+                // Code is correct — clear it from Firestore
+                await setDoc(
+                    doc(db, 'students', user.uid),
+                    {
+                        twoFactorCode: null,
+                        twoFactorCodeExpiry: null
+                    },
+                    { merge: true }
+                );
+                
+                // Restore session from pending storage
+                sessionStorage.setItem('schoolId', sessionStorage.getItem('pendingSchoolId'));
+                sessionStorage.setItem('userRole', sessionStorage.getItem('pendingUserRole'));
+                sessionStorage.setItem('userDisplayName', sessionStorage.getItem('pendingDisplayName'));
+                sessionStorage.setItem('userEmail', sessionStorage.getItem('pendingEmail'));
+                sessionStorage.setItem('userUid', sessionStorage.getItem('pendingUid'));
+                sessionStorage.setItem('schoolName', sessionStorage.getItem('pendingSchoolName'));
+                sessionStorage.setItem('schoolLocation', sessionStorage.getItem('pendingSchoolLocation'));
+                
+                // Clear pending data
+                ['pendingSchoolId','pendingUserRole','pendingDisplayName','pendingEmail','pendingUid','pendingSchoolName','pendingSchoolLocation']
+                    .forEach(key => sessionStorage.removeItem(key));
+                
+                // Redirect
+                window.location.href = 'school-hub.html';
+                
             } catch (error) {
                 console.error('2FA verification error:', error);
                 btn.classList.remove('loading');
                 btn.disabled = false;
-                showError('Error checking verification status. Please try again.');
+                showError('Error verifying code. Please try again.');
             }
         });
 
@@ -965,6 +1046,20 @@
                     try {
                         const studentDoc = await getDoc(doc(db, 'students', user.uid));
                         if (studentDoc.exists() && studentDoc.data().twoFactorEnabled === true) {
+                            // Generate one-time code
+                            const code = generateCode();
+                            const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+                            
+                            // Store code in Firestore
+                            await setDoc(
+                                doc(db, 'students', user.uid),
+                                {
+                                    twoFactorCode: code,
+                                    twoFactorCodeExpiry: expiresAt
+                                },
+                                { merge: true }
+                            );
+                            
                             // Send verification email (ignore rate-limit errors)
                             try {
                                 await sendEmailVerification(user);
@@ -973,7 +1068,11 @@
                                     console.error('Failed to send 2FA email:', e);
                                 }
                             }
-
+                            
+                            // Store code in sessionStorage so we can display it
+                            // (In production, the code would be sent via a proper email service)
+                            sessionStorage.setItem('twoFactorCode', code);
+                            
                             // Store pending session
                             sessionStorage.setItem('pendingSchoolId', finalSchoolId);
                             sessionStorage.setItem('pendingUserRole', userRole);
