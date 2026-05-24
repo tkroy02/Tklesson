@@ -473,6 +473,98 @@
             color: var(--primary);
         }
 
+        /* Email Verification Overlay */
+        .verification-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .verification-overlay.show {
+            display: flex;
+        }
+
+        .verification-modal {
+            background: white;
+            border-radius: var(--border-radius);
+            padding: 40px;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            animation: fadeInUp 0.3s ease-out;
+        }
+
+        .verification-modal .icon-circle {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: #e8f5e9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+            color: #27ae60;
+        }
+
+        .verification-modal h3 {
+            color: var(--primary);
+            margin-bottom: 12px;
+            font-size: 1.3rem;
+        }
+
+        .verification-modal p {
+            color: var(--text-gray);
+            margin-bottom: 24px;
+            line-height: 1.6;
+        }
+
+        .verification-modal .email-highlight {
+            background: #f0f4ff;
+            padding: 8px 16px;
+            border-radius: 8px;
+            display: inline-block;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 20px;
+        }
+
+        .verification-modal .btn-resend {
+            background: none;
+            border: none;
+            color: var(--primary);
+            cursor: pointer;
+            font-weight: 600;
+            text-decoration: underline;
+            margin-top: 12px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9rem;
+        }
+
+        .verification-modal .btn-resend:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .resend-message {
+            font-size: 0.8rem;
+            margin-top: 8px;
+            padding: 6px;
+            border-radius: 6px;
+        }
+
+        .resend-message.success {
+            background: #e8f5e9;
+            color: #27ae60;
+        }
+
         @media (max-width: 600px) {
             .signup-card {
                 padding: 28px 20px;
@@ -484,6 +576,10 @@
 
             .btn-row {
                 flex-direction: column;
+            }
+            
+            .verification-modal {
+                padding: 28px 20px;
             }
         }
     </style>
@@ -500,6 +596,33 @@
             })
             .catch(err => console.error("Header load error:", err));
     </script>
+
+    <!-- Email Verification Overlay -->
+    <div class="verification-overlay" id="verification-overlay">
+        <div class="verification-modal">
+            <div class="icon-circle">
+                <i class="fas fa-envelope"></i>
+            </div>
+            <h3>Verify Your Email Address</h3>
+            <p>We've sent a verification email to</p>
+            <div class="email-highlight" id="verification-email-display"></div>
+            <p>Please check your inbox and click the verification link to activate your school account. If you don't see it, check your spam folder.</p>
+            <button class="btn-resend" id="btn-resend-email" onclick="resendVerificationEmail()">
+                Resend verification email
+            </button>
+            <div id="resend-message" class="resend-message"></div>
+            <div style="margin-top: 20px;">
+                <button class="btn btn-outline" onclick="checkVerificationStatus()" id="btn-check-verification" style="width: 100%; justify-content: center;">
+                    <i class="fas fa-sync-alt"></i> I've verified my email
+                </button>
+            </div>
+            <div style="margin-top: 16px; font-size: 0.8rem; color: var(--text-muted);">
+                <button class="btn-resend" onclick="signOutAndRestart()" style="color: var(--text-muted);">
+                    Cancel and start over
+                </button>
+            </div>
+        </div>
+    </div>
 
     <div class="signup-wrapper">
         <div class="signup-container">
@@ -679,6 +802,11 @@
                         </div>
 
                         <!-- Pricing reminder -->
+                        <div class="pricing-reminder" id="pricing-reminder">
+                            <i class="fas fa-gift" style="color: var(--secondary);"></i> 
+                            Your <strong>30-day free trial</strong> starts immediately upon registration. No credit card required.
+                        </div>
+
                         <div class="btn-row">
                             <button type="button" class="btn btn-outline" onclick="prevStep(2)">
                                 <i class="fas fa-arrow-left"></i> Back
@@ -719,7 +847,10 @@
         getAuth, 
         createUserWithEmailAndPassword, 
         updateProfile,
-        signOut
+        sendEmailVerification,
+        signOut,
+        reload,
+        onAuthStateChanged
     } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
     import { 
         getFirestore, 
@@ -755,9 +886,17 @@
     const domainInput = document.getElementById('domain-input');
     const btnAddDomain = document.getElementById('btn-add-domain');
     const pricingReminder = document.getElementById('pricing-reminder');
+    const verificationOverlay = document.getElementById('verification-overlay');
+    const verificationEmailDisplay = document.getElementById('verification-email-display');
+    const btnResendEmail = document.getElementById('btn-resend-email');
+    const btnCheckVerification = document.getElementById('btn-check-verification');
+    const resendMessage = document.getElementById('resend-message');
 
     let currentStep = 1;
     let schoolDomains = [];
+    let verificationCheckInterval = null;
+    let pendingSchoolData = null;
+    let currentUserEmail = '';
 
     // Country list
     const countries = [
@@ -971,6 +1110,124 @@
         messageBox.classList.remove('show', 'error', 'success');
     }
 
+    // ========== EMAIL VERIFICATION FUNCTIONS ==========
+    
+    window.resendVerificationEmail = async function() {
+        const user = auth.currentUser;
+        if (!user) return;
+        
+        btnResendEmail.disabled = true;
+        btnResendEmail.textContent = 'Sending...';
+        resendMessage.textContent = '';
+        resendMessage.className = 'resend-message';
+        
+        try {
+            await sendEmailVerification(user, {
+                url: window.location.origin + '/school-hub.html',
+                handleCodeInApp: false
+            });
+            
+            resendMessage.textContent = '✓ Verification email resent successfully!';
+            resendMessage.className = 'resend-message success';
+            
+            setTimeout(() => {
+                resendMessage.textContent = '';
+                resendMessage.className = 'resend-message';
+            }, 4000);
+            
+            // Re-enable after 60 seconds
+            setTimeout(() => {
+                btnResendEmail.disabled = false;
+                btnResendEmail.textContent = 'Resend verification email';
+            }, 60000);
+            
+        } catch (error) {
+            console.error('Error sending verification:', error);
+            btnResendEmail.disabled = false;
+            btnResendEmail.textContent = 'Resend verification email';
+            
+            if (error.code === 'auth/too-many-requests') {
+                resendMessage.textContent = 'Too many requests. Please wait a moment.';
+                resendMessage.className = 'resend-message';
+            } else {
+                resendMessage.textContent = 'Failed to resend. Please try again.';
+                resendMessage.className = 'resend-message';
+            }
+        }
+    };
+
+    window.checkVerificationStatus = async function() {
+        const user = auth.currentUser;
+        if (!user) return;
+        
+        btnCheckVerification.disabled = true;
+        btnCheckVerification.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+        
+        try {
+            await reload(user);
+            
+            if (user.emailVerified) {
+                // Email is verified! Update Firestore and redirect
+                clearInterval(verificationCheckInterval);
+                
+                if (pendingSchoolData) {
+                    await setDoc(doc(db, 'schools', pendingSchoolData.schoolId), 
+                        { emailVerified: true }, { merge: true });
+                    await setDoc(doc(db, 'schooladmins', user.uid), 
+                        { emailVerified: true }, { merge: true });
+                    
+                    sessionStorage.setItem('schoolId', pendingSchoolData.schoolId);
+                    sessionStorage.setItem('userRole', 'admin');
+                    sessionStorage.setItem('userDisplayName', pendingSchoolData.adminName);
+                    sessionStorage.setItem('userEmail', pendingSchoolData.adminEmail);
+                    sessionStorage.setItem('userUid', user.uid);
+                    sessionStorage.setItem('schoolName', pendingSchoolData.schoolName);
+                    sessionStorage.setItem('schoolLocation', 
+                        [pendingSchoolData.city, pendingSchoolData.country].filter(Boolean).join(', '));
+                }
+                
+                verificationOverlay.classList.remove('show');
+                window.location.href = 'school-hub.html';
+            } else {
+                resendMessage.textContent = 'Email not verified yet. Please check your inbox.';
+                resendMessage.className = 'resend-message';
+                btnCheckVerification.disabled = false;
+                btnCheckVerification.innerHTML = '<i class="fas fa-sync-alt"></i> I\'ve verified my email';
+            }
+        } catch (error) {
+            console.error('Error checking verification:', error);
+            resendMessage.textContent = 'Error checking status. Please try again.';
+            resendMessage.className = 'resend-message';
+            btnCheckVerification.disabled = false;
+            btnCheckVerification.innerHTML = '<i class="fas fa-sync-alt"></i> I\'ve verified my email';
+        }
+    };
+
+    window.signOutAndRestart = async function() {
+        clearInterval(verificationCheckInterval);
+        try {
+            await signOut(auth);
+        } catch (e) {
+            console.error('Sign out error:', e);
+        }
+        verificationOverlay.classList.remove('show');
+        pendingSchoolData = null;
+        submitButton.disabled = false;
+        submitButton.classList.remove('loading');
+    };
+
+    function showVerificationOverlay(email) {
+        currentUserEmail = email;
+        verificationEmailDisplay.textContent = email;
+        verificationOverlay.classList.add('show');
+        btnResendEmail.disabled = false;
+        btnResendEmail.textContent = 'Resend verification email';
+        btnCheckVerification.disabled = false;
+        btnCheckVerification.innerHTML = '<i class="fas fa-sync-alt"></i> I\'ve verified my email';
+        resendMessage.textContent = '';
+        resendMessage.className = 'resend-message';
+    }
+
     // ========== FORM SUBMISSION ==========
     document.getElementById('school-signup-form').addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -1015,6 +1272,12 @@
             // Update profile
             await updateProfile(user, { displayName: adminName });
 
+            // Send email verification
+            await sendEmailVerification(user, {
+                url: window.location.origin + '/school-hub.html',
+                handleCodeInApp: false
+            });
+
             // Generate school ID
             const schoolId = `school_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
@@ -1036,6 +1299,7 @@
                 subscriptionStart: trialStart,
                 subscriptionExpiry: trialExpiry,
                 isActive: true,
+                emailVerified: false,
                 createdAt: new Date().toISOString(),
                 createdBy: user.uid
             });
@@ -1049,27 +1313,55 @@
                 schoolId: schoolId,
                 role: 'school_admin',
                 permissions: ['manage_users', 'manage_billing', 'view_analytics'],
+                emailVerified: false,
                 createdAt: new Date().toISOString()
             });
 
-            // Store session
-            sessionStorage.setItem('schoolId', schoolId);
-            sessionStorage.setItem('userRole', 'admin');
-            sessionStorage.setItem('userDisplayName', adminName);
-            sessionStorage.setItem('userEmail', adminEmail);
-            sessionStorage.setItem('userUid', user.uid);
-            sessionStorage.setItem('schoolName', schoolName);
-            sessionStorage.setItem('schoolLocation', [city, country].filter(Boolean).join(', '));
+            // Store pending data for when verification completes
+            pendingSchoolData = {
+                schoolId: schoolId,
+                schoolName: schoolName,
+                adminName: adminName,
+                adminEmail: adminEmail,
+                country: country,
+                city: city
+            };
 
-            // Show success
-            showMessage('School registered successfully! 30-day free trial activated. Redirecting...', 'success');
+            // Show verification overlay
+            showVerificationOverlay(adminEmail);
+            
+            // Start checking verification status periodically (every 3 seconds)
+            verificationCheckInterval = setInterval(async () => {
+                const currentUser = auth.currentUser;
+                if (currentUser) {
+                    await reload(currentUser);
+                    if (currentUser.emailVerified) {
+                        clearInterval(verificationCheckInterval);
+                        
+                        // Update verification status in Firestore
+                        await setDoc(doc(db, 'schools', schoolId), 
+                            { emailVerified: true }, { merge: true });
+                        await setDoc(doc(db, 'schooladmins', user.uid), 
+                            { emailVerified: true }, { merge: true });
+                        
+                        // Store session
+                        sessionStorage.setItem('schoolId', schoolId);
+                        sessionStorage.setItem('userRole', 'admin');
+                        sessionStorage.setItem('userDisplayName', adminName);
+                        sessionStorage.setItem('userEmail', adminEmail);
+                        sessionStorage.setItem('userUid', user.uid);
+                        sessionStorage.setItem('schoolName', schoolName);
+                        sessionStorage.setItem('schoolLocation', 
+                            [city, country].filter(Boolean).join(', '));
+                        
+                        verificationOverlay.classList.remove('show');
+                        // Redirect to hub
+                        window.location.href = 'school-hub.html';
+                    }
+                }
+            }, 3000);
+
             submitButton.classList.remove('loading');
-            submitButton.disabled = true;
-
-            // Redirect to hub
-            setTimeout(() => {
-                window.location.href = 'school-hub.html';
-            }, 2000);
 
         } catch (error) {
             console.error('Registration error:', error);
@@ -1095,7 +1387,14 @@
         }
     });
 
-    console.log('School Signup loaded');
+    // Clean up interval when page unloads
+    window.addEventListener('beforeunload', () => {
+        if (verificationCheckInterval) {
+            clearInterval(verificationCheckInterval);
+        }
+    });
+
+    console.log('School Signup with email verification loaded');
 </script>
 
 </body>
