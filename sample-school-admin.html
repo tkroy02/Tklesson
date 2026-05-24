@@ -741,21 +741,48 @@
         <h1 class="page-title">Enrolment Monitor</h1>
     </div>
     <div class="card">
-        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 200px; position: relative;">
-                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
-                <input type="text" id="enrolment-search" class="form-input" 
-                       placeholder="Search student or subject..." 
-                       oninput="filterEnrolments()"
-                       style="padding-left: 40px;">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="max-width: 180px; margin-bottom: 0;">
+                <label>Term</label>
+                <select id="enrolment-term-filter" class="form-input" onchange="filterEnrolments()">
+                    <option value="all">All Terms</option>
+                    <option value="fall">Fall</option>
+                    <option value="spring">Spring</option>
+                    <option value="winter">Winter</option>
+                    <option value="summer">Summer</option>
+                    <option value="september">September Term</option>
+                    <option value="january">January Term</option>
+                    <option value="may">May Term</option>
+                </select>
             </div>
-            <select id="enrolment-status-filter" class="form-input" onchange="filterEnrolments()" style="max-width: 160px;">
-                <option value="all">All Status</option>
-                <option value="pending">Pending</option>
-                <option value="enrolled">Enrolled</option>
-                <option value="rejected">Rejected</option>
-            </select>
-            <span id="enrolment-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;"></span>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label>Year</label>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="changeAdminEnrolmentYear(-1)" style="padding: 6px 10px;">−</button>
+                    <span id="admin-enrolment-year" style="font-weight: 600; min-width: 44px; text-align: center;"></span>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="changeAdminEnrolmentYear(1)" style="padding: 6px 10px;">+</button>
+                </div>
+            </div>
+            <div class="form-group" style="max-width: 160px; margin-bottom: 0;">
+                <label>Status</label>
+                <select id="enrolment-status-filter" class="form-input" onchange="filterEnrolments()">
+                    <option value="all">All Status</option>
+                    <option value="pending">Pending</option>
+                    <option value="enrolled">Enrolled</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex: 1; min-width: 200px; margin-bottom: 0;">
+                <label>Search</label>
+                <div style="position: relative;">
+                    <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                    <input type="text" id="enrolment-search" class="form-input" 
+                           placeholder="Search student or subject..." 
+                           oninput="filterEnrolments()"
+                           style="padding-left: 40px;">
+                </div>
+            </div>
+            <span id="enrolment-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap; padding-bottom: 12px;"></span>
         </div>
         <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
             <table>
@@ -1498,30 +1525,57 @@ window.goToTeacherPage = function(page) {
 
         // Load overview stats
         async function loadOverview() {
-            const user = auth.currentUser;
-            if (!user) return;
-            
-            const displayName = user.displayName || sessionStorage.getItem('adminName') || 'Admin';
-            document.getElementById('user-avatar').textContent = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-            document.getElementById('user-name').textContent = displayName;
-            
-            try {
-                const usersRef = collection(db, `schools/${schoolId}/users`);
-                const usersSnap = await getDocs(usersRef);
-                const users = usersSnap.docs.map(d => d.data());
-                
-                const studentsCount = users.filter(u => u.role === 'student').length;
-                const teachersCount = users.filter(u => u.role === 'teacher').length;
-                
-                document.getElementById('stat-students').textContent = studentsCount;
-                document.getElementById('stat-teachers').textContent = teachersCount;
-            } catch (error) {
-                console.error('Error loading overview:', error);
-            }
-            
-            loadSubscriptionBanner();
-            loadActivityFeed();
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    const displayName = user.displayName || sessionStorage.getItem('adminName') || 'Admin';
+    document.getElementById('user-avatar').textContent = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    document.getElementById('user-name').textContent = displayName;
+    
+    try {
+        const usersRef = collection(db, `schools/${schoolId}/users`);
+        const usersSnap = await getDocs(usersRef);
+        const users = usersSnap.docs.map(d => d.data());
+        
+        const studentsCount = users.filter(u => u.role === 'student').length;
+        const teachersCount = users.filter(u => u.role === 'teacher').length;
+        
+        document.getElementById('stat-students').textContent = studentsCount;
+        document.getElementById('stat-teachers').textContent = teachersCount;
+        
+        // Courses count
+        const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+        const subjectsSnap = await getDocs(subjectsRef);
+        document.getElementById('stat-courses').textContent = subjectsSnap.size;
+        
+        // Active this week (enrolments or quiz attempts in last 7 days)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        let activeCount = 0;
+        try {
+            const quizRef = collection(db, `schools/${schoolId}/quizAttempts`);
+            const quizSnap = await getDocs(quizRef);
+            const recentQuizzes = quizSnap.docs.filter(d => {
+                const date = d.data().attemptedAt;
+                return date && new Date(date) >= sevenDaysAgo;
+            });
+            const activeStudentIds = new Set(recentQuizzes.map(d => d.data().studentId).filter(Boolean));
+            activeCount = activeStudentIds.size;
+        } catch (e) {
+            // quizAttempts might not exist yet
+            activeCount = 0;
         }
+        
+        document.getElementById('stat-active').textContent = activeCount;
+        
+    } catch (error) {
+        console.error('Error loading overview:', error);
+    }
+    
+    loadSubscriptionBanner();
+    loadActivityFeed();
+}
 
         // Load subscription banner
         async function loadSubscriptionBanner() {
@@ -1887,9 +1941,13 @@ let filteredEnrolments = [];
 let enrolmentSortField = 'date';
 let enrolmentSortDirection = 'desc';
 let enrolmentPage = 1;
+let adminEnrolmentYear = new Date().getFullYear();
 const enrolmentsPerPage = 30;
 
 async function loadAllEnrolments() {
+    const yearSpan = document.getElementById('admin-enrolment-year');
+    if (yearSpan) yearSpan.textContent = adminEnrolmentYear;
+    
     const tbody = document.getElementById('enrolments-table-body');
     try {
         const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
@@ -1949,11 +2007,26 @@ window.sortEnrolments = function(field) {
     filterEnrolments();
 };
 
+function enrolmentMatchesAdminPeriod(enrolment, term, year) {
+    if (term === 'all' && !year) return true;
+    const name = (enrolment.subjectName || '').toLowerCase();
+    let matches = true;
+    if (term !== 'all') matches = matches && name.includes(term);
+    if (year) matches = matches && name.includes(year);
+    return matches;
+}
+
 window.filterEnrolments = function() {
     const searchQuery = document.getElementById('enrolment-search')?.value?.toLowerCase()?.trim() || '';
     const statusFilter = document.getElementById('enrolment-status-filter')?.value || 'all';
+    const term = document.getElementById('enrolment-term-filter')?.value || 'all';
+    const year = document.getElementById('admin-enrolment-year')?.textContent?.trim() || '';
     
     filteredEnrolments = [...allEnrolments];
+    
+    if (term !== 'all' || year) {
+        filteredEnrolments = filteredEnrolments.filter(e => enrolmentMatchesAdminPeriod(e, term, year));
+    }
     
     if (statusFilter !== 'all') {
         filteredEnrolments = filteredEnrolments.filter(e => e.status === statusFilter);
@@ -1968,6 +2041,12 @@ window.filterEnrolments = function() {
     
     enrolmentPage = 1;
     renderEnrolmentPage();
+};
+
+window.changeAdminEnrolmentYear = function(delta) {
+    adminEnrolmentYear += delta;
+    document.getElementById('admin-enrolment-year').textContent = adminEnrolmentYear;
+    filterEnrolments();
 };
 
 async function renderEnrolmentPage() {
@@ -1987,7 +2066,6 @@ async function renderEnrolmentPage() {
         return;
     }
     
-    // Collect unique teacher IDs and fetch their names
     const teacherIds = [...new Set(filteredEnrolments.map(e => e.teacherId).filter(Boolean))];
     const teacherNames = {};
     
