@@ -2363,16 +2363,22 @@ window.viewGrades = async function(subjectId, subjectName) {
     container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Loading quiz grades...</p>';
 
     try {
-        const attemptsRef = collection(db, 'schools/' + schoolId + '/quizAttempts');
-        const q = query(attemptsRef, where('subjectName', '==', subjectName));
-        const snap = await getDocs(q);
-
-        if (snap.empty) {
+        // Get the subject's enrolled students
+        const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
+        const subjectSnap = await getDoc(subjectRef);
+        if (!subjectSnap.exists()) {
+            container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);">Subject not found.</p>';
+            return;
+        }
+        
+        const studentIds = subjectSnap.data().studentIds || [];
+        
+        if (studentIds.length === 0) {
             container.innerHTML =
                 '<div class="empty-state">' +
                     '<i class="fas fa-chart-bar"></i>' +
                     '<h4>' + subjectName + '</h4>' +
-                    '<p>No quiz attempts yet for this subject.</p>' +
+                    '<p>No students enrolled in this subject.</p>' +
                     '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
                         '<i class="fas fa-arrow-left"></i> Back to My Class' +
                     '</button>' +
@@ -2380,27 +2386,39 @@ window.viewGrades = async function(subjectId, subjectName) {
             return;
         }
 
-        const topicGrouped = {};
-        const examGrouped = {};
+        // Fetch quiz attempts for all enrolled students
+        const attemptsRef = collection(db, `schools/${schoolId}/quizAttempts`);
+        const allAttempts = [];
+        
+        for (const sid of studentIds) {
+            const q = query(attemptsRef, where('studentId', '==', sid));
+            const snap = await getDocs(q);
+            snap.docs.forEach(d => allAttempts.push(d.data()));
+        }
 
-        snap.docs.forEach(function(d) {
-            const data = d.data();
-            const isExam = data.quizPath && data.quizPath.includes('exam_quiz');
-            const target = isExam ? examGrouped : topicGrouped;
-            if (!target[data.quizLabel]) target[data.quizLabel] = [];
-            target[data.quizLabel].push(data);
+        if (allAttempts.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                    '<i class="fas fa-chart-bar"></i>' +
+                    '<h4>' + subjectName + '</h4>' +
+                    '<p>No quiz attempts yet from enrolled students.</p>' +
+                    '<button class="btn btn-outline btn-sm" onclick="loadMyClass()">' +
+                        '<i class="fas fa-arrow-left"></i> Back to My Class' +
+                    '</button>' +
+                '</div>';
+            return;
+        }
+
+        // Sort newest first
+        allAttempts.sort((a, b) => new Date(b.attemptedAt) - new Date(a.attemptedAt));
+
+        // Group by quiz label
+        const grouped = {};
+        allAttempts.forEach(a => {
+            const label = a.quizLabel || a.quizPath || 'Unknown Quiz';
+            if (!grouped[label]) grouped[label] = [];
+            grouped[label].push(a);
         });
-
-        [topicGrouped, examGrouped].forEach(function(grouped) {
-            Object.keys(grouped).forEach(function(label) {
-                grouped[label].sort(function(a, b) {
-                    return new Date(b.attemptedAt) - new Date(a.attemptedAt);
-                });
-            });
-        });
-
-        const hasTopicQuizzes = Object.keys(topicGrouped).length > 0;
-        const hasExamQuizzes = Object.keys(examGrouped).length > 0;
 
         let html =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">' +
@@ -2410,24 +2428,10 @@ window.viewGrades = async function(subjectId, subjectName) {
                 '</button>' +
             '</div>';
 
-        if (hasTopicQuizzes) {
-            html +=
-                '<div style="margin-bottom:28px;">' +
-                    '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;padding-left:2px;">' +
-                        '<i class="fas fa-book-open" style="margin-right:6px;"></i>Topic Quizzes' +
-                    '</div>' +
-                    renderGradesTables(topicGrouped) +
-                '</div>';
-        }
-
-        if (hasExamQuizzes) {
-            html +=
-                '<div style="margin-bottom:28px;">' +
-                    '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:14px;padding-left:2px;">' +
-                        '<i class="fas fa-file-alt" style="margin-right:6px;"></i>Exam Quizzes' +
-                    '</div>' +
-                    renderGradesTables(examGrouped) +
-                '</div>';
+        if (Object.keys(grouped).length === 0) {
+            html += '<p style="text-align:center;padding:20px;color:var(--text-muted);">No quiz attempts found.</p>';
+        } else {
+            html += renderGradesTables(grouped);
         }
 
         container.innerHTML = html;
@@ -2437,7 +2441,7 @@ window.viewGrades = async function(subjectId, subjectName) {
         container.innerHTML = '<p style="text-align:center;padding:20px;color:var(--danger);">Error loading grades.</p>';
     }
 };
-
+        
 window.viewGrades = viewGrades;
 window.renderGradesTables = renderGradesTables;
 
