@@ -611,25 +611,40 @@
 
         <!-- Manage Teachers Page (Role: Teacher, not Tutor) -->
         <div id="teachers" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Manage Teachers</h1>
-                <button class="btn btn-gold btn-sm" onclick="openAddUserModal('teacher')">
-                    <i class="fas fa-plus"></i> Add Teacher
-                </button>
+    <div class="page-header">
+        <h1 class="page-title">Manage Teachers</h1>
+        <button class="btn btn-gold btn-sm" onclick="openAddUserModal('teacher')">
+            <i class="fas fa-plus"></i> Add Teacher
+        </button>
+    </div>
+    <div class="card">
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 250px; position: relative;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                <input type="text" id="teacher-search" class="form-input" 
+                       placeholder="Search by name or email..." 
+                       oninput="filterTeachers()"
+                       style="padding-left: 40px;">
             </div>
-            <div class="card">
-                <h3 style="margin-bottom: 20px; color: var(--primary);">All Teachers</h3>
-                <table>
-                    <thead>
-                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th>
-                    </thead>
-                    <tbody id="teachers-table-body">
-                        <tr><td colspan="5" style="text-align: center;">Loading teachers...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <span id="teacher-count" style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;"></span>
         </div>
-
+        <table>
+            <thead>
+                <tr>
+                    <th style="cursor: pointer;" onclick="sortTeachers('name')">Name <i class="fas fa-sort"></i></th>
+                    <th style="cursor: pointer;" onclick="sortTeachers('email')">Email <i class="fas fa-sort"></i></th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="teachers-table-body">
+                <tr><td colspan="5" style="text-align: center;">Loading teachers...</td></tr>
+            </tbody>
+        </table>
+        <div id="teachers-pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px;"></div>
+    </div>
+</div>
 
         <!-- All Courses Page -->
 <div id="courses" class="page">
@@ -1092,39 +1107,138 @@ window.goToStudentPage = function(page) {
 };
 
         // Load teachers
-        async function loadTeachers() {
-            const tbody = document.getElementById('teachers-table-body');
-            try {
-                const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'teacher'));
-                const querySnapshot = await getDocs(q);
-                const teachers = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                
-                if (teachers.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No teachers yet. Click "Add Teacher" to get started.</td></tr>';
-                    return;
-                }
-                
-                tbody.innerHTML = teachers.map(teacher => `
-                    <tr>
-                        <td><strong>${teacher.displayName || 'N/A'}</strong></td>
-                        <td>${teacher.email || 'N/A'}</td>
-                        <td><span class="badge badge-teacher">Teacher</span></td>
-                        <td><span class="badge badge-active">Active</span></td>
-                        <td>
-                            <button class="btn btn-outline btn-sm" onclick="resetPassword('${teacher.email}')" title="Reset Password">
-                                <i class="fas fa-key"></i>
-                            </button>
-                            <button class="btn btn-danger btn-sm" onclick="removeUser('${teacher.id}', '${teacher.displayName || teacher.email}')" title="Remove">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </td>
-                    </tr>
-                `).join('');
-            } catch (error) {
-                console.error('Error loading teachers:', error);
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading teachers. Please refresh.</td></tr>';
+        // Teacher management state
+let allTeachers = [];
+let filteredTeachers = [];
+let teacherSortField = 'name';
+let teacherSortDirection = 'asc';
+let teacherPage = 1;
+const teachersPerPage = 50;
+
+async function loadTeachers() {
+    const tbody = document.getElementById('teachers-table-body');
+    try {
+        const q = query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'teacher'));
+        const querySnapshot = await getDocs(q);
+        allTeachers = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        sortTeacherData();
+        filterTeachers();
+    } catch (error) {
+        console.error('Error loading teachers:', error);
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading teachers. Please refresh.</td></tr>';
+    }
+}
+
+function sortTeacherData() {
+    allTeachers.sort((a, b) => {
+        let valA, valB;
+        
+        if (teacherSortField === 'name') {
+            valA = (a.displayName || '').toLowerCase();
+            valB = (b.displayName || '').toLowerCase();
+        } else if (teacherSortField === 'email') {
+            valA = (a.email || '').toLowerCase();
+            valB = (b.email || '').toLowerCase();
+        }
+        
+        if (valA < valB) return teacherSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return teacherSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+window.sortTeachers = function(field) {
+    if (teacherSortField === field) {
+        teacherSortDirection = teacherSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        teacherSortField = field;
+        teacherSortDirection = 'asc';
+    }
+    sortTeacherData();
+    teacherPage = 1;
+    filterTeachers();
+};
+
+window.filterTeachers = function() {
+    const searchQuery = document.getElementById('teacher-search')?.value?.toLowerCase()?.trim() || '';
+    
+    if (searchQuery) {
+        filteredTeachers = allTeachers.filter(t => 
+            (t.displayName || '').toLowerCase().includes(searchQuery) ||
+            (t.email || '').toLowerCase().includes(searchQuery)
+        );
+    } else {
+        filteredTeachers = [...allTeachers];
+    }
+    
+    teacherPage = 1;
+    renderTeacherPage();
+};
+
+function renderTeacherPage() {
+    const tbody = document.getElementById('teachers-table-body');
+    const countSpan = document.getElementById('teacher-count');
+    const paginationDiv = document.getElementById('teachers-pagination');
+    
+    if (countSpan) {
+        countSpan.textContent = filteredTeachers.length !== allTeachers.length 
+            ? `${filteredTeachers.length} of ${allTeachers.length} teachers`
+            : `${allTeachers.length} teacher${allTeachers.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (filteredTeachers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">No teachers found.</td></tr>';
+        if (paginationDiv) paginationDiv.innerHTML = '';
+        return;
+    }
+    
+    const totalPages = Math.ceil(filteredTeachers.length / teachersPerPage);
+    const start = (teacherPage - 1) * teachersPerPage;
+    const pageTeachers = filteredTeachers.slice(start, start + teachersPerPage);
+    
+    tbody.innerHTML = pageTeachers.map(teacher => `
+        <tr>
+            <td><strong>${teacher.displayName || 'N/A'}</strong></td>
+            <td>${teacher.email || 'N/A'}</td>
+            <td><span class="badge badge-teacher">Teacher</span></td>
+            <td><span class="badge badge-active">Active</span></td>
+            <td>
+                <button class="btn btn-outline btn-sm" onclick="resetPassword('${teacher.email}')" title="Reset Password">
+                    <i class="fas fa-key"></i>
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="removeUser('${teacher.id}', '${(teacher.displayName || teacher.email).replace(/'/g, "\\'")}')" title="Remove">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        </tr>
+    `).join('');
+    
+    if (paginationDiv && totalPages > 1) {
+        let pagHTML = '';
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToTeacherPage(${teacherPage - 1})" ${teacherPage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= teacherPage - 2 && i <= teacherPage + 2)) {
+                pagHTML += `<button class="btn btn-sm ${i === teacherPage ? 'btn-accent' : 'btn-outline'}" onclick="goToTeacherPage(${i})">${i}</button>`;
+            } else if (i === teacherPage - 3 || i === teacherPage + 3) {
+                pagHTML += `<span style="padding: 0 4px;">...</span>`;
             }
         }
+        
+        pagHTML += `<button class="btn btn-outline btn-sm" onclick="goToTeacherPage(${teacherPage + 1})" ${teacherPage === totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        paginationDiv.innerHTML = pagHTML;
+    } else if (paginationDiv) {
+        paginationDiv.innerHTML = '';
+    }
+}
+
+window.goToTeacherPage = function(page) {
+    const totalPages = Math.ceil(filteredTeachers.length / teachersPerPage);
+    if (page < 1 || page > totalPages) return;
+    teacherPage = page;
+    renderTeacherPage();
+};
 
         // Load overview stats
         async function loadOverview() {
