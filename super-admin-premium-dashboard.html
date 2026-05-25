@@ -1267,17 +1267,44 @@ window.openSchoolDetail = async function(schoolId) {
 window.closeSchoolDetail = () => document.getElementById('school-detail-modal').style.display = 'none';
 
 window.toggleSchoolSubscription = async (schoolId, activate) => {
+    const school = allSchools.find(s => s.id === schoolId);
+    if (!school) return;
+    
+    const action = activate ? 'ACTIVATE' : 'DEACTIVATE';
+    const planName = school.subscriptionPlan || 'trial';
+    const schoolName = school.name || 'Unnamed School';
+    
+    const confirmed = confirm(
+        `⚠️ ${action} SUBSCRIPTION\n\n` +
+        `School: ${schoolName}\n` +
+        `Current Plan: ${planName}\n` +
+        `Action: ${activate ? 'Activate subscription' : 'Deactivate subscription (revert to trial)'}\n\n` +
+        `Are you sure you want to proceed?`
+    );
+    
+    if (!confirmed) return;
+    
     try {
         await updateDoc(doc(db, 'schools', schoolId), {
             subscription: activate,
-            subscriptionPlan: activate ? 'monthly' : 'trial',
+            subscriptionPlan: activate ? (school.subscriptionPlan || 'monthly') : 'trial',
             lastUpdated: new Date().toISOString()
         });
-        alert(`Subscription ${activate?'activated':'deactivated'} successfully.`);
+        
+        alert(`✅ Subscription ${activate ? 'activated' : 'deactivated'} successfully for ${schoolName}.`);
         await fetchAllSchools();
         renderSchoolTable();
         closeSchoolDetail();
-    } catch (e) { alert('Error: ' + e.message); }
+        
+        // Also refresh subscriptions page if it's visible
+        if (document.getElementById('page-subscriptions').classList.contains('active')) {
+            loadSubscriptionsPage();
+        }
+        
+    } catch (e) { 
+        console.error('Subscription toggle error:', e);
+        alert('❌ Error: ' + e.message); 
+    }
 };
         
         // ── Activity Page ──
@@ -1403,21 +1430,31 @@ window.renderActivityLog = function() {
                 <div class="stat-card"><div class="stat-value">${activeCount}</div><div class="stat-label">Active</div></div>
                 <div class="stat-card"><div class="stat-value">${allSchools.length-activeCount}</div><div class="stat-label">Inactive/Trial</div></div>`;
             document.getElementById('subscription-table-body').innerHTML = allSchools.map(s => {
-                const daysLeft = s.subscriptionExpiry ? Math.ceil((new Date(s.subscriptionExpiry) - new Date()) / (
-                    86400000)) : 0;
-                return `
-                <tr>
-                    <td><strong>${s.name||'Unknown'}</strong></td>
-                    <td><span class="badge badge-info">${s.subscriptionPlan||'trial'}</span></td>
-                    <td><span class="badge ${s.subscription?'badge-success':'badge-danger'}">${s.subscription?'Active':'Inactive'}</span></td>
-                    <td>${s.subscriptionStart?new Date(s.subscriptionStart).toLocaleDateString():'—'}</td>
-                    <td>${s.subscriptionExpiry?new Date(s.subscriptionExpiry).toLocaleDateString():'—'}</td>
-                    <td><span class="badge ${daysLeft>30?'badge-success':daysLeft>7?'badge-warning':'badge-danger'}">${s.subscription?daysLeft+'d':'—'}</span></td>
-                    <td><button class="btn btn-xs btn-outline" onclick="toggleSchoolSubscription('${s.id}', ${!s.subscription})">Toggle</button></td>
-                </tr>`;
-            }).join('');
-        }
-
+    const daysLeft = s.subscriptionExpiry ? Math.ceil((new Date(s.subscriptionExpiry) - new Date()) / (86400000)) : 0;
+    const isActive = s.subscription === true;
+    
+    return `
+    <tr>
+        <td><strong>${s.name || 'Unknown'}</strong></td>
+        <td><span class="badge badge-info">${s.subscriptionPlan || 'trial'}</span></td>
+        <td><span class="badge ${isActive ? 'badge-success' : 'badge-danger'}">${isActive ? 'Active' : 'Inactive'}</span></td>
+        <td>${s.subscriptionStart ? new Date(s.subscriptionStart).toLocaleDateString() : '—'}</td>
+        <td>${s.subscriptionExpiry ? new Date(s.subscriptionExpiry).toLocaleDateString() : '—'}</td>
+        <td>
+            <span class="badge ${daysLeft > 30 ? 'badge-success' : daysLeft > 7 ? 'badge-warning' : 'badge-danger'}">
+                ${isActive ? daysLeft + 'd left' : '—'}
+            </span>
+        </td>
+        <td>
+            <button class="btn btn-sm ${isActive ? 'btn-danger' : 'btn-primary'}" 
+                    onclick="toggleSchoolSubscription('${s.id}', ${!isActive})"
+                    title="${isActive ? 'Deactivate this subscription' : 'Activate this subscription'}">
+                <i class="fas fa-power-off"></i> ${isActive ? 'Deactivate' : 'Activate'}
+            </button>
+        </td>
+    </tr>`;
+}).join('');
+            
         function timeAgo(ts) {
             const diff = Date.now() - new Date(ts).getTime();
             const mins = Math.floor(diff / 60000);
