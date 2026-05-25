@@ -3773,22 +3773,41 @@ function initDashboard() {
   //Profile Section starts here. All JS functionalities of the profile section starts here
   //.......................................................................................
   
-  // Set up profile editing
-  document.getElementById('editProfileBtn').addEventListener('click', function() {
+
+// Flag to prevent duplicate listener registration
+let profileListenersAttached = false;
+
+/**
+ * Setup all profile editing event listeners (called once)
+ */
+function setupProfileEditing() {
+  if (profileListenersAttached) {
+    console.log('Profile listeners already attached, skipping...');
+    return;
+  }
+
+  const editBtn = document.getElementById('editProfileBtn');
+  const saveBtn = document.getElementById('saveProfileBtn');
+  const form = document.getElementById('profileForm');
+
+  if (!editBtn || !saveBtn || !form) {
+    console.error('Profile elements not found - check DOM structure');
+    return;
+  }
+
+  // Edit Profile / Cancel toggle handler
+  editBtn.addEventListener('click', function() {
     console.log('Edit Profile button clicked');
-    const form = document.getElementById('profileForm');
-    console.log('Form found:', form);
     
-    // Check current state using multiple methods
     const computedStyle = window.getComputedStyle(form);
     const isHidden = form.style.display === 'none' || 
                     computedStyle.display === 'none' ||
                     computedStyle.visibility === 'hidden';
     
-    console.log('Form current state - inline display:', form.style.display);
-    console.log('Form current state - computed display:', computedStyle.display);
-    console.log('Form current state - computed visibility:', computedStyle.visibility);
-    console.log('Is hidden:', isHidden);
+    console.log('Form state - inline:', form.style.display, 
+                '| computed:', computedStyle.display, 
+                '| visibility:', computedStyle.visibility,
+                '| isHidden:', isHidden);
     
     if (isHidden) {
       // Show the form
@@ -3802,130 +3821,183 @@ function initDashboard() {
       this.textContent = 'Edit Profile';
       console.log('Form set to hidden');
     }
-  }); // <-- CLOSES initDashboard() function
-
-// Only setup profile editing once
-  //if (!profileEditingSetup) {
-    //setupProfileEditing();
-    //profileEditingSetup = true;
-  //}
-  
-// Setup profile editing handlers
-function setupProfileEditing() {
-  document.getElementById('editProfileBtn').addEventListener('click', function() {
-    console.log('Edit Profile button clicked');
-    const form = document.getElementById('profileForm');
-    
-    const computedStyle = window.getComputedStyle(form);
-    const isHidden = form.style.display === 'none' || 
-                    computedStyle.display === 'none' ||
-                    computedStyle.visibility === 'hidden';
-    
-    if (isHidden) {
-      form.style.display = 'block';
-      form.style.visibility = 'visible';
-      this.textContent = 'Cancel Editing';
-    } else {
-      form.style.display = 'none';
-      this.textContent = 'Edit Profile';
-    }
   });
 
-  document.getElementById('saveProfileBtn').addEventListener('click', function() {
+  // Save Profile handler
+  saveBtn.addEventListener('click', function() {
+    console.log('Save Profile button clicked');
     saveProfile();
   });
+
+  profileListenersAttached = true;
+  console.log('Profile event listeners attached successfully');
 }
-  
+
+/**
+ * Load all dashboard data on initialization
+ */
 async function loadDashboardData() {
-  await loadUserData(currentUser.uid);
-  await loadMyTutors();
-  await loadUserBookings();
-  updateActiveTutorsCount();
+  try {
+    await loadUserData();
+    await loadMyTutors();
+    await loadUserBookings();
+    updateActiveTutorsCount();
+    console.log('Dashboard data loaded');
+  } catch (error) {
+    console.error('Error loading dashboard data:', error);
+  }
 }
 
-// Load user data from Firestore
+/**
+ * Load user data from Firestore
+ */
 function loadUserData() {
-  if (!currentUser) return;
+  return new Promise((resolve, reject) => {
+    if (!currentUser) {
+      console.warn('No currentUser available');
+      resolve();
+      return;
+    }
 
-  db.collection('students').doc(currentUser.uid).get()
-    .then(doc => {
-      if (doc.exists) {
-        userData = doc.data();
-        updateUIWithUserData();
-      } else {
-        console.error('No user data found');
-      }
-    })
-    .catch(error => {
-      console.error('Error loading user data:', error);
-    });
+    db.collection('students').doc(currentUser.uid).get()
+      .then(doc => {
+        if (doc.exists) {
+          userData = doc.data();
+          updateUIWithUserData();
+          console.log('User data loaded:', userData);
+          resolve();
+        } else {
+          console.error('No user data found for UID:', currentUser.uid);
+          resolve(); // Resolve anyway to not block other loads
+        }
+      })
+      .catch(error => {
+        console.error('Error loading user data:', error);
+        reject(error);
+      });
+  });
 }
 
-// Update UI with user data
+/**
+ * Update UI elements with loaded user data
+ */
 function updateUIWithUserData() {
-  if (!userData) return;
+  if (!userData) {
+    console.warn('No userData available to update UI');
+    return;
+  }
 
-  // Update user name and email in various places
- const userNameElements = document.querySelectorAll('#userName, #profileName');
+  // Update user name in display elements
+  const userNameElements = document.querySelectorAll('#userName, #profileName');
   userNameElements.forEach(el => {
-    el.textContent = userData.fullName || 'User';  // ← CHANGE from userData.name
+    if (el) el.textContent = userData.fullName || userData.name || 'User';
   });
 
+  // Update email in display elements and form fields
+  const userEmail = userData.email || currentUser?.email || '';
   const userEmailElements = document.querySelectorAll('#profileEmail, #email');
   userEmailElements.forEach(el => {
-    el.value = userData.email || currentUser.email;
-    if (el.tagName === 'SPAN') {
-      el.textContent = userData.email || currentUser.email;
+    if (!el) return;
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      el.value = userEmail;
+    } else {
+      el.textContent = userEmail;
     }
   });
 
   // Update profile form fields
-  document.getElementById('fullName').value = userData.fullName || '';  // ← CHANGE from userData.name
-  document.getElementById('phone').value = userData.phone || '';
-  document.getElementById('role').value = userData.role || 'Student';
+  const fullNameField = document.getElementById('fullName');
+  const phoneField = document.getElementById('phone');
+  const roleField = document.getElementById('role');
+  
+  if (fullNameField) fullNameField.value = userData.fullName || userData.name || '';
+  if (phoneField) phoneField.value = userData.phone || '';
+  if (roleField) roleField.value = userData.role || 'Student';
 
-  // Update profile status
+  // Update profile status badge
   const profileStatus = document.getElementById('profileStatus');
-  if (userData.emailVerified || currentUser.emailVerified) {
-    profileStatus.textContent = 'Verified';
-    profileStatus.className = 'status-badge status-verified';
-  } else {
-    profileStatus.textContent = 'Pending Verification';
-    profileStatus.className = 'status-badge status-pending';
+  if (profileStatus) {
+    const isVerified = userData.emailVerified || currentUser?.emailVerified;
+    profileStatus.textContent = isVerified ? 'Verified' : 'Pending Verification';
+    profileStatus.className = `status-badge status-${isVerified ? 'verified' : 'pending'}`;
   }
 }
-  
-// Save profile data to Firestore
+
+/**
+ * Save updated profile data to Firestore
+ */
 function saveProfile() {
-  if (!currentUser) return;
+  if (!currentUser) {
+    alert('User not authenticated. Please log in again.');
+    return;
+  }
 
-  const fullName = document.getElementById('fullName').value;
-  const phone = document.getElementById('phone').value;
+  const fullName = document.getElementById('fullName')?.value?.trim();
+  const phone = document.getElementById('phone')?.value?.trim();
 
-  // Update user data in Firestore - use fullName consistently
+  if (!fullName) {
+    alert('Full name is required');
+    return;
+  }
+
+  // Show loading state (optional UX improvement)
+  const saveBtn = document.getElementById('saveProfileBtn');
+  const originalBtnText = saveBtn?.textContent;
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+  }
+
   db.collection('students').doc(currentUser.uid).update({
-    fullName: fullName,  // ← CHANGE THIS from 'name' to 'fullName'
+    fullName: fullName,
     phone: phone,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   })
-    
   .then(() => {
     alert('Profile updated successfully!');
-    // Reload user data to update UI
+    
+    // Refresh UI with updated data
     loadUserData();
-    // Hide the form
-    document.getElementById('profileForm').style.display = 'none';
-    document.getElementById('editProfileBtn').textContent = 'Edit Profile';
+    
+    // Hide form and reset button
+    const form = document.getElementById('profileForm');
+    const editBtn = document.getElementById('editProfileBtn');
+    if (form) form.style.display = 'none';
+    if (editBtn) editBtn.textContent = 'Edit Profile';
+    
   })
   .catch(error => {
     console.error('Error updating profile:', error);
     alert('Error updating profile. Please try again.');
+  })
+  .finally(() => {
+    // Restore button state
+    if (saveBtn && originalBtnText) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = originalBtnText;
+    }
   });
 }
 
-// Initialize the dashboard when the page loads
+/**
+ * Initialize dashboard on page load
+ */
+function initDashboard() {
+  console.log('Initializing dashboard...');
+  
+  // Setup profile editing listeners (single source of truth)
+  setupProfileEditing();
+  
+  // Load dashboard data
+  loadDashboardData();
+  
+  console.log('Dashboard initialization complete');
+}
+
+// Attach DOMContentLoaded listener (single entry point)
 document.addEventListener('DOMContentLoaded', initDashboard);
-//.............................................................................
+
+/.............................................................................
 //Profile Section ends. All JS functionalities of the profile section ends here
 //.............................................................................  
 
