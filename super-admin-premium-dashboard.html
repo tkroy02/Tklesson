@@ -1314,27 +1314,7 @@ window.navigateTo = function(pageName, el) {
             return `${Math.floor(diff/86400000)}d ago`;
         }
 
-        // Expose globals
- window.openSchoolDetail = openSchoolDetail;
-window.closeSchoolDetail = closeSchoolDetail;
-window.toggleSchoolSubscription = toggleSchoolSubscription;
-window.renderSchoolTable = renderSchoolTable;
-window.renderActivityLog = renderActivityLog;
-window.handleTFAction = handleTFAction;
-window.goToTFAStep = goToTFAStep;
-window.verifyTFASetup = verifyTFASetup;
-window.closeTFASetup = closeTFASetup;
-window.confirmDisableTFA = confirmDisableTFA;
-window.closeTFADisable = closeTFADisable;
-window.loadTFAStatus = loadTFAStatus;
-window.openTFASetupModal = openTFASetupModal;
-window.openTFADisableModal = openTFADisableModal;
-
-
-
-
-        
-// ═══════════════ 2FA MANAGEMENT ═══════════════
+       // ═══════════════ 2FA MANAGEMENT (CLEAN - NO DUPLICATES) ═══════════════
 let currentTfaSecret = null;
 let tfaFailCount = 0;
 const MAX_TFA_ATTEMPTS = 5;
@@ -1343,7 +1323,6 @@ const MAX_TFA_ATTEMPTS = 5;
 async function loadTFALibraries() {
     if (window.OTPAuth && window.QRCode) return;
     
-    // Load QRCode
     if (!window.QRCode) {
         await new Promise((resolve, reject) => {
             const script = document.createElement('script');
@@ -1354,7 +1333,6 @@ async function loadTFALibraries() {
         });
     }
     
-    // Load OTPAuth
     if (!window.OTPAuth) {
         await new Promise((resolve, reject) => {
             const script = document.createElement('script');
@@ -1395,26 +1373,34 @@ async function loadTFAStatus() {
     }
 }
 
-// ── Handle TFA Action Button ──
-window.handleTFAction = async function() {
-    if (!currentUser) return;
-    
-    const snap = await getDoc(doc(db, 'admins', currentUser.uid));
-    const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
-    
-    if (enabled) {
-        openTFADisableModal();
-    } else {
-        openTFASetupModal();
+// ── Handle TFA Action ──
+async function handleTFAction() {
+    if (!currentUser) {
+        alert('Please wait for authentication to complete.');
+        return;
     }
-};
+    
+    try {
+        const snap = await getDoc(doc(db, 'admins', currentUser.uid));
+        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
+        
+        if (enabled) {
+            openTFADisableModal();
+        } else {
+            openTFASetupModal();
+        }
+    } catch (err) {
+        console.error('TFA action error:', err);
+        alert('Error checking 2FA status. Please try again.');
+    }
+}
 
 // ── Open Setup Modal ──
 async function openTFASetupModal() {
     await loadTFALibraries();
     
     if (!window.OTPAuth) {
-        alert('Unable to load security libraries. Please check your connection and try again.');
+        alert('Unable to load security libraries. Please try again.');
         return;
     }
     
@@ -1430,11 +1416,9 @@ async function openTFASetupModal() {
     currentTfaSecret = totp.secret.base32;
     tfaFailCount = 0;
     
-    // Show manual key
     document.getElementById('tfa-manual-key').textContent = 
         currentTfaSecret.match(/.{1,4}/g).join(' ');
     
-    // Generate QR
     const container = document.getElementById('tfa-qr-container');
     container.innerHTML = '';
     new QRCode(container, {
@@ -1451,8 +1435,17 @@ async function openTFASetupModal() {
     setupOTPInputs('tfa-setup-otp-inputs');
 }
 
+// ── Open Disable Modal ──
+function openTFADisableModal() {
+    document.getElementById('tfa-disable-password').value = '';
+    clearOTPInputs('tfa-disable-otp-inputs');
+    setupOTPInputs('tfa-disable-otp-inputs');
+    document.getElementById('tfa-disable-error').style.display = 'none';
+    document.getElementById('tfa-disable-modal').style.display = 'flex';
+}
+
 // ── Step Navigation ──
-window.goToTFAStep = function(step) {
+function goToTFAStep(step) {
     [1, 2, 3].forEach(n => {
         const el = document.getElementById(`tfa-step-${n}`);
         if (el) el.style.display = n === step ? 'block' : 'none';
@@ -1467,10 +1460,10 @@ window.goToTFAStep = function(step) {
     if (step === 3) {
         document.getElementById('tfa-modal-title').textContent = 'Setup Complete';
     }
-};
+}
 
 // ── Verify Setup ──
-window.verifyTFASetup = async function() {
+async function verifyTFASetup() {
     if (tfaFailCount >= MAX_TFA_ATTEMPTS) {
         document.getElementById('tfa-setup-error-text').textContent = 'Too many attempts. Please restart setup.';
         document.getElementById('tfa-setup-error').style.display = 'block';
@@ -1506,7 +1499,6 @@ window.verifyTFASetup = async function() {
         return;
     }
     
-    // Save to Firestore
     try {
         await setDoc(doc(db, 'admins', currentUser.uid), {
             twoFactorEnabled: true,
@@ -1516,7 +1508,6 @@ window.verifyTFASetup = async function() {
         
         goToTFAStep(3);
         await loadTFAStatus();
-        
     } catch (err) {
         console.error('Save TFA error:', err);
         document.getElementById('tfa-setup-error-text').textContent = 'Failed to save. Please try again.';
@@ -1524,29 +1515,21 @@ window.verifyTFASetup = async function() {
     }
     
     setVerifyButtonLoading(false);
-};
-
-// ── Close Setup ──
-window.closeTFASetup = function() {
-    document.getElementById('tfa-setup-modal').style.display = 'none';
-    currentTfaSecret = null;
-};
-
-// ── Disable Modal ──
-function openTFADisableModal() {
-    document.getElementById('tfa-disable-password').value = '';
-    clearOTPInputs('tfa-disable-otp-inputs');
-    setupOTPInputs('tfa-disable-otp-inputs');
-    document.getElementById('tfa-disable-error').style.display = 'none';
-    document.getElementById('tfa-disable-modal').style.display = 'flex';
 }
 
-window.closeTFADisable = function() {
+// ── Close Setup ──
+function closeTFASetup() {
+    document.getElementById('tfa-setup-modal').style.display = 'none';
+    currentTfaSecret = null;
+}
+
+// ── Close Disable ──
+function closeTFADisable() {
     document.getElementById('tfa-disable-modal').style.display = 'none';
-};
+}
 
 // ── Confirm Disable ──
-window.confirmDisableTFA = async function() {
+async function confirmDisableTFA() {
     const password = document.getElementById('tfa-disable-password').value;
     const code = getOTPCode('tfa-disable-otp-inputs');
     
@@ -1561,11 +1544,9 @@ window.confirmDisableTFA = async function() {
     }
     
     try {
-        // Re-authenticate
         const credential = EmailAuthProvider.credential(currentUser.email, password);
         await reauthenticateWithCredential(currentUser, credential);
         
-        // Verify TOTP
         const snap = await getDoc(doc(db, 'admins', currentUser.uid));
         const secret = snap.data()?.twoFactorSecret;
         
@@ -1586,7 +1567,6 @@ window.confirmDisableTFA = async function() {
             return;
         }
         
-        // Disable 2FA
         await setDoc(doc(db, 'admins', currentUser.uid), {
             twoFactorEnabled: false,
             twoFactorSecret: null,
@@ -1603,7 +1583,7 @@ window.confirmDisableTFA = async function() {
             err.code === 'auth/wrong-password' ? 'Incorrect password.' : 'Verification failed.';
         document.getElementById('tfa-disable-error').style.display = 'block';
     }
-};
+}
 
 // ── OTP Input Helpers ──
 function setupOTPInputs(containerId) {
@@ -1635,7 +1615,10 @@ function getOTPCode(containerId) {
 }
 
 function clearOTPInputs(containerId) {
-    document.querySelectorAll(`#${containerId} .otp-digit`).forEach(i => { i.value = ''; i.classList.remove('error'); });
+    document.querySelectorAll(`#${containerId} .otp-digit`).forEach(i => { 
+        i.value = ''; 
+        i.classList.remove('error'); 
+    });
 }
 
 function shakeOTPInputs(containerId) {
@@ -1659,6 +1642,22 @@ function setVerifyButtonLoading(loading) {
         if (spinner) spinner.style.display = 'none';
     }
 }
+
+// ═══════════════ EXPORT ALL GLOBAL FUNCTIONS (CLEAN - SINGLE BLOCK) ═══════════════
+window.handleTFAction = handleTFAction;
+window.loadTFAStatus = loadTFAStatus;
+window.openTFASetupModal = openTFASetupModal;
+window.openTFADisableModal = openTFADisableModal;
+window.goToTFAStep = goToTFAStep;
+window.verifyTFASetup = verifyTFASetup;
+window.closeTFASetup = closeTFASetup;
+window.confirmDisableTFA = confirmDisableTFA;
+window.closeTFADisable = closeTFADisable;
+window.openSchoolDetail = openSchoolDetail;
+window.closeSchoolDetail = closeSchoolDetail;
+window.toggleSchoolSubscription = toggleSchoolSubscription;
+window.renderSchoolTable = renderSchoolTable;
+window.renderActivityLog = renderActivityLog;
 
     </script>
 </body>
