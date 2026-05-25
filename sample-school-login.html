@@ -58,6 +58,37 @@
             z-index: 0;
         }
 
+
+/* OTP digits — reused from student dashboard pattern */
+.otp-digit {
+    width: 46px; height: 54px;
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
+    text-align: center;
+    font-size: 1.4rem;
+    font-weight: 700;
+    font-family: 'Inter', sans-serif;
+    color: #0b3d91;
+    background: #f7f9fc;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    caret-color: transparent;
+}
+.otp-digit:focus {
+    outline: none;
+    border-color: #0b3d91;
+    box-shadow: 0 0 0 3px rgba(11,61,145,0.1);
+    background: white;
+}
+.otp-digit.error {
+    border-color: #e74c3c;
+    box-shadow: 0 0 0 3px rgba(231,76,60,0.1);
+    animation: shake 0.4s ease;
+}
+
+@media (max-width: 480px) {
+    .otp-digit { width: 40px; height: 48px; font-size: 1.2rem; }
+}
+
         .login-wrapper {
             position: relative;
             z-index: 1;
@@ -723,7 +754,27 @@ fetch("header.html")
             errorMessage.classList.remove('show');
         }
 
-        loginForm.addEventListener('submit', async function(e) {
+        // ── Runtime state ──────────────────────────────────────────
+let _pendingSession = null;   // holds verified user data until 2FA passes
+let _challengeFailCount = 0;
+let _challengeTab = 'otp';
+let _countdownTimer = null;
+const CHALLENGE_MAX_ATTEMPTS = 5;
+
+// ── OTP library loader ─────────────────────────────────────
+function loadOTPLib() {
+    return new Promise((resolve, reject) => {
+        if (window.OTPAuth) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    });
+}
+
+// ── FORM SUBMIT ────────────────────────────────────────────
+loginForm.addEventListener('submit', async function(e) {
     e.preventDefault();
     hideError();
 
@@ -733,10 +784,8 @@ fetch("header.html")
 
     if (!email) {
         showError('Please enter your email address.');
-        emailInput.focus();
-        return;
+        emailInput.focus(); return;
     }
-
     if (!schoolId) {
         if (detectedSchool) {
             selectedSchoolId.value = detectedSchool.id;
@@ -745,11 +794,9 @@ fetch("header.html")
             return;
         }
     }
-
     if (!password) {
         showError('Please enter your password.');
-        passwordInput.focus();
-        return;
+        passwordInput.focus(); return;
     }
 
     loginButton.classList.add('loading');
@@ -758,10 +805,9 @@ fetch("header.html")
     try {
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
-
         const finalSchoolId = selectedSchoolId.value;
 
-        // ========== STEP 1: Check schooladmins collection first ==========
+        // ── Role check (unchanged from your original) ──
         let userData = null;
         let userRole = null;
 
@@ -770,27 +816,21 @@ fetch("header.html")
 
         if (schoolAdminDoc.exists()) {
             const adminData = schoolAdminDoc.data();
-            
-            // Verify this admin belongs to the selected school
             if (adminData.schoolId === finalSchoolId) {
                 userData = adminData;
                 userRole = 'admin';
-                console.log('✅ User identified as school admin for:', finalSchoolId);
             } else {
-                // Admin exists but for a different school
                 await auth.signOut();
-                showError('You are an administrator for a different school. Please select the correct school from the dropdown.');
+                showError('You are an administrator for a different school. Please select the correct school.');
                 loginButton.classList.remove('loading');
                 loginButton.disabled = false;
                 return;
             }
         }
 
-        // ========== STEP 2: If not an admin, check regular users ==========
         if (!userRole) {
             const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
             const userDoc = await getDoc(userRef);
-
             if (!userDoc.exists()) {
                 await auth.signOut();
                 showError('You are not registered at this school. Please select the correct school or contact your administrator.');
@@ -798,35 +838,54 @@ fetch("header.html")
                 loginButton.disabled = false;
                 return;
             }
-
             userData = userDoc.data();
             userRole = userData.role || 'student';
-            console.log('✅ User identified as:', userRole, 'for school:', finalSchoolId);
         }
 
-        // ========== STEP 3: Get school info ==========
+        // ── School info ──
         const schoolRef = doc(db, 'schools', finalSchoolId);
         const schoolDoc = await getDoc(schoolRef);
         const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
 
-        // ========== STEP 4: Store session ==========
-        sessionStorage.setItem('schoolId', finalSchoolId);
-        sessionStorage.setItem('userRole', userRole);
-        sessionStorage.setItem('userDisplayName', userData.displayName || user.email);
-        sessionStorage.setItem('userEmail', user.email);
-        sessionStorage.setItem('userUid', user.uid);
-        sessionStorage.setItem('schoolName', schoolData.name || 'Your School');
-        sessionStorage.setItem('schoolLocation', 
-            [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
-        );
+        // ── Check 2FA ──
+        // For admins, secret lives in schooladmins doc.
+        // For students/teachers, it lives in schools/{id}/users/{uid}
+        let userDocForTFA = null;
+        if (userRole === 'admin') {
+            userDocForTFA = schoolAdminDoc.data();
+        } else {
+            const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
+            const userSnap = await getDoc(userRef);
+            userDocForTFA = userSnap.exists() ? userSnap.data() : {};
+        }
 
-        console.log('✅ Login successful — Role:', userRole, '| School:', schoolData.name);
+        // ── Store pending session (NOT written to sessionStorage yet) ──
+        _pendingSession = {
+            schoolId: finalSchoolId,
+            userRole,
+            userDisplayName: userData.displayName || user.email,
+            userEmail: user.email,
+            userUid: user.uid,
+            schoolName: schoolData.name || 'Your School',
+            schoolLocation: [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
+        };
 
-        // ========== STEP 5: Redirect to hub ==========
-        window.location.href = 'school-hub.html';
+        loginButton.classList.remove('loading');
+        loginButton.disabled = false;
+
+        if (userDocForTFA.twoFactorEnabled === true && userDocForTFA.twoFactorSecret) {
+            // 2FA required — show challenge
+            await loadOTPLib();
+            _pendingSession.tfaSecret = userDocForTFA.twoFactorSecret;
+            _pendingSession.tfaBackupCodes = userDocForTFA.twoFactorBackupCodes || [];
+            openChallengeModal();
+        } else {
+            // No 2FA — proceed directly
+            commitSessionAndRedirect();
+        }
 
     } catch (error) {
-        console.error('❌ Login error:', error);
+        console.error('Login error:', error);
         loginButton.classList.remove('loading');
         loginButton.disabled = false;
 
@@ -834,23 +893,272 @@ fetch("header.html")
             case 'auth/user-not-found':
             case 'auth/invalid-credential':
             case 'auth/wrong-password':
-                showError('Invalid email or password. Please try again.');
-                break;
+                showError('Invalid email or password. Please try again.'); break;
             case 'auth/invalid-email':
-                showError('Please enter a valid email address.');
-                break;
+                showError('Please enter a valid email address.'); break;
             case 'auth/too-many-requests':
-                showError('Too many login attempts. Please try again later.');
-                break;
+                showError('Too many login attempts. Please try again later.'); break;
             case 'auth/network-request-failed':
-                showError('Network error. Please check your connection.');
-                break;
+                showError('Network error. Please check your connection.'); break;
             default:
                 showError('Login failed. Please try again.');
         }
     }
 });
 
+// ── Write session and go to hub ────────────────────────────
+function commitSessionAndRedirect() {
+    if (!_pendingSession) return;
+    const s = _pendingSession;
+    sessionStorage.setItem('schoolId', s.schoolId);
+    sessionStorage.setItem('userRole', s.userRole);
+    sessionStorage.setItem('userDisplayName', s.userDisplayName);
+    sessionStorage.setItem('userEmail', s.userEmail);
+    sessionStorage.setItem('userUid', s.userUid);
+    sessionStorage.setItem('schoolName', s.schoolName);
+    sessionStorage.setItem('schoolLocation', s.schoolLocation);
+    window.location.href = 'school-hub.html';
+}
+
+// ── Open challenge modal ───────────────────────────────────
+function openChallengeModal() {
+    _challengeFailCount = 0;
+    _challengeTab = 'otp';
+    document.getElementById('2fa-challenge-modal').style.display = 'flex';
+    document.getElementById('challenge-error').style.display = 'none';
+    document.getElementById('challenge-lockout').style.display = 'none';
+    document.getElementById('challenge-submit-btn').disabled = false;
+    switchChallengeTab('otp');
+    startOTPCountdown();
+}
+
+window.cancelChallenge = async function() {
+    document.getElementById('2fa-challenge-modal').style.display = 'none';
+    stopOTPCountdown();
+    _pendingSession = null;
+    _challengeFailCount = 0;
+    await auth.signOut();
+    loginButton.classList.remove('loading');
+    loginButton.disabled = false;
+};
+
+// ── Tab switch ─────────────────────────────────────────────
+window.switchChallengeTab = function(tab) {
+    _challengeTab = tab;
+
+    const otpPanel = document.getElementById('challenge-otp-panel');
+    const backupPanel = document.getElementById('challenge-backup-panel');
+    const tabOtp = document.getElementById('tab-otp');
+    const tabBackup = document.getElementById('tab-backup');
+    const subtitle = document.getElementById('2fa-challenge-subtitle');
+
+    if (tab === 'otp') {
+        otpPanel.style.display = 'block';
+        backupPanel.style.display = 'none';
+        tabOtp.style.background = '#0b3d91';
+        tabOtp.style.color = 'white';
+        tabBackup.style.background = 'transparent';
+        tabBackup.style.color = '#708090';
+        subtitle.textContent = 'Enter the 6-digit code from your authenticator app.';
+        wireChallengOTPInputs();
+        startOTPCountdown();
+    } else {
+        otpPanel.style.display = 'none';
+        backupPanel.style.display = 'block';
+        tabBackup.style.background = '#0b3d91';
+        tabBackup.style.color = 'white';
+        tabOtp.style.background = 'transparent';
+        tabOtp.style.color = '#708090';
+        subtitle.textContent = 'Enter one of your saved backup codes.';
+        stopOTPCountdown();
+        setTimeout(() => document.getElementById('backup-code-input').focus(), 100);
+    }
+
+    document.getElementById('challenge-error').style.display = 'none';
+};
+
+// ── OTP countdown timer ────────────────────────────────────
+function startOTPCountdown() {
+    stopOTPCountdown();
+    function tick() {
+        const seconds = 30 - (Math.floor(Date.now() / 1000) % 30);
+        const el = document.getElementById('otp-countdown');
+        if (el) el.textContent = seconds;
+    }
+    tick();
+    _countdownTimer = setInterval(tick, 1000);
+}
+
+function stopOTPCountdown() {
+    if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
+}
+
+// ── Wire OTP digit inputs ──────────────────────────────────
+function wireChallengOTPInputs() {
+    const inputs = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
+    inputs.forEach((input, i) => {
+        const fresh = input.cloneNode(true);
+        input.parentNode.replaceChild(fresh, input);
+    });
+
+    const fresh = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
+    fresh.forEach((input, i) => {
+        input.value = '';
+        input.classList.remove('error');
+
+        input.addEventListener('input', e => {
+            const val = e.target.value.replace(/\D/g, '');
+            e.target.value = val.slice(-1);
+            if (val && i < fresh.length - 1) fresh[i + 1].focus();
+        });
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Backspace' && !input.value && i > 0) fresh[i - 1].focus();
+        });
+        input.addEventListener('paste', e => {
+            e.preventDefault();
+            const pasted = (e.clipboardData || window.clipboardData)
+                .getData('text').replace(/\D/g, '').slice(0, 6);
+            pasted.split('').forEach((char, idx) => {
+                if (fresh[idx]) fresh[idx].value = char;
+            });
+            const nextEmpty = [...fresh].findIndex(inp => !inp.value);
+            if (nextEmpty !== -1) fresh[nextEmpty].focus();
+            else fresh[5].focus();
+        });
+
+        if (i === 0) setTimeout(() => input.focus(), 150);
+    });
+}
+
+// ── Submit challenge ───────────────────────────────────────
+window.submitChallengeCode = async function() {
+    if (_challengeFailCount >= CHALLENGE_MAX_ATTEMPTS) return;
+
+    const errorEl = document.getElementById('challenge-error');
+    const errorText = document.getElementById('challenge-error-text');
+    errorEl.style.display = 'none';
+
+    // Loading state
+    document.getElementById('challenge-btn-text').style.display = 'none';
+    document.getElementById('challenge-btn-spinner').style.display = 'inline';
+    document.getElementById('challenge-submit-btn').disabled = true;
+
+    const resetBtn = () => {
+        document.getElementById('challenge-btn-text').style.display = 'inline';
+        document.getElementById('challenge-btn-spinner').style.display = 'none';
+        document.getElementById('challenge-submit-btn').disabled = false;
+    };
+
+    try {
+        if (_challengeTab === 'otp') {
+            // ── TOTP path ──
+            const code = [...document.querySelectorAll('#challenge-otp-inputs .otp-digit')]
+                .map(i => i.value).join('');
+
+            if (code.length !== 6) {
+                shakeChallenge();
+                resetBtn(); return;
+            }
+
+            const totp = new OTPAuth.TOTP({
+                algorithm: 'SHA1', digits: 6, period: 30,
+                secret: OTPAuth.Secret.fromBase32(_pendingSession.tfaSecret)
+            });
+            const delta = totp.validate({ token: code, window: 1 });
+
+            if (delta === null) {
+                _challengeFailCount++;
+                shakeChallenge();
+                const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
+                if (left <= 0) {
+                    lockoutChallenge();
+                } else {
+                    errorText.textContent = `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                    errorEl.style.display = 'block';
+                    clearChallengeOTP();
+                }
+                resetBtn(); return;
+            }
+
+        } else {
+            // ── Backup code path ──
+            const entered = document.getElementById('backup-code-input').value.trim().toUpperCase();
+            if (!entered) { resetBtn(); return; }
+
+            const encoded = btoa(entered);
+            const match = _pendingSession.tfaBackupCodes.indexOf(encoded);
+
+            if (match === -1) {
+                _challengeFailCount++;
+                document.getElementById('backup-code-input').style.borderColor = '#e74c3c';
+                const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
+                if (left <= 0) {
+                    lockoutChallenge();
+                } else {
+                    errorText.textContent = `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                    errorEl.style.display = 'block';
+                }
+                resetBtn(); return;
+            }
+
+            // ── Burn the used backup code in Firestore ──
+            const updatedCodes = [..._pendingSession.tfaBackupCodes];
+            updatedCodes.splice(match, 1);
+
+            const userDocRef = _pendingSession.userRole === 'admin'
+                ? doc(db, 'schooladmins', _pendingSession.userUid)
+                : doc(db, 'schools', _pendingSession.schoolId, 'users', _pendingSession.userUid);
+
+            await setDoc(userDocRef, { twoFactorBackupCodes: updatedCodes }, { merge: true });
+
+            const remaining = updatedCodes.length;
+            if (remaining <= 2) {
+                // Warn after redirect — store flag
+                sessionStorage.setItem('2fa_backup_warning', remaining.toString());
+            }
+        }
+
+        // ── Both paths converge here on success ──
+        stopOTPCountdown();
+        document.getElementById('2fa-challenge-modal').style.display = 'none';
+        commitSessionAndRedirect();
+
+    } catch (err) {
+        console.error('2FA challenge error:', err);
+        errorText.textContent = 'Verification failed. Please try again.';
+        errorEl.style.display = 'block';
+        resetBtn();
+    }
+};
+
+// ── Lockout ────────────────────────────────────────────────
+async function lockoutChallenge() {
+    stopOTPCountdown();
+    document.getElementById('challenge-error').style.display = 'none';
+    document.getElementById('challenge-lockout').style.display = 'block';
+    document.getElementById('challenge-submit-btn').disabled = true;
+    await auth.signOut();
+    _pendingSession = null;
+}
+
+// ── Helpers ────────────────────────────────────────────────
+function shakeChallenge() {
+    if (_challengeTab === 'otp') {
+        document.querySelectorAll('#challenge-otp-inputs .otp-digit').forEach(i => {
+            i.classList.add('error');
+            setTimeout(() => i.classList.remove('error'), 600);
+        });
+    }
+}
+
+function clearChallengeOTP() {
+    document.querySelectorAll('#challenge-otp-inputs .otp-digit')
+        .forEach(i => { i.value = ''; });
+    const first = document.querySelector('#challenge-otp-inputs .otp-digit');
+    if (first) first.focus();
+}
+
+// ── onAuthStateChanged — only redirect if 2FA already cleared ─
 onAuthStateChanged(auth, async (user) => {
     if (user && sessionStorage.getItem('schoolId')) {
         window.location.href = 'school-hub.html';
@@ -858,7 +1166,120 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 loadSchools();
+
     </script>
+
+<!-- ================================================
+     2FA CHALLENGE MODAL
+     ================================================ -->
+<div id="2fa-challenge-modal" style="
+    display:none; position:fixed; inset:0; z-index:9999;
+    background:rgba(3,21,46,0.85); backdrop-filter:blur(6px);
+    align-items:center; justify-content:center; padding:24px;">
+    <div style="
+        background:white; border-radius:16px; padding:40px 36px;
+        max-width:420px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.4);
+        animation: fadeInUp 0.4s ease-out both;">
+
+        <!-- Header -->
+        <div style="text-align:center; margin-bottom:28px;">
+            <div style="width:56px; height:56px; background:#eef3fb; border-radius:50%;
+                display:flex; align-items:center; justify-content:center; margin:0 auto 14px;">
+                <i class="fas fa-shield-alt" style="color:#0b3d91; font-size:1.5rem;"></i>
+            </div>
+            <h2 style="color:#0b3d91; font-size:1.3rem; font-weight:800; margin-bottom:6px;">
+                Two-Factor Verification
+            </h2>
+            <p style="color:#708090; font-size:0.88rem;" id="2fa-challenge-subtitle">
+                Enter the 6-digit code from your authenticator app.
+            </p>
+        </div>
+
+        <!-- Tab switcher -->
+        <div style="display:flex; background:#f7f9fc; border-radius:10px; padding:4px; margin-bottom:24px; gap:4px;">
+            <button id="tab-otp" onclick="switchChallengeTab('otp')" style="
+                flex:1; padding:9px; border:none; border-radius:8px; font-weight:600;
+                font-size:0.85rem; cursor:pointer; transition:all 0.2s;
+                background:#0b3d91; color:white; font-family:'Inter',sans-serif;">
+                <i class="fas fa-mobile-alt"></i> Auth App
+            </button>
+            <button id="tab-backup" onclick="switchChallengeTab('backup')" style="
+                flex:1; padding:9px; border:none; border-radius:8px; font-weight:600;
+                font-size:0.85rem; cursor:pointer; transition:all 0.2s;
+                background:transparent; color:#708090; font-family:'Inter',sans-serif;">
+                <i class="fas fa-key"></i> Backup Code
+            </button>
+        </div>
+
+        <!-- OTP tab -->
+        <div id="challenge-otp-panel">
+            <div style="display:flex; gap:8px; justify-content:center; margin-bottom:16px;"
+                id="challenge-otp-inputs">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+            </div>
+            <p id="challenge-otp-timer" style="text-align:center; font-size:0.8rem; color:#708090; margin-bottom:16px;">
+                Code refreshes in <span id="otp-countdown">30</span>s
+            </p>
+        </div>
+
+        <!-- Backup code tab -->
+        <div id="challenge-backup-panel" style="display:none;">
+            <input type="text" id="backup-code-input"
+                placeholder="XXXX-XXXX"
+                style="width:100%; padding:13px 16px; border:2px solid #e2e8f0;
+                border-radius:10px; font-size:1rem; font-family:monospace;
+                text-align:center; letter-spacing:2px; text-transform:uppercase;
+                margin-bottom:16px; box-sizing:border-box; color:#0b3d91; font-weight:700;"
+                oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9-]/g,'')">
+        </div>
+
+        <!-- Error -->
+        <div id="challenge-error" style="
+            display:none; background:#fef2f2; border:1px solid #fecaca;
+            color:#e74c3c; padding:10px 14px; border-radius:8px;
+            font-size:0.85rem; text-align:center; margin-bottom:16px;">
+            <i class="fas fa-exclamation-circle"></i>
+            <span id="challenge-error-text">Incorrect code. Please try again.</span>
+        </div>
+
+        <!-- Lockout notice -->
+        <div id="challenge-lockout" style="
+            display:none; background:#fef2f2; border:1px solid #fecaca;
+            color:#e74c3c; padding:14px; border-radius:8px;
+            font-size:0.88rem; text-align:center; margin-bottom:16px;">
+            <i class="fas fa-ban"></i>
+            <strong>Too many failed attempts.</strong><br>
+            <span style="font-size:0.82rem;">Please log in again to retry.</span>
+        </div>
+
+        <!-- Submit button -->
+        <button id="challenge-submit-btn" onclick="submitChallengeCode()" style="
+            width:100%; padding:14px; background:#0b3d91; color:white;
+            border:none; border-radius:50px; font-size:1rem; font-weight:700;
+            cursor:pointer; font-family:'Inter',sans-serif; transition:all 0.3s;
+            display:flex; align-items:center; justify-content:center; gap:8px;">
+            <span id="challenge-btn-text">Verify & Sign In</span>
+            <span id="challenge-btn-spinner" style="display:none;">
+                <i class="fas fa-spinner fa-spin"></i>
+            </span>
+        </button>
+
+        <!-- Cancel -->
+        <button onclick="cancelChallenge()" style="
+            width:100%; margin-top:10px; padding:12px; background:none;
+            border:1.5px solid #e2e8f0; border-radius:50px; font-size:0.9rem;
+            font-weight:600; color:#708090; cursor:pointer; font-family:'Inter',sans-serif;
+            transition:all 0.2s;">
+            <i class="fas fa-arrow-left" style="margin-right:6px;"></i> Back to Login
+        </button>
+
+    </div>
+</div>
 
 </body>
 </html>
