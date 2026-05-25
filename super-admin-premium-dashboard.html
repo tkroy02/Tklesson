@@ -781,24 +781,33 @@
         </div>
 
         <!-- Page: Global Activity Log -->
-        <div id="page-activity" class="page">
-            <div class="page-header">
-                <div class="page-title-group"><h1>📋 Global Activity Log</h1><p>Every significant action across all schools</p></div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                    <select class="form-select" id="activity-school-filter" onchange="renderActivityLog()" style="max-width:220px;">
-                        <option value="all">All Schools</option>
-                    </select>
-                    <select class="form-select" id="activity-type-filter" onchange="renderActivityLog()" style="max-width:180px;">
-                        <option value="all">All Types</option>
-                        <option value="enrolment">Enrolments</option>
-                        <option value="assignment">Assignments</option>
-                        <option value="quiz">Quiz Attempts</option>
-                        <option value="user">User Changes</option>
-                    </select>
-                </div>
-            </div>
-            <div class="card" id="activity-log-container" style="max-height:650px; overflow-y:auto;"></div>
+<div id="page-activity" class="page">
+    <div class="page-header">
+        <div class="page-title-group">
+            <h1>📋 Global Activity Log</h1>
+            <p>Every significant action across all schools (last 100 entries)</p>
         </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <select class="form-select" id="activity-school-filter" onchange="renderActivityLog()" style="max-width:220px;">
+                <option value="all">All Schools</option>
+            </select>
+            <select class="form-select" id="activity-type-filter" onchange="renderActivityLog()" style="max-width:180px;">
+                <option value="all">All Types</option>
+                <option value="enrolment">Enrolments</option>
+                <option value="assignment">Assignments</option>
+                <option value="quiz">Quiz Attempts</option>
+                <option value="user">User Changes</option>
+            </select>
+        </div>
+    </div>
+    <div class="card" style="padding:16px;">
+        <div id="activity-log-container" style="max-height:600px; overflow-y:auto; padding-right:8px;">
+            <p style="text-align:center; padding:40px; color:var(--text-muted);">
+                <i class="fas fa-spinner fa-pulse"></i> Loading activity...
+            </p>
+        </div>
+    </div>
+</div>
 
         <!-- Page: Analytics -->
         <div id="page-analytics" class="page">
@@ -1050,59 +1059,74 @@ window.navigateTo = function(pageName, el) {
         }
 
         async function fetchGlobalActivity() {
-            allActivityEntries = [];
-            for (let school of allSchools) {
-                try {
-                    // Enrolments
-                    const enrSnap = await getDocs(collection(db, `schools/${school.id}/enrolments`));
-                    enrSnap.docs.forEach(d => {
-                        const data = d.data();
-                        allActivityEntries.push({
-                            schoolId: school.id,
-                            schoolName: school.name || 'Unknown',
-                            type: 'enrolment',
-                            detail: `${data.studentName||'Student'} ${data.status||'updated'} in ${data.subjectName||'subject'}`,
-                            timestamp: data.requestedAt || data.createdAt || new Date().toISOString(),
-                            icon: 'fa-user-check',
-                            color: '#0d8a4e'
-                        });
+    allActivityEntries = [];
+    
+    for (let school of allSchools) {
+        // Stop if we already have enough
+        if (allActivityEntries.length >= 200) break;
+        
+        try {
+            // Enrolments
+            const enrSnap = await getDocs(collection(db, `schools/${school.id}/enrolments`));
+            enrSnap.docs.forEach(d => {
+                const data = d.data();
+                allActivityEntries.push({
+                    schoolId: school.id,
+                    schoolName: school.name || 'Unknown',
+                    type: 'enrolment',
+                    detail: `${data.studentName || 'Student'} ${data.status || 'updated'} in ${data.subjectName || 'subject'}`,
+                    timestamp: data.requestedAt || data.createdAt || new Date().toISOString(),
+                    icon: 'fa-user-check',
+                    color: '#0d8a4e'
+                });
+            });
+            
+            // Assignments (limit per school)
+            const asgnSnap = await getDocs(collection(db, `schools/${school.id}/assignments`));
+            asgnSnap.docs.slice(0, 20).forEach(d => {
+                const data = d.data();
+                allActivityEntries.push({
+                    schoolId: school.id,
+                    schoolName: school.name || 'Unknown',
+                    type: 'assignment',
+                    detail: `${data.teacherName || 'Teacher'} sent "${data.title || 'Assignment'}" to ${data.studentCount || 0} students`,
+                    timestamp: data.createdAt || new Date().toISOString(),
+                    icon: 'fa-paper-plane',
+                    color: '#2563eb'
+                });
+            });
+            
+            // Quiz attempts (limit per school)
+            try {
+                const quizSnap = await getDocs(collection(db, `schools/${school.id}/quizAttempts`));
+                quizSnap.docs.slice(0, 20).forEach(d => {
+                    const data = d.data();
+                    allActivityEntries.push({
+                        schoolId: school.id,
+                        schoolName: school.name || 'Unknown',
+                        type: 'quiz',
+                        detail: `${data.studentName || 'Student'} scored ${data.score != null ? data.score + '%' : 'N/A'} on ${data.quizLabel || 'quiz'}`,
+                        timestamp: data.attemptedAt || new Date().toISOString(),
+                        icon: 'fa-chart-bar',
+                        color: '#e8a80c'
                     });
-                    // Assignments
-                    const asgnSnap = await getDocs(collection(db, `schools/${school.id}/assignments`));
-                    asgnSnap.docs.forEach(d => {
-                        const data = d.data();
-                        allActivityEntries.push({
-                            schoolId: school.id,
-                            schoolName: school.name || 'Unknown',
-                            type: 'assignment',
-                            detail: `${data.teacherName||'Teacher'} sent "${data.title||'Assignment'}" to ${data.studentCount||0} students`,
-                            timestamp: data.createdAt || new Date().toISOString(),
-                            icon: 'fa-paper-plane',
-                            color: '#2563eb'
-                        });
-                    });
-                    // Quiz attempts
-                    try {
-                        const quizSnap = await getDocs(collection(db, `schools/${school.id}/quizAttempts`));
-                        quizSnap.docs.forEach(d => {
-                            const data = d.data();
-                            allActivityEntries.push({
-                                schoolId: school.id,
-                                schoolName: school.name || 'Unknown',
-                                type: 'quiz',
-                                detail: `${data.studentName||'Student'} scored ${data.score!=null?data.score+'%':'N/A'} on ${data.quizLabel||'quiz'}`,
-                                timestamp: data.attemptedAt || new Date().toISOString(),
-                                icon: 'fa-chart-bar',
-                                color: '#e8a80c'
-                            });
-                        });
-                    } catch (e) {}
-                } catch (e) {}
+                });
+            } catch (e) {
+                // quizAttempts might not exist
             }
-            allActivityEntries.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-            return allActivityEntries;
+            
+        } catch (e) {
+            console.log(`Skipped school ${school.id}:`, e.message);
         }
-
+    }
+    
+    // Sort by newest first and cap total
+    allActivityEntries.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    allActivityEntries = allActivityEntries.slice(0, 200); // Hard cap at source
+    
+    return allActivityEntries;
+}
+        
         // ── Overview Page ──
         async function loadOverview() {
             await fetchAllSchools();
@@ -1212,33 +1236,78 @@ window.navigateTo = function(pageName, el) {
         };
 
         // ── Activity Page ──
-        async function loadActivityPage() {
-            await fetchAllSchools();
-            await fetchGlobalActivity();
-            populateActivitySchoolFilter();
-            renderActivityLog();
-        }
+async function loadActivityPage() {
+    await fetchAllSchools();
+    await fetchGlobalActivity();
+    populateActivitySchoolFilter();
+    renderActivityLog();
+}
 
-        function populateActivitySchoolFilter() {
-            const sel = document.getElementById('activity-school-filter');
-            if (!sel) return;
-            sel.innerHTML = '<option value="all">All Schools</option>' + allSchools.map(s =>
-                `<option value="${s.id}">${s.name||'Unknown'}</option>`).join('');
-        }
+function populateActivitySchoolFilter() {
+    const sel = document.getElementById('activity-school-filter');
+    if (!sel) return;
+    sel.innerHTML = '<option value="all">All Schools</option>' + 
+        allSchools.map(s => `<option value="${s.id}">${s.name || 'Unknown'}</option>`).join('');
+}
 
-        window.renderActivityLog = function() {
-            const schoolFilter = document.getElementById('activity-school-filter')?.value || 'all';
-            const typeFilter = document.getElementById('activity-type-filter')?.value || 'all';
-            let filtered = [...allActivityEntries];
-            if (schoolFilter !== 'all') filtered = filtered.filter(a => a.schoolId === schoolFilter);
-            if (typeFilter !== 'all') filtered = filtered.filter(a => a.type === typeFilter);
-            const container = document.getElementById('activity-log-container');
-            container.innerHTML = filtered.slice(0, 200).map(a => `
-                <div class="activity-item">
-                    <div class="activity-icon" style="background:${a.color}15;color:${a.color};"><i class="fas ${a.icon}"></i></div>
-                    <div><div class="activity-text"><strong>${a.schoolName}</strong> · ${a.detail}</div><div class="activity-time">${new Date(a.timestamp).toLocaleString()}</div></div>
-                </div>`).join('') || '<p style="padding:30px;text-align:center;">No matching activity.</p>';
-        };
+window.renderActivityLog = function() {
+    const schoolFilter = document.getElementById('activity-school-filter')?.value || 'all';
+    const typeFilter = document.getElementById('activity-type-filter')?.value || 'all';
+    
+    let filtered = [...allActivityEntries];
+    
+    // Apply filters
+    if (schoolFilter !== 'all') {
+        filtered = filtered.filter(a => a.schoolId === schoolFilter);
+    }
+    if (typeFilter !== 'all') {
+        filtered = filtered.filter(a => a.type === typeFilter);
+    }
+    
+    // Cap at 100 entries
+    filtered = filtered.slice(0, 100);
+    
+    const container = document.getElementById('activity-log-container');
+    
+    if (filtered.length === 0) {
+        container.innerHTML = `
+            <p style="text-align:center; padding:40px; color:var(--text-muted);">
+                <i class="fas fa-inbox" style="display:block; font-size:2rem; margin-bottom:10px; opacity:0.3;"></i>
+                No matching activity found
+            </p>`;
+        return;
+    }
+    
+    container.innerHTML = filtered.map(a => {
+        const time = new Date(a.timestamp);
+        const timeStr = time.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        
+        return `
+            <div class="activity-item">
+                <div class="activity-icon" style="background:${a.color}15; color:${a.color}; flex-shrink:0;">
+                    <i class="fas ${a.icon}"></i>
+                </div>
+                <div style="flex:1; min-width:0;">
+                    <div class="activity-text">
+                        <strong style="color:var(--primary);">${a.schoolName}</strong> · ${a.detail}
+                    </div>
+                    <div class="activity-time">${timeStr}</div>
+                </div>
+            </div>`;
+    }).join('');
+    
+    // Show count info
+    const countInfo = document.createElement('div');
+    countInfo.style.cssText = 'text-align:center; padding:12px; color:var(--text-muted); font-size:0.78rem; border-top:1px solid var(--border-light); margin-top:8px;';
+    countInfo.textContent = `Showing ${filtered.length} of ${allActivityEntries.length} total entries`;
+    container.appendChild(countInfo);
+};
 
         // ── Analytics Page ──
         async function loadAnalyticsPage() {
