@@ -526,7 +526,7 @@
         </div>
     </div>
 
-    <script type="module">
+   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
     import { getFirestore, doc, getDoc, collection, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
@@ -547,13 +547,17 @@
     let pendingTFAUser = null;
     let tfaSecret = null;
 
-    // ── Check if already logged in ──
+    // ── Redirect if already logged in as super admin ──
     onAuthStateChanged(auth, async (user) => {
         if (user && window.location.pathname.includes('super-admin-login')) {
-            const adminRef = doc(db, 'admins', user.uid);  // ✅ Fixed: 'admins'
-            const adminSnap = await getDoc(adminRef);
-            if (adminSnap.exists()) {
-                window.location.href = 'super-admin-premium-dashboard.html';
+            try {
+                const adminRef = doc(db, 'admins', user.uid);
+                const adminSnap = await getDoc(adminRef);
+                if (adminSnap.exists()) {
+                    window.location.href = 'super-admin-premium-dashboard.html';
+                }
+            } catch (err) {
+                console.log('Auto-redirect check skipped:', err.message);
             }
         }
     });
@@ -571,7 +575,7 @@
         }
     };
 
-    // ── Show Error ──
+    // ── Error Handling ──
     function showError(message) {
         const banner = document.getElementById('error-banner');
         const text = document.getElementById('error-text');
@@ -584,7 +588,7 @@
         document.getElementById('error-banner').classList.remove('show');
     }
 
-    // ── Set Loading State ──
+    // ── Loading State ──
     function setLoading(loading) {
         const btn = document.getElementById('login-btn');
         if (loading) {
@@ -612,10 +616,11 @@
         setLoading(true);
 
         try {
+            // Authenticate with Firebase
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
 
-            // ✅ FIXED: Check 'admins' collection instead of 'superadmins'
+            // Verify super admin status in 'admins' collection
             const adminRef = doc(db, 'admins', user.uid);
             const adminSnap = await getDoc(adminRef);
 
@@ -627,9 +632,11 @@
             }
 
             const adminData = adminSnap.data();
+            console.log('✅ Super admin verified:', adminData.displayName || adminData.email);
 
             // Check if 2FA is enabled
             if (adminData.twoFactorEnabled === true && adminData.twoFactorSecret) {
+                console.log('🔐 2FA enabled — showing verification modal');
                 pendingTFAUser = user;
                 tfaSecret = adminData.twoFactorSecret;
                 showTFAModal();
@@ -637,16 +644,18 @@
                 return;
             }
 
+            console.log('🔓 2FA not enabled — direct login');
+            
             // Log access
-            await logSuperAdminAccess(user, adminData);
+            await logAdminAccess(user, adminData);
 
-            // No 2FA - redirect directly
+            // Redirect to dashboard
             window.location.href = 'super-admin-premium-dashboard.html';
 
         } catch (error) {
-            console.error('Login error:', error);
+            console.error('❌ Login error:', error.code, error.message);
+            
             let message = 'Login failed. Please try again.';
-
             switch (error.code) {
                 case 'auth/invalid-email':
                     message = 'Invalid email address format.';
@@ -658,13 +667,13 @@
                     message = 'Incorrect password. Please try again.';
                     break;
                 case 'auth/invalid-credential':
-                    message = 'Invalid email or password. Please check your credentials.';
+                    message = 'Invalid email or password.';
                     break;
                 case 'auth/too-many-requests':
-                    message = 'Too many failed attempts. Please try again later or reset your password.';
+                    message = 'Too many failed attempts. Please try again later.';
                     break;
                 case 'auth/network-request-failed':
-                    message = 'Network error. Please check your internet connection.';
+                    message = 'Network error. Check your internet connection.';
                     break;
             }
 
@@ -673,10 +682,10 @@
         }
     };
 
-    // ── Log Super Admin Access ──
-    async function logSuperAdminAccess(user, adminData) {
+    // ── Log Admin Access ──
+    async function logAdminAccess(user, adminData) {
         try {
-            const logRef = doc(collection(db, 'admin_access_logs'));  // ✅ Fixed: 'admin_access_logs'
+            const logRef = doc(collection(db, 'admin_access_logs'));
             await setDoc(logRef, {
                 uid: user.uid,
                 email: user.email,
@@ -685,12 +694,13 @@
                 userAgent: navigator.userAgent,
                 ipLogged: true
             });
+            console.log('📝 Access logged');
         } catch (e) {
-            console.log('Access logging skipped:', e.message);
+            console.log('⚠️ Access logging skipped:', e.message);
         }
     }
 
-    // ── 2FA Modal ──
+    // ── Show 2FA Modal ──
     function showTFAModal() {
         document.getElementById('tfa-modal').classList.add('active');
         document.getElementById('tfa-error-banner').style.display = 'none';
@@ -702,6 +712,7 @@
         }, 200);
     }
 
+    // ── Cancel 2FA ──
     window.cancelTFA = function() {
         document.getElementById('tfa-modal').classList.remove('active');
         pendingTFAUser = null;
@@ -709,27 +720,34 @@
         auth.signOut();
     };
 
+    // ── Setup OTP Input Fields ──
     function setupTFAInputs() {
         const inputs = document.querySelectorAll('#tfa-otp-inputs .otp-digit');
         inputs.forEach((input, i) => {
             input.value = '';
             input.classList.remove('error');
+            
+            // Handle input
             input.addEventListener('input', (e) => {
                 const val = e.target.value.replace(/\D/g, '');
                 e.target.value = val.slice(-1);
                 if (val && i < inputs.length - 1) inputs[i + 1].focus();
             });
+            
+            // Handle backspace
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Backspace' && !input.value && i > 0) inputs[i - 1].focus();
             });
+            
+            // Handle paste
             input.addEventListener('paste', (e) => {
                 e.preventDefault();
                 const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
                 pasted.split('').forEach((char, idx) => {
                     if (inputs[idx]) inputs[idx].value = char;
                 });
-                const lastIdx = Math.min(pasted.length, 5);
-                if (inputs[lastIdx]) inputs[lastIdx].focus();
+                const focusIdx = Math.min(pasted.length, 5);
+                if (inputs[focusIdx]) inputs[focusIdx].focus();
             });
         });
     }
@@ -763,8 +781,10 @@
         }
     }
 
+    // ── Verify 2FA Code ──
     window.verifyTFA = async function() {
         const code = getTFACode();
+        
         if (code.length !== 6) {
             shakeTFAInputs();
             return;
@@ -774,6 +794,7 @@
         setTFALoading(true);
 
         try {
+            // Load OTPAuth library if not already loaded
             if (!window.OTPAuth) {
                 await new Promise((resolve, reject) => {
                     const script = document.createElement('script');
@@ -784,6 +805,7 @@
                 });
             }
 
+            // Verify TOTP code
             const totp = new OTPAuth.TOTP({
                 algorithm: 'SHA1',
                 digits: 6,
@@ -802,28 +824,33 @@
                 return;
             }
 
-            // ✅ FIXED: Use 'admins' collection
+            console.log('✅ 2FA verified successfully');
+
+            // Get admin data and log access
             const adminRef = doc(db, 'admins', pendingTFAUser.uid);
             const adminSnap = await getDoc(adminRef);
-            await logSuperAdminAccess(pendingTFAUser, adminSnap.data() || {});
+            await logAdminAccess(pendingTFAUser, adminSnap.data() || {});
 
+            // Redirect to dashboard
             window.location.href = 'super-admin-premium-dashboard.html';
 
         } catch (error) {
-            console.error('TFA verification error:', error);
+            console.error('❌ 2FA verification error:', error);
             document.getElementById('tfa-error-banner').style.display = 'flex';
             document.getElementById('tfa-error-text').textContent = 'Verification failed. Please try again.';
             setTFALoading(false);
         }
     };
 
-    // ── Keyboard shortcut for Enter in TFA modal ──
+    // ── Enter key submits 2FA code ──
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && document.getElementById('tfa-modal').classList.contains('active')) {
             e.preventDefault();
             window.verifyTFA();
         }
     });
+
+    console.log('🚀 Super Admin Login ready — collection: admins');
 </script>
 </body>
 </html>
