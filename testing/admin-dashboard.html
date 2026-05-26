@@ -3325,6 +3325,7 @@ function displayTutorsTable() {
             photoStatusBadge = '<span class="status-badge status-inactive">No Photo</span>';
         }
         
+        const has2FA = tutor.twoFactorEnabled === true;
         tableHTML += `
             <tr data-tutor-id="${tutor.id}">
                 <td style="text-align: center;">
@@ -3335,7 +3336,13 @@ function displayTutorsTable() {
                 </td>
                 <td>${name}</td>
                 <td>${email}</td>
-                <td><span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span></td>
+                <td>
+                    <span class="status-badge status-${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span>
+                    <span title="${has2FA ? '2FA Enabled' : '2FA Not Enabled'}"
+                        style="margin-left:4px; color:${has2FA ? '#10b981' : '#d1d5db'};">
+                        <i class="fas fa-shield-alt"></i>
+                    </span>
+                </td>
                 <td>${photoStatusBadge}</td>
                 <td>${subjects}</td>
                 <td>${sessions}</td>
@@ -3347,6 +3354,13 @@ function displayTutorsTable() {
                     }
                     ${hasPhoto && photoStatus !== 'rejected' ? 
                         `<button class="btn-danger" data-action="reject-photo">Reject Photo</button>` : ''
+                    }
+                    ${has2FA ?
+                        `<button class="btn-outline" 
+                            style="background:#fff7ed; color:#c2410c; border:1.5px solid #fed7aa;"
+                            data-action="reset-2fa">
+                            <i class="fas fa-shield-alt"></i> Reset 2FA
+                        </button>` : ''
                     }
                     ${tutor.approved ? 
                         `<button class="btn-danger" data-action="suspend-tutor">Suspend</button>` :
@@ -3419,6 +3433,9 @@ function handleTutorTableClick(event) {
             break;
         case 'reject-photo':
             showRejectPhotoModal(tutorId);
+            break;
+        case 'reset-2fa':
+            adminResetTutor2FA(tutorId);
             break;
     }
 }
@@ -10020,6 +10037,43 @@ function generateATFABackupCodes(count) {
         codes.push(`${p1}-${p2}`);
     }
     return codes;
+}
+
+        // ── Admin reset tutor 2FA ──────────────────────────────────
+async function adminResetTutor2FA(tutorId) {
+    const tutor = tutorsData.find(t => t.id === tutorId);
+    if (!tutor) return;
+
+    const name = tutor.personal?.fullName || tutor.personal?.email || 'this tutor';
+
+    const confirmed = confirm(
+        `Reset 2FA for ${name}?\n\n` +
+        `This will disable two-factor authentication. ` +
+        `They can log in with just their password until they re-enroll.`
+    );
+    if (!confirmed) return;
+
+    try {
+        await db.collection('tutors').doc(tutorId).update({
+            twoFactorEnabled: false,
+            twoFactorSecret: null,
+            twoFactorBackupCodes: [],
+            twoFactorResetBy: currentUser.uid,
+            twoFactorResetByEmail: currentUser.email,
+            twoFactorResetAt: new Date().toISOString()
+        });
+
+        // Update local data so shield turns grey immediately
+        const localTutor = tutorsData.find(t => t.id === tutorId);
+        if (localTutor) localTutor.twoFactorEnabled = false;
+        displayTutorsTable();
+
+        alert(`2FA has been reset for ${name}.`);
+
+    } catch (err) {
+        console.error('Admin reset tutor 2FA error:', err);
+        alert('Failed to reset 2FA. Please try again.');
+    }
 }
         
     </script>
