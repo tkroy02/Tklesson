@@ -526,6 +526,25 @@
   <div class="bg-orb"></div>
   <div class="grid-pattern"></div>
 
+  <!-- Toast Notification -->
+  <div id="toast" style="
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    padding: 14px 22px;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #fff;
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    max-width: 320px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  "></div>
+
   <!-- Business Insights Dashboard -->
   <div id="dashboard">
     <div class="main-content">
@@ -619,7 +638,6 @@
         </div>
 
         <div class="insights-list" id="insights-list">
-          <!-- Insights will be loaded here dynamically -->
           <div class="empty-state">
             <i class="fas fa-clipboard-list"></i>
             <h3>No insights yet</h3>
@@ -634,7 +652,23 @@
   <div id="super-footer-container"></div>
 
   <script>
-    // ===== FETCH HEADER/FOOTER WITH HAMBURGER SETUP (aligned with student login) =====
+    // ===== TOAST NOTIFICATION =====
+    function showToast(message, type = 'success') {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.style.background = type === 'success'
+        ? 'linear-gradient(135deg, #0d8a4e, #0f9f5a)'
+        : 'linear-gradient(135deg, #c62828, #e53935)';
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+      clearTimeout(toast._hideTimer);
+      toast._hideTimer = setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(12px)';
+      }, 3000);
+    }
+
+    // ===== LOAD HEADER / FOOTER =====
     async function loadSharedComponents() {
       const headerContainer = document.getElementById('super-header-container');
       const footerContainer = document.getElementById('super-footer-container');
@@ -655,7 +689,7 @@
         headerContainer.innerHTML = headerHtml;
         footerContainer.innerHTML = footerHtml;
 
-        // Execute any inline scripts in loaded content
+        // Re-execute inline scripts from injected HTML
         [headerContainer, footerContainer].forEach(container => {
           container.querySelectorAll('script').forEach(oldScript => {
             const newScript = document.createElement('script');
@@ -665,15 +699,42 @@
           });
         });
 
-        // ---------- HAMBURGER MENU SETUP (exact student login pattern) ----------
+        // ---------- HAMBURGER MENU SETUP ----------
         const header = headerContainer.querySelector('header');
         const navMenu = header?.querySelector('#navMenu');
         const hamburger = header?.querySelector('.hamburger');
 
         if (hamburger && navMenu) {
-          hamburger.addEventListener('click', () => {
+          // Toggle on button click
+          hamburger.addEventListener('click', (e) => {
+            e.stopPropagation();
             const isOpen = navMenu.classList.toggle('open');
-            hamburger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            hamburger.setAttribute('aria-expanded', String(isOpen));
+          });
+
+          // Close when any nav link is clicked
+          navMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+              navMenu.classList.remove('open');
+              hamburger.setAttribute('aria-expanded', 'false');
+            });
+          });
+
+          // Close when clicking outside the header
+          document.addEventListener('click', (e) => {
+            if (!header.contains(e.target)) {
+              navMenu.classList.remove('open');
+              hamburger.setAttribute('aria-expanded', 'false');
+            }
+          });
+
+          // Close on Escape key, return focus to trigger
+          document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && navMenu.classList.contains('open')) {
+              navMenu.classList.remove('open');
+              hamburger.setAttribute('aria-expanded', 'false');
+              hamburger.focus();
+            }
           });
         }
 
@@ -683,7 +744,7 @@
       }
     }
 
-    // Firebase configuration
+    // ===== FIREBASE INIT (guarded) =====
     const firebaseConfig = {
       apiKey: "AIzaSyBcuCuqYrySz26d7CoQXZllePzMq3LEyWE",
       authDomain: "tkmachines-945b9.firebaseapp.com",
@@ -694,67 +755,66 @@
       measurementId: "G-Y8GH34Q2FN"
     };
 
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
+    // FIX: guard prevents double-init when header also calls initializeApp
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+
     const db = firebase.firestore();
     const auth = firebase.auth();
 
-    // AUTHENTICATION CHECK
+    // ===== AUTH CHECK =====
     auth.onAuthStateChanged(function(user) {
       if (!user) {
         window.location.href = 'index.html';
       }
     });
 
-    // DOM elements
-    const insightForm = document.getElementById('insight-form');
-    const insightsList = document.getElementById('insights-list');
-    const clearFormBtn = document.getElementById('clear-form');
-    const filterType = document.getElementById('filter-type');
-    const filterCategory = document.getElementById('filter-category');
+    // ===== DOM REFERENCES =====
+    const insightForm     = document.getElementById('insight-form');
+    const insightsList    = document.getElementById('insights-list');
+    const clearFormBtn    = document.getElementById('clear-form');
+    const filterType      = document.getElementById('filter-type');
+    const filterCategory  = document.getElementById('filter-category');
 
-    // Set today's date as default
+    // Default date to today
     document.getElementById('insight-date').valueAsDate = new Date();
 
-    // Form submission handler
+    // ===== FORM SUBMIT =====
     insightForm.addEventListener('submit', async (e) => {
       e.preventDefault();
 
-      const title = document.getElementById('insight-title').value;
-      const type = document.getElementById('insight-type').value;
-      const description = document.getElementById('insight-description').value;
-      const category = document.getElementById('insight-category').value;
-      const date = document.getElementById('insight-date').value;
-      const tags = document.getElementById('insight-tags').value.split(',').map(tag => tag.trim());
+      const title       = document.getElementById('insight-title').value.trim();
+      const type        = document.getElementById('insight-type').value;
+      const description = document.getElementById('insight-description').value.trim();
+      const category    = document.getElementById('insight-category').value;
+      const date        = document.getElementById('insight-date').value;
+      const tags        = document.getElementById('insight-tags').value
+                            .split(',').map(t => t.trim()).filter(Boolean);
 
       try {
         await db.collection('insights').add({
-          title,
-          type,
-          description,
-          category,
-          date,
-          tags,
+          title, type, description, category, date, tags,
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
 
         insightForm.reset();
         document.getElementById('insight-date').valueAsDate = new Date();
         loadInsights();
-        alert('Insight saved successfully!');
+        showToast('Insight saved successfully!');               // FIX: toast replaces alert()
       } catch (error) {
         console.error('Error saving insight:', error);
-        alert('Error saving insight. Please try again.');
+        showToast('Error saving insight. Please try again.', 'error');
       }
     });
 
-    // Clear form handler
+    // ===== CLEAR FORM =====
     clearFormBtn.addEventListener('click', () => {
       insightForm.reset();
       document.getElementById('insight-date').valueAsDate = new Date();
     });
 
-    // Load insights from Firestore
+    // ===== LOAD INSIGHTS =====
     async function loadInsights() {
       try {
         const snapshot = await db.collection('insights')
@@ -764,125 +824,162 @@
         insightsList.innerHTML = '';
 
         if (snapshot.empty) {
-          insightsList.innerHTML = `
-            <div class="empty-state">
-              <i class="fas fa-clipboard-list"></i>
-              <h3>No insights yet</h3>
-              <p>Add your first business insight using the form above</p>
-            </div>
-          `;
+          renderEmptyState('No insights yet', 'Add your first business insight using the form above', 'fa-clipboard-list');
           return;
         }
 
+        const typeFilter     = filterType.value;
+        const categoryFilter = filterCategory.value;
+        let rendered = 0;
+
         snapshot.forEach(doc => {
-          const insight = doc.data();
+          const insight   = doc.data();
           const insightId = doc.id;
 
-          const typeFilter = filterType.value;
-          const categoryFilter = filterCategory.value;
-
           if ((typeFilter !== 'all' && insight.type !== typeFilter) ||
-              (categoryFilter !== 'all' && insight.category !== categoryFilter)) {
-            return;
-          }
+              (categoryFilter !== 'all' && insight.category !== categoryFilter)) return;
 
-          const insightCard = document.createElement('div');
-          insightCard.className = 'insight-card';
-          insightCard.innerHTML = `
-            <div class="insight-header">
-              <h4 class="insight-title">${insight.title}</h4>
-              <span class="insight-type type-${insight.type}">${getTypeLabel(insight.type)}</span>
-            </div>
-            <div class="insight-meta">
-              <span><i class="fas fa-tag"></i> ${getCategoryLabel(insight.category)}</span>
-              <span><i class="fas fa-calendar"></i> ${formatDate(insight.date)}</span>
-            </div>
-            <div class="insight-content">
-              <p>${insight.description}</p>
-            </div>
-            <div class="insight-tags">
-              ${insight.tags && insight.tags.length > 0 ?
-                `<p><strong>Tags:</strong> ${insight.tags.join(', ')}</p>` : ''}
-            </div>
-            <div class="insight-actions">
-              <button class="btn-icon btn-edit" onclick="editInsight('${insightId}')">
-                <i class="fas fa-edit"></i> Edit
-              </button>
-              <button class="btn-icon btn-delete" onclick="deleteInsight('${insightId}')">
-                <i class="fas fa-trash"></i> Delete
-              </button>
-            </div>
-          `;
-
-          insightsList.appendChild(insightCard);
+          insightsList.appendChild(buildInsightCard(insight, insightId));
+          rendered++;
         });
+
+        if (rendered === 0) {
+          renderEmptyState('No matching insights', 'Try adjusting the filters above', 'fa-filter');
+        }
+
       } catch (error) {
         console.error('Error loading insights:', error);
-        insightsList.innerHTML = `
-          <div class="empty-state">
-            <i class="fas fa-exclamation-triangle"></i>
-            <h3>Error loading insights</h3>
-            <p>Please try refreshing the page</p>
-          </div>
-        `;
+        renderEmptyState('Error loading insights', 'Please try refreshing the page', 'fa-exclamation-triangle');
       }
     }
 
-    // Helper functions
+    // ===== BUILD CARD (FIX: textContent for all user data — no XSS risk) =====
+    function buildInsightCard(insight, insightId) {
+      const card = document.createElement('div');
+      card.className = 'insight-card';
+
+      // Header row
+      const header = document.createElement('div');
+      header.className = 'insight-header';
+
+      const titleEl = document.createElement('h4');
+      titleEl.className = 'insight-title';
+      titleEl.textContent = insight.title;           // safe
+
+      const typeBadge = document.createElement('span');
+      typeBadge.className = `insight-type type-${insight.type}`;
+      typeBadge.textContent = getTypeLabel(insight.type);
+
+      header.append(titleEl, typeBadge);
+
+      // Meta row
+      const meta = document.createElement('div');
+      meta.className = 'insight-meta';
+
+      const catSpan = document.createElement('span');
+      catSpan.innerHTML = '<i class="fas fa-tag"></i> ';
+      catSpan.append(document.createTextNode(getCategoryLabel(insight.category)));
+
+      const dateSpan = document.createElement('span');
+      dateSpan.innerHTML = '<i class="fas fa-calendar"></i> ';
+      dateSpan.append(document.createTextNode(formatDate(insight.date)));
+
+      meta.append(catSpan, dateSpan);
+
+      // Description
+      const content = document.createElement('div');
+      content.className = 'insight-content';
+      const desc = document.createElement('p');
+      desc.textContent = insight.description;        // safe
+      content.appendChild(desc);
+
+      // Tags
+      const tagsDiv = document.createElement('div');
+      tagsDiv.className = 'insight-tags';
+      if (insight.tags && insight.tags.length > 0) {
+        const tagsP = document.createElement('p');
+        const strong = document.createElement('strong');
+        strong.textContent = 'Tags: ';
+        tagsP.appendChild(strong);
+        tagsP.append(document.createTextNode(insight.tags.join(', '))); // safe
+        tagsDiv.appendChild(tagsP);
+      }
+
+      // Actions
+      const actions = document.createElement('div');
+      actions.className = 'insight-actions';
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-icon btn-edit';
+      editBtn.innerHTML = '<i class="fas fa-edit"></i> Edit';
+      editBtn.addEventListener('click', () => editInsight(insightId));
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn-icon btn-delete';
+      deleteBtn.innerHTML = '<i class="fas fa-trash"></i> Delete';
+      deleteBtn.addEventListener('click', () => deleteInsight(insightId));
+
+      actions.append(editBtn, deleteBtn);
+      card.append(header, meta, content, tagsDiv, actions);
+      return card;
+    }
+
+    // ===== EMPTY / ERROR STATE =====
+    function renderEmptyState(heading, message, icon) {
+      insightsList.innerHTML = '';
+      const div = document.createElement('div');
+      div.className = 'empty-state';
+      div.innerHTML = `<i class="fas ${icon}"></i>`;
+      const h3 = document.createElement('h3');
+      h3.textContent = heading;
+      const p = document.createElement('p');
+      p.textContent = message;
+      div.append(h3, p);
+      insightsList.appendChild(div);
+    }
+
+    // ===== HELPERS =====
     function getTypeLabel(type) {
-      const typeLabels = {
-        'success': 'Success',
-        'failure': 'Failure',
-        'observation': 'Observation'
-      };
-      return typeLabels[type] || type;
+      return { success: 'Success', failure: 'Failure', observation: 'Observation' }[type] || type;
     }
 
     function getCategoryLabel(category) {
-      const categoryLabels = {
-        'marketing': 'Marketing',
-        'sales': 'Sales',
-        'operations': 'Operations',
-        'finance': 'Finance',
-        'product': 'Product',
-        'customer-service': 'Customer Service',
-        'hr': 'HR',
-        'other': 'Other'
-      };
-      return categoryLabels[category] || category;
+      return {
+        marketing: 'Marketing', sales: 'Sales', operations: 'Operations',
+        finance: 'Finance', product: 'Product', 'customer-service': 'Customer Service',
+        hr: 'HR', other: 'Other'
+      }[category] || category;
     }
 
     function formatDate(dateString) {
-      const options = { year: 'numeric', month: 'short', day: 'numeric' };
-      return new Date(dateString).toLocaleDateString(undefined, options);
+      return new Date(dateString).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     }
 
-    // Delete insight function
+    // ===== DELETE =====
     async function deleteInsight(insightId) {
       if (confirm('Are you sure you want to delete this insight?')) {
         try {
           await db.collection('insights').doc(insightId).delete();
           loadInsights();
+          showToast('Insight deleted.');                        // FIX: toast replaces alert()
         } catch (error) {
           console.error('Error deleting insight:', error);
-          alert('Error deleting insight. Please try again.');
+          showToast('Error deleting insight. Please try again.', 'error');
         }
       }
     }
 
-    // Edit insight function
+    // ===== EDIT (placeholder) =====
     function editInsight(insightId) {
-      alert('Edit functionality will be implemented in a future version.');
+      showToast('Edit functionality coming soon.', 'error');   // FIX: toast replaces alert()
     }
 
-    // Filter change handlers
+    // ===== FILTER LISTENERS =====
     filterType.addEventListener('change', loadInsights);
     filterCategory.addEventListener('change', loadInsights);
 
-    // Initial load
+    // ===== INIT =====
     loadInsights();
-
-    // Load shared components
     loadSharedComponents();
   </script>
 </body>
