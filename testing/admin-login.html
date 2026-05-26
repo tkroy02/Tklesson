@@ -14,8 +14,9 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/Tklesson1-32x32.png">
     <meta name="theme-color" content="#0b3d91">
 
-    <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore-compat.js"></script>
 
     <style>
         :root {
@@ -170,6 +171,39 @@
             background: white;
         }
 
+.c-otp-digit {
+    width:46px; height:54px;
+    border:2px solid rgba(11,61,145,0.15); border-radius:10px;
+    text-align:center; font-size:1.4rem; font-weight:700;
+    font-family:'Inter',sans-serif; color:var(--primary);
+    background:var(--background-light);
+    transition:border-color 0.2s, box-shadow 0.2s;
+    caret-color:transparent;
+    padding:0;
+}
+.c-otp-digit:focus {
+    outline:none; border-color:var(--primary);
+    box-shadow:0 0 0 3px rgba(11,61,145,0.1); background:white;
+}
+.c-otp-digit.error {
+    border-color:var(--error);
+    box-shadow:0 0 0 3px rgba(239,68,68,0.1);
+    animation:shake 0.4s ease;
+}
+@keyframes shake {
+    0%,100% { transform:translateX(0); }
+    25%      { transform:translateX(-6px); }
+    50%      { transform:translateX(6px); }
+    75%      { transform:translateX(-4px); }
+}
+@keyframes fadeIn {
+    from { opacity:0; transform:translateY(16px); }
+    to   { opacity:1; transform:translateY(0); }
+}
+@media (max-width:480px) {
+    .c-otp-digit { width:40px; height:48px; font-size:1.2rem; }
+}
+        
         .btn {
             padding: 13px 20px;
             border-radius: 50px;
@@ -315,7 +349,8 @@
 
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
-
+        const db = firebase.firestore();
+        
         const emailInput = document.getElementById('email');
         const passwordInput = document.getElementById('password');
         const loginBtn = document.getElementById('loginBtn');
@@ -325,51 +360,449 @@
         const loadingSpinner = document.getElementById('loadingSpinner');
         const btnText = document.querySelector('.btn-text');
 
-        auth.onAuthStateChanged((user) => {
-            if (user) window.location.href = 'admin-dashboard.html';
-        });
+        // ── Runtime state ──────────────────────────────────────────
+let _pendingAdminSession = null;
+let _adminChallengeFailCount = 0;
+let _adminChallengeTab = 'otp';
+let _adminCountdownTimer = null;
+const ADMIN_CHALLENGE_MAX_ATTEMPTS = 5;
 
-        async function login(email, password) {
-            try {
-                loadingSpinner.style.display = 'block';
-                btnText.style.display = 'none';
-                errorMessage.style.display = 'none';
-                await auth.signInWithEmailAndPassword(email, password);
-            } catch (error) {
-                console.error("Login error:", error);
-                loadingSpinner.style.display = 'none';
-                btnText.style.display = 'block';
-                errorText.textContent = getErrorMessage(error.code);
-                errorMessage.style.display = 'flex';
+// ── Only redirect if already fully authenticated ───────────
+auth.onAuthStateChanged((user) => {
+    if (user && sessionStorage.getItem('adminAuthenticated')) {
+        window.location.href = 'admin-dashboard.html';
+    }
+});
+
+// ── Load OTPAuth library ───────────────────────────────────
+function loadOTPLib() {
+    return new Promise((resolve, reject) => {
+        if (window.OTPAuth) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    });
+}
+
+// ── Login function ─────────────────────────────────────────
+async function login(email, password) {
+    try {
+        loadingSpinner.style.display = 'block';
+        btnText.style.display = 'none';
+        errorMessage.style.display = 'none';
+
+        const userCredential = await auth.signInWithEmailAndPassword(
+            email, password
+        );
+        const user = userCredential.user;
+
+        // Check admin doc and 2FA in one read
+        const adminSnap = await db.collection('admins').doc(user.uid).get();
+
+        if (!adminSnap.exists) {
+            await auth.signOut();
+            loadingSpinner.style.display = 'none';
+            btnText.style.display = 'block';
+            errorText.textContent = 'Access denied. Admin privileges required.';
+            errorMessage.style.display = 'flex';
+            return;
+        }
+
+        const adminData = adminSnap.data();
+
+        // Store pending session
+        _pendingAdminSession = {
+            uid: user.uid,
+            email: user.email,
+            twoFactorEnabled: adminData.twoFactorEnabled === true,
+            tfaSecret: adminData.twoFactorSecret || null,
+            tfaBackupCodes: adminData.twoFactorBackupCodes || []
+        };
+
+        loadingSpinner.style.display = 'none';
+        btnText.style.display = 'block';
+
+        if (_pendingAdminSession.twoFactorEnabled && _pendingAdminSession.tfaSecret) {
+            await loadOTPLib();
+            openAdminChallengeModal();
+        } else {
+            commitAdminSession();
+        }
+
+    } catch (error) {
+        console.error("Login error:", error);
+        loadingSpinner.style.display = 'none';
+        btnText.style.display = 'block';
+        errorText.textContent = getErrorMessage(error.code);
+        errorMessage.style.display = 'flex';
+    }
+}
+
+// ── Commit session and redirect ────────────────────────────
+function commitAdminSession() {
+    sessionStorage.setItem('adminAuthenticated', 'true');
+    sessionStorage.setItem('adminEmail', _pendingAdminSession.email);
+    sessionStorage.setItem('adminUid', _pendingAdminSession.uid);
+    window.location.href = 'admin-dashboard.html';
+}
+
+// ── Open challenge modal ───────────────────────────────────
+function openAdminChallengeModal() {
+    _adminChallengeFailCount = 0;
+    _adminChallengeTab = 'otp';
+    document.getElementById('tfa-challenge-modal').style.display = 'flex';
+    document.getElementById('challenge-error').style.display = 'none';
+    document.getElementById('challenge-lockout').style.display = 'none';
+    document.getElementById('challenge-submit-btn').disabled = false;
+    switchAdminChallengeTab('otp');
+    startAdminChallengeCountdown();
+}
+
+window.cancelAdminChallenge = async function() {
+    document.getElementById('tfa-challenge-modal').style.display = 'none';
+    stopAdminChallengeCountdown();
+    _pendingAdminSession = null;
+    _adminChallengeFailCount = 0;
+    await auth.signOut();
+    loadingSpinner.style.display = 'none';
+    btnText.style.display = 'block';
+    loginBtn.disabled = false;
+};
+
+// ── Tab switcher ───────────────────────────────────────────
+window.switchAdminChallengeTab = function(tab) {
+    _adminChallengeTab = tab;
+    const otpPanel    = document.getElementById('challenge-otp-panel');
+    const backupPanel = document.getElementById('challenge-backup-panel');
+    const tabOtp      = document.getElementById('tab-otp');
+    const tabBackup   = document.getElementById('tab-backup');
+    const subtitle    = document.getElementById('tfa-challenge-subtitle');
+
+    if (tab === 'otp') {
+        otpPanel.style.display = 'block';
+        backupPanel.style.display = 'none';
+        tabOtp.style.background = '#0b3d91';
+        tabOtp.style.color = 'white';
+        tabBackup.style.background = 'transparent';
+        tabBackup.style.color = '#708090';
+        subtitle.textContent = 'Enter the 6-digit code from your authenticator app.';
+        wireAdminChallengeOTPInputs();
+        startAdminChallengeCountdown();
+    } else {
+        otpPanel.style.display = 'none';
+        backupPanel.style.display = 'block';
+        tabBackup.style.background = '#0b3d91';
+        tabBackup.style.color = 'white';
+        tabOtp.style.background = 'transparent';
+        tabOtp.style.color = '#708090';
+        subtitle.textContent = 'Enter one of your saved backup codes.';
+        stopAdminChallengeCountdown();
+        setTimeout(() => document.getElementById('c-backup-code-input').focus(), 100);
+    }
+    document.getElementById('challenge-error').style.display = 'none';
+};
+
+// ── Countdown timer ────────────────────────────────────────
+function startAdminChallengeCountdown() {
+    stopAdminChallengeCountdown();
+    function tick() {
+        const s = 30 - (Math.floor(Date.now() / 1000) % 30);
+        const el = document.getElementById('c-otp-countdown');
+        if (el) el.textContent = s;
+    }
+    tick();
+    _adminCountdownTimer = setInterval(tick, 1000);
+}
+
+function stopAdminChallengeCountdown() {
+    if (_adminCountdownTimer) {
+        clearInterval(_adminCountdownTimer);
+        _adminCountdownTimer = null;
+    }
+}
+
+// ── Wire OTP inputs ────────────────────────────────────────
+function wireAdminChallengeOTPInputs() {
+    const inputs = document.querySelectorAll('#challenge-otp-inputs .c-otp-digit');
+    inputs.forEach(input => {
+        const fresh = input.cloneNode(true);
+        input.parentNode.replaceChild(fresh, input);
+    });
+    const fresh = document.querySelectorAll('#challenge-otp-inputs .c-otp-digit');
+    fresh.forEach((input, i) => {
+        input.value = '';
+        input.classList.remove('error');
+        input.addEventListener('input', e => {
+            const val = e.target.value.replace(/\D/g, '');
+            e.target.value = val.slice(-1);
+            if (val && i < fresh.length - 1) fresh[i + 1].focus();
+        });
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Backspace' && !input.value && i > 0)
+                fresh[i - 1].focus();
+        });
+        input.addEventListener('paste', e => {
+            e.preventDefault();
+            const pasted = (e.clipboardData || window.clipboardData)
+                .getData('text').replace(/\D/g, '').slice(0, 6);
+            pasted.split('').forEach((char, idx) => {
+                if (fresh[idx]) fresh[idx].value = char;
+            });
+            const nextEmpty = [...fresh].findIndex(inp => !inp.value);
+            if (nextEmpty !== -1) fresh[nextEmpty].focus();
+            else fresh[5].focus();
+        });
+        if (i === 0) setTimeout(() => input.focus(), 150);
+    });
+}
+
+// ── Submit challenge ───────────────────────────────────────
+window.submitAdminChallenge = async function() {
+    if (_adminChallengeFailCount >= ADMIN_CHALLENGE_MAX_ATTEMPTS) return;
+
+    const errorEl   = document.getElementById('challenge-error');
+    const errorText = document.getElementById('challenge-error-text');
+    errorEl.style.display = 'none';
+
+    document.getElementById('challenge-btn-text').style.display = 'none';
+    document.getElementById('challenge-btn-spinner').style.display = 'inline';
+    document.getElementById('challenge-submit-btn').disabled = true;
+
+    const resetBtn = () => {
+        document.getElementById('challenge-btn-text').style.display = 'inline';
+        document.getElementById('challenge-btn-spinner').style.display = 'none';
+        document.getElementById('challenge-submit-btn').disabled = false;
+    };
+
+    try {
+        if (_adminChallengeTab === 'otp') {
+            const code = [...document.querySelectorAll(
+                '#challenge-otp-inputs .c-otp-digit')]
+                .map(i => i.value).join('');
+
+            if (code.length !== 6) {
+                shakeAdminChallengeInputs(); resetBtn(); return;
+            }
+
+            const totp = new OTPAuth.TOTP({
+                algorithm: 'SHA1', digits: 6, period: 30,
+                secret: OTPAuth.Secret.fromBase32(_pendingAdminSession.tfaSecret)
+            });
+            const delta = totp.validate({ token: code, window: 1 });
+
+            if (delta === null) {
+                _adminChallengeFailCount++;
+                shakeAdminChallengeInputs();
+                const left = ADMIN_CHALLENGE_MAX_ATTEMPTS - _adminChallengeFailCount;
+                if (left <= 0) {
+                    await lockoutAdminChallenge();
+                } else {
+                    errorText.textContent =
+                        `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                    errorEl.style.display = 'block';
+                    clearAdminChallengeOTP();
+                }
+                resetBtn(); return;
+            }
+
+        } else {
+            // Backup code path
+            const entered = document.getElementById('c-backup-code-input')
+                .value.trim().toUpperCase();
+            if (!entered) { resetBtn(); return; }
+
+            const encoded = btoa(entered);
+            const match = _pendingAdminSession.tfaBackupCodes.indexOf(encoded);
+
+            if (match === -1) {
+                _adminChallengeFailCount++;
+                document.getElementById('c-backup-code-input')
+                    .style.borderColor = '#ef4444';
+                const left = ADMIN_CHALLENGE_MAX_ATTEMPTS - _adminChallengeFailCount;
+                if (left <= 0) {
+                    await lockoutAdminChallenge();
+                } else {
+                    errorText.textContent =
+                        `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                    errorEl.style.display = 'block';
+                }
+                resetBtn(); return;
+            }
+
+            // Burn used backup code
+            const updatedCodes = [..._pendingAdminSession.tfaBackupCodes];
+            updatedCodes.splice(match, 1);
+            await db.collection('admins').doc(_pendingAdminSession.uid).update({
+                twoFactorBackupCodes: updatedCodes
+            });
+            if (updatedCodes.length <= 2) {
+                sessionStorage.setItem('tfa_backup_warning',
+                    updatedCodes.length.toString());
             }
         }
 
-        function getErrorMessage(errorCode) {
-            switch(errorCode) {
-                case 'auth/invalid-email': return 'Invalid email address format.';
-                case 'auth/user-disabled': return 'This account has been disabled.';
-                case 'auth/user-not-found': return 'No account found with this email.';
-                case 'auth/wrong-password': return 'Incorrect password.';
-                case 'auth/too-many-requests': return 'Too many failed attempts. Please try again later.';
-                default: return 'An error occurred during login. Please try again.';
-            }
-        }
+        // Success
+        stopAdminChallengeCountdown();
+        document.getElementById('tfa-challenge-modal').style.display = 'none';
+        commitAdminSession();
 
-        function goToHomepage() { window.location.href = '/index.html'; }
+    } catch (err) {
+        console.error('Admin challenge error:', err);
+        errorText.textContent = 'Verification failed. Please try again.';
+        errorEl.style.display = 'block';
+        resetBtn();
+    }
+};
 
-        loginBtn.addEventListener('click', () => {
-            const email = emailInput.value.trim();
-            const password = passwordInput.value;
-            if (!email) { errorText.textContent = 'Please enter your email address.'; errorMessage.style.display = 'flex'; emailInput.focus(); return; }
-            if (!password) { errorText.textContent = 'Please enter your password.'; errorMessage.style.display = 'flex'; passwordInput.focus(); return; }
-            login(email, password);
-        });
+// ── Lockout ────────────────────────────────────────────────
+async function lockoutAdminChallenge() {
+    stopAdminChallengeCountdown();
+    document.getElementById('challenge-error').style.display = 'none';
+    document.getElementById('challenge-lockout').style.display = 'block';
+    document.getElementById('challenge-submit-btn').disabled = true;
+    await auth.signOut();
+    _pendingAdminSession = null;
+}
 
-        homeBtn.addEventListener('click', goToHomepage);
+// ── Helpers ────────────────────────────────────────────────
+function shakeAdminChallengeInputs() {
+    document.querySelectorAll('#challenge-otp-inputs .c-otp-digit').forEach(i => {
+        i.classList.add('error');
+        setTimeout(() => i.classList.remove('error'), 600);
+    });
+}
 
-        passwordInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') loginBtn.click();
-        });
+function clearAdminChallengeOTP() {
+    document.querySelectorAll('#challenge-otp-inputs .c-otp-digit')
+        .forEach(i => { i.value = ''; });
+    const first = document.querySelector('#challenge-otp-inputs .c-otp-digit');
+    if (first) first.focus();
+}
     </script>
+
+    <!-- ================================================
+     2FA CHALLENGE MODAL
+     ================================================ -->
+<div id="tfa-challenge-modal" style="display:none; position:fixed; inset:0;
+    z-index:9999; background:rgba(3,21,46,0.85); backdrop-filter:blur(6px);
+    align-items:center; justify-content:center; padding:24px; overflow-y:auto;">
+    <div style="background:white; border-radius:16px; padding:40px 36px;
+        max-width:420px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.4);
+        margin:auto; animation:fadeIn 0.4s ease-out both;">
+
+        <!-- Header -->
+        <div style="text-align:center; margin-bottom:28px;">
+            <div style="width:56px; height:56px; background:#eef3fb;
+                border-radius:50%; display:flex; align-items:center;
+                justify-content:center; margin:0 auto 14px;">
+                <i class="fas fa-shield-alt" style="color:#0b3d91; font-size:1.5rem;"></i>
+            </div>
+            <h2 style="color:#0b3d91; font-size:1.3rem; font-weight:800;
+                margin-bottom:6px;">Two-Factor Verification</h2>
+            <p style="color:#708090; font-size:0.88rem;" id="tfa-challenge-subtitle">
+                Enter the 6-digit code from your authenticator app.
+            </p>
+        </div>
+
+        <!-- Tab switcher -->
+        <div style="display:flex; background:#f7f9fc; border-radius:10px;
+            padding:4px; margin-bottom:24px; gap:4px;">
+            <button id="tab-otp" onclick="switchAdminChallengeTab('otp')"
+                style="flex:1; padding:9px; border:none; border-radius:8px;
+                font-weight:600; font-size:0.85rem; cursor:pointer;
+                background:#0b3d91; color:white;
+                font-family:'Inter',sans-serif; transition:all 0.2s;">
+                <i class="fas fa-mobile-alt"></i> Auth App
+            </button>
+            <button id="tab-backup" onclick="switchAdminChallengeTab('backup')"
+                style="flex:1; padding:9px; border:none; border-radius:8px;
+                font-weight:600; font-size:0.85rem; cursor:pointer;
+                background:transparent; color:#708090;
+                font-family:'Inter',sans-serif; transition:all 0.2s;">
+                <i class="fas fa-key"></i> Backup Code
+            </button>
+        </div>
+
+        <!-- OTP panel -->
+        <div id="challenge-otp-panel">
+            <div style="display:flex; gap:8px; justify-content:center;
+                margin-bottom:16px;" id="challenge-otp-inputs">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+                <input class="c-otp-digit" type="text" maxlength="1"
+                    inputmode="numeric" pattern="[0-9]">
+            </div>
+            <p style="text-align:center; font-size:0.8rem; color:#708090;
+                margin-bottom:16px;">
+                Code refreshes in <span id="c-otp-countdown">30</span>s
+            </p>
+        </div>
+
+        <!-- Backup panel -->
+        <div id="challenge-backup-panel" style="display:none;">
+            <input type="text" id="c-backup-code-input"
+                placeholder="XXXX-XXXX"
+                style="width:100%; padding:13px 16px; border:2px solid #e2e8f0;
+                border-radius:10px; font-size:1rem; font-family:monospace;
+                text-align:center; letter-spacing:2px; text-transform:uppercase;
+                margin-bottom:16px; box-sizing:border-box; color:#0b3d91;
+                font-weight:700;"
+                oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9-]/g,'')">
+        </div>
+
+        <!-- Error -->
+        <div id="challenge-error" style="display:none; background:#fef2f2;
+            border:1px solid #fecaca; color:#ef4444; padding:10px 14px;
+            border-radius:8px; font-size:0.85rem; text-align:center;
+            margin-bottom:16px;">
+            <i class="fas fa-exclamation-circle"></i>
+            <span id="challenge-error-text">Incorrect code.</span>
+        </div>
+
+        <!-- Lockout -->
+        <div id="challenge-lockout" style="display:none; background:#fef2f2;
+            border:1px solid #fecaca; color:#ef4444; padding:14px;
+            border-radius:8px; font-size:0.88rem; text-align:center;
+            margin-bottom:16px;">
+            <i class="fas fa-ban"></i>
+            <strong>Too many failed attempts.</strong><br>
+            <span style="font-size:0.82rem;">Please log in again to retry.</span>
+        </div>
+
+        <!-- Submit -->
+        <button onclick="submitAdminChallenge()" id="challenge-submit-btn"
+            style="width:100%; padding:14px;
+            background:linear-gradient(to right, #0b3d91, #1e5bbf);
+            color:white; border:none; border-radius:50px; font-size:1rem;
+            font-weight:700; cursor:pointer; font-family:'Inter',sans-serif;
+            display:flex; align-items:center; justify-content:center; gap:8px;">
+            <span id="challenge-btn-text">Verify & Sign In</span>
+            <span id="challenge-btn-spinner" style="display:none;">
+                <i class="fas fa-spinner fa-spin"></i>
+            </span>
+        </button>
+
+        <!-- Cancel -->
+        <button onclick="cancelAdminChallenge()" style="width:100%;
+            margin-top:10px; padding:12px; background:none;
+            border:1.5px solid #e2e8f0; border-radius:50px; font-size:0.9rem;
+            font-weight:600; color:#708090; cursor:pointer;
+            font-family:'Inter',sans-serif;">
+            <i class="fas fa-arrow-left" style="margin-right:6px;"></i>
+            Back to Login
+        </button>
+    </div>
+</div>
+    
 </body>
 </html>
