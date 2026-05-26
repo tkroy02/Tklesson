@@ -9,6 +9,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700;14..32,800;14..32,900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    
     <style>
         :root {
             --navy-deep: #040d1f;
@@ -79,6 +84,36 @@
             position: relative; z-index:10;
             max-width: 1150px; margin: 0 auto; padding: 36px 28px 40px;
         }
+        
+        /* User bar */
+        .user-bar {
+            display: flex; align-items: center; justify-content: flex-end;
+            gap: 12px; margin-bottom: 20px; padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .user-info {
+            display: flex; align-items: center; gap: 10px;
+            color: rgba(255,255,255,0.7); font-size: 0.82rem; font-weight: 500;
+        }
+        .user-avatar {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--blue), var(--blue-bright));
+            display: flex; align-items: center; justify-content: center;
+            color: white; font-weight: 700; font-size: 0.85rem;
+            box-shadow: 0 4px 12px rgba(11,61,145,0.3);
+        }
+        .logout-btn {
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+            color: rgba(255,255,255,0.6); padding: 6px 14px; border-radius: 8px;
+            font-size: 0.75rem; font-weight: 600; cursor: pointer;
+            transition: all var(--transition); display: flex; align-items: center; gap: 6px;
+            font-family: var(--font);
+        }
+        .logout-btn:hover {
+            background: rgba(220,38,38,0.15); border-color: rgba(220,38,38,0.4);
+            color: #fca5a5;
+        }
+        
         .hub-header {
             text-align: center; margin-bottom: 40px;
         }
@@ -179,11 +214,25 @@
         .hub-footer a { color: rgba(255,255,255,0.3); text-decoration: none; transition: color var(--transition); }
         .hub-footer a:hover { color: rgba(255,255,255,0.6); }
 
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed; inset:0; background: rgba(4,13,31,0.85); z-index:999;
+            display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 20px;
+            backdrop-filter: blur(8px);
+        }
+        .loading-spinner {
+            width: 48px; height: 48px; border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: var(--gold); border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { color: rgba(255,255,255,0.5); font-size:0.85rem; }
+
         @media (max-width: 600px) {
             .hub-container { padding: 24px 14px 30px; }
             .hub-header h1 { font-size:1.5rem; }
             .portal-grid { grid-template-columns: 1fr; }
             .tool-grid { grid-template-columns: 1fr 1fr; }
+            .user-bar { flex-wrap: wrap; justify-content: center; }
         }
     </style>
 </head>
@@ -191,7 +240,24 @@
     <div class="bg-orb"></div><div class="bg-orb"></div><div class="bg-orb"></div>
     <div class="grid-pattern"></div>
 
-    <div class="hub-container">
+    <!-- Loading overlay (hidden after auth check) -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Verifying credentials...</div>
+    </div>
+
+    <div class="hub-container" id="hub-content" style="display: none;">
+        <!-- User bar with Firebase info -->
+        <div class="user-bar">
+            <div class="user-info" id="user-display">
+                <div class="user-avatar" id="user-avatar">A</div>
+                <span id="user-email">admin@tklesson.com</span>
+            </div>
+            <button class="logout-btn" id="logout-button">
+                <i class="fas fa-sign-out-alt"></i> Sign Out
+            </button>
+        </div>
+
         <div class="hub-header">
             <div class="hub-logo"><i class="fas fa-crown"></i></div>
             <h1>Tklesson <span>Machine</span></h1>
@@ -238,5 +304,96 @@
             <a href="#">Support</a>
         </div>
     </div>
+
+    <script>
+        (function() {
+            // Firebase configuration
+            const firebaseConfig = {
+                apiKey: "AIzaSyBcuCuqYrySz26d7CoQXZllePzMq3LEyWE",
+                authDomain: "tkmachines-945b9.firebaseapp.com",
+                projectId: "tkmachines-945b9",
+                storageBucket: "tkmachines-945b9.firebasestorage.app",
+                messagingSenderId: "137087394703",
+                appId: "1:137087394703:web:81c3383fd6ee961ef3e1fa",
+                measurementId: "G-Y8GH34Q2FN"
+            };
+
+            // Initialize Firebase
+            firebase.initializeApp(firebaseConfig);
+            const auth = firebase.auth();
+
+            // DOM elements
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const hubContent = document.getElementById('hub-content');
+            const userEmailSpan = document.getElementById('user-email');
+            const userAvatarDiv = document.getElementById('user-avatar');
+            const logoutButton = document.getElementById('logout-button');
+
+            // Auth state listener
+            auth.onAuthStateChanged((user) => {
+                loadingOverlay.style.display = 'none';
+                
+                if (user) {
+                    // User is signed in
+                    hubContent.style.display = 'block';
+                    
+                    // Update user display
+                    const email = user.email || 'admin@tklesson.com';
+                    userEmailSpan.textContent = email;
+                    
+                    // Set avatar initial
+                    const initial = email.charAt(0).toUpperCase();
+                    userAvatarDiv.textContent = initial;
+                    
+                    // Store auth token for other pages if needed
+                    user.getIdToken().then((token) => {
+                        sessionStorage.setItem('firebaseAuthToken', token);
+                    }).catch(() => {});
+                    
+                    console.log('✅ Firebase Auth active:', email);
+                } else {
+                    // No user signed in — redirect to login
+                    console.warn('🔒 No authenticated user — redirecting to login');
+                    window.location.href = 'super-admin-login.html';
+                }
+            }, (error) => {
+                // Auth error
+                loadingOverlay.style.display = 'none';
+                console.error('Firebase Auth error:', error);
+                window.location.href = 'super-admin-login.html';
+            });
+
+            // Logout handler
+            logoutButton.addEventListener('click', () => {
+                if (confirm('Sign out of Tklesson Command Hub?')) {
+                    auth.signOut().then(() => {
+                        sessionStorage.removeItem('firebaseAuthToken');
+                        window.location.href = 'super-admin-login.html';
+                    }).catch((error) => {
+                        console.error('Sign out error:', error);
+                        // Force redirect anyway
+                        window.location.href = 'super-admin-login.html';
+                    });
+                }
+            });
+
+            // Optional: Session timeout (30 min inactivity)
+            let inactivityTimer;
+            function resetInactivityTimer() {
+                clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(() => {
+                    auth.signOut().then(() => {
+                        sessionStorage.removeItem('firebaseAuthToken');
+                        window.location.href = 'super-admin-login.html?timeout=1';
+                    });
+                }, 30 * 60 * 1000); // 30 minutes
+            }
+            
+            ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(event => {
+                document.addEventListener(event, resetInactivityTimer, { passive: true });
+            });
+            resetInactivityTimer();
+        })();
+    </script>
 </body>
 </html>
