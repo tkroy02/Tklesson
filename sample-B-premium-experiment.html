@@ -11143,7 +11143,8 @@ async function activateMonthlySubscription() {
         const result = await createCheckoutSession({ plan: 'monthly' });
         
         // Log the subscription initiation
-        await addDoc(collection(db, 'subscriptions'), {
+        const { addDoc, collection } = window.firebaseModules;
+        await addDoc(collection(window.db, 'subscriptions'), {
             userId: user.uid,
             email: user.email,
             type: 'subscription_started',
@@ -11173,22 +11174,42 @@ async function activateYearlySubscription() {
         const result = await createCheckoutSession({ plan: 'yearly' });
         
         // Log the subscription initiation
+        // 1. Log the cancellation as a transaction
         await addDoc(collection(db, 'subscriptions'), {
             userId: user.uid,
             email: user.email,
-            type: 'subscription_started',
-            plan: 'yearly',
-            price: 99.99,
-            status: 'pending_payment',
-            initiatedAt: new Date().toISOString()
+            type: 'cancellation',
+            plan: userData.subscriptionPlan || 'unknown',
+            price: userData.subscriptionPrice || 0,
+            reason: reason,
+            reasonText: otherReason,
+            subscribedSince: userData.subscriptionStart || null,
+            cancelledOn: now.toISOString(),
+            totalMonthsSubscribed: totalMonths,
+            totalSpent: totalSpent,
+            wasActive: userData.subscription === true
         });
         
-        window.location.href = result.data.url;
+        // 2. Update user document - keep access until expiry
+        await updateDoc(userRef, {
+            subscription: false,
+            subscriptionPlan: 'cancelled',
+            cancellationReason: reason,
+            cancellationReasonText: otherReason,
+            cancelledAt: now.toISOString(),
+            previousPlan: userData.subscriptionPlan || 'unknown'
+        });
+        
+        showToast('Subscription cancelled. You have access until the end of your billing period.', 'info');
+        return true;
+        
     } catch (error) {
-        console.error('Checkout error:', error);
-        alert('Error starting checkout: ' + error.message);
+        console.error('Cancellation error:', error);
+        showToast('Failed to cancel. Please try again or contact support.', 'error');
+        return false;
     }
 }
+        
 async function activateYearlySubscription() {
     const user = auth.currentUser;
     if (!user) {
