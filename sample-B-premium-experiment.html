@@ -11481,8 +11481,16 @@ async function cancelSubscription() {
     const reason = document.getElementById('cancellation-reason')?.value || null;
     const otherReason = document.getElementById('other-reason')?.value || null;
     
+    if (!window.db || !window.firebaseModules) {
+        console.error('Firebase not initialized');
+        showToast('Error: Firebase not ready. Please refresh.', 'error');
+        return false;
+    }
+    
+    const { addDoc, collection, getDoc, updateDoc, doc } = window.firebaseModules;
+    
     try {
-        const userRef = doc(db, 'users', user.uid);
+        const userRef = doc(window.db, 'users', user.uid);
         const userDoc = await getDoc(userRef);
         
         if (!userDoc.exists()) {
@@ -11491,20 +11499,18 @@ async function cancelSubscription() {
         }
         
         const userData = userDoc.data();
-        
-        // Calculate subscription duration
         const startDate = userData.subscriptionStart ? new Date(userData.subscriptionStart) : null;
         const now = new Date();
         let totalMonths = 0;
         let totalSpent = 0;
         
-        if (startDate) {
+        if (startDate && userData.subscriptionPrice) {
             totalMonths = Math.max(1, Math.ceil((now - startDate) / (1000 * 60 * 60 * 24 * 30)));
             totalSpent = userData.subscriptionPrice * totalMonths;
         }
         
-        // 1. Log the cancellation as a transaction
-        await addDoc(collection(db, 'subscriptions'), {
+        // Log cancellation to subscriptions collection
+        await addDoc(collection(window.db, 'subscriptions'), {
             userId: user.uid,
             email: user.email,
             type: 'cancellation',
@@ -11516,13 +11522,23 @@ async function cancelSubscription() {
             cancelledOn: now.toISOString(),
             totalMonthsSubscribed: totalMonths,
             totalSpent: totalSpent,
-            wasActive: userData.subscription === true
+            wasActive: userData.subscription === true,
+            source: 'user_app'
         });
         
-        // 2. Update user document - keep access until expiry
+        // Call Stripe to cancel at period end
+        if (userData.stripeSubscriptionId && window.functions && window.httpsCallable) {
+            try {
+                const cancelStripeSub = window.httpsCallable(window.functions, 'cancelSubscription');
+                await cancelStripeSub();
+            } catch (stripeError) {
+                console.error('Stripe cancellation error:', stripeError);
+            }
+        }
+        
+        // Update user document
         await updateDoc(userRef, {
-            subscription: false,
-            subscriptionPlan: 'cancelled',
+            subscriptionCancelAtPeriodEnd: true,
             cancellationReason: reason,
             cancellationReasonText: otherReason,
             cancelledAt: now.toISOString(),
