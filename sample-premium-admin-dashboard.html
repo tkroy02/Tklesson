@@ -1520,7 +1520,7 @@
 </div>
                 </section>
 
-                <!-- Subscription Grants Section -->
+<!-- Subscription Grants Section -->
 <section id="subscription-grants" class="content-section">
     <div class="card">
         <div class="card-header">
@@ -1554,31 +1554,60 @@
         </div>
     </div>
 
+    <!-- Revoke Subscription Card -->
     <div class="card" style="margin-top: 1.5rem;">
-    <div class="card-header">
-        <h2><i class="fas fa-list"></i> Recent Grants</h2>
-        <span style="font-size: 0.8rem; color: var(--text-tertiary);">Last 100 grants</span>
-    </div>
-    <div class="card-body" style="padding: 0;">
-        <div style="max-height: 400px; overflow-y: auto; border-radius: 0 0 var(--border-radius-lg) var(--border-radius-lg);">
-            <table class="data-table">
-                <thead style="position: sticky; top: 0; z-index: 10;">
-                    <tr>
-                        <th style="background: var(--bg-tertiary);">Date</th>
-                        <th style="background: var(--bg-tertiary);">User</th>
-                        <th style="background: var(--bg-tertiary);">Duration</th>
-                        <th style="background: var(--bg-tertiary);">Reason</th>
-                        <th style="background: var(--bg-tertiary);">Granted By</th>
-                    </tr>
-                </thead>
-                <tbody id="recent-grants">
-                    <tr><td colspan="5" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
-                </tbody>
-            </table>
+        <div class="card-header">
+            <h2><i class="fas fa-ban"></i> Revoke Subscription</h2>
+        </div>
+        <div class="card-body">
+            <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                Immediately removes premium access from a user. This cannot be undone without re-granting.
+            </p>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">User Email or UID</label>
+                    <input type="text" id="revoke-user-lookup" class="form-control" placeholder="Enter user email or UID...">
+                    <div id="revoke-user-result" style="margin-top: 8px; font-size: 0.85rem;"></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Reason (internal note)</label>
+                    <input type="text" id="revoke-reason" class="form-control" placeholder="e.g., Abuse, Payment fraud, Requested...">
+                </div>
+            </div>
+            <button class="btn btn-danger" id="revoke-subscription-button" disabled>
+                <i class="fas fa-ban"></i> Revoke Access
+            </button>
+            <div id="revoke-feedback" style="margin-top: 12px; font-size: 0.9rem;"></div>
         </div>
     </div>
-</div>
-</section>
+
+    <!-- Recent Grants Table -->
+    <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-header">
+            <h2><i class="fas fa-list"></i> Recent Grants & Revokes</h2>
+            <span style="font-size: 0.8rem; color: var(--text-tertiary);">Last 100 actions</span>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <div style="max-height: 400px; overflow-y: auto; border-radius: 0 0 var(--border-radius-lg) var(--border-radius-lg);">
+                <table class="data-table">
+                    <thead style="position: sticky; top: 0; z-index: 10;">
+                        <tr>
+                            <th style="background: var(--bg-tertiary);">Date</th>
+                            <th style="background: var(--bg-tertiary);">User</th>
+                            <th style="background: var(--bg-tertiary);">Action</th>
+                            <th style="background: var(--bg-tertiary);">Duration</th>
+                            <th style="background: var(--bg-tertiary);">Reason</th>
+                            <th style="background: var(--bg-tertiary);">By</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-grants">
+                        <tr><td colspan="6" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>   
                 
                 <section id="analytics" class="content-section">
                     <div class="stats-grid">
@@ -2537,44 +2566,65 @@ async grantFreeSubscription(userId, durationMonths, reason) {
 async loadRecentGrants() {
     const tbody = document.getElementById('recent-grants');
     if (!tbody) return;
-
+    
     try {
         const { getDocs, collection } = window.firebaseModules;
         const subSnap = await getDocs(collection(window.db, 'subscriptions'));
-        const grants  = [];
-
+        const actions = [];
+        
         subSnap.forEach(doc => {
             const data = doc.data();
-            if (data.type === 'admin_grant') grants.push(data);
+            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
+                actions.push(data);
+            }
         });
-
-        grants.sort((a, b) => new Date(b.grantedAt) - new Date(a.grantedAt));
-
-        const recent = grants.slice(0, 100);
-
-        const countSpan = document.querySelector('#subscription-grants .card-header span');
-        if (countSpan) countSpan.textContent = `Showing ${recent.length} of ${grants.length} grants`;
-
+        
+        actions.sort((a, b) => new Date(b.grantedAt || b.revokedAt) - new Date(a.grantedAt || a.revokedAt));
+        
+        // Cap at 100
+        const recent = actions.slice(0, 100);
+        
+        // Update the count in the header
+        const countSpan = document.querySelector('#subscription-grants .card:last-child .card-header span');
+        if (countSpan) {
+            countSpan.textContent = `Showing ${recent.length} of ${actions.length} actions`;
+        }
+        
         if (recent.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--gray);">No grants yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--gray);">No actions yet</td></tr>';
             return;
         }
-
-        tbody.innerHTML = recent.map(g => `
-            <tr>
-                <td>${new Date(g.grantedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-                <td>${g.email || g.userId?.substring(0, 8) || 'N/A'}</td>
-                <td>${g.duration || '?'} month(s)</td>
-                <td>${g.reason || '—'}</td>
-                <td>${g.grantedByName || g.grantedBy?.substring(0, 8) || 'Admin'}</td>
-            </tr>`).join('');
-
+        
+        const actionLabels = {
+            'admin_grant': '🎁 Granted',
+            'admin_revoke': '🚫 Revoked'
+        };
+        
+        tbody.innerHTML = recent.map(a => {
+            const date = a.grantedAt || a.revokedAt || '';
+            const formattedDate = date ? new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
+            const actionLabel = actionLabels[a.type] || a.type;
+            const byName = a.grantedByName || a.revokedByName || a.grantedBy?.substring(0, 8) || a.revokedBy?.substring(0, 8) || 'Admin';
+            const rowColor = a.type === 'admin_revoke' ? 'var(--danger)' : 'var(--success)';
+            
+            return `
+                <tr>
+                    <td>${formattedDate}</td>
+                    <td>${a.email || a.userId?.substring(0, 8) || 'N/A'}</td>
+                    <td style="color: ${rowColor}; font-weight: 600;">${actionLabel}</td>
+                    <td>${a.duration ? a.duration + ' month(s)' : '—'}</td>
+                    <td>${a.reason || '—'}</td>
+                    <td>${byName}</td>
+                </tr>
+            `;
+        }).join('');
+        
     } catch (error) {
-        console.error('Error loading grants:', error);
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger);">Error loading grants</td></tr>';
+        console.error('Error loading actions:', error);
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--danger);">Error loading actions</td></tr>';
     }
 }
-
+            
 //=======================================================================================//
 //=======================SUBSCRIPTION CREDIT ENDS========================================//
 //=======================================================================================//
