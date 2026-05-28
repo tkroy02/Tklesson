@@ -5167,6 +5167,12 @@ window.firebaseModules = {
     onSnapshot    // ← Add
 };
 
+// ---------- Notification Functions ----------
+window.initNotifications = initNotifications;
+window.cleanupNotifications = cleanupNotifications;
+window.markNotificationRead = markNotificationRead;
+window.markAllNotificationsRead = markAllNotificationsRead;
+    
 // ---------- Auth Functions ----------
 window.updateProfile = updateProfile;
 window.updatePassword = updatePassword;
@@ -12577,6 +12583,196 @@ async function updateSubscriptionStatus(
 //============ SUBSCRIPTION SECTION ENDS HERE ============//
 //=======================================================//
 
+//=========================================================//
+// ============NOTIFICATION SYSTEM STARTS HERE =============//
+//========================================================//
+
+let notificationUnsubscribe = null;
+
+function initNotifications(userId) {
+    // Wait for Firebase modules to be ready
+    if (!window.firebaseModules || !window.firebaseModules.where) {
+        setTimeout(() => initNotifications(userId), 300);
+        return;
+    }
+
+    const { collection, query, where, orderBy, limit, onSnapshot } = window.firebaseModules;
+
+    const bellEl      = document.getElementById('notification-bell');
+    const dropdownEl  = document.getElementById('notification-dropdown');
+
+    if (!bellEl || !dropdownEl) return;
+
+    // ── Real-time listener on subscriptions ──────────────────────
+    const q = query(
+        collection(window.db, 'subscriptions'),
+        where('userId', '==', userId),
+        limit(50)
+    );
+
+    notificationUnsubscribe = onSnapshot(q, (snapshot) => {
+        const notifications = [];
+        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+        
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
+                notifications.push({
+                    id: doc.id,
+                    type: data.type,
+                    message: data.type === 'admin_grant'
+                        ? `🎁 You've been granted ${data.duration || '?'} month(s) of free premium access!`
+                        : `🚫 Your premium access has been removed. Reason: ${data.reason || 'Not specified'}`,
+                    createdAt: data.grantedAt || data.revokedAt,
+                    read: readFlags.includes(doc.id)
+                });
+            }
+        });
+        
+        // Sort by newest first
+        notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        
+        renderNotifications(notifications);
+    });
+
+    // ── Toggle dropdown ────────────────────────────────────────
+    bellEl.onclick = (e) => {
+        e.stopPropagation();
+        const isOpen = dropdownEl.style.display === 'block';
+        dropdownEl.style.display = isOpen ? 'none' : 'block';
+    };
+
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+        if (!bellEl.contains(e.target) && !dropdownEl.contains(e.target)) {
+            dropdownEl.style.display = 'none';
+        }
+    });
+}
+
+// ── Render ─────────────────────────────────────────────────────
+function renderNotifications(notifications) {
+    const badgeEl = document.getElementById('notification-count');
+    const listEl  = document.getElementById('notification-list');
+    if (!badgeEl || !listEl) return;
+
+    const unreadCount = notifications.filter(n => !n.read).length;
+
+    // Badge
+    if (unreadCount > 0) {
+        badgeEl.style.display = 'flex';
+        badgeEl.textContent = unreadCount > 99 ? '99+' : unreadCount;
+    } else {
+        badgeEl.style.display = 'none';
+    }
+
+    // List
+    if (notifications.length === 0) {
+        listEl.innerHTML = `
+            <div style="text-align:center; padding:36px 20px; color:var(--gray);">
+                <i class="fas fa-bell-slash" style="font-size:1.8rem; opacity:.4; display:block; margin-bottom:10px;"></i>
+                No notifications yet
+            </div>`;
+        return;
+    }
+
+    listEl.innerHTML = notifications.map(n => buildNotifHTML(n)).join('');
+
+    // Attach per-item click → mark read
+    listEl.querySelectorAll('[data-notif-id]').forEach(el => {
+        el.onclick = () => markNotificationRead(el.dataset.notifId);
+    });
+}
+
+function buildNotifHTML(n) {
+    const isUnread = !n.read;
+    const icon = getNotifIcon(n.type);
+    const timeStr = formatNotifTime(n.createdAt);
+    const bgStyle = isUnread ? 'background: #f5f3ff;' : '';
+
+    return `
+        <div data-notif-id="${n.id}"
+             style="display:flex;gap:12px;padding:14px 18px;cursor:pointer;
+                    transition:background .12s;border-bottom:1px solid #f1f1f1;
+                    ${bgStyle}"
+             onmouseover="this.style.background='#f9f9f9'"
+             onmouseout="this.style.background='${isUnread ? '#f5f3ff' : ''}'">
+            <div style="width:38px;height:38px;border-radius:50%;display:flex;
+                        align-items:center;justify-content:center;font-size:18px;
+                        flex-shrink:0;background:${icon.bg}">${icon.emoji}</div>
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:13px;line-height:1.5;color:#1a1a1a;">${n.message}</div>
+                <div style="font-size:11px;color:var(--gray);margin-top:3px;">${timeStr}</div>
+            </div>
+            ${isUnread ? '<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>' : ''}
+        </div>`;
+}
+
+// ── Icon map ───────────────────────────────────────────────────
+function getNotifIcon(type) {
+    const map = {
+        admin_grant:  { emoji: '🎁', bg: '#f0fdf4' },
+        admin_revoke: { emoji: '🚫', bg: '#fef2f2' }
+    };
+    return map[type] || { emoji: '📣', bg: '#f9fafb' };
+}
+
+// ── Mark single read ────────────────────────────────────────────
+function markNotificationRead(notifId) {
+    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+    if (!readFlags.includes(notifId)) {
+        readFlags.push(notifId);
+        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
+    }
+    // Re-render will happen via the snapshot listener
+}
+
+// ── Mark all read ───────────────────────────────────────────────
+function markAllNotificationsRead() {
+    const listEl = document.getElementById('notification-list');
+    if (!listEl) return;
+    
+    const notifEls = listEl.querySelectorAll('[data-notif-id]');
+    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+    
+    notifEls.forEach(el => {
+        const id = el.dataset.notifId;
+        if (!readFlags.includes(id)) {
+            readFlags.push(id);
+        }
+    });
+    
+    localStorage.setItem('readNotifications', JSON.stringify(readFlags));
+    // Re-render will happen via the snapshot listener
+}
+
+// ── Relative time ───────────────────────────────────────────────
+function formatNotifTime(isoString) {
+    if (!isoString) return '';
+    const diff = (Date.now() - new Date(isoString)) / 1000;
+
+    if (diff < 60)       return 'Just now';
+    if (diff < 3600)     return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)    return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800)   return `${Math.floor(diff / 86400)}d ago`;
+
+    return new Date(isoString).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric'
+    });
+}
+
+// ── Cleanup on logout ────────────────────────────────────────────
+function cleanupNotifications() {
+    if (notificationUnsubscribe) {
+        notificationUnsubscribe();
+        notificationUnsubscribe = null;
+    }
+}
+
+//========================================================//
+//===========NOTIFICATION SYSTEM ENDS HERE ===============//
+//========================================================//
+    
 </script>
 
 </body>
