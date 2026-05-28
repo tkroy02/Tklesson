@@ -5933,38 +5933,94 @@ function updateUserProfileDisplay(user) {
 //==================== TWO-FACTOR AUTHENTICATION (TOTP) ====================//
 //==========================================================================//
 
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 let pending2FASecret = null;
 
 // ── Boot: reflect saved 2FA state on page load ──────────────────
-function init2FAStatus() {
+async function init2FAStatus() {
     const user = auth.currentUser;
     if (!user) return;
 
-    const stored = localStorage.getItem(`2fa_enabled_${user.uid}`);
-    const isEnabled = stored === 'true';
+    try {
+        const { getDoc, doc } = window.firebaseModules;
+        const snap = await getDoc(doc(window.db, 'users', user.uid));
+        const data = snap.exists() ? snap.data() : {};
+        const isEnabled = data.twoFactorEnabled === true;
 
-    const statusText  = document.getElementById('2fa-status-text');
-    const statusBadge = document.getElementById('2fa-status-badge');
-    const btnLabel    = document.getElementById('2fa-btn-label');
+        const statusText  = document.getElementById('2fa-status-text');
+        const statusBadge = document.getElementById('2fa-status-badge');
+        const btnLabel    = document.getElementById('2fa-btn-label');
 
-    if (isEnabled) {
-        if (statusText)  statusText.textContent  = 'Currently protecting your account';
-        if (statusBadge) statusBadge.style.display = 'inline-block';
-        if (btnLabel)    btnLabel.textContent    = 'Disable';
-    } else {
-        if (statusText)  statusText.textContent  = 'Add an extra layer of security';
-        if (statusBadge) statusBadge.style.display = 'none';
-        if (btnLabel)    btnLabel.textContent    = 'Enable';
+        if (isEnabled) {
+            if (statusText)  statusText.textContent  = 'Currently protecting your account';
+            if (statusBadge) statusBadge.style.display = 'inline-block';
+            if (btnLabel)    btnLabel.textContent    = 'Disable';
+        } else {
+            if (statusText)  statusText.textContent  = 'Add an extra layer of security';
+            if (statusBadge) statusBadge.style.display = 'none';
+            if (btnLabel)    btnLabel.textContent    = 'Enable';
+        }
+    } catch (e) {
+        console.warn('Could not load 2FA status:', e);
     }
 }
 
 // ── Main button handler ─────────────────────────────────────────
-function handle2FAAction() {
+async function handle2FAAction() {
     const user = auth.currentUser;
     if (!user) return;
 
-    const isEnabled = localStorage.getItem(`2fa_enabled_${user.uid}`) === 'true';
-    isEnabled ? open2FADisableModal() : open2FASetupModal();
+    try {
+        const { getDoc, doc } = window.firebaseModules;
+        const snap = await getDoc(doc(window.db, 'users', user.uid));
+        const data = snap.exists() ? snap.data() : {};
+        const isEnabled = data.twoFactorEnabled === true;
+
+        isEnabled ? open2FADisableModal() : open2FASetupModal();
+    } catch (e) {
+        open2FASetupModal();
+    }
+}
+
+// ── TOTP Engine (pure Web Crypto, no external library) ──────────
+function generateSecret(len = 20) {
+    const buf = new Uint8Array(len);
+    crypto.getRandomValues(buf);
+    return Array.from(buf).map(b => B32[b % 32]).join('');
+}
+
+function base32Decode(s) {
+    let bits = 0, val = 0;
+    const out = [];
+    for (const c of s.toUpperCase().replace(/=+$/, '')) {
+        const idx = B32.indexOf(c);
+        if (idx < 0) continue;
+        val = (val << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            out.push((val >>> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    return new Uint8Array(out);
+}
+
+async function getTOTP(secret, offset = 0) {
+    const T = Math.floor(Date.now() / 1000 / 30) + offset;
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setUint32(4, T, false);
+    const key = await crypto.subtle.importKey('raw', base32Decode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+    const off = hmac[hmac.length - 1] & 0xf;
+    const code = ((hmac[off] & 0x7f) << 24 | hmac[off + 1] << 16 | hmac[off + 2] << 8 | hmac[off + 3]) % 1000000;
+    return code.toString().padStart(6, '0');
+}
+
+async function verifyTOTP(secret, token) {
+    for (const offset of [0, -1, 1]) {
+        if (await getTOTP(secret, offset) === token) return true;
+    }
+    return false;
 }
 
 // ── SETUP ───────────────────────────────────────────────────────
@@ -5972,19 +6028,11 @@ async function open2FASetupModal() {
     const user = auth.currentUser;
     if (!user) return;
 
-    const secret = new OTPAuth.Secret({ size: 20 });
-    pending2FASecret = secret.base32;
+    pending2FASecret = generateSecret();
 
-    const totp = new OTPAuth.TOTP({
-        issuer:    'Tklesson (Self-Study Admin)',
-        label:     user.email,
-        algorithm: 'SHA1',
-        digits:    6,
-        period:    30,
-        secret
-    });
-
-    const uri = totp.toString();
+    const label  = encodeURIComponent(`Tklesson (Self-Study Admin):${user.email}`);
+    const issuer = encodeURIComponent('Tklesson (Self-Study Admin)');
+    const uri    = `otpauth://totp/${label}?secret=${pending2FASecret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
 
     const qrContainer = document.getElementById('2fa-qr-container');
     qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(uri)}" width="180" height="180" alt="2FA QR Code" style="display:block;">`;
@@ -5995,8 +6043,7 @@ async function open2FASetupModal() {
     document.getElementById('2fa-verify-error').style.display = 'none';
     document.getElementById('2fa-verify-input').value = '';
 
-    const modal = document.getElementById('2fa-setup-modal');
-    modal.style.display = 'flex';
+    document.getElementById('2fa-setup-modal').style.display = 'flex';
 }
 
 function show2FAVerifyStep() {
@@ -6025,7 +6072,7 @@ async function confirm2FASetup() {
         return;
     }
 
-    const valid = verifyTOTPCode(pending2FASecret, code);
+    const valid = await verifyTOTP(pending2FASecret, code);
 
     if (!valid) {
         errorEl.style.display = 'block';
@@ -6036,22 +6083,23 @@ async function confirm2FASetup() {
     }
 
     const user = auth.currentUser;
-    localStorage.setItem(`2fa_secret_${user.uid}`, pending2FASecret);
-    localStorage.setItem(`2fa_enabled_${user.uid}`, 'true');
 
     try {
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(window.db, 'users', user.uid), {
+        const { doc, setDoc } = window.firebaseModules;
+        await setDoc(doc(window.db, 'users', user.uid), {
             twoFactorEnabled: true,
+            twoFactorSecret: pending2FASecret,
+            twoFactorEnrolledAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
-        });
-    } catch (e) {
-        console.warn('Could not persist 2FA state to Firestore:', e);
-    }
+        }, { merge: true });
 
-    close2FAModal();
-    init2FAStatus();
-    showToast('Two-factor authentication enabled successfully', 'success');
+        close2FAModal();
+        init2FAStatus();
+        showToast('Two-factor authentication enabled successfully', 'success');
+    } catch (e) {
+        console.error('Could not save 2FA to Firestore:', e);
+        showToast('Failed to save 2FA settings. Please try again.', 'error');
+    }
 }
 
 // ── DISABLE ─────────────────────────────────────────────────────
@@ -6070,56 +6118,40 @@ async function confirm2FADisable() {
     const code    = document.getElementById('2fa-disable-input').value.trim();
     const errorEl = document.getElementById('2fa-disable-error');
     const user    = auth.currentUser;
-    const secret  = localStorage.getItem(`2fa_secret_${user.uid}`);
-
-    if (!secret) {
-        close2FADisableModal();
-        return;
-    }
-
-    const valid = verifyTOTPCode(secret, code);
-
-    if (!valid) {
-        errorEl.style.display = 'block';
-        errorEl.textContent = 'Incorrect code. Please try again.';
-        document.getElementById('2fa-disable-input').value = '';
-        document.getElementById('2fa-disable-input').focus();
-        return;
-    }
-
-    localStorage.removeItem(`2fa_secret_${user.uid}`);
-    localStorage.setItem(`2fa_enabled_${user.uid}`, 'false');
 
     try {
-        const { doc, updateDoc } = window.firebaseModules;
+        const { getDoc, doc, updateDoc } = window.firebaseModules;
+        const snap = await getDoc(doc(window.db, 'users', user.uid));
+        const data = snap.exists() ? snap.data() : {};
+        const secret = data.twoFactorSecret;
+
+        if (!secret) {
+            close2FADisableModal();
+            return;
+        }
+
+        const valid = await verifyTOTP(secret, code);
+
+        if (!valid) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = 'Incorrect code. Please try again.';
+            document.getElementById('2fa-disable-input').value = '';
+            document.getElementById('2fa-disable-input').focus();
+            return;
+        }
+
         await updateDoc(doc(window.db, 'users', user.uid), {
             twoFactorEnabled: false,
+            twoFactorSecret: null,
             updatedAt: new Date().toISOString()
         });
+
+        close2FADisableModal();
+        init2FAStatus();
+        showToast('Two-factor authentication disabled', 'info');
     } catch (e) {
-        console.warn('Could not update 2FA state in Firestore:', e);
-    }
-
-    close2FADisableModal();
-    init2FAStatus();
-    showToast('Two-factor authentication disabled', 'info');
-}
-
-// ── TOTP verification (±1 window for clock drift) ───────────────
-function verifyTOTPCode(secretBase32, inputCode) {
-    try {
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1',
-            digits:    6,
-            period:    30,
-            secret:    OTPAuth.Secret.fromBase32(secretBase32)
-        });
-
-        const delta = totp.validate({ token: inputCode, window: 1 });
-        return delta !== null;
-    } catch (e) {
-        console.error('TOTP verification error:', e);
-        return false;
+        console.error('Could not disable 2FA:', e);
+        showToast('Failed to disable 2FA. Please try again.', 'error');
     }
 }
 
@@ -6137,8 +6169,7 @@ function copy2FASecret() {
 
 //==========================================================================//
 //==================== TWO-FACTOR AUTHENTICATION ENDS =====================//
-//==========================================================================//
-    
+//==========================================================================//    
 //============================================================================//
 //=========================== DASHBOARD STARTS HERE ==========================//
 //=============================================================================//
