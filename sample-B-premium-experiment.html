@@ -12625,7 +12625,6 @@ async function updateSubscriptionStatus(
 let notificationUnsubscribe = null;
 
 function initNotifications(userId) {
-    // Wait for Firebase modules to be ready
     if (!window.firebaseModules || !window.firebaseModules.where) {
         setTimeout(() => initNotifications(userId), 300);
         return;
@@ -12633,12 +12632,11 @@ function initNotifications(userId) {
 
     const { collection, query, where, orderBy, limit, onSnapshot } = window.firebaseModules;
 
-    const bellEl      = document.getElementById('notification-bell');
-    const dropdownEl  = document.getElementById('notification-dropdown');
+    const bellEl     = document.getElementById('notification-bell');
+    const dropdownEl = document.getElementById('notification-dropdown');
 
     if (!bellEl || !dropdownEl) return;
 
-    // ── Real-time listener on notifications ────────────────────
     const q = query(
         collection(window.db, 'notifications'),
         where('userId', '==', userId),
@@ -12648,44 +12646,33 @@ function initNotifications(userId) {
 
     notificationUnsubscribe = onSnapshot(q, (snapshot) => {
         const notifications = [];
-        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-        
         snapshot.forEach(doc => {
             const data = doc.data();
             notifications.push({
-                id: doc.id,
-                type: data.type,
-                message: data.message,
+                id:        doc.id,
+                type:      data.type,
+                message:   data.message,
                 createdAt: data.createdAt,
-                read: readFlags.includes(doc.id)
+                read:      data.read === true
             });
         });
-        
         renderNotifications(notifications);
     });
 
-    // ── Toggle dropdown ────────────────────────────────────────
     bellEl.onclick = (e) => {
         e.stopPropagation();
         const isOpen = dropdownEl.style.display !== 'none';
         dropdownEl.style.display = isOpen ? 'none' : 'block';
     };
 
-    // Close on outside click
     document.addEventListener('click', (e) => {
         if (!bellEl.contains(e.target) && !dropdownEl.contains(e.target)) {
             dropdownEl.style.display = 'none';
         }
     });
-
-    // Mark all read button
-    const markAllBtn = dropdownEl.querySelector('[data-action="mark-all"]');
-    if (markAllBtn) {
-        markAllBtn.onclick = () => markAllNotificationsRead();
-    }
 }
 
-// ── Render ─────────────────────────────────────────────────────
+// ── Render ──────────────────────────────────────────────────────
 function renderNotifications(notifications) {
     const badgeEl = document.getElementById('notification-count');
     const listEl  = document.getElementById('notification-list');
@@ -12693,15 +12680,13 @@ function renderNotifications(notifications) {
 
     const unreadCount = notifications.filter(n => !n.read).length;
 
-    // Badge
     if (unreadCount > 0) {
         badgeEl.style.display = 'flex';
-        badgeEl.textContent = unreadCount > 99 ? '99+' : unreadCount;
+        badgeEl.textContent   = unreadCount > 99 ? '99+' : unreadCount;
     } else {
         badgeEl.style.display = 'none';
     }
 
-    // List
     if (notifications.length === 0) {
         listEl.innerHTML = `
             <div style="text-align:center; padding:36px 20px; color:var(--gray);">
@@ -12713,88 +12698,105 @@ function renderNotifications(notifications) {
 
     listEl.innerHTML = notifications.map(n => buildNotifHTML(n)).join('');
 
-    // Attach per-item click → mark read
     listEl.querySelectorAll('[data-notif-id]').forEach(el => {
         el.onclick = () => markNotificationRead(el.dataset.notifId);
     });
 }
 
+// ── Build item HTML ──────────────────────────────────────────────
 function buildNotifHTML(n) {
     const isUnread = !n.read;
-    const icon = getNotifIcon(n.type);
-    const timeStr = formatNotifTime(n.createdAt);
-    const bgStyle = isUnread ? 'background: #f5f3ff;' : '';
+    const icon     = getNotifIcon(n.type);
+    const timeStr  = formatNotifTime(n.createdAt);
+    const bgColor  = isUnread ? '#f5f3ff' : 'transparent';
+    const dot      = isUnread
+        ? `<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>`
+        : '';
 
     return `
         <div data-notif-id="${n.id}"
              style="display:flex;gap:12px;padding:14px 18px;cursor:pointer;
                     transition:background .12s;border-bottom:1px solid #f1f1f1;
-                    ${bgStyle}"
-             onmouseover="this.style.background='#f9f9f9'"
-             onmouseout="this.style.background='${isUnread ? '#f5f3ff' : ''}'">
+                    background:${bgColor};"
+             onmouseover="this.style.background='#f0eeff'"
+             onmouseout="this.style.background='${bgColor}'">
             <div style="width:38px;height:38px;border-radius:50%;display:flex;
                         align-items:center;justify-content:center;font-size:18px;
-                        flex-shrink:0;background:${icon.bg}">${icon.emoji}</div>
+                        flex-shrink:0;background:${icon.bg};">${icon.emoji}</div>
             <div style="flex:1;min-width:0;">
                 <div style="font-size:13px;line-height:1.5;color:#1a1a1a;">${n.message}</div>
                 <div style="font-size:11px;color:var(--gray);margin-top:3px;">${timeStr}</div>
             </div>
-            ${isUnread ? '<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>' : ''}
+            ${dot}
         </div>`;
 }
 
-// ── Icon map ───────────────────────────────────────────────────
+// ── Icon map ─────────────────────────────────────────────────────
 function getNotifIcon(type) {
     const map = {
-        admin_grant:  { emoji: '🎁', bg: '#f0fdf4' },
-        admin_revoke: { emoji: '🚫', bg: '#fef2f2' }
+        admin_grant:   { emoji: '🎁', bg: '#f0fdf4' },
+        admin_revoke:  { emoji: '🚫', bg: '#fef2f2' },
+        course_update: { emoji: '📚', bg: '#eff6ff' },
+        quiz_result:   { emoji: '📝', bg: '#fefce8' },
+        reminder:      { emoji: '🔔', bg: '#f5f3ff' },
     };
     return map[type] || { emoji: '📣', bg: '#f9fafb' };
 }
 
-// ── Mark single read ────────────────────────────────────────────
-function markNotificationRead(notifId) {
-    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-    if (!readFlags.includes(notifId)) {
-        readFlags.push(notifId);
-        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
+// ── Mark single read ─────────────────────────────────────────────
+async function markNotificationRead(notifId) {
+    const { updateDoc, doc } = window.firebaseModules;
+    try {
+        await updateDoc(doc(window.db, 'notifications', notifId), { read: true });
+        // onSnapshot fires automatically → re-renders list and badge
+    } catch (e) {
+        console.error('Failed to mark notification read:', e);
     }
 }
 
-// ── Mark all read ───────────────────────────────────────────────
-function markAllNotificationsRead() {
-    const listEl = document.getElementById('notification-list');
-    if (!listEl) return;
-    
-    const notifEls = listEl.querySelectorAll('[data-notif-id]');
-    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-    
-    notifEls.forEach(el => {
-        const id = el.dataset.notifId;
-        if (!readFlags.includes(id)) {
-            readFlags.push(id);
-        }
-    });
-    
-    localStorage.setItem('readNotifications', JSON.stringify(readFlags));
+// ── Mark all read ────────────────────────────────────────────────
+async function markAllNotificationsRead() {
+    const { collection, query, where, getDocs, writeBatch, doc } = window.firebaseModules;
+
+    const userId = window.currentUserId || window.auth?.currentUser?.uid;
+    if (!userId) return;
+
+    try {
+        const q    = query(
+            collection(window.db, 'notifications'),
+            where('userId', '==', userId),
+            where('read', '==', false)
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) return;
+
+        const batch = writeBatch(window.db);
+        snap.forEach(d => {
+            batch.update(doc(window.db, 'notifications', d.id), { read: true });
+        });
+        await batch.commit();
+        // onSnapshot fires automatically → badge clears, dots disappear
+    } catch (e) {
+        console.error('Failed to mark all read:', e);
+    }
 }
 
-// ── Relative time ───────────────────────────────────────────────
+// ── Relative time ─────────────────────────────────────────────────
 function formatNotifTime(isoString) {
     if (!isoString) return '';
     const diff = (Date.now() - new Date(isoString)) / 1000;
 
-    if (diff < 60)       return 'Just now';
-    if (diff < 3600)     return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400)    return `${Math.floor(diff / 3600)}h ago`;
-    if (diff < 604800)   return `${Math.floor(diff / 86400)}d ago`;
+    if (diff < 60)     return 'Just now';
+    if (diff < 3600)   return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)  return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
 
     return new Date(isoString).toLocaleDateString('en-US', {
         month: 'short', day: 'numeric'
     });
 }
 
-// ── Cleanup on logout ────────────────────────────────────────────
+// ── Cleanup on logout ─────────────────────────────────────────────
 function cleanupNotifications() {
     if (notificationUnsubscribe) {
         notificationUnsubscribe();
