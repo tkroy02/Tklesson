@@ -156,66 +156,6 @@ html {
     min-height: 100vh;
 }
 
-.notification-bell:hover {
-    color: var(--primary);
-}
-
-.notification-item {
-    display: flex;
-    gap: 12px;
-    padding: 14px 20px;
-    border-bottom: 1px solid #f0f0f0;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.notification-item:hover {
-    background: #f8f9fa;
-}
-
-.notification-item.unread {
-    background: rgba(11, 61, 145, 0.04);
-    border-left: 3px solid var(--primary);
-}
-
-.notification-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.9rem;
-    flex-shrink: 0;
-}
-
-.notification-icon.grant { background: #f0fff4; color: var(--success); }
-.notification-icon.revoke { background: #fef2f2; color: var(--danger); }
-.notification-icon.expiry { background: #fffbeb; color: var(--warning); }
-
-.notification-content {
-    flex: 1;
-    min-width: 0;
-}
-
-.notification-title {
-    font-weight: 600;
-    font-size: 0.85rem;
-    margin-bottom: 2px;
-}
-
-.notification-message {
-    font-size: 0.78rem;
-    color: var(--gray);
-    line-height: 1.4;
-}
-
-.notification-time {
-    font-size: 0.7rem;
-    color: #aaa;
-    margin-top: 4px;
-}
-        
 /* Resource Content */
 #resource-content .content-section,
 #resource-content .textbook-content,
@@ -5200,12 +5140,9 @@ window.firebaseModules = {
     doc,
     setDoc,
     getDocs,
-    deleteDoc,
-    query,
-    where,
-    orderBy,
-    limit
+    deleteDoc
 };
+
 // ---------- Auth Functions ----------
 window.updateProfile = updateProfile;
 window.updatePassword = updatePassword;
@@ -5391,7 +5328,6 @@ function initializeSettings() {
     loadUserProfile();
     loadSettings();
     setupEventListeners();
-    loadNotifications();
 }
 
 // Reset when leaving settings page
@@ -12609,162 +12545,6 @@ async function updateSubscriptionStatus(
 //============ SUBSCRIPTION SECTION ENDS HERE ============//
 //=======================================================//
 
-//=========================================================//
-// ============NOTIFICATION SYSTEM STARTS HERE =============//
-//========================================================//
-
-const { collection, query, where, getDocs, limit } = window.firebaseModules;
-    
-async function loadNotifications() {
-    const user = auth.currentUser;
-    if (!user) return;
-
-    try {
-        const subRef = collection(db, 'subscriptions');
-        const q = query(subRef, where('userId', '==', user.uid), limit(50));
-        const snapshot = await getDocs(q);
-
-        const notifications = [];
-        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
-                notifications.push({
-                    id: doc.id,
-                    type: data.type,
-                    title: data.type === 'admin_grant' ? '🎁 Free Premium Access Granted!' : '🚫 Premium Access Revoked',
-                    message: data.type === 'admin_grant' 
-                        ? `You've been granted ${data.duration || '?'} month(s) of free premium access. Enjoy!`
-                        : `Your premium access has been removed. Reason: ${data.reason || 'Not specified'}`,
-                    createdAt: data.grantedAt || data.revokedAt || data.grantedAt,
-                    read: readFlags.includes(doc.id)
-                });
-            }
-        });
-
-        notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-        updateNotificationBadge(notifications);
-        renderNotifications(notifications);
-
-    } catch (error) {
-        console.error('Error loading notifications:', error);
-    }
-}
-
-function updateNotificationBadge(notifications) {
-    const badge = document.getElementById('notification-count');
-    if (!badge) return;
-
-    const unread = notifications.filter(n => !n.read).length;
-
-    if (unread > 0) {
-        badge.textContent = unread > 99 ? '99+' : unread;
-        badge.style.display = 'flex';
-    } else {
-        badge.style.display = 'none';
-    }
-}
-
-function renderNotifications(notifications) {
-    const list = document.getElementById('notification-list');
-    if (!list) return;
-
-    if (notifications.length === 0) {
-        list.innerHTML = '<div style="text-align: center; padding: 30px; color: var(--gray);"><i class="fas fa-bell-slash" style="font-size: 2rem; margin-bottom: 8px; display: block;"></i>No notifications</div>';
-        return;
-    }
-
-    const icons = {
-        'admin_grant': { icon: 'fa-gift', class: 'grant' },
-        'admin_revoke': { icon: 'fa-ban', class: 'revoke' }
-    };
-
-    list.innerHTML = notifications.map(n => {
-        const config = icons[n.type] || { icon: 'fa-bell', class: '' };
-        const time = getTimeAgo(n.createdAt);
-
-        return `
-            <div class="notification-item ${n.read ? '' : 'unread'}" onclick="markNotificationRead('${n.id}')">
-                <div class="notification-icon ${config.class}">
-                    <i class="fas ${config.icon}"></i>
-                </div>
-                <div class="notification-content">
-                    <div class="notification-title">${n.title}</div>
-                    <div class="notification-message">${n.message}</div>
-                    <div class="notification-time">${time}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-function getTimeAgo(dateString) {
-    if (!dateString) return '';
-    const diff = Date.now() - new Date(dateString).getTime();
-    const mins = Math.floor(diff / 60000);
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
-
-    if (mins < 1) return 'Just now';
-    if (mins < 60) return `${mins}m ago`;
-    if (hours < 24) return `${hours}h ago`;
-    if (days < 7) return `${days}d ago`;
-    return new Date(dateString).toLocaleDateString();
-}
-
-function markNotificationRead(notificationId) {
-    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-    if (!readFlags.includes(notificationId)) {
-        readFlags.push(notificationId);
-        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
-    }
-    loadNotifications();
-}
-
-async function markAllNotificationsRead() {
-    const user = auth.currentUser;
-    if (!user) return;
-
-    try {
-        const subRef = collection(db, 'subscriptions');
-        const q = query(subRef, where('userId', '==', user.uid), limit(50));
-        const snapshot = await getDocs(q);
-
-        const readFlags = snapshot.docs.map(doc => doc.id);
-        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
-        loadNotifications();
-    } catch (error) {
-        console.error('Error marking all read:', error);
-    }
-}
-
-function toggleNotifications() {
-    const dropdown = document.getElementById('notification-dropdown');
-    if (!dropdown) return;
-
-    const isOpen = dropdown.style.display === 'block';
-    dropdown.style.display = isOpen ? 'none' : 'block';
-
-    if (!isOpen) loadNotifications();
-}
-
-// Close dropdown when clicking outside
-document.addEventListener('click', (e) => {
-    const dropdown = document.getElementById('notification-dropdown');
-    const bell = document.getElementById('notification-bell');
-    if (dropdown && bell && !bell.contains(e.target) && !dropdown.contains(e.target)) {
-        dropdown.style.display = 'none';
-    }
-});
-
-//========================================================//
-//===========NOTIFICATION SYSTEM ENDS HERE ===============//
-//========================================================//
-
-
-    
 </script>
 
 </body>
