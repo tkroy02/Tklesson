@@ -2512,37 +2512,28 @@ setupGrantSubscription() {
 
 async grantFreeSubscription(userId, durationMonths, reason) {
     const { updateDoc, addDoc, doc, collection, getDoc } = window.firebaseModules;
-
     const userDoc  = await getDoc(doc(window.db, 'users', userId));
     const userData = userDoc.data() || {};
-
     const now = new Date();
     let startDate = now;
     let expiryDate;
-
     if (userData.subscription === true && userData.subscriptionExpiry) {
         const currentExpiry = new Date(userData.subscriptionExpiry);
         if (currentExpiry > now) {
-            // Still active — extend from current expiry
             startDate  = new Date(userData.subscriptionStart || now);
             expiryDate = new Date(currentExpiry);
         } else {
-            // Expired — start fresh
             expiryDate = new Date(now);
         }
     } else {
-        // No active subscription — start fresh
         expiryDate = new Date(now);
     }
-
     expiryDate.setMonth(expiryDate.getMonth() + durationMonths);
-
     const plan = durationMonths >= 12 ? 'premium_yearly' : 'premium_monthly';
     const extendedExisting =
         userData.subscription === true &&
         userData.subscriptionExpiry &&
         new Date(userData.subscriptionExpiry) > now;
-
     await updateDoc(doc(window.db, 'users', userId), {
         subscription:      true,
         subscriptionPlan:  plan,
@@ -2554,21 +2545,31 @@ async grantFreeSubscription(userId, durationMonths, reason) {
         grantReason:       reason,
         updatedAt:         now.toISOString()
     });
-
     await addDoc(collection(window.db, 'subscriptions'), {
-    userId,
-    email: this.users.find(u => u.id === userId)?.email || '',
-    type: 'admin_grant',
-    plan: durationMonths >= 12 ? 'premium_yearly' : 'premium_monthly',
-    price: 0,
-    duration: durationMonths,
-    reason,
-    grantedBy: this.currentUser?.uid || 'admin',
-    grantedByName: this.currentUser?.email?.split('@')[0] || 'Admin',  // Add this
-    grantedAt: now.toISOString(),
-    source: 'admin_dashboard',
-    extendedExisting: userData.subscription === true && userData.subscriptionExpiry && new Date(userData.subscriptionExpiry) > now
-});
+        userId,
+        email:         this.users.find(u => u.id === userId)?.email || '',
+        type:          'admin_grant',
+        plan:          durationMonths >= 12 ? 'premium_yearly' : 'premium_monthly',
+        price:         0,
+        duration:      durationMonths,
+        reason,
+        grantedBy:     this.currentUser?.uid || 'admin',
+        grantedByName: this.currentUser?.email?.split('@')[0] || 'Admin',
+        grantedAt:     now.toISOString(),
+        source:        'admin_dashboard',
+        extendedExisting
+    });
+
+    // Notify student
+    await addDoc(collection(window.db, 'notifications'), {
+        userId,
+        type:      'admin_grant',
+        message:   extendedExisting
+                     ? `Your premium access has been extended by ${durationMonths} month(s). Enjoy!`
+                     : `You have been granted ${durationMonths} month(s) of free premium access. Enjoy!`,
+        read:      false,
+        createdAt: new Date().toISOString()
+    });
 }
 
 async loadRecentGrants() {
@@ -2759,7 +2760,7 @@ async revokeSubscription(userId, reason) {
         source: 'admin_dashboard'
     });
 }
-
+            
 //=======================================================================================//
 //=======================SUBSCRIPTION CREDIT ENDS========================================//
 //=======================================================================================//
