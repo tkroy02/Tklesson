@@ -12610,21 +12610,35 @@ async function updateSubscriptionStatus(
 // ============NOTIFICATION SYSTEM STARTS HERE =============//
 //========================================================//
 
-// ---------- Notification System ----------
-
 async function loadNotifications() {
     const user = auth.currentUser;
     if (!user) return;
 
     try {
-        const notificationsRef = collection(db, 'users', user.uid, 'notifications');
-        const q = query(notificationsRef, orderBy('createdAt', 'desc'), limit(50));
+        const subRef = collection(db, 'subscriptions');
+        const q = query(subRef, where('userId', '==', user.uid), limit(50));
         const snapshot = await getDocs(q);
 
         const notifications = [];
+        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+
         snapshot.forEach(doc => {
-            notifications.push({ id: doc.id, ...doc.data() });
+            const data = doc.data();
+            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
+                notifications.push({
+                    id: doc.id,
+                    type: data.type,
+                    title: data.type === 'admin_grant' ? '🎁 Free Premium Access Granted!' : '🚫 Premium Access Revoked',
+                    message: data.type === 'admin_grant' 
+                        ? `You've been granted ${data.duration || '?'} month(s) of free premium access. Enjoy!`
+                        : `Your premium access has been removed. Reason: ${data.reason || 'Not specified'}`,
+                    createdAt: data.grantedAt || data.revokedAt || data.grantedAt,
+                    read: readFlags.includes(doc.id)
+                });
+            }
         });
+
+        notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
         updateNotificationBadge(notifications);
         renderNotifications(notifications);
@@ -12658,10 +12672,8 @@ function renderNotifications(notifications) {
     }
 
     const icons = {
-        'subscription_granted': { icon: 'fa-gift', class: 'grant' },
-        'subscription_revoked': { icon: 'fa-ban', class: 'revoke' },
-        'subscription_expiring': { icon: 'fa-clock', class: 'expiry' },
-        'subscription_expired': { icon: 'fa-exclamation-circle', class: 'expiry' }
+        'admin_grant': { icon: 'fa-gift', class: 'grant' },
+        'admin_revoke': { icon: 'fa-ban', class: 'revoke' }
     };
 
     list.innerHTML = notifications.map(n => {
@@ -12697,16 +12709,13 @@ function getTimeAgo(dateString) {
     return new Date(dateString).toLocaleDateString();
 }
 
-async function markNotificationRead(notificationId) {
-    const user = auth.currentUser;
-    if (!user) return;
-
-    try {
-        await updateDoc(doc(db, 'users', user.uid, 'notifications', notificationId), { read: true });
-        loadNotifications();
-    } catch (error) {
-        console.error('Error marking read:', error);
+function markNotificationRead(notificationId) {
+    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+    if (!readFlags.includes(notificationId)) {
+        readFlags.push(notificationId);
+        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
     }
+    loadNotifications();
 }
 
 async function markAllNotificationsRead() {
@@ -12714,16 +12723,12 @@ async function markAllNotificationsRead() {
     if (!user) return;
 
     try {
-        const ref = collection(db, 'users', user.uid, 'notifications');
-        const q = query(ref, where('read', '==', false));
+        const subRef = collection(db, 'subscriptions');
+        const q = query(subRef, where('userId', '==', user.uid), limit(50));
         const snapshot = await getDocs(q);
 
-        const updates = [];
-        snapshot.forEach(doc => {
-            updates.push(updateDoc(doc.ref, { read: true }));
-        });
-        await Promise.all(updates);
-
+        const readFlags = snapshot.docs.map(doc => doc.id);
+        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
         loadNotifications();
     } catch (error) {
         console.error('Error marking all read:', error);
@@ -12749,24 +12754,9 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Helper to create notifications (call from admin grant/revoke or expiry checks)
-async function createNotification(userId, type, title, message) {
-    try {
-        await addDoc(collection(db, 'users', userId, 'notifications'), {
-            type,
-            title,
-            message,
-            read: false,
-            createdAt: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('Error creating notification:', error);
-    }
-}
-
-//============================================================================//
-//===========NOTIFICATION SYSTEM ENDS HERE ===================================//
-//============================================================================//
+//========================================================//
+//===========NOTIFICATION SYSTEM ENDS HERE ===============//
+//========================================================//
 
 
     
