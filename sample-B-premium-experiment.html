@@ -12546,36 +12546,53 @@ async function updateSubscriptionStatus(
 //============ SUBSCRIPTION SECTION ENDS HERE ============//
 //=======================================================//
 
-// =============================================
-// NOTIFICATION SYSTEM — Student Dashboard
-// =============================================
+//=========================================================//
+// ============NOTIFICATION SYSTEM STARTS HERE =============//
+//========================================================//
 
 let notificationUnsubscribe = null;
 
 function initNotifications(userId) {
-    const { collection, query, where, orderBy, limit,
-            onSnapshot, updateDoc, doc, writeBatch } = window.firebaseModules;
+    const { collection, query, where, orderBy, limit, onSnapshot } = window.firebaseModules;
 
     const bellEl      = document.getElementById('notification-bell');
     const badgeEl     = document.getElementById('notification-count');
     const dropdownEl  = document.getElementById('notification-dropdown');
     const listEl      = document.getElementById('notification-list');
 
-    // ── Real-time listener ──────────────────────────────────────────
+    if (!bellEl || !dropdownEl) return;
+
+    // ── Real-time listener on subscriptions ──────────────────────
     const q = query(
-        collection(window.db, 'notifications'),
+        collection(window.db, 'subscriptions'),
         where('userId', '==', userId),
-        orderBy('createdAt', 'desc'),
+        orderBy('grantedAt', 'desc'),
         limit(50)
     );
 
     notificationUnsubscribe = onSnapshot(q, (snapshot) => {
         const notifications = [];
-        snapshot.forEach(d => notifications.push({ id: d.id, ...d.data() }));
+        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+        
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
+                notifications.push({
+                    id: doc.id,
+                    type: data.type,
+                    message: data.type === 'admin_grant'
+                        ? `🎁 You've been granted ${data.duration || '?'} month(s) of free premium access!`
+                        : `🚫 Your premium access has been removed. Reason: ${data.reason || 'Not specified'}`,
+                    createdAt: data.grantedAt || data.revokedAt,
+                    read: readFlags.includes(doc.id)
+                });
+            }
+        });
+        
         renderNotifications(notifications);
     });
 
-    // ── Toggle dropdown ─────────────────────────────────────────────
+    // ── Toggle dropdown ────────────────────────────────────────
     bellEl.onclick = (e) => {
         e.stopPropagation();
         const isOpen = dropdownEl.style.display !== 'none';
@@ -12592,21 +12609,22 @@ function initNotifications(userId) {
     // Mark all read button
     const markAllBtn = dropdownEl.querySelector('[data-action="mark-all"]');
     if (markAllBtn) {
-        markAllBtn.onclick = () => markAllNotificationsRead(userId);
+        markAllBtn.onclick = () => markAllNotificationsRead();
     }
 }
 
-// ── Render ──────────────────────────────────────────────────────────
+// ── Render ─────────────────────────────────────────────────────
 function renderNotifications(notifications) {
     const badgeEl = document.getElementById('notification-count');
     const listEl  = document.getElementById('notification-list');
+    if (!badgeEl || !listEl) return;
 
     const unreadCount = notifications.filter(n => !n.read).length;
 
     // Badge
     if (unreadCount > 0) {
         badgeEl.style.display = 'flex';
-        badgeEl.textContent   = unreadCount > 99 ? '99+' : unreadCount;
+        badgeEl.textContent = unreadCount > 99 ? '99+' : unreadCount;
     } else {
         badgeEl.style.display = 'none';
     }
@@ -12630,13 +12648,10 @@ function renderNotifications(notifications) {
 }
 
 function buildNotifHTML(n) {
-    const isUnread  = !n.read;
-    const icon      = getNotifIcon(n.type);
-    const timeStr   = formatNotifTime(n.createdAt);
-    const bgStyle   = isUnread ? 'background: #f5f3ff;' : '';
-    const dotHTML   = isUnread
-        ? `<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>`
-        : '';
+    const isUnread = !n.read;
+    const icon = getNotifIcon(n.type);
+    const timeStr = formatNotifTime(n.createdAt);
+    const bgStyle = isUnread ? 'background: #f5f3ff;' : '';
 
     return `
         <div data-notif-id="${n.id}"
@@ -12652,54 +12667,49 @@ function buildNotifHTML(n) {
                 <div style="font-size:13px;line-height:1.5;color:#1a1a1a;">${n.message}</div>
                 <div style="font-size:11px;color:var(--gray);margin-top:3px;">${timeStr}</div>
             </div>
-            ${dotHTML}
+            ${isUnread ? '<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>' : ''}
         </div>`;
 }
 
-// ── Icon map ────────────────────────────────────────────────────────
+// ── Icon map ───────────────────────────────────────────────────
 function getNotifIcon(type) {
     const map = {
-        admin_grant:   { emoji: '🎁', bg: '#f0fdf4' },
-        admin_revoke:  { emoji: '🚫', bg: '#fef2f2' },
-        course_update: { emoji: '📚', bg: '#eff6ff' },
-        quiz_result:   { emoji: '📝', bg: '#fefce8' },
-        reminder:      { emoji: '🔔', bg: '#f5f3ff' },
+        admin_grant:  { emoji: '🎁', bg: '#f0fdf4' },
+        admin_revoke: { emoji: '🚫', bg: '#fef2f2' }
     };
     return map[type] || { emoji: '📣', bg: '#f9fafb' };
 }
 
-// ── Mark single read ─────────────────────────────────────────────────
-async function markNotificationRead(notifId) {
-    const { updateDoc, doc } = window.firebaseModules;
-    try {
-        await updateDoc(doc(window.db, 'notifications', notifId), { read: true });
-    } catch (e) {
-        console.error('Failed to mark notification read:', e);
+// ── Mark single read ────────────────────────────────────────────
+function markNotificationRead(notifId) {
+    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+    if (!readFlags.includes(notifId)) {
+        readFlags.push(notifId);
+        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
     }
 }
 
-// ── Mark all read ────────────────────────────────────────────────────
-async function markAllNotificationsRead(userId) {
-    const { collection, query, where, getDocs, writeBatch, doc } = window.firebaseModules;
-
-    try {
-        const q    = query(
-            collection(window.db, 'notifications'),
-            where('userId', '==', userId),
-            where('read', '==', false)
-        );
-        const snap = await getDocs(q);
-        if (snap.empty) return;
-
-        const batch = writeBatch(window.db);
-        snap.forEach(d => batch.update(doc(window.db, 'notifications', d.id), { read: true }));
-        await batch.commit();
-    } catch (e) {
-        console.error('Failed to mark all read:', e);
-    }
+// ── Mark all read ───────────────────────────────────────────────
+function markAllNotificationsRead() {
+    // Get all current notification IDs from the DOM and mark them read
+    const listEl = document.getElementById('notification-list');
+    if (!listEl) return;
+    
+    const notifEls = listEl.querySelectorAll('[data-notif-id]');
+    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
+    
+    notifEls.forEach(el => {
+        const id = el.dataset.notifId;
+        if (!readFlags.includes(id)) {
+            readFlags.push(id);
+        }
+    });
+    
+    localStorage.setItem('readNotifications', JSON.stringify(readFlags));
+    // Force re-render will happen via the snapshot listener
 }
 
-// ── Relative time ────────────────────────────────────────────────────
+// ── Relative time ───────────────────────────────────────────────
 function formatNotifTime(isoString) {
     if (!isoString) return '';
     const diff = (Date.now() - new Date(isoString)) / 1000;
@@ -12714,7 +12724,7 @@ function formatNotifTime(isoString) {
     });
 }
 
-// ── Cleanup on logout ─────────────────────────────────────────────────
+// ── Cleanup on logout ────────────────────────────────────────────
 function cleanupNotifications() {
     if (notificationUnsubscribe) {
         notificationUnsubscribe();
@@ -12722,9 +12732,9 @@ function cleanupNotifications() {
     }
 }
 
- //=============================================================================//
-//mmm ===========================//
-//===============================================================================//
+//========================================================//
+//===========NOTIFICATION SYSTEM ENDS HERE ===============//
+//========================================================//
     
 </script>
 
