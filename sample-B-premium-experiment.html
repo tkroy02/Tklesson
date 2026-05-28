@@ -3130,11 +3130,7 @@ body {
     <div class="page-header">
         <h1 class="page-title">Dashboard</h1>
         <div style="display: flex; align-items: center; gap: 15px;">
-            <!-- Notification Bell -->
-            <div class="notification-bell" id="notification-bell" onclick="toggleNotifications()" style="position: relative; cursor: pointer; font-size: 1.25rem; color: var(--text-secondary);">
-                <i class="fas fa-bell"></i>
-                <span class="notification-badge" id="notification-count" style="display: none; position: absolute; top: -6px; right: -6px; background: var(--danger); color: white; font-size: 0.6rem; font-weight: 700; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid white;">0</span>
-            </div>
+          
             <!-- User Info -->
             <div class="user-info">
                 <div class="user-avatar" id="user-avatar">JS</div>
@@ -5140,12 +5136,7 @@ window.firebaseModules = {
     doc,
     setDoc,
     getDocs,
-    deleteDoc,
-    query,
-    where,
-    orderBy,
-    limit,
-    onSnapshot
+    deleteDoc
 };
 
 // ---------- Auth Functions ----------
@@ -6642,8 +6633,8 @@ window.showPage = async function(pageId, element = null) {
     }
 };
 
-// Track login state
-onAuthStateChanged(auth, async (user) => {
+  // Track login state
+  onAuthStateChanged(auth, async (user) => {
     if (user) {
         console.log("User signed in:", user.email);
 
@@ -6654,13 +6645,6 @@ onAuthStateChanged(auth, async (user) => {
         
         // Update profile display immediately
         updateUserProfileDisplay(user);
-        
-        // Init notifications — wait for Firebase modules to be ready
-        if (window.firebaseModules && window.firebaseModules.where) {
-            initNotifications(user.uid);
-        } else {
-            setTimeout(() => initNotifications(user.uid), 300);
-        }
         
         // Initialize dashboard with real data
         setTimeout(async () => {
@@ -6687,6 +6671,7 @@ onAuthStateChanged(auth, async (user) => {
         window.location.href = "premium.html";
     }
 });
+
 //==========================================================================//
 //===================SHOW PAGE ENDS HERE ==============================//
 //==========================================================================//
@@ -12556,196 +12541,6 @@ async function updateSubscriptionStatus(
 //============ SUBSCRIPTION SECTION ENDS HERE ============//
 //=======================================================//
 
-//=========================================================//
-// ============NOTIFICATION SYSTEM STARTS HERE =============//
-//========================================================//
-
-let notificationUnsubscribe = null;
-
-function initNotifications(userId) {
-    const { collection, query, where, getDocs, limit, onSnapshot, doc, updateDoc } = window.firebaseModules;
-
-    const bellEl      = document.getElementById('notification-bell');
-    const badgeEl     = document.getElementById('notification-count');
-    const dropdownEl  = document.getElementById('notification-dropdown');
-    const listEl      = document.getElementById('notification-list');
-
-    if (!bellEl || !dropdownEl) return;
-
-    // ── Real-time listener on subscriptions ──────────────────────
-    const q = query(
-        collection(window.db, 'subscriptions'),
-        where('userId', '==', userId),
-        orderBy('grantedAt', 'desc'),
-        limit(50)
-    );
-
-    notificationUnsubscribe = onSnapshot(q, (snapshot) => {
-        const notifications = [];
-        const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-        
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (data.type === 'admin_grant' || data.type === 'admin_revoke') {
-                notifications.push({
-                    id: doc.id,
-                    type: data.type,
-                    message: data.type === 'admin_grant'
-                        ? `🎁 You've been granted ${data.duration || '?'} month(s) of free premium access!`
-                        : `🚫 Your premium access has been removed. Reason: ${data.reason || 'Not specified'}`,
-                    createdAt: data.grantedAt || data.revokedAt,
-                    read: readFlags.includes(doc.id)
-                });
-            }
-        });
-        
-        renderNotifications(notifications);
-    });
-
-    // ── Toggle dropdown ────────────────────────────────────────
-    bellEl.onclick = (e) => {
-        e.stopPropagation();
-        const isOpen = dropdownEl.style.display !== 'none';
-        dropdownEl.style.display = isOpen ? 'none' : 'block';
-    };
-
-    // Close on outside click
-    document.addEventListener('click', (e) => {
-        if (!bellEl.contains(e.target) && !dropdownEl.contains(e.target)) {
-            dropdownEl.style.display = 'none';
-        }
-    });
-
-    // Mark all read button
-    const markAllBtn = dropdownEl.querySelector('[data-action="mark-all"]');
-    if (markAllBtn) {
-        markAllBtn.onclick = () => markAllNotificationsRead();
-    }
-}
-
-// ── Render ─────────────────────────────────────────────────────
-function renderNotifications(notifications) {
-    const badgeEl = document.getElementById('notification-count');
-    const listEl  = document.getElementById('notification-list');
-    if (!badgeEl || !listEl) return;
-
-    const unreadCount = notifications.filter(n => !n.read).length;
-
-    // Badge
-    if (unreadCount > 0) {
-        badgeEl.style.display = 'flex';
-        badgeEl.textContent = unreadCount > 99 ? '99+' : unreadCount;
-    } else {
-        badgeEl.style.display = 'none';
-    }
-
-    // List
-    if (notifications.length === 0) {
-        listEl.innerHTML = `
-            <div style="text-align:center; padding:36px 20px; color:var(--gray);">
-                <i class="fas fa-bell-slash" style="font-size:1.8rem; opacity:.4; display:block; margin-bottom:10px;"></i>
-                No notifications yet
-            </div>`;
-        return;
-    }
-
-    listEl.innerHTML = notifications.map(n => buildNotifHTML(n)).join('');
-
-    // Attach per-item click → mark read
-    listEl.querySelectorAll('[data-notif-id]').forEach(el => {
-        el.onclick = () => markNotificationRead(el.dataset.notifId);
-    });
-}
-
-function buildNotifHTML(n) {
-    const isUnread = !n.read;
-    const icon = getNotifIcon(n.type);
-    const timeStr = formatNotifTime(n.createdAt);
-    const bgStyle = isUnread ? 'background: #f5f3ff;' : '';
-
-    return `
-        <div data-notif-id="${n.id}"
-             style="display:flex;gap:12px;padding:14px 18px;cursor:pointer;
-                    transition:background .12s;border-bottom:1px solid #f1f1f1;
-                    ${bgStyle}"
-             onmouseover="this.style.background='#f9f9f9'"
-             onmouseout="this.style.background='${isUnread ? '#f5f3ff' : ''}'">
-            <div style="width:38px;height:38px;border-radius:50%;display:flex;
-                        align-items:center;justify-content:center;font-size:18px;
-                        flex-shrink:0;background:${icon.bg}">${icon.emoji}</div>
-            <div style="flex:1;min-width:0;">
-                <div style="font-size:13px;line-height:1.5;color:#1a1a1a;">${n.message}</div>
-                <div style="font-size:11px;color:var(--gray);margin-top:3px;">${timeStr}</div>
-            </div>
-            ${isUnread ? '<div style="width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:4px;"></div>' : ''}
-        </div>`;
-}
-
-// ── Icon map ───────────────────────────────────────────────────
-function getNotifIcon(type) {
-    const map = {
-        admin_grant:  { emoji: '🎁', bg: '#f0fdf4' },
-        admin_revoke: { emoji: '🚫', bg: '#fef2f2' }
-    };
-    return map[type] || { emoji: '📣', bg: '#f9fafb' };
-}
-
-// ── Mark single read ────────────────────────────────────────────
-function markNotificationRead(notifId) {
-    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-    if (!readFlags.includes(notifId)) {
-        readFlags.push(notifId);
-        localStorage.setItem('readNotifications', JSON.stringify(readFlags));
-    }
-}
-
-// ── Mark all read ───────────────────────────────────────────────
-function markAllNotificationsRead() {
-    // Get all current notification IDs from the DOM and mark them read
-    const listEl = document.getElementById('notification-list');
-    if (!listEl) return;
-    
-    const notifEls = listEl.querySelectorAll('[data-notif-id]');
-    const readFlags = JSON.parse(localStorage.getItem('readNotifications') || '[]');
-    
-    notifEls.forEach(el => {
-        const id = el.dataset.notifId;
-        if (!readFlags.includes(id)) {
-            readFlags.push(id);
-        }
-    });
-    
-    localStorage.setItem('readNotifications', JSON.stringify(readFlags));
-    // Force re-render will happen via the snapshot listener
-}
-
-// ── Relative time ───────────────────────────────────────────────
-function formatNotifTime(isoString) {
-    if (!isoString) return '';
-    const diff = (Date.now() - new Date(isoString)) / 1000;
-
-    if (diff < 60)       return 'Just now';
-    if (diff < 3600)     return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400)    return `${Math.floor(diff / 3600)}h ago`;
-    if (diff < 604800)   return `${Math.floor(diff / 86400)}d ago`;
-
-    return new Date(isoString).toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric'
-    });
-}
-
-// ── Cleanup on logout ────────────────────────────────────────────
-function cleanupNotifications() {
-    if (notificationUnsubscribe) {
-        notificationUnsubscribe();
-        notificationUnsubscribe = null;
-    }
-}
-
-//========================================================//
-//===========NOTIFICATION SYSTEM ENDS HERE ===============//
-//========================================================//
-    
 </script>
 
 </body>
