@@ -556,9 +556,9 @@
   (function () {
 
     /* ══════════════════════════════════
-       Firebase
-    ══════════════════════════════════ */
-    const _fbConfig = {
+     Firebase
+  ══════════════════════════════════ */
+  const _fbConfig = {
     apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
     authDomain: "email-notifications-1c77b.firebaseapp.com",
     projectId: "email-notifications-1c77b",
@@ -566,525 +566,579 @@
     messagingSenderId: "272046681025",
     appId: "1:272046681025:web:e0aff95e41caa65c6d1d40",
     measurementId: "G-B3VJ7R5R8H"
-};
+  };
 
-    firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    const db   = firebase.firestore();
+  firebase.initializeApp(_fbConfig);
+  const auth = firebase.auth();
+  const db   = firebase.firestore();
 
-    /* ══════════════════════════════════
-       Constants
-    ══════════════════════════════════ */
-    const DEVICE_TOKEN_KEY    = 'tk_admin_device_token';
-    const DEVICE_EXPIRY_KEY   = 'tk_admin_device_expiry';
-    const DEVICE_TOKEN_DAYS   = 30;
-    const SQ_MAX_ATTEMPTS     = 5;
+  /* ══════════════════════════════════
+     Constants
+  ══════════════════════════════════ */
+  const DEVICE_TOKEN_KEY    = 'tk_admin_device_token';
+  const DEVICE_EXPIRY_KEY   = 'tk_admin_device_expiry';
+  const DEVICE_TOKEN_DAYS   = 30;
+  const SQ_MAX_ATTEMPTS     = 5;
 
-    /* ══════════════════════════════════
-       TOTP Engine (RFC 6238 / HMAC-SHA1)
-    ══════════════════════════════════ */
-    const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  /* ══════════════════════════════════
+     Security Questions — fetched from Firestore
+  ══════════════════════════════════ */
+  let securityQuestions = null;
 
-    function base32Decode(s) {
-      let bits = 0, val = 0;
-      const out = [];
-      for (const c of s.toUpperCase().replace(/=+$/, '')) {
-        const idx = B32.indexOf(c);
-        if (idx < 0) continue;
-        val = (val << 5) | idx; bits += 5;
-        if (bits >= 8) { out.push((val >>> (bits - 8)) & 0xff); bits -= 8; }
+  async function loadSecurityQuestions() {
+    if (securityQuestions) return securityQuestions;
+    try {
+      const snap = await db.collection('app_config').doc('security_questions').get();
+      if (snap.exists && snap.data().questions) {
+        securityQuestions = snap.data().questions;
+        return securityQuestions;
       }
-      return new Uint8Array(out);
+      console.warn('No security questions found in Firestore. Using fallback.');
+      return getFallbackQuestions();
+    } catch (err) {
+      console.error('Failed to load security questions:', err);
+      return getFallbackQuestions();
     }
+  }
 
-    async function getTOTP(secret, offset) {
-      const step = 30;
-      const T    = Math.floor(Date.now() / 1000 / step) + (offset || 0);
-      const buf  = new ArrayBuffer(8);
-      new DataView(buf).setUint32(4, T, false);
-      const key  = await crypto.subtle.importKey(
-        'raw', base32Decode(secret),
-        { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
-      );
-      const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
-      const off  = hmac[hmac.length - 1] & 0xf;
-      const code = ((hmac[off] & 0x7f) << 24 |
-                    hmac[off+1] << 16 |
-                    hmac[off+2] << 8  |
-                    hmac[off+3]) % 1_000_000;
-      return code.toString().padStart(6, '0');
+  function getFallbackQuestions() {
+    // Minimal fallback — real questions must be in Firestore
+    return [
+      { id: 'sq1', question: 'Security Question 1 — please configure in Firestore' },
+      { id: 'sq2', question: 'Security Question 2 — please configure in Firestore' },
+      { id: 'sq3', question: 'Security Question 3 — please configure in Firestore' }
+    ];
+  }
+
+  async function renderSecurityQuestions() {
+    const questions = await loadSecurityQuestions();
+    const container = document.getElementById('sq-questions-container');
+    if (!container) return;
+
+    container.innerHTML = questions.map((q, i) => `
+      <div class="form-group">
+        <span class="q-label">${q.question}</span>
+        <div class="input-field">
+          <i class="fas ${q.icon || 'fa-shield'}"></i>
+          <input type="password" id="${q.id}" class="form-control"
+                 placeholder="Your answer" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+    `).join('');
+  }
+
+  /* ══════════════════════════════════
+     TOTP Engine (RFC 6238 / HMAC-SHA1)
+  ══════════════════════════════════ */
+  const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+  function base32Decode(s) {
+    let bits = 0, val = 0;
+    const out = [];
+    for (const c of s.toUpperCase().replace(/=+$/, '')) {
+      const idx = B32.indexOf(c);
+      if (idx < 0) continue;
+      val = (val << 5) | idx; bits += 5;
+      if (bits >= 8) { out.push((val >>> (bits - 8)) & 0xff); bits -= 8; }
     }
+    return new Uint8Array(out);
+  }
 
-    async function verifyTOTP(secret, token) {
-      for (const offset of [0, -1, 1]) {
-        if (await getTOTP(secret, offset) === token) return true;
-      }
+  async function getTOTP(secret, offset) {
+    const step = 30;
+    const T    = Math.floor(Date.now() / 1000 / step) + (offset || 0);
+    const buf  = new ArrayBuffer(8);
+    new DataView(buf).setUint32(4, T, false);
+    const key  = await crypto.subtle.importKey(
+      'raw', base32Decode(secret),
+      { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+    );
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+    const off  = hmac[hmac.length - 1] & 0xf;
+    const code = ((hmac[off] & 0x7f) << 24 |
+                  hmac[off+1] << 16 |
+                  hmac[off+2] << 8  |
+                  hmac[off+3]) % 1_000_000;
+    return code.toString().padStart(6, '0');
+  }
+
+  async function verifyTOTP(secret, token) {
+    for (const offset of [0, -1, 1]) {
+      if (await getTOTP(secret, offset) === token) return true;
+    }
+    return false;
+  }
+
+  /* ══════════════════════════════════
+     SHA-256 helper
+  ══════════════════════════════════ */
+  async function sha256(str) {
+    const buf  = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(str.trim().toLowerCase())
+    );
+    return Array.from(new Uint8Array(buf))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  /* ══════════════════════════════════
+     Device token helpers
+  ══════════════════════════════════ */
+  function generateToken() {
+    const arr = new Uint8Array(32);
+    crypto.getRandomValues(arr);
+    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function getStoredToken() {
+    const token  = localStorage.getItem(DEVICE_TOKEN_KEY);
+    const expiry = localStorage.getItem(DEVICE_EXPIRY_KEY);
+    if (!token || !expiry) return null;
+    if (Date.now() > parseInt(expiry, 10)) {
+      localStorage.removeItem(DEVICE_TOKEN_KEY);
+      localStorage.removeItem(DEVICE_EXPIRY_KEY);
+      return null;
+    }
+    return token;
+  }
+
+  async function isTrustedDevice(uid) {
+    const token = getStoredToken();
+    if (!token) return false;
+    try {
+      const tokenHash = await sha256(token);
+      const snap = await db.collection('user_security').doc(uid).get();
+      if (!snap.exists) return false;
+      const data = snap.data();
+      const stored = data.trustedDeviceTokens || [];
+      return stored.includes(tokenHash);
+    } catch {
       return false;
     }
+  }
 
-    /* ══════════════════════════════════
-       SHA-256 helper
-    ══════════════════════════════════ */
-    async function sha256(str) {
-      const buf  = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(str.trim().toLowerCase())
-      );
-      return Array.from(new Uint8Array(buf))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-    }
+  async function trustDevice(uid) {
+    const token     = generateToken();
+    const tokenHash = await sha256(token);
+    const expiry    = Date.now() + DEVICE_TOKEN_DAYS * 24 * 60 * 60 * 1000;
 
-    /* ══════════════════════════════════
-       Device token helpers
-    ══════════════════════════════════ */
-    function generateToken() {
-      const arr = new Uint8Array(32);
-      crypto.getRandomValues(arr);
-      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
+    localStorage.setItem(DEVICE_TOKEN_KEY,  token);
+    localStorage.setItem(DEVICE_EXPIRY_KEY, expiry.toString());
 
-    function getStoredToken() {
-      const token  = localStorage.getItem(DEVICE_TOKEN_KEY);
-      const expiry = localStorage.getItem(DEVICE_EXPIRY_KEY);
-      if (!token || !expiry) return null;
-      if (Date.now() > parseInt(expiry, 10)) {
-        localStorage.removeItem(DEVICE_TOKEN_KEY);
-        localStorage.removeItem(DEVICE_EXPIRY_KEY);
-        return null;
-      }
-      return token;
-    }
+    const snap = await db.collection('user_security').doc(uid).get();
+    const existing = snap.exists ? (snap.data().trustedDeviceTokens || []) : [];
+    const updated  = [...existing, tokenHash].slice(-10);
+    await db.collection('user_security').doc(uid).set(
+      { trustedDeviceTokens: updated },
+      { merge: true }
+    );
+  }
 
-    async function isTrustedDevice(uid) {
-      const token = getStoredToken();
-      if (!token) return false;
-      try {
-        const tokenHash = await sha256(token);
-        const snap = await db.collection('user_security').doc(uid).get();
-        if (!snap.exists) return false;
-        const data = snap.data();
-        const stored = data.trustedDeviceTokens || [];
-        return stored.includes(tokenHash);
-      } catch {
-        return false;
-      }
-    }
+  /* ══════════════════════════════════
+     State
+  ══════════════════════════════════ */
+  let pendingUser      = null;
+  let pendingSecret    = null;
+  let pendingUID       = null;
+  let sqFailCount      = 0;
+  let sqLocked         = false;
+  let countdownTimer   = null;
 
-    async function trustDevice(uid) {
-      const token     = generateToken();
-      const tokenHash = await sha256(token);
-      const expiry    = Date.now() + DEVICE_TOKEN_DAYS * 24 * 60 * 60 * 1000;
+  /* ══════════════════════════════════
+     UI Helpers
+  ══════════════════════════════════ */
+  const track = document.getElementById('card-track');
 
-      // Store token locally
-      localStorage.setItem(DEVICE_TOKEN_KEY,  token);
-      localStorage.setItem(DEVICE_EXPIRY_KEY, expiry.toString());
+  function slideToPanel(panel) {
+    track.classList.remove('show-step2', 'show-step3');
+    if (panel === 2) track.classList.add('show-step2');
+    if (panel === 3) track.classList.add('show-step3');
+  }
 
-      // Store hash in Firestore (append, keep last 10 to handle multiple devices)
-      const snap = await db.collection('user_security').doc(uid).get();
-      const existing = snap.exists ? (snap.data().trustedDeviceTokens || []) : [];
-      const updated  = [...existing, tokenHash].slice(-10);
-      await db.collection('user_security').doc(uid).set(
-        { trustedDeviceTokens: updated },
-        { merge: true }
-      );
-    }
+  function showLoginError(msg) {
+    document.getElementById('login-error-text').textContent = msg;
+    document.getElementById('login-error').classList.add('show');
+    document.getElementById('login-success').classList.remove('show');
+  }
 
-    /* ══════════════════════════════════
-       State
-    ══════════════════════════════════ */
-    let pendingUser      = null;
-    let pendingSecret    = null;
-    let pendingUID       = null;
-    let sqFailCount      = 0;
-    let sqLocked         = false;
-    let countdownTimer   = null;
+  function showLoginSuccess(msg) {
+    document.getElementById('login-success-text').textContent = msg;
+    document.getElementById('login-success').classList.add('show');
+    document.getElementById('login-error').classList.remove('show');
+  }
 
-    /* ══════════════════════════════════
-       UI Helpers
-    ══════════════════════════════════ */
-    const track = document.getElementById('card-track');
+  function hideLoginMsgs() {
+    document.getElementById('login-error').classList.remove('show');
+    document.getElementById('login-success').classList.remove('show');
+  }
 
-    function slideToPanel(panel) {
-      track.classList.remove('show-step2', 'show-step3');
-      if (panel === 2) track.classList.add('show-step2');
-      if (panel === 3) track.classList.add('show-step3');
-    }
+  function showTFAError(msg) {
+    document.getElementById('tfa-error-text').textContent = msg;
+    document.getElementById('tfa-error').classList.add('show');
+    const row = document.querySelector('.otp-row');
+    row.style.animation = 'none';
+    row.offsetHeight;
+    row.style.animation = 'shake 0.35s ease';
+  }
 
-    function showLoginError(msg) {
-      document.getElementById('login-error-text').textContent = msg;
-      document.getElementById('login-error').classList.add('show');
-      document.getElementById('login-success').classList.remove('show');
-    }
+  function hideTFAError() {
+    document.getElementById('tfa-error').classList.remove('show');
+  }
 
-    function showLoginSuccess(msg) {
-      document.getElementById('login-success-text').textContent = msg;
-      document.getElementById('login-success').classList.add('show');
-      document.getElementById('login-error').classList.remove('show');
-    }
-
-    function hideLoginMsgs() {
-      document.getElementById('login-error').classList.remove('show');
-      document.getElementById('login-success').classList.remove('show');
-    }
-
-    function showTFAError(msg) {
-      document.getElementById('tfa-error-text').textContent = msg;
-      document.getElementById('tfa-error').classList.add('show');
-      const row = document.querySelector('.otp-row');
-      row.style.animation = 'none';
-      row.offsetHeight;
-      row.style.animation = 'shake 0.35s ease';
-    }
-
-    function hideTFAError() {
-      document.getElementById('tfa-error').classList.remove('show');
-    }
-
-    function showSQError(msg) {
-      document.getElementById('sq-error-text').textContent = msg;
-      document.getElementById('sq-error').classList.add('show');
-      // Shake all three inputs
-      ['sq1','sq2','sq3'].forEach(id => {
-        const el = document.getElementById(id);
-        el.classList.add('input-error');
-        el.style.animation = 'none';
-        el.offsetHeight;
-        el.style.animation = 'shake 0.35s ease';
-        setTimeout(() => el.classList.remove('input-error'), 1500);
-      });
-    }
-
-    function hideSQError() {
-      document.getElementById('sq-error').classList.remove('show');
-    }
-
-    function updateAttemptBadge() {
-      const badge = document.getElementById('sq-attempt-badge');
-      const label = document.getElementById('sq-attempts-left');
-      const left  = SQ_MAX_ATTEMPTS - sqFailCount;
-      if (sqFailCount > 0) {
-        badge.style.display = 'inline-flex';
-        label.textContent   = `${left} attempt${left !== 1 ? 's' : ''} remaining`;
-      }
-    }
-
-    /* ── Countdown ring ── */
-    function startCountdown() {
-      if (countdownTimer) clearInterval(countdownTimer);
-      const ring  = document.getElementById('timer-ring');
-      const label = document.getElementById('timer-label');
-      const circ  = 50.3;
-      function tick() {
-        const rem = 30 - (Math.floor(Date.now() / 1000) % 30);
-        if (ring) {
-          ring.style.strokeDashoffset = circ * (1 - rem / 30);
-          ring.style.stroke = rem <= 5 ? '#e85d75' : 'var(--gold)';
-        }
-        if (label) label.textContent = rem + 's';
-      }
-      tick();
-      countdownTimer = setInterval(tick, 1000);
-    }
-
-    /* ── OTP digit auto-advance ── */
-    ['d0','d1','d2','d3','d4','d5'].forEach((id, idx) => {
-      const el = document.getElementById(id);
-      el.addEventListener('input', () => {
-        el.value = el.value.replace(/[^0-9]/g, '');
-        el.classList.toggle('filled', !!el.value);
-        if (el.value && idx < 5) document.getElementById(`d${idx+1}`).focus();
-        const all = ['d0','d1','d2','d3','d4','d5'].every(i => document.getElementById(i).value);
-        if (all) verifyLogin2FA();
-      });
-      el.addEventListener('keydown', e => {
-        if (e.key === 'Backspace' && !el.value && idx > 0) {
-          const prev = document.getElementById(`d${idx-1}`);
-          prev.value = ''; prev.classList.remove('filled'); prev.focus();
-        }
-      });
-      el.addEventListener('paste', e => {
-        e.preventDefault();
-        const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
-        [...pasted].forEach((ch, i) => {
-          const t = document.getElementById(`d${i}`);
-          if (t) { t.value = ch; t.classList.add('filled'); }
-        });
-        if (pasted.length === 6) verifyLogin2FA();
-        else document.getElementById(`d${Math.min(pasted.length, 5)}`).focus();
-      });
+  function showSQError(msg) {
+    document.getElementById('sq-error-text').textContent = msg;
+    document.getElementById('sq-error').classList.add('show');
+    // Shake all three inputs
+    const questions = securityQuestions || getFallbackQuestions();
+    questions.forEach(q => {
+      const el = document.getElementById(q.id);
+      if (!el) return;
+      el.classList.add('input-error');
+      el.style.animation = 'none';
+      el.offsetHeight;
+      el.style.animation = 'shake 0.35s ease';
+      setTimeout(() => el.classList.remove('input-error'), 1500);
     });
+  }
 
-    /* ══════════════════════════════════
-       Step 1 — Email + Password
-    ══════════════════════════════════ */
-    document.getElementById('login-form').addEventListener('submit', async function (e) {
+  function hideSQError() {
+    document.getElementById('sq-error').classList.remove('show');
+  }
+
+  function updateAttemptBadge() {
+    const badge = document.getElementById('sq-attempt-badge');
+    const label = document.getElementById('sq-attempts-left');
+    const left  = SQ_MAX_ATTEMPTS - sqFailCount;
+    if (sqFailCount > 0) {
+      badge.style.display = 'inline-flex';
+      label.textContent   = `${left} attempt${left !== 1 ? 's' : ''} remaining`;
+    }
+  }
+
+  /* ── Countdown ring ── */
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    const ring  = document.getElementById('timer-ring');
+    const label = document.getElementById('timer-label');
+    const circ  = 50.3;
+    function tick() {
+      const rem = 30 - (Math.floor(Date.now() / 1000) % 30);
+      if (ring) {
+        ring.style.strokeDashoffset = circ * (1 - rem / 30);
+        ring.style.stroke = rem <= 5 ? '#e85d75' : 'var(--gold)';
+      }
+      if (label) label.textContent = rem + 's';
+    }
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+  }
+
+  /* ── OTP digit auto-advance ── */
+  ['d0','d1','d2','d3','d4','d5'].forEach((id, idx) => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/[^0-9]/g, '');
+      el.classList.toggle('filled', !!el.value);
+      if (el.value && idx < 5) document.getElementById(`d${idx+1}`).focus();
+      const all = ['d0','d1','d2','d3','d4','d5'].every(i => document.getElementById(i).value);
+      if (all) verifyLogin2FA();
+    });
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Backspace' && !el.value && idx > 0) {
+        const prev = document.getElementById(`d${idx-1}`);
+        prev.value = ''; prev.classList.remove('filled'); prev.focus();
+      }
+    });
+    el.addEventListener('paste', e => {
       e.preventDefault();
-      hideLoginMsgs();
+      const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+      [...pasted].forEach((ch, i) => {
+        const t = document.getElementById(`d${i}`);
+        if (t) { t.value = ch; t.classList.add('filled'); }
+      });
+      if (pasted.length === 6) verifyLogin2FA();
+      else document.getElementById(`d${Math.min(pasted.length, 5)}`).focus();
+    });
+  });
 
-      const email    = document.getElementById('email').value.trim();
-      const password = document.getElementById('password').value;
-      const btn      = document.getElementById('login-btn');
-      const spinner  = document.getElementById('login-spinner');
-      const text     = document.getElementById('login-text');
+  /* ══════════════════════════════════
+     Step 1 — Email + Password
+  ══════════════════════════════════ */
+  document.getElementById('login-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hideLoginMsgs();
 
-      spinner.style.display = 'inline-block';
-      btn.disabled = true;
-      text.textContent = 'Verifying...';
+    const email    = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const btn      = document.getElementById('login-btn');
+    const spinner  = document.getElementById('login-spinner');
+    const text     = document.getElementById('login-text');
 
-      try {
-        const cred = await auth.signInWithEmailAndPassword(email, password);
-        const user = cred.user;
+    spinner.style.display = 'inline-block';
+    btn.disabled = true;
+    text.textContent = 'Verifying...';
 
-        const snap = await db.collection('user_security').doc(user.uid).get();
+    try {
+      const cred = await auth.signInWithEmailAndPassword(email, password);
+      const user = cred.user;
 
-        if (snap.exists && snap.data().totpEnabled && snap.data().totpSecret) {
-          pendingUser   = user;
-          pendingUID    = user.uid;
-          pendingSecret = snap.data().totpSecret;
+      const snap = await db.collection('user_security').doc(user.uid).get();
 
-          document.getElementById('tfa-display-email').textContent = email;
-          slideToPanel(2);
-          startCountdown();
-          setTimeout(() => document.getElementById('d0').focus(), 480);
+      if (snap.exists && snap.data().totpEnabled && snap.data().totpSecret) {
+        pendingUser   = user;
+        pendingUID    = user.uid;
+        pendingSecret = snap.data().totpSecret;
 
-          spinner.style.display = 'none';
-          btn.disabled = false;
-          text.textContent = 'Access Dashboard';
-        } else {
-          // No 2FA — check device trust then proceed
-          pendingUID = user.uid;
-          await postAuthFlow();
-        }
-      } catch (err) {
+        document.getElementById('tfa-display-email').textContent = email;
+        slideToPanel(2);
+        startCountdown();
+        setTimeout(() => document.getElementById('d0').focus(), 480);
+
         spinner.style.display = 'none';
         btn.disabled = false;
         text.textContent = 'Access Dashboard';
-
-        const msgs = {
-          'auth/user-not-found':     'No account linked to this email.',
-          'auth/wrong-password':     'Incorrect password. Please retry.',
-          'auth/invalid-email':      'Invalid email format.',
-          'auth/too-many-requests':  'Too many attempts. Account temporarily locked.',
-          'auth/invalid-credential': 'Invalid credentials. Check email and password.',
-        };
-        showLoginError(msgs[err.code] || 'Authentication failed. Check credentials.');
-      }
-    });
-
-    /* ══════════════════════════════════
-       Step 2 — Verify TOTP
-    ══════════════════════════════════ */
-    window.verifyLogin2FA = async function () {
-      hideTFAError();
-      const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
-      if (code.length < 6) { showTFAError('Please enter all 6 digits.'); return; }
-
-      const btn     = document.getElementById('tfa-verify-btn');
-      const spinner = document.getElementById('tfa-spinner');
-      const text    = document.getElementById('tfa-btn-text');
-
-      btn.disabled = true;
-      spinner.style.display = 'inline-block';
-      text.innerHTML = 'Verifying…';
-
-      try {
-        const valid = await verifyTOTP(pendingSecret, code);
-        if (!valid) {
-          btn.disabled = false;
-          spinner.style.display = 'none';
-          text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-          showTFAError('Incorrect code. Try again or wait for the next code.');
-          ['d0','d1','d2','d3','d4','d5'].forEach(i => {
-            const el = document.getElementById(i);
-            el.value = ''; el.classList.remove('filled');
-          });
-          document.getElementById('d0').focus();
-          return;
-        }
-
-        // TOTP valid — now check device trust
-        if (countdownTimer) clearInterval(countdownTimer);
-
-        btn.disabled = false;
-        spinner.style.display = 'none';
-        text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-
+      } else {
+        pendingUID = user.uid;
         await postAuthFlow();
+      }
+    } catch (err) {
+      spinner.style.display = 'none';
+      btn.disabled = false;
+      text.textContent = 'Access Dashboard';
 
-      } catch (err) {
+      const msgs = {
+        'auth/user-not-found':     'No account linked to this email.',
+        'auth/wrong-password':     'Incorrect password. Please retry.',
+        'auth/invalid-email':      'Invalid email format.',
+        'auth/too-many-requests':  'Too many attempts. Account temporarily locked.',
+        'auth/invalid-credential': 'Invalid credentials. Check email and password.',
+      };
+      showLoginError(msgs[err.code] || 'Authentication failed. Check credentials.');
+    }
+  });
+
+  /* ══════════════════════════════════
+     Step 2 — Verify TOTP
+  ══════════════════════════════════ */
+  window.verifyLogin2FA = async function () {
+    hideTFAError();
+    const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
+    if (code.length < 6) { showTFAError('Please enter all 6 digits.'); return; }
+
+    const btn     = document.getElementById('tfa-verify-btn');
+    const spinner = document.getElementById('tfa-spinner');
+    const text    = document.getElementById('tfa-btn-text');
+
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+    text.innerHTML = 'Verifying…';
+
+    try {
+      const valid = await verifyTOTP(pendingSecret, code);
+      if (!valid) {
         btn.disabled = false;
         spinner.style.display = 'none';
         text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-        showTFAError('Verification error. Please try again.');
-      }
-    };
-
-    /* ══════════════════════════════════
-       Post-auth: device check → SQ or dashboard
-    ══════════════════════════════════ */
-    async function postAuthFlow() {
-      try {
-        const trusted = await isTrustedDevice(pendingUID);
-        if (trusted) {
-          window.location.href = 'super-dashboard.html';
-        } else {
-          // Check if security questions have been set up
-          const snap = await db.collection('user_security').doc(pendingUID).get();
-          const data = snap.exists ? snap.data() : {};
-
-          if (data.sqHash1 && data.sqHash2 && data.sqHash3) {
-            // Questions set up — show panel 3
-            sqFailCount = 0;
-            sqLocked    = false;
-            hideSQError();
-            document.getElementById('sq-lockout').classList.remove('show');
-            document.getElementById('sq-attempt-badge').style.display = 'none';
-            document.getElementById('sq-verify-btn').disabled = false;
-            document.getElementById('sq-back-btn').style.display = 'flex';
-            ['sq1','sq2','sq3'].forEach(id => document.getElementById(id).value = '');
-            slideToPanel(3);
-            setTimeout(() => document.getElementById('sq1').focus(), 480);
-          } else {
-            // Questions not set up yet — go straight in, prompt setup on dashboard
-            sessionStorage.setItem('sq_setup_required', 'true');
-            window.location.href = 'super-dashboard.html';
-          }
-        }
-      } catch (err) {
-        console.error('Device check error:', err);
-        window.location.href = 'super-dashboard.html';
-      }
-    }
-
-    /* ══════════════════════════════════
-       Step 3 — Security Questions
-    ══════════════════════════════════ */
-    window.verifySecurityQuestions = async function () {
-      if (sqLocked) return;
-      hideSQError();
-
-      const a1 = document.getElementById('sq1').value.trim();
-      const a2 = document.getElementById('sq2').value.trim();
-      const a3 = document.getElementById('sq3').value.trim();
-
-      if (!a1 || !a2 || !a3) {
-        showSQError('Please answer all three questions.');
+        showTFAError('Incorrect code. Try again or wait for the next code.');
+        ['d0','d1','d2','d3','d4','d5'].forEach(i => {
+          const el = document.getElementById(i);
+          el.value = ''; el.classList.remove('filled');
+        });
+        document.getElementById('d0').focus();
         return;
       }
 
-      const btn     = document.getElementById('sq-verify-btn');
-      const spinner = document.getElementById('sq-spinner');
-      const text    = document.getElementById('sq-btn-text');
+      if (countdownTimer) clearInterval(countdownTimer);
 
-      btn.disabled = true;
-      spinner.style.display = 'inline-block';
-      text.innerHTML = 'Verifying…';
+      btn.disabled = false;
+      spinner.style.display = 'none';
+      text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
 
-      try {
-        // Hash all three answers
-        const [h1, h2, h3] = await Promise.all([sha256(a1), sha256(a2), sha256(a3)]);
+      await postAuthFlow();
 
-        // Fetch stored hashes
+    } catch (err) {
+      btn.disabled = false;
+      spinner.style.display = 'none';
+      text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
+      showTFAError('Verification error. Please try again.');
+    }
+  };
+
+  /* ══════════════════════════════════
+     Post-auth: device check → SQ or dashboard
+  ══════════════════════════════════ */
+  async function postAuthFlow() {
+    try {
+      const trusted = await isTrustedDevice(pendingUID);
+      if (trusted) {
+        window.location.href = 'super-dashboard.html';
+      } else {
         const snap = await db.collection('user_security').doc(pendingUID).get();
-        const data = snap.data();
+        const data = snap.exists ? snap.data() : {};
 
-        if (h1 === data.sqHash1 && h2 === data.sqHash2 && h3 === data.sqHash3) {
-          // ✅ Correct — trust this device and proceed
-          await trustDevice(pendingUID);
-          window.location.href = 'super-dashboard.html';
+        if (data.sqHash1 && data.sqHash2 && data.sqHash3) {
+          // Load questions from Firestore, then render
+          await renderSecurityQuestions();
+          sqFailCount = 0;
+          sqLocked    = false;
+          hideSQError();
+          document.getElementById('sq-lockout').classList.remove('show');
+          document.getElementById('sq-attempt-badge').style.display = 'none';
+          document.getElementById('sq-verify-btn').disabled = false;
+          document.getElementById('sq-back-btn').style.display = 'flex';
+          slideToPanel(3);
+          setTimeout(() => {
+            const firstInput = document.querySelector('#sq-questions-container input');
+            if (firstInput) firstInput.focus();
+          }, 480);
         } else {
-          sqFailCount++;
-          updateAttemptBadge();
-
-          btn.disabled = false;
-          spinner.style.display = 'none';
-          text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-
-          const left = SQ_MAX_ATTEMPTS - sqFailCount;
-
-          if (left <= 0) {
-            // Lockout
-            sqLocked = true;
-            hideSQError();
-            document.getElementById('sq-lockout').classList.add('show');
-            document.getElementById('sq-verify-btn').disabled = true;
-            document.getElementById('sq-back-btn').style.display = 'none';
-            document.getElementById('sq-attempt-badge').style.display = 'none';
-            await auth.signOut();
-            pendingUser = null; pendingUID = null; pendingSecret = null;
-          } else {
-            showSQError(`One or more answers are incorrect. ${left} attempt${left !== 1 ? 's' : ''} remaining.`);
-            // Clear inputs
-            ['sq1','sq2','sq3'].forEach(id => document.getElementById(id).value = '');
-            document.getElementById('sq1').focus();
-          }
+          sessionStorage.setItem('sq_setup_required', 'true');
+          window.location.href = 'super-dashboard.html';
         }
-      } catch (err) {
+      }
+    } catch (err) {
+      console.error('Device check error:', err);
+      window.location.href = 'super-dashboard.html';
+    }
+  }
+
+  /* ══════════════════════════════════
+     Step 3 — Security Questions
+  ══════════════════════════════════ */
+  window.verifySecurityQuestions = async function () {
+    if (sqLocked) return;
+    hideSQError();
+
+    const questions = securityQuestions || getFallbackQuestions();
+    const answers = questions.map(q => ({
+      id: q.id,
+      value: document.getElementById(q.id)?.value?.trim() || ''
+    }));
+
+    if (answers.some(a => !a.value)) {
+      showSQError('Please answer all questions.');
+      return;
+    }
+
+    const btn     = document.getElementById('sq-verify-btn');
+    const spinner = document.getElementById('sq-spinner');
+    const text    = document.getElementById('sq-btn-text');
+
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+    text.innerHTML = 'Verifying…';
+
+    try {
+      const hashes = await Promise.all(answers.map(a => sha256(a.value)));
+
+      const snap = await db.collection('user_security').doc(pendingUID).get();
+      const data = snap.data();
+
+      // Check against stored hashes (sqHash1, sqHash2, sqHash3)
+      const storedHashes = [data.sqHash1, data.sqHash2, data.sqHash3];
+      const allCorrect = hashes.every((hash, i) => hash === storedHashes[i]);
+
+      if (allCorrect) {
+        await trustDevice(pendingUID);
+        window.location.href = 'super-dashboard.html';
+      } else {
+        sqFailCount++;
+        updateAttemptBadge();
+
         btn.disabled = false;
         spinner.style.display = 'none';
         text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-        showSQError('Verification failed. Please try again.');
+
+        const left = SQ_MAX_ATTEMPTS - sqFailCount;
+
+        if (left <= 0) {
+          sqLocked = true;
+          hideSQError();
+          document.getElementById('sq-lockout').classList.add('show');
+          document.getElementById('sq-verify-btn').disabled = true;
+          document.getElementById('sq-back-btn').style.display = 'none';
+          document.getElementById('sq-attempt-badge').style.display = 'none';
+          await auth.signOut();
+          pendingUser = null; pendingUID = null; pendingSecret = null;
+        } else {
+          showSQError(`One or more answers are incorrect. ${left} attempt${left !== 1 ? 's' : ''} remaining.`);
+          questions.forEach(q => {
+            const el = document.getElementById(q.id);
+            if (el) el.value = '';
+          });
+          const firstInput = document.querySelector('#sq-questions-container input');
+          if (firstInput) firstInput.focus();
+        }
       }
-    };
+    } catch (err) {
+      btn.disabled = false;
+      spinner.style.display = 'none';
+      text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
+      showSQError('Verification failed. Please try again.');
+    }
+  };
 
-    window.cancelSecurityQuestions = async function () {
-      if (sqLocked) return;
-      await auth.signOut().catch(() => {});
-      pendingUser = null; pendingUID = null; pendingSecret = null;
-      sqFailCount = 0; sqLocked = false;
-      ['sq1','sq2','sq3'].forEach(id => document.getElementById(id).value = '');
-      hideSQError();
-      document.getElementById('sq-attempt-badge').style.display = 'none';
-      slideToPanel(1);
-    };
-
-    /* ── Back button on panel 2 ── */
-    window.cancelLogin2FA = function () {
-      if (countdownTimer) clearInterval(countdownTimer);
-      auth.signOut().catch(() => {});
-      pendingUser = null; pendingUID = null; pendingSecret = null;
-      ['d0','d1','d2','d3','d4','d5'].forEach(i => {
-        const el = document.getElementById(i);
-        el.value = ''; el.classList.remove('filled');
-      });
-      hideTFAError();
-      slideToPanel(1);
-    };
-
-    /* ══════════════════════════════════
-       Password Reset
-    ══════════════════════════════════ */
-    document.getElementById('reset-password-btn').addEventListener('click', function () {
-      const email = document.getElementById('email').value.trim();
-      hideLoginMsgs();
-      if (!email) { showLoginError('Enter your admin email first, then click Reset.'); return; }
-
-      this.disabled = true;
-      this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending link…';
-
-      auth.sendPasswordResetEmail(email)
-        .then(() => {
-          this.disabled = false;
-          this.innerHTML = '<i class="fas fa-key"></i> Reset credentials';
-          showLoginSuccess('Recovery email dispatched. Check your inbox.');
-        })
-        .catch(err => {
-          this.disabled = false;
-          this.innerHTML = '<i class="fas fa-key"></i> Reset credentials';
-          const msgs = {
-            'auth/user-not-found': 'Email not registered.',
-            'auth/invalid-email':  'Invalid email address.',
-          };
-          showLoginError(msgs[err.code] || 'Reset request failed.');
-        });
+  window.cancelSecurityQuestions = async function () {
+    if (sqLocked) return;
+    await auth.signOut().catch(() => {});
+    pendingUser = null; pendingUID = null; pendingSecret = null;
+    sqFailCount = 0; sqLocked = false;
+    const questions = securityQuestions || [];
+    questions.forEach(q => {
+      const el = document.getElementById(q.id);
+      if (el) el.value = '';
     });
+    hideSQError();
+    document.getElementById('sq-attempt-badge').style.display = 'none';
+    slideToPanel(1);
+  };
 
-    document.getElementById('email').addEventListener('input', hideLoginMsgs);
-    document.getElementById('password').addEventListener('input', hideLoginMsgs);
+  /* ── Back button on panel 2 ── */
+  window.cancelLogin2FA = function () {
+    if (countdownTimer) clearInterval(countdownTimer);
+    auth.signOut().catch(() => {});
+    pendingUser = null; pendingUID = null; pendingSecret = null;
+    ['d0','d1','d2','d3','d4','d5'].forEach(i => {
+      const el = document.getElementById(i);
+      el.value = ''; el.classList.remove('filled');
+    });
+    hideTFAError();
+    slideToPanel(1);
+  };
 
-  })();
-  </script>
+  /* ══════════════════════════════════
+     Password Reset
+  ══════════════════════════════════ */
+  document.getElementById('reset-password-btn').addEventListener('click', function () {
+    const email = document.getElementById('email').value.trim();
+    hideLoginMsgs();
+    if (!email) { showLoginError('Enter your admin email first, then click Reset.'); return; }
 
+    this.disabled = true;
+    this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending link…';
+
+    auth.sendPasswordResetEmail(email)
+      .then(() => {
+        this.disabled = false;
+        this.innerHTML = '<i class="fas fa-key"></i> Reset credentials';
+        showLoginSuccess('Recovery email dispatched. Check your inbox.');
+      })
+      .catch(err => {
+        this.disabled = false;
+        this.innerHTML = '<i class="fas fa-key"></i> Reset credentials';
+        const msgs = {
+          'auth/user-not-found': 'Email not registered.',
+          'auth/invalid-email':  'Invalid email address.',
+        };
+        showLoginError(msgs[err.code] || 'Reset request failed.');
+      });
+  });
+
+  document.getElementById('email').addEventListener('input', hideLoginMsgs);
+  document.getElementById('password').addEventListener('input', hideLoginMsgs);
+
+})();
+</script>
 </body>
 </html>
