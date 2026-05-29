@@ -549,626 +549,584 @@ fetch("header.html")
 
     <!-- Firebase SDKs -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { 
-            getAuth, 
-            signInWithEmailAndPassword, 
-            onAuthStateChanged 
-        } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { 
-            getFirestore, 
-            collection, 
-            getDocs, 
-            doc, 
-            getDoc 
-        } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
+    import { 
+        getAuth, 
+        signInWithEmailAndPassword, 
+        onAuthStateChanged 
+    } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import { 
+        getFirestore, 
+        collection, 
+        getDocs, 
+        doc, 
+        getDoc,
+        setDoc
+    } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
-            authDomain: "email-notifications-1c77b.firebaseapp.com",
-            projectId: "email-notifications-1c77b",
-            storageBucket: "email-notifications-1c77b.firebasestorage.app",
-            messagingSenderId: "272046681025",
-            appId: "1:272046681025:web:e0aff95e41caa65c6d1d40",
-            measurementId: "G-B3VJ7R5R8H"
-        };
+    // ── Fetch config from Cloud Function ──
+    const firebaseConfig = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig')
+    .then(r => r.json());
+        
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const functions = getFunctions(app);
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+    const emailInput = document.getElementById('email');
+    const schoolDetectedBadge = document.getElementById('school-detected-badge');
+    const detectedSchoolName = document.getElementById('detected-school-name');
+    const schoolDropdownGroup = document.getElementById('school-dropdown-group');
+    const schoolSelectInput = document.getElementById('school-select-input');
+    const schoolDropdownList = document.getElementById('school-dropdown-list');
+    const selectedSchoolId = document.getElementById('selected-school-id');
+    const dropdownArrow = document.getElementById('dropdown-arrow');
+    const passwordInput = document.getElementById('password');
+    const togglePasswordBtn = document.getElementById('toggle-password');
+    const loginButton = document.getElementById('login-button');
+    const errorMessage = document.getElementById('error-message');
+    const errorText = document.getElementById('error-text');
+    const loginForm = document.getElementById('school-login-form');
 
-        const emailInput = document.getElementById('email');
-        const schoolDetectedBadge = document.getElementById('school-detected-badge');
-        const detectedSchoolName = document.getElementById('detected-school-name');
-        const schoolDropdownGroup = document.getElementById('school-dropdown-group');
-        const schoolSelectInput = document.getElementById('school-select-input');
-        const schoolDropdownList = document.getElementById('school-dropdown-list');
-        const selectedSchoolId = document.getElementById('selected-school-id');
-        const dropdownArrow = document.getElementById('dropdown-arrow');
-        const passwordInput = document.getElementById('password');
-        const togglePasswordBtn = document.getElementById('toggle-password');
-        const loginButton = document.getElementById('login-button');
-        const errorMessage = document.getElementById('error-message');
-        const errorText = document.getElementById('error-text');
-        const loginForm = document.getElementById('school-login-form');
+    let allSchools = [];
+    let detectedSchool = null;
 
-        let allSchools = [];
-        let detectedSchool = null;
+    async function loadSchools() {
+        try {
+            const schoolsRef = collection(db, 'schools');
+            const snapshot = await getDocs(schoolsRef);
+            allSchools = [];
 
-        async function loadSchools() {
-            try {
-                const schoolsRef = collection(db, 'schools');
-                const snapshot = await getDocs(schoolsRef);
-                allSchools = [];
-
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    if (data.isActive !== false) {
-                        allSchools.push({
-                            id: doc.id,
-                            name: data.name,
-                            city: data.city || '',
-                            country: data.country || '',
-                            domains: data.domains || []
-                        });
-                    }
-                });
-
-                allSchools.sort((a, b) => a.name.localeCompare(b.name));
-                console.log(`Loaded ${allSchools.length} schools`);
-            } catch (error) {
-                console.error('Error loading schools:', error);
-                showError('Unable to load school list. Please check your connection.');
-            }
-        }
-
-        function detectSchoolFromEmail(email) {
-            if (!email || !email.includes('@')) return null;
-            const domain = email.split('@')[1].toLowerCase();
-
-            for (const school of allSchools) {
-                if (school.domains && school.domains.length > 0) {
-                    for (const schoolDomain of school.domains) {
-                        if (domain === schoolDomain.toLowerCase()) {
-                            return school;
-                        }
-                    }
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                if (data.isActive !== false) {
+                    allSchools.push({
+                        id: doc.id,
+                        name: data.name,
+                        city: data.city || '',
+                        country: data.country || '',
+                        domains: data.domains || []
+                    });
                 }
-            }
-            return null;
-        }
-
-        emailInput.addEventListener('input', function() {
-            const email = this.value.trim();
-            detectedSchool = detectSchoolFromEmail(email);
-
-            if (detectedSchool) {
-                schoolDetectedBadge.style.display = 'flex';
-                detectedSchoolName.textContent = detectedSchool.name;
-                schoolDropdownGroup.style.display = 'none';
-                selectedSchoolId.value = detectedSchool.id;
-            } else {
-                schoolDetectedBadge.style.display = 'none';
-                schoolDropdownGroup.style.display = 'block';
-                selectedSchoolId.value = '';
-
-                if (!email) {
-                    schoolSelectInput.value = '';
-                    schoolSelectInput.placeholder = 'Search for your school...';
-                }
-            }
-
-            hideError();
-        });
-
-        schoolSelectInput.addEventListener('click', function() {
-            const isOpen = schoolDropdownList.classList.contains('open');
-            if (isOpen) {
-                closeDropdown();
-            } else {
-                openDropdown();
-            }
-        });
-
-        schoolSelectInput.addEventListener('input', function() {
-            filterDropdown(this.value);
-        });
-
-        function openDropdown() {
-            renderDropdown(allSchools);
-            schoolDropdownList.classList.add('open');
-            dropdownArrow.classList.remove('fa-chevron-down');
-            dropdownArrow.classList.add('fa-chevron-up');
-        }
-
-        function closeDropdown() {
-            schoolDropdownList.classList.remove('open');
-            dropdownArrow.classList.remove('fa-chevron-up');
-            dropdownArrow.classList.add('fa-chevron-down');
-        }
-
-        function renderDropdown(schools) {
-            if (schools.length === 0) {
-                schoolDropdownList.innerHTML = '<div class="no-results">No schools found</div>';
-                return;
-            }
-
-            schoolDropdownList.innerHTML = schools.map(school => {
-                const location = [school.city, school.country].filter(Boolean).join(', ');
-                return `
-                    <div class="dropdown-item" data-school-id="${school.id}" data-school-name="${school.name}">
-                        <strong>${school.name}</strong>
-                        ${location ? `<span style="color: var(--text-muted); font-size: 0.8rem; display: block;">${location}</span>` : ''}
-                    </div>
-                `;
-            }).join('');
-
-            schoolDropdownList.querySelectorAll('.dropdown-item').forEach(item => {
-                item.addEventListener('click', function() {
-                    const schoolId = this.getAttribute('data-school-id');
-                    const schoolName = this.getAttribute('data-school-name');
-                    selectSchool(schoolId, schoolName);
-                });
             });
+
+            allSchools.sort((a, b) => a.name.localeCompare(b.name));
+            console.log(`Loaded ${allSchools.length} schools`);
+        } catch (error) {
+            console.error('Error loading schools:', error);
+            showError('Unable to load school list. Please check your connection.');
         }
-
-        function filterDropdown(query) {
-            if (!query) {
-                renderDropdown(allSchools);
-                return;
-            }
-            const filtered = allSchools.filter(school =>
-                school.name.toLowerCase().includes(query.toLowerCase()) ||
-                school.city.toLowerCase().includes(query.toLowerCase()) ||
-                school.country.toLowerCase().includes(query.toLowerCase())
-            );
-            renderDropdown(filtered);
-        }
-
-        function selectSchool(schoolId, schoolName) {
-            selectedSchoolId.value = schoolId;
-            schoolSelectInput.value = schoolName;
-            closeDropdown();
-            hideError();
-        }
-
-        document.addEventListener('click', function(e) {
-            if (!schoolSelectInput.contains(e.target) && !schoolDropdownList.contains(e.target)) {
-                closeDropdown();
-            }
-        });
-
-        togglePasswordBtn.addEventListener('click', function() {
-            const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
-            passwordInput.setAttribute('type', type);
-            this.querySelector('i').classList.toggle('fa-eye');
-            this.querySelector('i').classList.toggle('fa-eye-slash');
-        });
-
-        function showError(message) {
-            errorText.textContent = message;
-            errorMessage.classList.add('show');
-        }
-
-        function hideError() {
-            errorMessage.classList.remove('show');
-        }
-
-        // ── Runtime state ──────────────────────────────────────────
-let _pendingSession = null;   // holds verified user data until 2FA passes
-let _challengeFailCount = 0;
-let _challengeTab = 'otp';
-let _countdownTimer = null;
-const CHALLENGE_MAX_ATTEMPTS = 5;
-
-// ── OTP library loader ─────────────────────────────────────
-function loadOTPLib() {
-    return new Promise((resolve, reject) => {
-        if (window.OTPAuth) { resolve(); return; }
-        const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
-        s.onload = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
-    });
-}
-
-// ── FORM SUBMIT ────────────────────────────────────────────
-loginForm.addEventListener('submit', async function(e) {
-    e.preventDefault();
-    hideError();
-
-    const email = emailInput.value.trim();
-    const password = passwordInput.value;
-    const schoolId = selectedSchoolId.value;
-
-    if (!email) {
-        showError('Please enter your email address.');
-        emailInput.focus(); return;
     }
-    if (!schoolId) {
+
+    function detectSchoolFromEmail(email) {
+        if (!email || !email.includes('@')) return null;
+        const domain = email.split('@')[1].toLowerCase();
+
+        for (const school of allSchools) {
+            if (school.domains && school.domains.length > 0) {
+                for (const schoolDomain of school.domains) {
+                    if (domain === schoolDomain.toLowerCase()) {
+                        return school;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    emailInput.addEventListener('input', function() {
+        const email = this.value.trim();
+        detectedSchool = detectSchoolFromEmail(email);
+
         if (detectedSchool) {
+            schoolDetectedBadge.style.display = 'flex';
+            detectedSchoolName.textContent = detectedSchool.name;
+            schoolDropdownGroup.style.display = 'none';
             selectedSchoolId.value = detectedSchool.id;
         } else {
-            showError('Please select your school from the dropdown.');
+            schoolDetectedBadge.style.display = 'none';
+            schoolDropdownGroup.style.display = 'block';
+            selectedSchoolId.value = '';
+
+            if (!email) {
+                schoolSelectInput.value = '';
+                schoolSelectInput.placeholder = 'Search for your school...';
+            }
+        }
+
+        hideError();
+    });
+
+    schoolSelectInput.addEventListener('click', function() {
+        const isOpen = schoolDropdownList.classList.contains('open');
+        if (isOpen) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    });
+
+    schoolSelectInput.addEventListener('input', function() {
+        filterDropdown(this.value);
+    });
+
+    function openDropdown() {
+        renderDropdown(allSchools);
+        schoolDropdownList.classList.add('open');
+        dropdownArrow.classList.remove('fa-chevron-down');
+        dropdownArrow.classList.add('fa-chevron-up');
+    }
+
+    function closeDropdown() {
+        schoolDropdownList.classList.remove('open');
+        dropdownArrow.classList.remove('fa-chevron-up');
+        dropdownArrow.classList.add('fa-chevron-down');
+    }
+
+    function renderDropdown(schools) {
+        if (schools.length === 0) {
+            schoolDropdownList.innerHTML = '<div class="no-results">No schools found</div>';
             return;
         }
+
+        schoolDropdownList.innerHTML = schools.map(school => {
+            const location = [school.city, school.country].filter(Boolean).join(', ');
+            return `
+                <div class="dropdown-item" data-school-id="${school.id}" data-school-name="${school.name}">
+                    <strong>${school.name}</strong>
+                    ${location ? `<span style="color: var(--text-muted); font-size: 0.8rem; display: block;">${location}</span>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        schoolDropdownList.querySelectorAll('.dropdown-item').forEach(item => {
+            item.addEventListener('click', function() {
+                const schoolId = this.getAttribute('data-school-id');
+                const schoolName = this.getAttribute('data-school-name');
+                selectSchool(schoolId, schoolName);
+            });
+        });
     }
-    if (!password) {
-        showError('Please enter your password.');
-        passwordInput.focus(); return;
+
+    function filterDropdown(query) {
+        if (!query) {
+            renderDropdown(allSchools);
+            return;
+        }
+        const filtered = allSchools.filter(school =>
+            school.name.toLowerCase().includes(query.toLowerCase()) ||
+            school.city.toLowerCase().includes(query.toLowerCase()) ||
+            school.country.toLowerCase().includes(query.toLowerCase())
+        );
+        renderDropdown(filtered);
     }
 
-    loginButton.classList.add('loading');
-    loginButton.disabled = true;
+    function selectSchool(schoolId, schoolName) {
+        selectedSchoolId.value = schoolId;
+        schoolSelectInput.value = schoolName;
+        closeDropdown();
+        hideError();
+    }
 
-    try {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-        const finalSchoolId = selectedSchoolId.value;
+    document.addEventListener('click', function(e) {
+        if (!schoolSelectInput.contains(e.target) && !schoolDropdownList.contains(e.target)) {
+            closeDropdown();
+        }
+    });
 
-        // ── Role check (unchanged from your original) ──
-        let userData = null;
-        let userRole = null;
+    togglePasswordBtn.addEventListener('click', function() {
+        const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
+        passwordInput.setAttribute('type', type);
+        this.querySelector('i').classList.toggle('fa-eye');
+        this.querySelector('i').classList.toggle('fa-eye-slash');
+    });
 
-        const schoolAdminRef = doc(db, 'schooladmins', user.uid);
-        const schoolAdminDoc = await getDoc(schoolAdminRef);
+    function showError(message) {
+        errorText.textContent = message;
+        errorMessage.classList.add('show');
+    }
 
-        if (schoolAdminDoc.exists()) {
-            const adminData = schoolAdminDoc.data();
-            if (adminData.schoolId === finalSchoolId) {
-                userData = adminData;
-                userRole = 'admin';
+    function hideError() {
+        errorMessage.classList.remove('show');
+    }
+
+    // ── Runtime state ──
+    let _pendingSession = null;
+    let _challengeFailCount = 0;
+    let _challengeTab = 'otp';
+    let _countdownTimer = null;
+    const CHALLENGE_MAX_ATTEMPTS = 5;
+
+    // ── FORM SUBMIT ──
+    loginForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        hideError();
+
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
+        const schoolId = selectedSchoolId.value;
+
+        if (!email) {
+            showError('Please enter your email address.');
+            emailInput.focus(); return;
+        }
+        if (!schoolId) {
+            if (detectedSchool) {
+                selectedSchoolId.value = detectedSchool.id;
             } else {
-                await auth.signOut();
-                showError('You are an administrator for a different school. Please select the correct school.');
-                loginButton.classList.remove('loading');
-                loginButton.disabled = false;
+                showError('Please select your school from the dropdown.');
                 return;
             }
         }
+        if (!password) {
+            showError('Please enter your password.');
+            passwordInput.focus(); return;
+        }
 
-        if (!userRole) {
-            const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
-            const userDoc = await getDoc(userRef);
-            if (!userDoc.exists()) {
-                await auth.signOut();
-                showError('You are not registered at this school. Please select the correct school or contact your administrator.');
-                loginButton.classList.remove('loading');
-                loginButton.disabled = false;
-                return;
+        loginButton.classList.add('loading');
+        loginButton.disabled = true;
+
+        try {
+            const userCredential = await signInWithEmailAndPassword(auth, email, password);
+            const user = userCredential.user;
+            const finalSchoolId = selectedSchoolId.value;
+
+            let userData = null;
+            let userRole = null;
+
+            const schoolAdminRef = doc(db, 'schooladmins', user.uid);
+            const schoolAdminDoc = await getDoc(schoolAdminRef);
+
+            if (schoolAdminDoc.exists()) {
+                const adminData = schoolAdminDoc.data();
+                if (adminData.schoolId === finalSchoolId) {
+                    userData = adminData;
+                    userRole = 'admin';
+                } else {
+                    await auth.signOut();
+                    showError('You are an administrator for a different school. Please select the correct school.');
+                    loginButton.classList.remove('loading');
+                    loginButton.disabled = false;
+                    return;
+                }
             }
-            userData = userDoc.data();
-            userRole = userData.role || 'student';
+
+            if (!userRole) {
+                const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
+                const userDoc = await getDoc(userRef);
+                if (!userDoc.exists()) {
+                    await auth.signOut();
+                    showError('You are not registered at this school. Please select the correct school or contact your administrator.');
+                    loginButton.classList.remove('loading');
+                    loginButton.disabled = false;
+                    return;
+                }
+                userData = userDoc.data();
+                userRole = userData.role || 'student';
+            }
+
+            const schoolRef = doc(db, 'schools', finalSchoolId);
+            const schoolDoc = await getDoc(schoolRef);
+            const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
+
+            let userDocForTFA = null;
+            if (userRole === 'admin') {
+                userDocForTFA = schoolAdminDoc.data();
+            } else {
+                const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
+                const userSnap = await getDoc(userRef);
+                userDocForTFA = userSnap.exists() ? userSnap.data() : {};
+            }
+
+            _pendingSession = {
+                schoolId: finalSchoolId,
+                userRole,
+                userDisplayName: userData.displayName || user.email,
+                userEmail: user.email,
+                userUid: user.uid,
+                schoolName: schoolData.name || 'Your School',
+                schoolLocation: [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
+            };
+
+            loginButton.classList.remove('loading');
+            loginButton.disabled = false;
+
+            if (userDocForTFA.twoFactorEnabled === true && userDocForTFA.twoFactorSecret) {
+                _pendingSession.tfaSecret = userDocForTFA.twoFactorSecret;
+                _pendingSession.tfaBackupCodes = userDocForTFA.twoFactorBackupCodes || [];
+                openChallengeModal();
+            } else {
+                commitSessionAndRedirect();
+            }
+
+        } catch (error) {
+            console.error('Login error:', error);
+            loginButton.classList.remove('loading');
+            loginButton.disabled = false;
+
+            switch (error.code) {
+                case 'auth/user-not-found':
+                case 'auth/invalid-credential':
+                case 'auth/wrong-password':
+                    showError('Invalid email or password. Please try again.'); break;
+                case 'auth/invalid-email':
+                    showError('Please enter a valid email address.'); break;
+                case 'auth/too-many-requests':
+                    showError('Too many login attempts. Please try again later.'); break;
+                case 'auth/network-request-failed':
+                    showError('Network error. Please check your connection.'); break;
+                default:
+                    showError('Login failed. Please try again.');
+            }
         }
-
-        // ── School info ──
-        const schoolRef = doc(db, 'schools', finalSchoolId);
-        const schoolDoc = await getDoc(schoolRef);
-        const schoolData = schoolDoc.exists() ? schoolDoc.data() : {};
-
-        // ── Check 2FA ──
-        // For admins, secret lives in schooladmins doc.
-        // For students/teachers, it lives in schools/{id}/users/{uid}
-        let userDocForTFA = null;
-        if (userRole === 'admin') {
-            userDocForTFA = schoolAdminDoc.data();
-        } else {
-            const userRef = doc(db, 'schools', finalSchoolId, 'users', user.uid);
-            const userSnap = await getDoc(userRef);
-            userDocForTFA = userSnap.exists() ? userSnap.data() : {};
-        }
-
-        // ── Store pending session (NOT written to sessionStorage yet) ──
-        _pendingSession = {
-            schoolId: finalSchoolId,
-            userRole,
-            userDisplayName: userData.displayName || user.email,
-            userEmail: user.email,
-            userUid: user.uid,
-            schoolName: schoolData.name || 'Your School',
-            schoolLocation: [schoolData.city, schoolData.country].filter(Boolean).join(', ') || 'Learning Portal'
-        };
-
-        loginButton.classList.remove('loading');
-        loginButton.disabled = false;
-
-        if (userDocForTFA.twoFactorEnabled === true && userDocForTFA.twoFactorSecret) {
-            // 2FA required — show challenge
-            await loadOTPLib();
-            _pendingSession.tfaSecret = userDocForTFA.twoFactorSecret;
-            _pendingSession.tfaBackupCodes = userDocForTFA.twoFactorBackupCodes || [];
-            openChallengeModal();
-        } else {
-            // No 2FA — proceed directly
-            commitSessionAndRedirect();
-        }
-
-    } catch (error) {
-        console.error('Login error:', error);
-        loginButton.classList.remove('loading');
-        loginButton.disabled = false;
-
-        switch (error.code) {
-            case 'auth/user-not-found':
-            case 'auth/invalid-credential':
-            case 'auth/wrong-password':
-                showError('Invalid email or password. Please try again.'); break;
-            case 'auth/invalid-email':
-                showError('Please enter a valid email address.'); break;
-            case 'auth/too-many-requests':
-                showError('Too many login attempts. Please try again later.'); break;
-            case 'auth/network-request-failed':
-                showError('Network error. Please check your connection.'); break;
-            default:
-                showError('Login failed. Please try again.');
-        }
-    }
-});
-
-// ── Write session and go to hub ────────────────────────────
-function commitSessionAndRedirect() {
-    if (!_pendingSession) return;
-    const s = _pendingSession;
-    sessionStorage.setItem('schoolId', s.schoolId);
-    sessionStorage.setItem('userRole', s.userRole);
-    sessionStorage.setItem('userDisplayName', s.userDisplayName);
-    sessionStorage.setItem('userEmail', s.userEmail);
-    sessionStorage.setItem('userUid', s.userUid);
-    sessionStorage.setItem('schoolName', s.schoolName);
-    sessionStorage.setItem('schoolLocation', s.schoolLocation);
-    window.location.href = 'school-hub.html';
-}
-
-// ── Open challenge modal ───────────────────────────────────
-function openChallengeModal() {
-    _challengeFailCount = 0;
-    _challengeTab = 'otp';
-    document.getElementById('2fa-challenge-modal').style.display = 'flex';
-    document.getElementById('challenge-error').style.display = 'none';
-    document.getElementById('challenge-lockout').style.display = 'none';
-    document.getElementById('challenge-submit-btn').disabled = false;
-    switchChallengeTab('otp');
-    startOTPCountdown();
-}
-
-window.cancelChallenge = async function() {
-    document.getElementById('2fa-challenge-modal').style.display = 'none';
-    stopOTPCountdown();
-    _pendingSession = null;
-    _challengeFailCount = 0;
-    await auth.signOut();
-    loginButton.classList.remove('loading');
-    loginButton.disabled = false;
-};
-
-// ── Tab switch ─────────────────────────────────────────────
-window.switchChallengeTab = function(tab) {
-    _challengeTab = tab;
-
-    const otpPanel = document.getElementById('challenge-otp-panel');
-    const backupPanel = document.getElementById('challenge-backup-panel');
-    const tabOtp = document.getElementById('tab-otp');
-    const tabBackup = document.getElementById('tab-backup');
-    const subtitle = document.getElementById('2fa-challenge-subtitle');
-
-    if (tab === 'otp') {
-        otpPanel.style.display = 'block';
-        backupPanel.style.display = 'none';
-        tabOtp.style.background = '#0b3d91';
-        tabOtp.style.color = 'white';
-        tabBackup.style.background = 'transparent';
-        tabBackup.style.color = '#708090';
-        subtitle.textContent = 'Enter the 6-digit code from your authenticator app.';
-        wireChallengOTPInputs();
-        startOTPCountdown();
-    } else {
-        otpPanel.style.display = 'none';
-        backupPanel.style.display = 'block';
-        tabBackup.style.background = '#0b3d91';
-        tabBackup.style.color = 'white';
-        tabOtp.style.background = 'transparent';
-        tabOtp.style.color = '#708090';
-        subtitle.textContent = 'Enter one of your saved backup codes.';
-        stopOTPCountdown();
-        setTimeout(() => document.getElementById('backup-code-input').focus(), 100);
-    }
-
-    document.getElementById('challenge-error').style.display = 'none';
-};
-
-// ── OTP countdown timer ────────────────────────────────────
-function startOTPCountdown() {
-    stopOTPCountdown();
-    function tick() {
-        const seconds = 30 - (Math.floor(Date.now() / 1000) % 30);
-        const el = document.getElementById('otp-countdown');
-        if (el) el.textContent = seconds;
-    }
-    tick();
-    _countdownTimer = setInterval(tick, 1000);
-}
-
-function stopOTPCountdown() {
-    if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
-}
-
-// ── Wire OTP digit inputs ──────────────────────────────────
-function wireChallengOTPInputs() {
-    const inputs = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
-    inputs.forEach((input, i) => {
-        const fresh = input.cloneNode(true);
-        input.parentNode.replaceChild(fresh, input);
     });
 
-    const fresh = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
-    fresh.forEach((input, i) => {
-        input.value = '';
-        input.classList.remove('error');
-
-        input.addEventListener('input', e => {
-            const val = e.target.value.replace(/\D/g, '');
-            e.target.value = val.slice(-1);
-            if (val && i < fresh.length - 1) fresh[i + 1].focus();
-        });
-        input.addEventListener('keydown', e => {
-            if (e.key === 'Backspace' && !input.value && i > 0) fresh[i - 1].focus();
-        });
-        input.addEventListener('paste', e => {
-            e.preventDefault();
-            const pasted = (e.clipboardData || window.clipboardData)
-                .getData('text').replace(/\D/g, '').slice(0, 6);
-            pasted.split('').forEach((char, idx) => {
-                if (fresh[idx]) fresh[idx].value = char;
-            });
-            const nextEmpty = [...fresh].findIndex(inp => !inp.value);
-            if (nextEmpty !== -1) fresh[nextEmpty].focus();
-            else fresh[5].focus();
-        });
-
-        if (i === 0) setTimeout(() => input.focus(), 150);
-    });
-}
-
-// ── Submit challenge ───────────────────────────────────────
-window.submitChallengeCode = async function() {
-    if (_challengeFailCount >= CHALLENGE_MAX_ATTEMPTS) return;
-
-    const errorEl = document.getElementById('challenge-error');
-    const errorText = document.getElementById('challenge-error-text');
-    errorEl.style.display = 'none';
-
-    // Loading state
-    document.getElementById('challenge-btn-text').style.display = 'none';
-    document.getElementById('challenge-btn-spinner').style.display = 'inline';
-    document.getElementById('challenge-submit-btn').disabled = true;
-
-    const resetBtn = () => {
-        document.getElementById('challenge-btn-text').style.display = 'inline';
-        document.getElementById('challenge-btn-spinner').style.display = 'none';
-        document.getElementById('challenge-submit-btn').disabled = false;
-    };
-
-    try {
-        if (_challengeTab === 'otp') {
-            // ── TOTP path ──
-            const code = [...document.querySelectorAll('#challenge-otp-inputs .otp-digit')]
-                .map(i => i.value).join('');
-
-            if (code.length !== 6) {
-                shakeChallenge();
-                resetBtn(); return;
-            }
-
-            const totp = new OTPAuth.TOTP({
-                algorithm: 'SHA1', digits: 6, period: 30,
-                secret: OTPAuth.Secret.fromBase32(_pendingSession.tfaSecret)
-            });
-            const delta = totp.validate({ token: code, window: 1 });
-
-            if (delta === null) {
-                _challengeFailCount++;
-                shakeChallenge();
-                const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
-                if (left <= 0) {
-                    lockoutChallenge();
-                } else {
-                    errorText.textContent = `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
-                    errorEl.style.display = 'block';
-                    clearChallengeOTP();
-                }
-                resetBtn(); return;
-            }
-
-        } else {
-            // ── Backup code path ──
-            const entered = document.getElementById('backup-code-input').value.trim().toUpperCase();
-            if (!entered) { resetBtn(); return; }
-
-            const encoded = btoa(entered);
-            const match = _pendingSession.tfaBackupCodes.indexOf(encoded);
-
-            if (match === -1) {
-                _challengeFailCount++;
-                document.getElementById('backup-code-input').style.borderColor = '#e74c3c';
-                const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
-                if (left <= 0) {
-                    lockoutChallenge();
-                } else {
-                    errorText.textContent = `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
-                    errorEl.style.display = 'block';
-                }
-                resetBtn(); return;
-            }
-
-            // ── Burn the used backup code in Firestore ──
-            const updatedCodes = [..._pendingSession.tfaBackupCodes];
-            updatedCodes.splice(match, 1);
-
-            const userDocRef = _pendingSession.userRole === 'admin'
-                ? doc(db, 'schooladmins', _pendingSession.userUid)
-                : doc(db, 'schools', _pendingSession.schoolId, 'users', _pendingSession.userUid);
-
-            await setDoc(userDocRef, { twoFactorBackupCodes: updatedCodes }, { merge: true });
-
-            const remaining = updatedCodes.length;
-            if (remaining <= 2) {
-                // Warn after redirect — store flag
-                sessionStorage.setItem('2fa_backup_warning', remaining.toString());
-            }
-        }
-
-        // ── Both paths converge here on success ──
-        stopOTPCountdown();
-        document.getElementById('2fa-challenge-modal').style.display = 'none';
-        commitSessionAndRedirect();
-
-    } catch (err) {
-        console.error('2FA challenge error:', err);
-        errorText.textContent = 'Verification failed. Please try again.';
-        errorEl.style.display = 'block';
-        resetBtn();
-    }
-};
-
-// ── Lockout ────────────────────────────────────────────────
-async function lockoutChallenge() {
-    stopOTPCountdown();
-    document.getElementById('challenge-error').style.display = 'none';
-    document.getElementById('challenge-lockout').style.display = 'block';
-    document.getElementById('challenge-submit-btn').disabled = true;
-    await auth.signOut();
-    _pendingSession = null;
-}
-
-// ── Helpers ────────────────────────────────────────────────
-function shakeChallenge() {
-    if (_challengeTab === 'otp') {
-        document.querySelectorAll('#challenge-otp-inputs .otp-digit').forEach(i => {
-            i.classList.add('error');
-            setTimeout(() => i.classList.remove('error'), 600);
-        });
-    }
-}
-
-function clearChallengeOTP() {
-    document.querySelectorAll('#challenge-otp-inputs .otp-digit')
-        .forEach(i => { i.value = ''; });
-    const first = document.querySelector('#challenge-otp-inputs .otp-digit');
-    if (first) first.focus();
-}
-
-// ── onAuthStateChanged — only redirect if 2FA already cleared ─
-onAuthStateChanged(auth, async (user) => {
-    if (user && sessionStorage.getItem('schoolId')) {
+    function commitSessionAndRedirect() {
+        if (!_pendingSession) return;
+        const s = _pendingSession;
+        sessionStorage.setItem('schoolId', s.schoolId);
+        sessionStorage.setItem('userRole', s.userRole);
+        sessionStorage.setItem('userDisplayName', s.userDisplayName);
+        sessionStorage.setItem('userEmail', s.userEmail);
+        sessionStorage.setItem('userUid', s.userUid);
+        sessionStorage.setItem('schoolName', s.schoolName);
+        sessionStorage.setItem('schoolLocation', s.schoolLocation);
         window.location.href = 'school-hub.html';
     }
-});
 
-loadSchools();
+    function openChallengeModal() {
+        _challengeFailCount = 0;
+        _challengeTab = 'otp';
+        document.getElementById('2fa-challenge-modal').style.display = 'flex';
+        document.getElementById('challenge-error').style.display = 'none';
+        document.getElementById('challenge-lockout').style.display = 'none';
+        document.getElementById('challenge-submit-btn').disabled = false;
+        switchChallengeTab('otp');
+        startOTPCountdown();
+    }
 
-    </script>
+    window.cancelChallenge = async function() {
+        document.getElementById('2fa-challenge-modal').style.display = 'none';
+        stopOTPCountdown();
+        _pendingSession = null;
+        _challengeFailCount = 0;
+        await auth.signOut();
+        loginButton.classList.remove('loading');
+        loginButton.disabled = false;
+    };
 
+    window.switchChallengeTab = function(tab) {
+        _challengeTab = tab;
+
+        const otpPanel = document.getElementById('challenge-otp-panel');
+        const backupPanel = document.getElementById('challenge-backup-panel');
+        const tabOtp = document.getElementById('tab-otp');
+        const tabBackup = document.getElementById('tab-backup');
+        const subtitle = document.getElementById('2fa-challenge-subtitle');
+
+        if (tab === 'otp') {
+            otpPanel.style.display = 'block';
+            backupPanel.style.display = 'none';
+            tabOtp.style.background = '#0b3d91';
+            tabOtp.style.color = 'white';
+            tabBackup.style.background = 'transparent';
+            tabBackup.style.color = '#708090';
+            subtitle.textContent = 'Enter the 6-digit code from your authenticator app.';
+            wireChallengeOTPInputs();
+            startOTPCountdown();
+        } else {
+            otpPanel.style.display = 'none';
+            backupPanel.style.display = 'block';
+            tabBackup.style.background = '#0b3d91';
+            tabBackup.style.color = 'white';
+            tabOtp.style.background = 'transparent';
+            tabOtp.style.color = '#708090';
+            subtitle.textContent = 'Enter one of your saved backup codes.';
+            stopOTPCountdown();
+            setTimeout(() => document.getElementById('backup-code-input').focus(), 100);
+        }
+
+        document.getElementById('challenge-error').style.display = 'none';
+    };
+
+    function startOTPCountdown() {
+        stopOTPCountdown();
+        function tick() {
+            const seconds = 30 - (Math.floor(Date.now() / 1000) % 30);
+            const el = document.getElementById('otp-countdown');
+            if (el) el.textContent = seconds;
+        }
+        tick();
+        _countdownTimer = setInterval(tick, 1000);
+    }
+
+    function stopOTPCountdown() {
+        if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
+    }
+
+    function wireChallengeOTPInputs() {
+        const inputs = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
+        inputs.forEach((input, i) => {
+            const fresh = input.cloneNode(true);
+            input.parentNode.replaceChild(fresh, input);
+        });
+
+        const fresh = document.querySelectorAll('#challenge-otp-inputs .otp-digit');
+        fresh.forEach((input, i) => {
+            input.value = '';
+            input.classList.remove('error');
+
+            input.addEventListener('input', e => {
+                const val = e.target.value.replace(/\D/g, '');
+                e.target.value = val.slice(-1);
+                if (val && i < fresh.length - 1) fresh[i + 1].focus();
+            });
+            input.addEventListener('keydown', e => {
+                if (e.key === 'Backspace' && !input.value && i > 0) fresh[i - 1].focus();
+            });
+            input.addEventListener('paste', e => {
+                e.preventDefault();
+                const pasted = (e.clipboardData || window.clipboardData)
+                    .getData('text').replace(/\D/g, '').slice(0, 6);
+                pasted.split('').forEach((char, idx) => {
+                    if (fresh[idx]) fresh[idx].value = char;
+                });
+                const nextEmpty = [...fresh].findIndex(inp => !inp.value);
+                if (nextEmpty !== -1) fresh[nextEmpty].focus();
+                else fresh[5].focus();
+            });
+
+            if (i === 0) setTimeout(() => input.focus(), 150);
+        });
+    }
+
+    // ── Updated: uses backend Cloud Function for TOTP verification ──
+    window.submitChallengeCode = async function() {
+        if (_challengeFailCount >= CHALLENGE_MAX_ATTEMPTS) return;
+
+        const errorEl = document.getElementById('challenge-error');
+        const errorText = document.getElementById('challenge-error-text');
+        errorEl.style.display = 'none';
+
+        document.getElementById('challenge-btn-text').style.display = 'none';
+        document.getElementById('challenge-btn-spinner').style.display = 'inline';
+        document.getElementById('challenge-submit-btn').disabled = true;
+
+        const resetBtn = () => {
+            document.getElementById('challenge-btn-text').style.display = 'inline';
+            document.getElementById('challenge-btn-spinner').style.display = 'none';
+            document.getElementById('challenge-submit-btn').disabled = false;
+        };
+
+        try {
+            if (_challengeTab === 'otp') {
+                const code = [...document.querySelectorAll('#challenge-otp-inputs .otp-digit')]
+                    .map(i => i.value).join('');
+
+                if (code.length !== 6) {
+                    shakeChallenge();
+                    resetBtn(); return;
+                }
+
+                // ── Call backend Cloud Function ──
+                const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+                const result = await verifyTOTP({ secret: _pendingSession.tfaSecret, token: code });
+
+                if (!result.data.valid) {
+                    _challengeFailCount++;
+                    shakeChallenge();
+                    const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
+                    if (left <= 0) {
+                        lockoutChallenge();
+                    } else {
+                        errorText.textContent = `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                        errorEl.style.display = 'block';
+                        clearChallengeOTP();
+                    }
+                    resetBtn(); return;
+                }
+
+            } else {
+                const entered = document.getElementById('backup-code-input').value.trim().toUpperCase();
+                if (!entered) { resetBtn(); return; }
+
+                const encoded = btoa(entered);
+                const match = _pendingSession.tfaBackupCodes.indexOf(encoded);
+
+                if (match === -1) {
+                    _challengeFailCount++;
+                    document.getElementById('backup-code-input').style.borderColor = '#e74c3c';
+                    const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
+                    if (left <= 0) {
+                        lockoutChallenge();
+                    } else {
+                        errorText.textContent = `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
+                        errorEl.style.display = 'block';
+                    }
+                    resetBtn(); return;
+                }
+
+                const updatedCodes = [..._pendingSession.tfaBackupCodes];
+                updatedCodes.splice(match, 1);
+
+                const userDocRef = _pendingSession.userRole === 'admin'
+                    ? doc(db, 'schooladmins', _pendingSession.userUid)
+                    : doc(db, 'schools', _pendingSession.schoolId, 'users', _pendingSession.userUid);
+
+                await setDoc(userDocRef, { twoFactorBackupCodes: updatedCodes }, { merge: true });
+
+                const remaining = updatedCodes.length;
+                if (remaining <= 2) {
+                    sessionStorage.setItem('2fa_backup_warning', remaining.toString());
+                }
+            }
+
+            stopOTPCountdown();
+            document.getElementById('2fa-challenge-modal').style.display = 'none';
+            commitSessionAndRedirect();
+
+        } catch (err) {
+            console.error('2FA challenge error:', err);
+            errorText.textContent = 'Verification failed. Please try again.';
+            errorEl.style.display = 'block';
+            resetBtn();
+        }
+    };
+
+    async function lockoutChallenge() {
+        stopOTPCountdown();
+        document.getElementById('challenge-error').style.display = 'none';
+        document.getElementById('challenge-lockout').style.display = 'block';
+        document.getElementById('challenge-submit-btn').disabled = true;
+        await auth.signOut();
+        _pendingSession = null;
+    }
+
+    function shakeChallenge() {
+        if (_challengeTab === 'otp') {
+            document.querySelectorAll('#challenge-otp-inputs .otp-digit').forEach(i => {
+                i.classList.add('error');
+                setTimeout(() => i.classList.remove('error'), 600);
+            });
+        }
+    }
+
+    function clearChallengeOTP() {
+        document.querySelectorAll('#challenge-otp-inputs .otp-digit')
+            .forEach(i => { i.value = ''; });
+        const first = document.querySelector('#challenge-otp-inputs .otp-digit');
+        if (first) first.focus();
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+        if (user && sessionStorage.getItem('schoolId')) {
+            window.location.href = 'school-hub.html';
+        }
+    });
+
+    loadSchools();
+</script>
 <!-- ================================================
      2FA CHALLENGE MODAL
      ================================================ -->
