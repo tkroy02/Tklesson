@@ -1196,17 +1196,15 @@
     import { getFirestore, collection, getDocs, doc, getDoc, setDoc, query, where, orderBy, limit, updateDoc } from
         "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
     import { getAuth, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
-    const firebaseConfig = {
-        apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
-        authDomain: "email-notifications-1c77b.firebaseapp.com",
-        projectId: "email-notifications-1c77b",
-        storageBucket: "email-notifications-1c77b.firebasestorage.app",
-        messagingSenderId: "272046681025",
-        appId: "1:272046681025:web:e0aff95e41caa65c6d1d40"
-    };
+
+        // ── Fetch config from Cloud Function ──
+    const firebaseConfig = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig')
+        .then(r => r.json());
 
     const app = initializeApp(firebaseConfig);
+    const functions = getFunctions(app);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
@@ -2065,60 +2063,56 @@ function renderSchoolRankings() {
     }
 
     // ── Verify Setup ──
-    async function verifyTFASetup() {
-        if (tfaFailCount >= MAX_TFA_ATTEMPTS) {
-            document.getElementById('tfa-setup-error-text').textContent = 'Too many attempts. Please restart setup.';
-            document.getElementById('tfa-setup-error').style.display = 'block';
+        async function confirmDisableTFA() {
+        const password = document.getElementById('tfa-disable-password').value;
+        const code = getOTPCode('tfa-disable-otp-inputs');
+        
+        if (!password) {
+            document.getElementById('tfa-disable-error-text').textContent = 'Please enter your password.';
+            document.getElementById('tfa-disable-error').style.display = 'block';
             return;
         }
-        
-        const code = getOTPCode('tfa-setup-otp-inputs');
         if (code.length !== 6) {
-            shakeOTPInputs('tfa-setup-otp-inputs');
-            return;
-        }
-        
-        setVerifyButtonLoading(true);
-        document.getElementById('tfa-setup-error').style.display = 'none';
-        
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1',
-            digits: 6,
-            period: 30,
-            secret: OTPAuth.Secret.fromBase32(currentTfaSecret)
-        });
-        
-        const delta = totp.validate({ token: code, window: 1 });
-        
-        if (delta === null) {
-            tfaFailCount++;
-            shakeOTPInputs('tfa-setup-otp-inputs');
-            clearOTPInputs('tfa-setup-otp-inputs');
-            document.getElementById('tfa-setup-error-text').textContent = 
-                `Invalid code. ${MAX_TFA_ATTEMPTS - tfaFailCount} attempts left.`;
-            document.getElementById('tfa-setup-error').style.display = 'block';
-            setVerifyButtonLoading(false);
+            shakeOTPInputs('tfa-disable-otp-inputs');
             return;
         }
         
         try {
+            const credential = EmailAuthProvider.credential(currentUser.email, password);
+            await reauthenticateWithCredential(currentUser, credential);
+            
+            const snap = await getDoc(doc(db, 'admins', currentUser.uid));
+            const secret = snap.data()?.twoFactorSecret;
+            
+            const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+            const result = await verifyTOTP({ secret, token: code });
+            
+            if (!result.data.valid) {
+                document.getElementById('tfa-disable-error-text').textContent = 'Invalid authenticator code.';
+                document.getElementById('tfa-disable-error').style.display = 'block';
+                shakeOTPInputs('tfa-disable-otp-inputs');
+                clearOTPInputs('tfa-disable-otp-inputs');
+                return;
+            }
+            
             await setDoc(doc(db, 'admins', currentUser.uid), {
-                twoFactorEnabled: true,
-                twoFactorSecret: currentTfaSecret,
-                twoFactorEnabledAt: new Date().toISOString()
+                twoFactorEnabled: false,
+                twoFactorSecret: null,
+                twoFactorDisabledAt: new Date().toISOString()
             }, { merge: true });
             
-            goToTFAStep(3);
+            closeTFADisable();
             await loadTFAStatus();
+            alert('2FA has been disabled successfully.');
+            
         } catch (err) {
-            console.error('Save TFA error:', err);
-            document.getElementById('tfa-setup-error-text').textContent = 'Failed to save. Please try again.';
-            document.getElementById('tfa-setup-error').style.display = 'block';
+            console.error('Disable TFA error:', err);
+            document.getElementById('tfa-disable-error-text').textContent = 
+                err.code === 'auth/wrong-password' ? 'Incorrect password.' : 'Verification failed.';
+            document.getElementById('tfa-disable-error').style.display = 'block';
         }
-        
-        setVerifyButtonLoading(false);
     }
-
+    
     // ── Close Setup ──
     function closeTFASetup() {
         document.getElementById('tfa-setup-modal').style.display = 'none';
