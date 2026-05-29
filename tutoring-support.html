@@ -3821,6 +3821,304 @@ window.goBackFromArticle = function() {
         showKBCategories();
     }
 };
+
+// ===== USER MANAGEMENT =====
+let currentManagementAction = null;
+let recentActions = [];
+
+function openManagementAction(actionType) {
+    currentManagementAction = actionType;
+    
+    document.querySelectorAll('#panel-manage .kb-grid .kb-category-card').forEach(card => {
+        card.style.display = 'none';
+    });
+    document.getElementById('managementActionForm').style.display = 'block';
+    
+    const formContent = document.getElementById('managementFormContent');
+    
+    switch(actionType) {
+        case 'password':
+            formContent.innerHTML = `
+                <h3 style="margin-bottom:16px;"><i class="fas fa-key"></i> Send Password Reset</h3>
+                <p style="color:var(--text-muted); margin-bottom:20px; font-size:0.9rem;">
+                    Enter the user's email to send them a password reset link.
+                </p>
+                <div class="form-group">
+                    <label class="form-label">User Email *</label>
+                    <input type="email" id="resetEmail" class="form-input" placeholder="user@example.com" required>
+                </div>
+                <div class="verification-steps" style="margin-bottom:20px;">
+                    <div class="verification-step verified" style="cursor:default;">
+                        <div class="step-icon"><i class="fas fa-check"></i></div>
+                        <div class="step-info">
+                            <strong>Verification Required</strong>
+                            <span>You must verify the user's identity before proceeding</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="sendManagementPasswordReset()">
+                    <i class="fas fa-paper-plane"></i> Send Reset Email
+                </button>
+                <div class="modal-status" id="mgmtPasswordStatus" style="margin-top:12px;"></div>
+            `;
+            break;
+            
+        case '2fa':
+            formContent.innerHTML = `
+                <h3 style="margin-bottom:16px;"><i class="fas fa-shield-alt"></i> Disable 2FA</h3>
+                <p style="color:var(--text-muted); margin-bottom:20px; font-size:0.9rem;">
+                    Enter the user's email to disable their two-factor authentication. This requires identity verification.
+                </p>
+                <div class="form-group">
+                    <label class="form-label">User Email *</label>
+                    <input type="email" id="disable2faEmail" class="form-input" placeholder="user@example.com" required>
+                </div>
+                <div class="verification-steps" style="margin-bottom:20px;">
+                    <div class="verification-step verified" style="cursor:default;">
+                        <div class="step-icon"><i class="fas fa-check"></i></div>
+                        <div class="step-info">
+                            <strong>Verification Required</strong>
+                            <span>Name, email, and phone must be verified with the user</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="sendManagementDisable2FA()" style="background:#f59e0b;">
+                    <i class="fas fa-shield-alt"></i> Disable 2FA
+                </button>
+                <div class="modal-status" id="mgmt2FAStatus" style="margin-top:12px;"></div>
+            `;
+            break;
+            
+        case 'credits':
+            formContent.innerHTML = `
+                <h3 style="margin-bottom:16px;"><i class="fas fa-coins"></i> Give Credits</h3>
+                <p style="color:var(--text-muted); margin-bottom:20px; font-size:0.9rem;">
+                    Add tutoring credits to a student's account.
+                </p>
+                <div class="form-group">
+                    <label class="form-label">Student Email *</label>
+                    <input type="email" id="creditEmail" class="form-input" placeholder="student@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Package Type</label>
+                    <select id="creditPackageType" class="form-select">
+                        <option value="hourly">Hourly (1 credit)</option>
+                        <option value="bronze">Bronze (4 sessions)</option>
+                        <option value="silver">Silver (8 sessions)</option>
+                        <option value="gold">Gold (12 sessions)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Number of Packages</label>
+                    <input type="number" id="creditAmount" class="form-input" value="1" min="1" max="10">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Reason</label>
+                    <input type="text" id="creditReason" class="form-input" placeholder="e.g., Customer satisfaction credit, Promotion, etc.">
+                </div>
+                <div class="verification-steps" style="margin-bottom:20px;">
+                    <div class="verification-step verified" style="cursor:default;">
+                        <div class="step-icon"><i class="fas fa-check"></i></div>
+                        <div class="step-info">
+                            <strong>Authorization Required</strong>
+                            <span>Credit additions are logged and audited</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="sendManagementCredits()" style="background:#06d6a0;">
+                    <i class="fas fa-check"></i> Add Credits
+                </button>
+                <div class="modal-status" id="mgmtCreditStatus" style="margin-top:12px;"></div>
+            `;
+            break;
+    }
+}
+
+function closeManagementAction() {
+    currentManagementAction = null;
+    document.getElementById('managementActionForm').style.display = 'none';
+    document.querySelectorAll('#panel-manage .kb-grid .kb-category-card').forEach(card => {
+        card.style.display = 'flex';
+    });
+}
+
+// ===== SEND PASSWORD RESET =====
+async function sendManagementPasswordReset() {
+    const email = document.getElementById('resetEmail').value.trim();
+    const statusEl = document.getElementById('mgmtPasswordStatus');
+    
+    if (!email) {
+        showMgmtStatus(statusEl, 'Please enter an email address.', 'error');
+        return;
+    }
+    
+    // Find user first
+    const user = findUserByEmail(email);
+    if (!user) {
+        showMgmtStatus(statusEl, 'No user found with that email.', 'error');
+        return;
+    }
+    
+    // Trigger verification
+    openVerificationModal(user.id, user.type, 'reset-password');
+    
+    try {
+        await auth.sendPasswordResetEmail(email);
+        showMgmtStatus(statusEl, `Password reset email sent to ${email}`, 'success');
+        addRecentAction('password', email, 'success');
+    } catch (err) {
+        showMgmtStatus(statusEl, 'Failed: ' + err.message, 'error');
+    }
+}
+
+// ===== DISABLE 2FA =====
+async function sendManagementDisable2FA() {
+    const email = document.getElementById('disable2faEmail').value.trim();
+    const statusEl = document.getElementById('mgmt2FAStatus');
+    
+    if (!email) {
+        showMgmtStatus(statusEl, 'Please enter an email address.', 'error');
+        return;
+    }
+    
+    const user = findUserByEmail(email);
+    if (!user) {
+        showMgmtStatus(statusEl, 'No user found with that email.', 'error');
+        return;
+    }
+    
+    if (!user.twoFactorEnabled) {
+        showMgmtStatus(statusEl, 'This user does not have 2FA enabled.', 'info');
+        return;
+    }
+    
+    // Trigger verification
+    openVerificationModal(user.id, user.type, 'disable-2fa');
+}
+
+// ===== GIVE CREDITS =====
+async function sendManagementCredits() {
+    const email = document.getElementById('creditEmail').value.trim();
+    const packageType = document.getElementById('creditPackageType').value;
+    const amount = parseInt(document.getElementById('creditAmount').value);
+    const reason = document.getElementById('creditReason').value.trim();
+    const statusEl = document.getElementById('mgmtCreditStatus');
+    
+    if (!email || !amount || !reason) {
+        showMgmtStatus(statusEl, 'Please fill in all fields.', 'error');
+        return;
+    }
+    
+    const user = findUserByEmail(email);
+    if (!user || user.type !== 'student') {
+        showMgmtStatus(statusEl, 'Student not found with that email.', 'error');
+        return;
+    }
+    
+    if (!confirm(`Add ${amount} ${packageType} package(s) to ${user.fullName || email}?\nReason: ${reason}`)) return;
+    
+    try {
+        const creditMap = { hourly: 1, bronze: 4, silver: 8, gold: 12 };
+        const sessionsPerPackage = creditMap[packageType] || 1;
+        const totalSessions = amount * sessionsPerPackage;
+        
+        // Update student credits
+        const studentRef = db.collection('students').doc(user.id);
+        const studentDoc = await studentRef.get();
+        const currentBalances = studentDoc.data().packageBalances || {};
+        const currentAmount = currentBalances[packageType] || 0;
+        
+        await studentRef.update({
+            [`packageBalances.${packageType}`]: currentAmount + amount,
+            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Log the transaction
+        await db.collection('creditTransactions').add({
+            studentId: user.id,
+            studentName: user.fullName || email,
+            adminId: currentAgent.uid,
+            adminName: currentAgent.email,
+            type: 'credit_addition',
+            packageType: packageType,
+            packages: amount,
+            sessions: totalSessions,
+            amount: totalSessions,
+            reason: reason,
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            status: 'completed'
+        });
+        
+        showMgmtStatus(statusEl, `Added ${amount} ${packageType} package(s) (${totalSessions} sessions) to ${email}`, 'success');
+        addRecentAction('credits', email, 'success');
+        document.getElementById('creditReason').value = '';
+        
+    } catch (err) {
+        showMgmtStatus(statusEl, 'Failed: ' + err.message, 'error');
+    }
+}
+
+// ===== HELPERS =====
+function findUserByEmail(email) {
+    return allUsersCache.find(u => {
+        const userEmail = (u.email || u.personal?.email || '').toLowerCase();
+        return userEmail === email.toLowerCase();
+    }) || null;
+}
+
+function showMgmtStatus(el, message, type) {
+    const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', info: 'fa-info-circle' };
+    el.className = `modal-status ${type} show`;
+    el.innerHTML = `<i class="fas ${icons[type]}"></i><span>${message}</span>`;
+    
+    if (type === 'success') {
+        setTimeout(() => { el.classList.remove('show'); }, 4000);
+    }
+}
+
+function addRecentAction(type, email, status) {
+    const action = {
+        type: type,
+        email: email,
+        status: status,
+        time: new Date().toLocaleString()
+    };
+    recentActions.unshift(action);
+    if (recentActions.length > 10) recentActions.pop();
+    renderRecentActions();
+}
+
+function renderRecentActions() {
+    const container = document.getElementById('recentManagementActions');
+    
+    if (recentActions.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state" style="padding:30px;">
+                <i class="fas fa-history"></i>
+                <h3>No recent actions</h3>
+                <p>Actions performed here will appear in this list</p>
+            </div>`;
+        return;
+    }
+    
+    const actionLabels = {
+        'password': 'Password Reset',
+        '2fa': '2FA Disabled',
+        'credits': 'Credits Added'
+    };
+    
+    container.innerHTML = recentActions.map(action => `
+        <div class="audit-item">
+            <div class="audit-icon ${action.status === 'success' ? 'verify' : 'disable'}">
+                <i class="fas fa-${action.type === 'password' ? 'key' : action.type === '2fa' ? 'shield-alt' : 'coins'}"></i>
+            </div>
+            <div class="audit-details">
+                <div class="audit-action">${actionLabels[action.type] || action.type}</div>
+                <div class="audit-meta">${action.email} • ${action.time}</div>
+            </div>
+        </div>
+    `).join('');
+}
     
 </script>
 
