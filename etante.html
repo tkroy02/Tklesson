@@ -540,7 +540,6 @@
     const questions = await loadSecurityQuestions();
     const container = document.getElementById('sq-questions-container');
     if (!container) return;
-
     container.innerHTML = questions.map(q => `
       <div class="form-group">
         <span class="q-label">${q.question}</span>
@@ -594,10 +593,8 @@
     const token = generateToken();
     const tokenHash = await sha256(token);
     const expiry = Date.now() + DEVICE_TOKEN_DAYS * 24 * 60 * 60 * 1000;
-
     localStorage.setItem(DEVICE_TOKEN_KEY, token);
     localStorage.setItem(DEVICE_EXPIRY_KEY, expiry.toString());
-
     const snap = await db.collection('user_security').doc(uid).get();
     const existing = snap.exists ? (snap.data().trustedDeviceTokens || []) : [];
     const updated = [...existing, tokenHash].slice(-10);
@@ -605,10 +602,11 @@
   }
 
   /* ── State ── */
-  let pendingUser    = null;
-  let pendingSecret  = null;
-  let pendingUID     = null;
-  let sqLocked       = false;
+  let loginInProgress = false;
+  let pendingTFAChallenge = null;
+  let pendingUser = null;
+  let pendingUID = null;
+  let sqLocked = false;
   let countdownTimer = null;
 
   /* ── UI helpers ── */
@@ -669,6 +667,14 @@
     countdownTimer = setInterval(tick, 1000);
   }
 
+  function resetLoginState() {
+    loginInProgress = false;
+    const btn = document.getElementById('login-btn');
+    btn.disabled = false;
+    document.getElementById('login-spinner').style.display = 'none';
+    document.getElementById('login-text').textContent = 'Access Dashboard';
+  }
+
   /* ── OTP auto-advance ── */
   ['d0','d1','d2','d3','d4','d5'].forEach((id, idx) => {
     const el = document.getElementById(id);
@@ -696,6 +702,8 @@
   /* ── Step 1 — Login ── */
   document.getElementById('login-form').addEventListener('submit', async function (e) {
     e.preventDefault();
+    if (loginInProgress) return;
+    loginInProgress = true;
     hideLoginMsgs();
 
     const email = document.getElementById('email').value.trim();
@@ -709,20 +717,30 @@
     try {
       const cred = await auth.signInWithEmailAndPassword(email, password);
       const user = cred.user;
-      const snap = await db.collection('user_security').doc(user.uid).get();
+      pendingUser = user;
+      pendingUID = user.uid;
 
-      if (snap.exists && snap.data().totpEnabled && snap.data().totpSecret) {
-        pendingUser = user; pendingUID = user.uid; pendingSecret = snap.data().totpSecret;
+      // Check 2FA status via Cloud Function
+      const checkAdmin = firebase.functions().httpsCallable('verifyAdminRole');
+      const result = await checkAdmin();
+
+      if (result.data.requiresTFA) {
+        // Initiate challenge flow
+        const initiateTFA = firebase.functions().httpsCallable('initiateTFA');
+        const tfaResult = await initiateTFA();
+        pendingTFAChallenge = tfaResult.data.challengeToken;
+
         document.getElementById('tfa-display-email').textContent = email;
-        slideToPanel(2); startCountdown();
+        slideToPanel(2);
+        startCountdown();
         setTimeout(() => document.getElementById('d0').focus(), 480);
         spinner.style.display = 'none'; btn.disabled = false; text.textContent = 'Access Dashboard';
       } else {
-        pendingUID = user.uid;
         await postAuthFlow();
       }
     } catch (err) {
       spinner.style.display = 'none'; btn.disabled = false; text.textContent = 'Access Dashboard';
+      loginInProgress = false;
       const msgs = {
         'auth/user-not-found': 'No account linked to this email.',
         'auth/wrong-password': 'Incorrect password. Please retry.',
@@ -734,7 +752,7 @@
     }
   });
 
-  /* ── Step 2 — TOTP (backend) ── */
+  /* ── Step 2 — TOTP (challenge flow) ── */
   window.verifyLogin2FA = async function () {
     hideTFAError();
     const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
@@ -747,7 +765,7 @@
 
     try {
       const verifyTOTP = firebase.functions().httpsCallable('verifyTOTP');
-      const result = await verifyTOTP({ secret: pendingSecret, token: code });
+      const result = await verifyTOTP({ challengeToken: pendingTFAChallenge, token: code });
 
       if (!result.data.valid) {
         btn.disabled = false; spinner.style.display = 'none';
@@ -758,6 +776,7 @@
         return;
       }
 
+      pendingTFAChallenge = null;
       if (countdownTimer) clearInterval(countdownTimer);
       btn.disabled = false; spinner.style.display = 'none';
       text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
@@ -774,6 +793,7 @@
     try {
       const trusted = await isTrustedDevice(pendingUID);
       if (trusted) {
+        resetLoginState();
         window.location.href = 'super-dashboard.html';
       } else {
         const snap = await db.collection('user_security').doc(pendingUID).get();
@@ -793,12 +813,14 @@
             if (firstInput) firstInput.focus();
           }, 480);
         } else {
+          resetLoginState();
           sessionStorage.setItem('sq_setup_required', 'true');
           window.location.href = 'super-dashboard.html';
         }
       }
     } catch (err) {
       console.error('Device check error:', err);
+      resetLoginState();
       window.location.href = 'super-dashboard.html';
     }
   }
@@ -825,6 +847,7 @@
 
       if (result.data.valid) {
         await trustDevice(pendingUID);
+        resetLoginState();
         window.location.href = 'super-dashboard.html';
       } else {
         btn.disabled = false; spinner.style.display = 'none';
@@ -837,7 +860,7 @@
           document.getElementById('sq-back-btn').style.display = 'none';
           document.getElementById('sq-attempt-badge').style.display = 'none';
           await auth.signOut();
-          pendingUser = null; pendingUID = null; pendingSecret = null;
+          pendingUser = null; pendingUID = null; loginInProgress = false;
         } else {
           showSQError(`One or more answers are incorrect. ${result.data.attemptsRemaining} attempt${result.data.attemptsRemaining !== 1 ? 's' : ''} remaining.`);
           questions.forEach(q => { const el = document.getElementById(q.id); if (el) el.value = ''; });
@@ -855,7 +878,8 @@
   window.cancelSecurityQuestions = async function () {
     if (sqLocked) return;
     await auth.signOut().catch(() => {});
-    pendingUser = null; pendingUID = null; pendingSecret = null; sqLocked = false;
+    pendingUser = null; pendingUID = null; pendingTFAChallenge = null; sqLocked = false;
+    loginInProgress = false;
     const questions = securityQuestions || [];
     questions.forEach(q => { const el = document.getElementById(q.id); if (el) el.value = ''; });
     hideSQError();
@@ -866,7 +890,8 @@
   window.cancelLogin2FA = function () {
     if (countdownTimer) clearInterval(countdownTimer);
     auth.signOut().catch(() => {});
-    pendingUser = null; pendingUID = null; pendingSecret = null;
+    pendingUser = null; pendingUID = null; pendingTFAChallenge = null;
+    loginInProgress = false;
     ['d0','d1','d2','d3','d4','d5'].forEach(i => { const el = document.getElementById(i); el.value = ''; el.classList.remove('filled'); });
     hideTFAError();
     slideToPanel(1);
@@ -894,7 +919,8 @@
   document.getElementById('password').addEventListener('input', hideLoginMsgs);
 
 })();
+    
 </script>
-
+  
 </body>
 </html>
