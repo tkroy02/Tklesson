@@ -2035,6 +2035,55 @@ function renderSchoolRankings() {
         setupOTPInputs('tfa-setup-otp-inputs');
     }
 
+// ── Verify Setup ──
+async function verifyTFASetup() {
+    if (tfaFailCount >= MAX_TFA_ATTEMPTS) {
+        document.getElementById('tfa-setup-error-text').textContent = 'Too many attempts. Please restart setup.';
+        document.getElementById('tfa-setup-error').style.display = 'block';
+        return;
+    }
+    
+    const code = getOTPCode('tfa-setup-otp-inputs');
+    if (code.length !== 6) {
+        shakeOTPInputs('tfa-setup-otp-inputs');
+        return;
+    }
+    
+    setVerifyButtonLoading(true);
+    document.getElementById('tfa-setup-error').style.display = 'none';
+    
+    try {
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const result = await verifyTOTP({ secret: currentTfaSecret, token: code });
+        
+        if (!result.data.valid) {
+            tfaFailCount++;
+            shakeOTPInputs('tfa-setup-otp-inputs');
+            clearOTPInputs('tfa-setup-otp-inputs');
+            document.getElementById('tfa-setup-error-text').textContent = 
+                `Invalid code. ${MAX_TFA_ATTEMPTS - tfaFailCount} attempts left.`;
+            document.getElementById('tfa-setup-error').style.display = 'block';
+            setVerifyButtonLoading(false);
+            return;
+        }
+        
+        await setDoc(doc(db, 'admins', currentUser.uid), {
+            twoFactorEnabled: true,
+            twoFactorSecret: currentTfaSecret,
+            twoFactorEnabledAt: new Date().toISOString()
+        }, { merge: true });
+        
+        goToTFAStep(3);
+        await loadTFAStatus();
+    } catch (err) {
+        console.error('Save TFA error:', err);
+        document.getElementById('tfa-setup-error-text').textContent = 'Failed to save. Please try again.';
+        document.getElementById('tfa-setup-error').style.display = 'block';
+    }
+    
+    setVerifyButtonLoading(false);
+}
+    
     // ── Open Disable Modal ──
     function openTFADisableModal() {
         document.getElementById('tfa-disable-password').value = '';
@@ -2305,6 +2354,7 @@ function renderSchoolRankings() {
     window.closePasswordModal = closePasswordModal;
     window.togglePwdVisibility = togglePwdVisibility;
     window.changePassword = changePassword;
+    
 </script>
 </body>
 </html>
