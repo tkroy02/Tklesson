@@ -1013,79 +1013,78 @@
   /* ══════════════════════════════════
      Step 3 — Security Questions
   ══════════════════════════════════ */
-  window.verifySecurityQuestions = async function () {
-    if (sqLocked) return;
-    hideSQError();
+ window.verifySecurityQuestions = async function () {
+  if (sqLocked) return;
+  hideSQError();
 
-    const questions = securityQuestions || getFallbackQuestions();
-    const answers = questions.map(q => ({
-      id: q.id,
-      value: document.getElementById(q.id)?.value?.trim() || ''
-    }));
+  const questions = securityQuestions || getFallbackQuestions();
+  const answerValues = {};
+  questions.forEach(q => {
+    const el = document.getElementById(q.id);
+    answerValues[q.id] = el?.value?.trim() || '';
+  });
 
-    if (answers.some(a => !a.value)) {
-      showSQError('Please answer all questions.');
-      return;
-    }
+  if (Object.values(answerValues).some(v => !v)) {
+    showSQError('Please answer all questions.');
+    return;
+  }
 
-    const btn     = document.getElementById('sq-verify-btn');
-    const spinner = document.getElementById('sq-spinner');
-    const text    = document.getElementById('sq-btn-text');
+  const btn     = document.getElementById('sq-verify-btn');
+  const spinner = document.getElementById('sq-spinner');
+  const text    = document.getElementById('sq-btn-text');
 
-    btn.disabled = true;
-    spinner.style.display = 'inline-block';
-    text.innerHTML = 'Verifying…';
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
+  text.innerHTML = 'Verifying…';
 
-    try {
-      const hashes = await Promise.all(answers.map(a => sha256(a.value)));
-
-      const snap = await db.collection('user_security').doc(pendingUID).get();
-      const data = snap.data();
-
-      // Check against stored hashes (sqHash1, sqHash2, sqHash3)
-      const storedHashes = [data.sqHash1, data.sqHash2, data.sqHash3];
-      const allCorrect = hashes.every((hash, i) => hash === storedHashes[i]);
-
-      if (allCorrect) {
-        await trustDevice(pendingUID);
-        window.location.href = 'super-dashboard.html';
-      } else {
-        sqFailCount++;
-        updateAttemptBadge();
-
-        btn.disabled = false;
-        spinner.style.display = 'none';
-        text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-
-        const left = SQ_MAX_ATTEMPTS - sqFailCount;
-
-        if (left <= 0) {
-          sqLocked = true;
-          hideSQError();
-          document.getElementById('sq-lockout').classList.add('show');
-          document.getElementById('sq-verify-btn').disabled = true;
-          document.getElementById('sq-back-btn').style.display = 'none';
-          document.getElementById('sq-attempt-badge').style.display = 'none';
-          await auth.signOut();
-          pendingUser = null; pendingUID = null; pendingSecret = null;
-        } else {
-          showSQError(`One or more answers are incorrect. ${left} attempt${left !== 1 ? 's' : ''} remaining.`);
-          questions.forEach(q => {
-            const el = document.getElementById(q.id);
-            if (el) el.value = '';
-          });
-          const firstInput = document.querySelector('#sq-questions-container input');
-          if (firstInput) firstInput.focus();
-        }
+  try {
+    const verifyAnswers = firebase.functions().httpsCallable('verifySecurityAnswers');
+    const result = await verifyAnswers({
+      answers: {
+        sq1: answerValues.sq1,
+        sq2: answerValues.sq2,
+        sq3: answerValues.sq3
       }
-    } catch (err) {
+    });
+
+    if (result.data.valid) {
+      await trustDevice(pendingUID);
+      window.location.href = 'super-dashboard.html';
+    } else {
+      sqFailCount = 5 - result.data.attemptsRemaining;
+      updateAttemptBadge();
+
       btn.disabled = false;
       spinner.style.display = 'none';
       text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-      showSQError('Verification failed. Please try again.');
-    }
-  };
 
+      if (result.data.lockedOut) {
+        sqLocked = true;
+        hideSQError();
+        document.getElementById('sq-lockout').classList.add('show');
+        document.getElementById('sq-verify-btn').disabled = true;
+        document.getElementById('sq-back-btn').style.display = 'none';
+        document.getElementById('sq-attempt-badge').style.display = 'none';
+        await auth.signOut();
+        pendingUser = null; pendingUID = null; pendingSecret = null;
+      } else {
+        showSQError(`One or more answers are incorrect. ${result.data.attemptsRemaining} attempt${result.data.attemptsRemaining !== 1 ? 's' : ''} remaining.`);
+        questions.forEach(q => {
+          const el = document.getElementById(q.id);
+          if (el) el.value = '';
+        });
+        const firstInput = document.querySelector('#sq-questions-container input');
+        if (firstInput) firstInput.focus();
+      }
+    }
+  } catch (err) {
+    btn.disabled = false;
+    spinner.style.display = 'none';
+    text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
+    showSQError('Verification failed. Please try again.');
+  }
+};
+  
   window.cancelSecurityQuestions = async function () {
     if (sqLocked) return;
     await auth.signOut().catch(() => {});
