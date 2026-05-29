@@ -527,12 +527,10 @@
     </div>
 
   <script type="module">
-    // ── Firebase Imports ──
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
     import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-    // ── Initialize Firebase ──
     let app, auth, functions;
     
     async function initializeSecure() {
@@ -545,7 +543,7 @@
             auth = getAuth(app);
             functions = getFunctions(app);
             
-            setupAuthListener(); // ← Set up listener AFTER init
+            setupAuthListener();
             console.log('🔐 Auth system initialized');
         } catch (error) {
             console.error('Initialization error:', error);
@@ -553,37 +551,21 @@
         }
     }
 
-    // ── Auth State Management (FIXED: Race Condition Prevention) ──
     let loginInProgress = false;
     let pendingTFAChallenge = null;
     let pendingTFAUserId = null;
 
     function setupAuthListener() {
         onAuthStateChanged(auth, async (user) => {
-            // ✅ CRITICAL: Block if login flow is in progress
-            if (loginInProgress) {
-                console.log('🔒 Auth change blocked: loginInProgress = true');
-                return;
-            }
+            if (loginInProgress) return;
+            if (pendingTFAChallenge || pendingTFAUserId) return;
             
-            // ✅ CRITICAL: Block if we're mid-2FA flow
-            if (pendingTFAChallenge || pendingTFAUserId) {
-                console.log('🔒 Auth change blocked: pending 2FA flow');
-                return;
-            }
-            
-            // Only redirect if user is authenticated AND not on login page
             if (user && !window.location.pathname.includes('super-admin-login')) {
-                // Verify admin status via Cloud Function (not direct Firestore)
                 try {
                     const checkAdmin = httpsCallable(functions, 'verifyAdminRole');
-                    const result = await checkAdmin({ uid: user.uid });
-                    
-                    if (result.data.isAdmin) {
-                        // Only redirect if 2FA is NOT required
-                        if (!result.data.requiresTFA) {
-                            window.location.href = 'super-admin-school-dashboard.html';
-                        }
+                    const result = await checkAdmin(); // No uid arg — reads from auth context
+                    if (result.data.isAdmin && !result.data.requiresTFA) {
+                        window.location.href = 'super-admin-school-dashboard.html';
                     }
                 } catch (err) {
                     console.error('Admin check failed:', err);
@@ -592,7 +574,6 @@
         });
     }
 
-    // ── UI Helpers ──
     window.togglePasswordVisibility = function() {
         const input = document.getElementById('password');
         const icon = document.getElementById('toggle-eye');
@@ -624,15 +605,10 @@
         setLoading(false);
     }
 
-    // ── Login Handler (FIXED: Proper Flow Control) ──
     window.handleLogin = async function(e) {
         e.preventDefault();
         
-        // ✅ Set flag BEFORE any async operations
-        if (loginInProgress) {
-            console.log('⚠️ Login already in progress');
-            return;
-        }
+        if (loginInProgress) return;
         loginInProgress = true;
         setLoading(true);
         hideError();
@@ -640,23 +616,16 @@
         const email = document.getElementById('email').value.trim().toLowerCase();
         const password = document.getElementById('password').value;
 
-        // Client-side validation
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 12) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 1) {
             showError('Please enter valid credentials.');
             resetLoginState();
             return;
         }
 
         try {
-            console.log('🔑 Attempting Firebase sign-in...');
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
-            console.log('✅ Firebase auth successful:', user.uid);
-            
-            // ✅ CRITICAL: Do NOT redirect here. Let onAuthStateChanged handle it.
-            // But we need to check 2FA status via Cloud Function
             await checkAndHandle2FA(user);
-            
         } catch (error) {
             console.error('Auth error:', error.code, error.message);
             showError('Invalid email or password. Please try again.');
@@ -664,14 +633,10 @@
         }
     };
 
-    // ── NEW: Check 2FA Status via Cloud Function ──
     async function checkAndHandle2FA(user) {
         try {
-            console.log('🔐 Checking admin role and 2FA status...');
             const checkAdmin = httpsCallable(functions, 'verifyAdminRole');
-            const adminResult = await checkAdmin({ uid: user.uid });
-            
-            console.log('📋 Admin check result:', adminResult.data);
+            const adminResult = await checkAdmin(); // No uid — reads from auth context
             
             if (!adminResult.data.isAdmin) {
                 await signOut(auth);
@@ -681,16 +646,11 @@
             }
             
             if (adminResult.data.requiresTFA) {
-                console.log('🔐 2FA required - initiating challenge...');
                 await initiateTFAFlow(user.uid);
-                // ✅ Do NOT reset login state here - 2FA flow is active
                 return;
             }
             
-            // No 2FA required - complete login
-            console.log('✅ No 2FA required - completing login');
             await completeLogin(user.uid);
-            
         } catch (error) {
             console.error('2FA check error:', error);
             showError('Session validation failed. Please try again.');
@@ -698,20 +658,15 @@
         }
     }
 
-    // ── Initiate Secure 2FA Flow ──
     async function initiateTFAFlow(uid) {
         try {
             const initiateTFA = httpsCallable(functions, 'initiateTFA');
-            const result = await initiateTFA({ uid });
+            const result = await initiateTFA(); // No uid — reads from auth context
             
             if (result.data.challengeToken) {
-                // ✅ Store challenge info BEFORE showing modal
                 pendingTFAChallenge = result.data.challengeToken;
                 pendingTFAUserId = uid;
-                
-                console.log('🎫 Challenge received, showing 2FA modal');
                 showTFAModal();
-                // ✅ Keep loginInProgress = true during 2FA
             } else {
                 throw new Error('No challenge token received');
             }
@@ -723,22 +678,14 @@
         }
     }
 
-    // ── Show 2FA Modal (with timing fix) ──
     function showTFAModal() {
         const modal = document.getElementById('tfa-modal');
         const errorBanner = document.getElementById('tfa-error-banner');
-        
-        // Reset modal state
         errorBanner.style.display = 'none';
         clearTFAInputs();
         setupTFAInputs();
-        
-        // ✅ Show modal with slight delay to ensure DOM is ready
         setTimeout(() => {
             modal.classList.add('active');
-            console.log('✨ 2FA modal displayed');
-            
-            // Focus first input after modal is visible
             setTimeout(() => {
                 document.querySelector('#tfa-otp-inputs .otp-digit')?.focus();
             }, 100);
@@ -746,7 +693,6 @@
     }
 
     window.cancelTFA = async function() {
-        console.log('❌ 2FA cancelled by user');
         document.getElementById('tfa-modal').classList.remove('active');
         clearPendingTFA();
         await signOut(auth);
@@ -756,10 +702,8 @@
     function clearPendingTFA() {
         pendingTFAChallenge = null;
         pendingTFAUserId = null;
-        console.log('🧹 Pending TFA state cleared');
     }
 
-    // ── TFA Input Handling (unchanged, but included for completeness) ──
     function setupTFAInputs() {
         const inputs = document.querySelectorAll('#tfa-otp-inputs .otp-digit');
         inputs.forEach((input, index) => {
@@ -781,14 +725,10 @@
             input.addEventListener('paste', (e) => {
                 e.preventDefault();
                 const pasted = (e.clipboardData || window.clipboardData)
-                    .getData('text')
-                    .replace(/\D/g, '')
-                    .slice(0, 6);
-                
+                    .getData('text').replace(/\D/g, '').slice(0, 6);
                 pasted.split('').forEach((char, idx) => {
                     if (inputs[idx]) inputs[idx].value = char;
                 });
-                
                 const nextIndex = Math.min(pasted.length, 5);
                 inputs[nextIndex]?.focus();
             });
@@ -796,9 +736,7 @@
     }
 
     function getTFACode() {
-        return [...document.querySelectorAll('#tfa-otp-inputs .otp-digit')]
-            .map(i => i.value)
-            .join('');
+        return [...document.querySelectorAll('#tfa-otp-inputs .otp-digit')].map(i => i.value).join('');
     }
 
     function clearTFAInputs() {
@@ -821,19 +759,16 @@
         btn.disabled = loading;
     }
 
-    // ── Verify TFA Code ──
     window.verifyTFA = async function() {
         const code = getTFACode();
         
         if (!/^\d{6}$/.test(code)) {
-            console.log('❌ Invalid code format:', code);
             shakeTFAInputs();
             return;
         }
 
         document.getElementById('tfa-error-banner').style.display = 'none';
         setTFALoading(true);
-        console.log('🔐 Verifying TFA code...');
 
         try {
             const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
@@ -842,14 +777,10 @@
                 token: code 
             });
 
-            console.log('📋 TFA verification result:', result.data);
-
             if (result.data.valid) {
-                console.log('✅ TFA successful - completing login');
                 clearPendingTFA();
                 await completeLogin(result.data.uid);
             } else {
-                console.log('❌ TFA failed - invalid code');
                 document.getElementById('tfa-error-banner').style.display = 'flex';
                 document.getElementById('tfa-error-text').textContent = 'Invalid code. Please try again.';
                 shakeTFAInputs();
@@ -864,30 +795,21 @@
         }
     };
 
-    // ── Complete Login & Redirect ──
     async function completeLogin(uid) {
         try {
-            console.log('📝 Logging admin access...');
             const logAccess = httpsCallable(functions, 'logAdminAccess');
             await logAccess({ 
                 uid,
                 userAgent: navigator.userAgent,
                 timestamp: new Date().toISOString()
             });
-            
-            console.log('🚀 Redirecting to dashboard');
-            // ✅ Reset state BEFORE redirect to avoid issues on back navigation
-            resetLoginState();
-            window.location.href = 'super-admin-school-dashboard.html';
         } catch (error) {
             console.error('Post-login error:', error);
-            // Still redirect even if logging fails
-            resetLoginState();
-            window.location.href = 'super-admin-school-dashboard.html';
         }
+        resetLoginState();
+        window.location.href = 'super-admin-school-dashboard.html';
     }
 
-    // ── Keyboard Support ──
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && document.getElementById('tfa-modal').classList.contains('active')) {
             e.preventDefault();
@@ -895,9 +817,7 @@
         }
     });
 
-    // ── Initialize on DOM Ready ──
     document.addEventListener('DOMContentLoaded', initializeSecure);
-    
     console.log('🔐 Super Admin Login module loaded');
 </script>
 </body>
