@@ -603,7 +603,6 @@
 
   /* ── State ── */
   let loginInProgress = false;
-  let pendingTFAChallenge = null;
   let pendingUser = null;
   let pendingUID = null;
   let sqLocked = false;
@@ -725,11 +724,6 @@
       const result = await checkAdmin();
 
       if (result.data.requiresTFA) {
-        // Initiate challenge flow
-        const initiateTFA = firebase.functions().httpsCallable('initiateTFA');
-        const tfaResult = await initiateTFA();
-        pendingTFAChallenge = tfaResult.data.challengeToken;
-
         document.getElementById('tfa-display-email').textContent = email;
         slideToPanel(2);
         startCountdown();
@@ -752,7 +746,7 @@
     }
   });
 
-  /* ── Step 2 — TOTP (challenge flow) ── */
+  /* ── Step 2 — TOTP (source-based, no challenge) ── */
   window.verifyLogin2FA = async function () {
     hideTFAError();
     const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
@@ -765,7 +759,7 @@
 
     try {
       const verifyTOTP = firebase.functions().httpsCallable('verifyTOTP');
-      const result = await verifyTOTP({ challengeToken: pendingTFAChallenge, token: code });
+      const result = await verifyTOTP({ source: 'user_security', token: code });
 
       if (!result.data.valid) {
         btn.disabled = false; spinner.style.display = 'none';
@@ -776,7 +770,6 @@
         return;
       }
 
-      pendingTFAChallenge = null;
       if (countdownTimer) clearInterval(countdownTimer);
       btn.disabled = false; spinner.style.display = 'none';
       text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
@@ -878,7 +871,7 @@
   window.cancelSecurityQuestions = async function () {
     if (sqLocked) return;
     await auth.signOut().catch(() => {});
-    pendingUser = null; pendingUID = null; pendingTFAChallenge = null; sqLocked = false;
+    pendingUser = null; pendingUID = null; sqLocked = false;
     loginInProgress = false;
     const questions = securityQuestions || [];
     questions.forEach(q => { const el = document.getElementById(q.id); if (el) el.value = ''; });
@@ -890,7 +883,7 @@
   window.cancelLogin2FA = function () {
     if (countdownTimer) clearInterval(countdownTimer);
     auth.signOut().catch(() => {});
-    pendingUser = null; pendingUID = null; pendingTFAChallenge = null;
+    pendingUser = null; pendingUID = null;
     loginInProgress = false;
     ['d0','d1','d2','d3','d4','d5'].forEach(i => { const el = document.getElementById(i); el.value = ''; el.classList.remove('filled'); });
     hideTFAError();
@@ -919,7 +912,6 @@
   document.getElementById('password').addEventListener('input', hideLoginMsgs);
 
 })();
-    
 </script>
   
 </body>
