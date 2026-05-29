@@ -559,7 +559,7 @@
   <script>
   (function () {
 
- <script>
+<script>
 (async function () {
 
   /* ══════════════════════════════════
@@ -583,7 +583,6 @@
   const DEVICE_TOKEN_KEY    = 'tk_admin_device_token';
   const DEVICE_EXPIRY_KEY   = 'tk_admin_device_expiry';
   const DEVICE_TOKEN_DAYS   = 30;
-  const SQ_MAX_ATTEMPTS     = 5;
 
   /* ══════════════════════════════════
      Security Questions — fetched from Firestore
@@ -607,7 +606,6 @@
   }
 
   function getFallbackQuestions() {
-    // Minimal fallback — real questions must be in Firestore
     return [
       { id: 'sq1', question: 'Security Question 1 — please configure in Firestore' },
       { id: 'sq2', question: 'Security Question 2 — please configure in Firestore' },
@@ -620,7 +618,7 @@
     const container = document.getElementById('sq-questions-container');
     if (!container) return;
 
-    container.innerHTML = questions.map((q, i) => `
+    container.innerHTML = questions.map((q) => `
       <div class="form-group">
         <span class="q-label">${q.question}</span>
         <div class="input-field">
@@ -633,52 +631,10 @@
   }
 
   /* ══════════════════════════════════
-     TOTP Engine (RFC 6238 / HMAC-SHA1)
-  ══════════════════════════════════ */
-  const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-  function base32Decode(s) {
-    let bits = 0, val = 0;
-    const out = [];
-    for (const c of s.toUpperCase().replace(/=+$/, '')) {
-      const idx = B32.indexOf(c);
-      if (idx < 0) continue;
-      val = (val << 5) | idx; bits += 5;
-      if (bits >= 8) { out.push((val >>> (bits - 8)) & 0xff); bits -= 8; }
-    }
-    return new Uint8Array(out);
-  }
-
-  async function getTOTP(secret, offset) {
-    const step = 30;
-    const T    = Math.floor(Date.now() / 1000 / step) + (offset || 0);
-    const buf  = new ArrayBuffer(8);
-    new DataView(buf).setUint32(4, T, false);
-    const key  = await crypto.subtle.importKey(
-      'raw', base32Decode(secret),
-      { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
-    );
-    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
-    const off  = hmac[hmac.length - 1] & 0xf;
-    const code = ((hmac[off] & 0x7f) << 24 |
-                  hmac[off+1] << 16 |
-                  hmac[off+2] << 8  |
-                  hmac[off+3]) % 1_000_000;
-    return code.toString().padStart(6, '0');
-  }
-
-  async function verifyTOTP(secret, token) {
-    for (const offset of [0, -1, 1]) {
-      if (await getTOTP(secret, offset) === token) return true;
-    }
-    return false;
-  }
-
-  /* ══════════════════════════════════
-     SHA-256 helper
+     SHA-256 helper (device tokens only)
   ══════════════════════════════════ */
   async function sha256(str) {
-    const buf  = await crypto.subtle.digest(
+    const buf = await crypto.subtle.digest(
       'SHA-256',
       new TextEncoder().encode(str.trim().toLowerCase())
     );
@@ -794,7 +750,6 @@
   function showSQError(msg) {
     document.getElementById('sq-error-text').textContent = msg;
     document.getElementById('sq-error').classList.add('show');
-    // Shake all three inputs
     const questions = securityQuestions || getFallbackQuestions();
     questions.forEach(q => {
       const el = document.getElementById(q.id);
@@ -814,10 +769,9 @@
   function updateAttemptBadge() {
     const badge = document.getElementById('sq-attempt-badge');
     const label = document.getElementById('sq-attempts-left');
-    const left  = SQ_MAX_ATTEMPTS - sqFailCount;
     if (sqFailCount > 0) {
       badge.style.display = 'inline-flex';
-      label.textContent   = `${left} attempt${left !== 1 ? 's' : ''} remaining`;
+      label.textContent = `${5 - sqFailCount} attempt${5 - sqFailCount !== 1 ? 's' : ''} remaining`;
     }
   }
 
@@ -924,54 +878,54 @@
   });
 
   /* ══════════════════════════════════
-     Step 2 — Verify TOTP
+     Step 2 — Verify TOTP (backend)
   ══════════════════════════════════ */
   window.verifyLogin2FA = async function () {
-  hideTFAError();
-  const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
-  if (code.length < 6) { showTFAError('Please enter all 6 digits.'); return; }
+    hideTFAError();
+    const code = ['d0','d1','d2','d3','d4','d5'].map(i => document.getElementById(i).value).join('');
+    if (code.length < 6) { showTFAError('Please enter all 6 digits.'); return; }
 
-  const btn     = document.getElementById('tfa-verify-btn');
-  const spinner = document.getElementById('tfa-spinner');
-  const text    = document.getElementById('tfa-btn-text');
+    const btn     = document.getElementById('tfa-verify-btn');
+    const spinner = document.getElementById('tfa-spinner');
+    const text    = document.getElementById('tfa-btn-text');
 
-  btn.disabled = true;
-  spinner.style.display = 'inline-block';
-  text.innerHTML = 'Verifying…';
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+    text.innerHTML = 'Verifying…';
 
-  try {
-    const verifyTOTP = firebase.functions().httpsCallable('verifyTOTP');
-    const result = await verifyTOTP({ secret: pendingSecret, token: code });
+    try {
+      const verifyTOTP = firebase.functions().httpsCallable('verifyTOTP');
+      const result = await verifyTOTP({ secret: pendingSecret, token: code });
 
-    if (!result.data.valid) {
+      if (!result.data.valid) {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
+        showTFAError('Incorrect code. Try again or wait for the next code.');
+        ['d0','d1','d2','d3','d4','d5'].forEach(i => {
+          const el = document.getElementById(i);
+          el.value = ''; el.classList.remove('filled');
+        });
+        document.getElementById('d0').focus();
+        return;
+      }
+
+      if (countdownTimer) clearInterval(countdownTimer);
+
       btn.disabled = false;
       spinner.style.display = 'none';
       text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-      showTFAError('Incorrect code. Try again or wait for the next code.');
-      ['d0','d1','d2','d3','d4','d5'].forEach(i => {
-        const el = document.getElementById(i);
-        el.value = ''; el.classList.remove('filled');
-      });
-      document.getElementById('d0').focus();
-      return;
+
+      await postAuthFlow();
+
+    } catch (err) {
+      btn.disabled = false;
+      spinner.style.display = 'none';
+      text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
+      showTFAError('Verification error. Please try again.');
     }
+  };
 
-    if (countdownTimer) clearInterval(countdownTimer);
-
-    btn.disabled = false;
-    spinner.style.display = 'none';
-    text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-
-    await postAuthFlow();
-
-  } catch (err) {
-    btn.disabled = false;
-    spinner.style.display = 'none';
-    text.innerHTML = '<i class="fas fa-check" style="margin-right:6px;"></i>Verify & Enter';
-    showTFAError('Verification error. Please try again.');
-  }
-};
-    
   /* ══════════════════════════════════
      Post-auth: device check → SQ or dashboard
   ══════════════════════════════════ */
@@ -985,7 +939,6 @@
         const data = snap.exists ? snap.data() : {};
 
         if (data.sqHash1 && data.sqHash2 && data.sqHash3) {
-          // Load questions from Firestore, then render
           await renderSecurityQuestions();
           sqFailCount = 0;
           sqLocked    = false;
@@ -1011,80 +964,80 @@
   }
 
   /* ══════════════════════════════════
-     Step 3 — Security Questions
+     Step 3 — Security Questions (backend)
   ══════════════════════════════════ */
- window.verifySecurityQuestions = async function () {
-  if (sqLocked) return;
-  hideSQError();
+  window.verifySecurityQuestions = async function () {
+    if (sqLocked) return;
+    hideSQError();
 
-  const questions = securityQuestions || getFallbackQuestions();
-  const answerValues = {};
-  questions.forEach(q => {
-    const el = document.getElementById(q.id);
-    answerValues[q.id] = el?.value?.trim() || '';
-  });
-
-  if (Object.values(answerValues).some(v => !v)) {
-    showSQError('Please answer all questions.');
-    return;
-  }
-
-  const btn     = document.getElementById('sq-verify-btn');
-  const spinner = document.getElementById('sq-spinner');
-  const text    = document.getElementById('sq-btn-text');
-
-  btn.disabled = true;
-  spinner.style.display = 'inline-block';
-  text.innerHTML = 'Verifying…';
-
-  try {
-    const verifyAnswers = firebase.functions().httpsCallable('verifySecurityAnswers');
-    const result = await verifyAnswers({
-      answers: {
-        sq1: answerValues.sq1,
-        sq2: answerValues.sq2,
-        sq3: answerValues.sq3
-      }
+    const questions = securityQuestions || getFallbackQuestions();
+    const answerValues = {};
+    questions.forEach(q => {
+      const el = document.getElementById(q.id);
+      answerValues[q.id] = el?.value?.trim() || '';
     });
 
-    if (result.data.valid) {
-      await trustDevice(pendingUID);
-      window.location.href = 'super-dashboard.html';
-    } else {
-      sqFailCount = 5 - result.data.attemptsRemaining;
-      updateAttemptBadge();
+    if (Object.values(answerValues).some(v => !v)) {
+      showSQError('Please answer all questions.');
+      return;
+    }
 
+    const btn     = document.getElementById('sq-verify-btn');
+    const spinner = document.getElementById('sq-spinner');
+    const text    = document.getElementById('sq-btn-text');
+
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+    text.innerHTML = 'Verifying…';
+
+    try {
+      const verifyAnswers = firebase.functions().httpsCallable('verifySecurityAnswers');
+      const result = await verifyAnswers({
+        answers: {
+          sq1: answerValues.sq1,
+          sq2: answerValues.sq2,
+          sq3: answerValues.sq3
+        }
+      });
+
+      if (result.data.valid) {
+        await trustDevice(pendingUID);
+        window.location.href = 'super-dashboard.html';
+      } else {
+        sqFailCount = 5 - result.data.attemptsRemaining;
+        updateAttemptBadge();
+
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
+
+        if (result.data.lockedOut) {
+          sqLocked = true;
+          hideSQError();
+          document.getElementById('sq-lockout').classList.add('show');
+          document.getElementById('sq-verify-btn').disabled = true;
+          document.getElementById('sq-back-btn').style.display = 'none';
+          document.getElementById('sq-attempt-badge').style.display = 'none';
+          await auth.signOut();
+          pendingUser = null; pendingUID = null; pendingSecret = null;
+        } else {
+          showSQError(`One or more answers are incorrect. ${result.data.attemptsRemaining} attempt${result.data.attemptsRemaining !== 1 ? 's' : ''} remaining.`);
+          questions.forEach(q => {
+            const el = document.getElementById(q.id);
+            if (el) el.value = '';
+          });
+          const firstInput = document.querySelector('#sq-questions-container input');
+          if (firstInput) firstInput.focus();
+        }
+      }
+    } catch (err) {
       btn.disabled = false;
       spinner.style.display = 'none';
       text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-
-      if (result.data.lockedOut) {
-        sqLocked = true;
-        hideSQError();
-        document.getElementById('sq-lockout').classList.add('show');
-        document.getElementById('sq-verify-btn').disabled = true;
-        document.getElementById('sq-back-btn').style.display = 'none';
-        document.getElementById('sq-attempt-badge').style.display = 'none';
-        await auth.signOut();
-        pendingUser = null; pendingUID = null; pendingSecret = null;
-      } else {
-        showSQError(`One or more answers are incorrect. ${result.data.attemptsRemaining} attempt${result.data.attemptsRemaining !== 1 ? 's' : ''} remaining.`);
-        questions.forEach(q => {
-          const el = document.getElementById(q.id);
-          if (el) el.value = '';
-        });
-        const firstInput = document.querySelector('#sq-questions-container input');
-        if (firstInput) firstInput.focus();
-      }
+      showSQError('Verification failed. Please try again.');
     }
-  } catch (err) {
-    btn.disabled = false;
-    spinner.style.display = 'none';
-    text.innerHTML = '<i class="fas fa-unlock-alt" style="margin-right:6px;"></i>Confirm Identity';
-    showSQError('Verification failed. Please try again.');
-  }
-};
-  
+  };
+
   window.cancelSecurityQuestions = async function () {
     if (sqLocked) return;
     await auth.signOut().catch(() => {});
@@ -1100,7 +1053,6 @@
     slideToPanel(1);
   };
 
-  /* ── Back button on panel 2 ── */
   window.cancelLogin2FA = function () {
     if (countdownTimer) clearInterval(countdownTimer);
     auth.signOut().catch(() => {});
@@ -1145,6 +1097,8 @@
   document.getElementById('password').addEventListener('input', hideLoginMsgs);
 
 })();
+
 </script>
+
 </body>
 </html>
