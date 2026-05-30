@@ -424,68 +424,20 @@ import {
     getDoc,
     updateDoc
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import {
+    getFunctions,
+    httpsCallable
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
 /* ── Firebase init ── */
 const config = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig')
         .then(r => r.json());
     
-const app       = initializeApp(config);  // ← use 'config'
+const app       = initializeApp(config);
 const analytics = getAnalytics(app);
 const auth      = getAuth(app);
 const db        = getFirestore(app);
-
-/* ══════════════════════════════════════════
-   TOTP helpers (pure JS, no external lib)
-══════════════════════════════════════════ */
-
-/** base32 decode */
-function base32Decode(b32) {
-    const alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    b32 = b32.toUpperCase().replace(/=+$/, '');
-    let bits = 0, value = 0;
-    const output = [];
-    for (const c of b32) {
-        const idx = alpha.indexOf(c);
-        if (idx === -1) continue;
-        value = (value << 5) | idx;
-        bits += 5;
-        if (bits >= 8) { bits -= 8; output.push((value >>> bits) & 0xff); }
-    }
-    return new Uint8Array(output);
-}
-
-/** HMAC-SHA1 via SubtleCrypto */
-async function hmacSha1(keyBytes, msgBytes) {
-    const key = await crypto.subtle.importKey(
-        'raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
-    );
-    const sig = await crypto.subtle.sign('HMAC', key, msgBytes);
-    return new Uint8Array(sig);
-}
-
-/** Compute TOTP token */
-async function computeTotp(secret, time = Date.now()) {
-    const counter  = Math.floor(time / 1000 / 30);
-    const keyBytes = base32Decode(secret);
-    const msgView  = new DataView(new ArrayBuffer(8));
-    msgView.setUint32(4, counter, false);
-    const hash   = await hmacSha1(keyBytes, new Uint8Array(msgView.buffer));
-    const offset = hash[hash.length - 1] & 0x0f;
-    const code   = ((hash[offset] & 0x7f) << 24 |
-                     hash[offset+1] << 16 |
-                     hash[offset+2] << 8  |
-                     hash[offset+3]) % 1_000_000;
-    return code.toString().padStart(6, '0');
-}
-
-/** Validate TOTP (±1 window to allow clock skew) */
-async function validateTotp(secret, token) {
-    const now = Date.now();
-    for (const delta of [-30000, 0, 30000]) {
-        if (await computeTotp(secret, now + delta) === token) return true;
-    }
-    return false;
-}
+const functions = getFunctions(app);
 
 /* ══════════════════════════════════════════
    Screen Management
@@ -507,7 +459,7 @@ function hideMessage(msgId) {
 }
 
 /* ══════════════════════════════════════════
-   OTP Input boxes (shared setup)
+   OTP Input boxes
 ══════════════════════════════════════════ */
 function setupOtpInputs(containerId) {
     const inputs = document.querySelectorAll(`#${containerId} input`);
@@ -564,8 +516,9 @@ function startTimers() {
 /* ══════════════════════════════════════════
    State
 ══════════════════════════════════════════ */
-let pendingUser     = null;   // Firebase user after successful password auth
+let pendingUser     = null;
 let pendingRemember = false;
+let challengeToken  = null;  // Server-issued challenge
 
 /* ══════════════════════════════════════════
    SCREEN 1: Sign-In
@@ -604,13 +557,21 @@ document.getElementById('signin-form').addEventListener('submit', async function
         /* Check Firestore for 2FA status */
         const snap = await getDoc(doc(db, 'users', user.uid));
         if (snap.exists() && snap.data().twoFactorEnabled === true) {
-            /* 2FA enrolled → ask for TOTP */
-            showScreen('screen-totp-verify');
-            clearOtpInputs('totp-otp-inputs');
-            startTimers();
-            document.querySelector('#totp-otp-inputs input').focus();
+            /* ✅ SERVER-SIDE: Initiate TFA challenge */
+            try {
+                const initiateTFA = httpsCallable(functions, 'initiateTFA');
+                const result = await initiateTFA({ context: 'users' });
+                challengeToken = result.data.challengeToken;
+
+                showScreen('screen-totp-verify');
+                clearOtpInputs('totp-otp-inputs');
+                startTimers();
+                document.querySelector('#totp-otp-inputs input').focus();
+            } catch (initErr) {
+                showMessage('message-signin', 'Failed to initiate 2FA. Please try again.', 'error');
+                await auth.signOut();
+            }
         } else {
-            /* Not enrolled → go straight to dashboard; setup is in settings */
             redirectToDashboard();
         }
     } catch (err) {
@@ -659,7 +620,7 @@ document.getElementById('resendVerification').addEventListener('click', async fu
 });
 
 /* ══════════════════════════════════════════
-   SCREEN 2: TOTP Verify
+   SCREEN 2: TOTP Verify (SERVER-SIDE)
 ══════════════════════════════════════════ */
 document.getElementById('verify-totp-btn').addEventListener('click', async () => {
     const token = getOtpValue('totp-otp-inputs');
@@ -670,11 +631,13 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
     btn.textContent = 'Verifying…';
 
     try {
-        const snap = await getDoc(doc(db, 'users', pendingUser.uid));
-        const secret = snap.data().totpSecret;
-        const valid  = await validateTotp(secret, token);
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const result = await verifyTOTP({
+            challengeToken: challengeToken,
+            token: token
+        });
 
-        if (valid) {
+        if (result.data.valid) {
             timerIntervals.forEach(clearInterval);
             redirectToDashboard();
         } else {
@@ -683,7 +646,19 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
             document.querySelector('#totp-otp-inputs input').focus();
         }
     } catch (err) {
-        showMessage('message-totp', 'Verification failed. Please try again.', 'error');
+        if (err.code === 'resource-exhausted') {
+            showMessage('message-totp', 'Too many attempts. Please sign in again.', 'error');
+            await auth.signOut();
+            pendingUser = null;
+            showScreen('screen-signin');
+        } else if (err.code === 'failed-precondition') {
+            showMessage('message-totp', 'Challenge expired. Please sign in again.', 'error');
+            await auth.signOut();
+            pendingUser = null;
+            showScreen('screen-signin');
+        } else {
+            showMessage('message-totp', 'Verification failed. Please try again.', 'error');
+        }
     } finally {
         btn.disabled    = false;
         btn.textContent = 'Verify Code';
@@ -711,7 +686,6 @@ document.getElementById('verify-recovery-btn').addEventListener('click', async (
         const idx   = codes.indexOf(entered);
 
         if (idx !== -1) {
-            /* Consume the code */
             const updated = codes.filter((_, i) => i !== idx);
             await updateDoc(ref, { recoveryCodes: updated });
             timerIntervals.forEach(clearInterval);
@@ -731,6 +705,7 @@ document.getElementById('back-to-signin').addEventListener('click', async (e) =>
     e.preventDefault();
     await auth.signOut();
     pendingUser = null;
+    challengeToken = null;
     showScreen('screen-signin');
 });
 
