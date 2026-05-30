@@ -3506,13 +3506,17 @@ window.saveAdminPassword = async function() {
 };
 
 // ================================================================
-//  ADMIN 2FA
+//  ADMIN 2FA (Cloud Function Version)
 // ================================================================
 
 let _adminTfaSecret = null;
 let _adminTfaBackupCodes = [];
 let _adminTfaFailCount = 0;
 const ADMIN_TFA_MAX_ATTEMPTS = 5;
+
+// ── Cloud Functions reference ──
+const functions = firebase.functions();
+const httpsCallable = functions.httpsCallable;
 
 // ── Load TFA libraries ─────────────────────────────────────
 function loadAdminTFALibraries() {
@@ -3641,30 +3645,43 @@ window.verifyAdminTFASetup = async function() {
     setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
         'admin-tfa-verify-spinner', true);
 
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_adminTfaSecret)
-    });
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _adminTfaFailCount++;
-        shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
-        document.getElementById('admin-tfa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
-        document.getElementById('admin-tfa-verify-error').style.display = 'block';
-        clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
-            'admin-tfa-verify-spinner', false);
-        return;
-    }
-
-    // Generate backup codes
-    _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
-    const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
-
     try {
+        // STEP 1: Get challenge token from cloud function (setup mode)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({ 
+            context: 'schooladmins',
+            isSetupMode: true,
+            pendingSecret: _adminTfaSecret
+        });
+
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
+
+        // STEP 2: Verify with cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({ 
+            challengeToken: initiateResult.data.challengeToken, 
+            token: code 
+        });
+
+        if (!verifyResult.data.valid) {
+            _adminTfaFailCount++;
+            shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
+            document.getElementById('admin-tfa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
+            document.getElementById('admin-tfa-verify-error').style.display = 'block';
+            clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
+                'admin-tfa-verify-spinner', false);
+            return;
+        }
+
+        // STEP 3: Generate backup codes and save to Firestore
+        _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
+        const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
+
         await setDoc(doc(db, 'schooladmins', auth.currentUser.uid), {
             twoFactorEnabled: true,
             twoFactorSecret: _adminTfaSecret,
@@ -3751,20 +3768,27 @@ window.confirmAdminTFADisable = async function() {
 
     try {
         const user = auth.currentUser;
+        
+        // STEP 1: Re-authenticate with password
         const credential = EmailAuthProvider.credential(user.email, password);
         await reauthenticateWithCredential(user, credential);
 
-        const snap = await getDoc(doc(db, 'schooladmins', user.uid));
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
+        // STEP 2: Get challenge token from cloud function (normal mode)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({ context: 'schooladmins' });
 
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
+
+        // STEP 3: Verify with cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({ 
+            challengeToken: initiateResult.data.challengeToken, 
+            token: code 
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!verifyResult.data.valid) {
             shakeAdminTFAOTPInputs('admin-tfa-disable-otp-inputs');
             errorTxt.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
@@ -3774,6 +3798,7 @@ window.confirmAdminTFADisable = async function() {
             return;
         }
 
+        // STEP 4: Disable in Firestore
         await setDoc(doc(db, 'schooladmins', user.uid), {
             twoFactorEnabled: false,
             twoFactorSecret: null,
@@ -3788,7 +3813,7 @@ window.confirmAdminTFADisable = async function() {
         console.error('Admin disable 2FA error:', err);
         const msg = err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
             ? 'Incorrect password. Please try again.'
-            : 'Something went wrong. Please try again.';
+            : 'Verification failed. Please try again.';
         errorTxt.textContent = msg;
         errorEl.style.display = 'block';
         setAdminTFABtnLoading('admin-tfa-disable-confirm-btn', 'admin-tfa-disable-btn-text',
