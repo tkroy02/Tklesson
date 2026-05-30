@@ -2160,12 +2160,18 @@ async function confirmDisableTFA() {
     try {
         const credential = EmailAuthProvider.credential(currentUser.email, password);
         await reauthenticateWithCredential(currentUser, credential);
-        
-        const snap = await getDoc(doc(db, 'admins', currentUser.uid));
-        const secret = snap.data()?.twoFactorSecret;
-        
+
+        // STEP 1: Get challenge token
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({ context: 'admins' });
+
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
+
+        // STEP 2: Verify with challenge token
         const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
-        const result = await verifyTOTP({ secret, token: code });
+        const result = await verifyTOTP({ challengeToken: initiateResult.data.challengeToken, token: code });
         
         if (!result.data.valid) {
             document.getElementById('tfa-disable-error-text').textContent = 'Invalid authenticator code.';
