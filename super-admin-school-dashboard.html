@@ -2053,10 +2053,24 @@ async function verifyTFASetup() {
     document.getElementById('tfa-setup-error').style.display = 'none';
     
     try {
-        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
-        const result = await verifyTOTP({ secret: currentTfaSecret, token: code });
+        // STEP 1: Call initiateTFA to get a challenge token
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({});
         
-        if (!result.data.valid) {
+        if (!initiateResult.data || !initiateResult.data.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
+        
+        const challengeToken = initiateResult.data.challengeToken;
+        
+        // STEP 2: Call verifyTOTP with the challenge token and 6-digit code
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({ 
+            challengeToken: challengeToken, 
+            token: code 
+        });
+        
+        if (!verifyResult.data.valid) {
             tfaFailCount++;
             shakeOTPInputs('tfa-setup-otp-inputs');
             clearOTPInputs('tfa-setup-otp-inputs');
@@ -2067,6 +2081,7 @@ async function verifyTFASetup() {
             return;
         }
         
+        // STEP 3: Save 2FA secret to admins collection
         await setDoc(doc(db, 'admins', currentUser.uid), {
             twoFactorEnabled: true,
             twoFactorSecret: currentTfaSecret,
@@ -2075,15 +2090,26 @@ async function verifyTFASetup() {
         
         goToTFAStep(3);
         await loadTFAStatus();
+        
     } catch (err) {
         console.error('Save TFA error:', err);
-        document.getElementById('tfa-setup-error-text').textContent = 'Failed to save. Please try again.';
+        
+        // Handle specific error messages
+        if (err.message && err.message.includes('2FA not enabled')) {
+            document.getElementById('tfa-setup-error-text').textContent = 
+                'Please enable 2FA in your account settings first, then try again.';
+        } else if (err.message && err.message.includes('Challenge expired')) {
+            document.getElementById('tfa-setup-error-text').textContent = 
+                'Challenge expired. Please refresh and try again.';
+        } else {
+            document.getElementById('tfa-setup-error-text').textContent = 
+                'Failed to verify. Please try again.';
+        }
         document.getElementById('tfa-setup-error').style.display = 'block';
     }
     
     setVerifyButtonLoading(false);
-}
-    
+}    
     // ── Open Disable Modal ──
     function openTFADisableModal() {
         document.getElementById('tfa-disable-password').value = '';
