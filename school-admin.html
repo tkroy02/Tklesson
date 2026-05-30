@@ -3737,30 +3737,43 @@ window.verifyAdminTFASetup = async function() {
     setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
         'admin-tfa-verify-spinner', true);
 
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_adminTfaSecret)
-    });
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _adminTfaFailCount++;
-        shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
-        document.getElementById('admin-tfa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
-        document.getElementById('admin-tfa-verify-error').style.display = 'block';
-        clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
-            'admin-tfa-verify-spinner', false);
-        return;
-    }
-
-    // Generate backup codes
-    _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
-    const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
-
     try {
+        // ✅ NEW: Initiate challenge via cloud function
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({
+            context: 'schooladmins',
+            isSetupMode: true,
+            pendingSecret: _adminTfaSecret
+        });
+
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
+            _adminTfaFailCount++;
+            shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
+            document.getElementById('admin-tfa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
+            document.getElementById('admin-tfa-verify-error').style.display = 'block';
+            clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
+                'admin-tfa-verify-spinner', false);
+            return;
+        }
+
+        // Generate backup codes
+        _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
+        const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
+
         await setDoc(doc(db, 'schooladmins', auth.currentUser.uid), {
             twoFactorEnabled: true,
             twoFactorSecret: _adminTfaSecret,
@@ -3847,20 +3860,29 @@ window.confirmAdminTFADisable = async function() {
 
     try {
         const user = auth.currentUser;
+
+        // Re-authenticate with password
         const credential = EmailAuthProvider.credential(user.email, password);
         await reauthenticateWithCredential(user, credential);
 
-        const snap = await getDoc(doc(db, 'schooladmins', user.uid));
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
-
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        // ✅ NEW: Initiate challenge via cloud function (no setup mode)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({
+            context: 'schooladmins'
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
             shakeAdminTFAOTPInputs('admin-tfa-disable-otp-inputs');
             errorTxt.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
@@ -3958,11 +3980,36 @@ function generateAdminTFABackupCodes(count) {
     }
     return codes;
 }
-
+        
 // ================================================================
 //  ADMIN — RESET USER 2FA
 // ================================================================
 window.adminReset2FA = async function(userId, userName, role) {
+    // ── Role check: only senior admin (or super admin) can reset another admin ──
+    if (role === 'junior admin' || role === 'senior admin') {
+        // Check if current user is a senior admin in this school
+        const currentUserDoc = await getDoc(doc(db, 'schooladmins', auth.currentUser.uid));
+        const currentUserRole = currentUserDoc.exists() ? currentUserDoc.data()?.role : null;
+
+        let isAuthorized = false;
+
+        if (currentUserRole === 'senior admin') {
+            isAuthorized = true;
+        } else {
+            // Fallback: check if current user is a super admin from the admins collection
+            const superAdminDoc = await getDoc(doc(db, 'admins', auth.currentUser.uid));
+            if (superAdminDoc.exists()) {
+                isAuthorized = true;
+            }
+        }
+
+        if (!isAuthorized) {
+            alert('Only a Senior Admin can reset another admin\'s 2FA. Please contact your Senior Admin.');
+            return;
+        }
+    }
+
+    // ── Confirmation ──
     const confirmed = confirm(
         `Reset 2FA for ${userName}?\n\n` +
         `This will disable two-factor authentication for this ${role}. ` +
