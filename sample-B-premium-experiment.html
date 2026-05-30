@@ -13599,12 +13599,12 @@ function cleanupNotifications() {
 //==================== TWO-FACTOR AUTHENTICATION (TOTP) ====================//
 //==========================================================================//
 
-const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-let _totpSecret = null;
+let _pendingChallengeToken = null;
 let _recoveryCodes = [];
 
-// ── TOTP Engine (pure Web Crypto) ──────────────────────────────
+// ── Generate secret client-side for setup (QR code only) ──
 function generateTOTPSecret(bytes = 20) {
+    const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
     const raw = new Uint8Array(bytes);
     crypto.getRandomValues(raw);
     let out = '';
@@ -13616,41 +13616,6 @@ function formatSecret(secret) {
     return secret.match(/.{1,4}/g).join(' ');
 }
 
-function base32ToBytes(b32) {
-    const s = b32.toUpperCase().replace(/\s/g, '').replace(/=+$/, '');
-    const bytes = [];
-    let buf = 0, bits = 0;
-    for (const ch of s) {
-        const idx = BASE32_ALPHABET.indexOf(ch);
-        if (idx < 0) continue;
-        buf = (buf << 5) | idx;
-        bits += 5;
-        if (bits >= 8) { bytes.push((buf >> (bits - 8)) & 0xff); bits -= 8; }
-    }
-    return new Uint8Array(bytes);
-}
-
-async function generateTOTPCode(secret, timestamp = Date.now()) {
-    const counter = Math.floor(timestamp / 1000 / 30);
-    const keyBytes = base32ToBytes(secret);
-    const ctr = new Uint8Array(8);
-    let n = counter;
-    for (let i = 7; i >= 0; i--) { ctr[i] = n & 0xff; n = Math.floor(n / 256); }
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
-    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, ctr));
-    const offset = sig[sig.length - 1] & 0x0f;
-    const code = ((sig[offset] & 0x7f) << 24 | (sig[offset + 1] & 0xff) << 16 | (sig[offset + 2] & 0xff) << 8 | (sig[offset + 3] & 0xff)) % 1000000;
-    return String(code).padStart(6, '0');
-}
-
-async function verifyTOTPCode(secret, userCode) {
-    const now = Date.now();
-    for (const ts of [now - 30000, now, now + 30000]) {
-        if (await generateTOTPCode(secret, ts) === userCode.replace(/\s/g, '')) return true;
-    }
-    return false;
-}
-
 function generateRecoveryCodes(n = 8) {
     return Array.from({ length: n }, () => {
         const bytes = new Uint8Array(5);
@@ -13660,7 +13625,25 @@ function generateRecoveryCodes(n = 8) {
     });
 }
 
-// ── Firestore Helpers ──────────────────────────────────────────
+// ── Cloud Function Helpers ──
+async function callInitiateTFA(isSetupMode = false, pendingSecret = null) {
+    const { httpsCallable } = window.firebaseModules;
+    const initiateTFA = httpsCallable(functions, 'initiateTFA');
+    const result = await initiateTFA({ 
+        context: 'users',  // or 'user_security', depending on your dashboard
+        ...(isSetupMode && { isSetupMode: true, pendingSecret })
+    });
+    return result.data.challengeToken;
+}
+
+async function callVerifyTOTP(challengeToken, code) {
+    const { httpsCallable } = window.firebaseModules;
+    const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+    const result = await verifyTOTP({ challengeToken, token: code });
+    return result.data.valid;
+}
+
+// ── Firestore Helpers ──
 async function save2FAToFirestore(user, secret) {
     const { doc, setDoc } = window.firebaseModules;
     await setDoc(doc(window.db, 'users', user.uid), {
@@ -13708,17 +13691,19 @@ async function handle2FAAction() {
     if (enabled) { open2FADisable(); } else { await open2FASetup(user); }
 }
 
-// ── UI: Setup Flow ─────────────────────────────────────────────
+// ── UI: Setup Flow (using cloud function) ─────────────────────
+let _tempTfaSecret = null;
+
 async function open2FASetup(user) {
-    _totpSecret = generateTOTPSecret();
+    _tempTfaSecret = generateTOTPSecret();
     document.getElementById('2fa-verify-code').value = '';
     document.getElementById('2fa-verify-error').style.display = 'none';
     document.getElementById('2fa-setup-modal').style.display = 'flex';
-    document.getElementById('2fa-secret-display').textContent = formatSecret(_totpSecret);
+    document.getElementById('2fa-secret-display').textContent = formatSecret(_tempTfaSecret);
 
     const label = encodeURIComponent(user.email);
     const issuer = encodeURIComponent('Tklesson (Self-Study)');
-    const uri = `otpauth://totp/${issuer}:${label}?secret=${_totpSecret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+    const uri = `otpauth://totp/${issuer}:${label}?secret=${_tempTfaSecret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
 
     const qrEl = document.getElementById('2fa-qr-code');
     qrEl.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(uri)}" width="160" height="160" alt="QR Code">`;
@@ -13730,9 +13715,10 @@ function close2FASetup() {
     document.getElementById('2fa-step-qr').style.display = 'block';
     document.getElementById('2fa-verify-code').value = '';
     document.getElementById('2fa-verify-error').style.display = 'none';
-    _totpSecret = null;
+    _tempTfaSecret = null;
+    _pendingChallengeToken = null;
 }
-    
+
 async function verify2FASetup() {
     const code = document.getElementById('2fa-verify-code').value.trim();
     const errEl = document.getElementById('2fa-verify-error');
@@ -13744,29 +13730,51 @@ async function verify2FASetup() {
         return;
     }
 
-    const valid = await verifyTOTPCode(_totpSecret, code);
-    if (!valid) {
-        errEl.textContent = 'Incorrect code. Please try again.';
-        errEl.style.display = 'block';
-        return;
-    }
+    try {
+        // Step 1: Get challenge token from cloud function (setup mode)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({ 
+            context: 'users',
+            isSetupMode: true,
+            pendingSecret: _tempTfaSecret
+        });
 
-    const user = auth.currentUser;
-    try { await save2FAToFirestore(user, _totpSecret); } catch (e) {
-        console.error('2FA save error', e);
-        errEl.textContent = 'Error saving. Please try again.';
-        errEl.style.display = 'block';
-        return;
-    }
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
 
-    _recoveryCodes = generateRecoveryCodes(8);
-    await saveRecoveryCodesToFirestore(user, _recoveryCodes);
-    close2FASetup();
-    update2FAUI(true);
-    open2FARecovery();
+        // Step 2: Verify with cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({ 
+            challengeToken: initiateResult.data.challengeToken, 
+            token: code 
+        });
+
+        if (!verifyResult.data.valid) {
+            errEl.textContent = 'Incorrect code. Please try again.';
+            errEl.style.display = 'block';
+            return;
+        }
+
+        // Step 3: Save to Firestore
+        const user = auth.currentUser;
+        await save2FAToFirestore(user, _tempTfaSecret);
+
+        _recoveryCodes = generateRecoveryCodes(8);
+        await saveRecoveryCodesToFirestore(user, _recoveryCodes);
+
+        close2FASetup();
+        update2FAUI(true);
+        open2FARecovery();
+
+    } catch (error) {
+        console.error('2FA setup error:', error);
+        errEl.textContent = error.message || 'Verification failed. Please try again.';
+        errEl.style.display = 'block';
+    }
 }
 
-// ── UI: Disable Flow ───────────────────────────────────────────
+// ── UI: Disable Flow (using cloud function) ───────────────────
 function open2FADisable() {
     document.getElementById('2fa-disable-code').value = '';
     document.getElementById('2fa-disable-error').style.display = 'none';
@@ -13789,30 +13797,40 @@ async function confirm2FADisable() {
     }
 
     const user = auth.currentUser;
-    const secret = await load2FASecret(user);
-    if (!secret) {
-        errEl.textContent = '2FA data not found. Already disabled?';
-        errEl.style.display = 'block';
-        return;
-    }
 
-    const valid = await verifyTOTPCode(secret, code);
-    if (!valid) {
-        errEl.textContent = 'Incorrect code. Please try again.';
-        errEl.style.display = 'block';
-        return;
-    }
+    try {
+        // Step 1: Get challenge token (normal mode — 2FA already enabled)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({ context: 'users' });
 
-    try { await disable2FAInFirestore(user); } catch (e) {
-        console.error('2FA disable error', e);
-        errEl.textContent = 'Error disabling 2FA. Please try again.';
-        errEl.style.display = 'block';
-        return;
-    }
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate TFA challenge');
+        }
 
-    close2FADisable();
-    update2FAUI(false);
-    showToast('Two-factor authentication disabled', 'info');
+        // Step 2: Verify with cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({ 
+            challengeToken: initiateResult.data.challengeToken, 
+            token: code 
+        });
+
+        if (!verifyResult.data.valid) {
+            errEl.textContent = 'Incorrect code. Please try again.';
+            errEl.style.display = 'block';
+            return;
+        }
+
+        // Step 3: Disable in Firestore
+        await disable2FAInFirestore(user);
+        close2FADisable();
+        update2FAUI(false);
+        showToast('Two-factor authentication disabled', 'info');
+
+    } catch (error) {
+        console.error('2FA disable error:', error);
+        errEl.textContent = error.message || 'Error disabling 2FA. Please try again.';
+        errEl.style.display = 'block';
+    }
 }
 
 // ── UI: Recovery Codes ─────────────────────────────────────────
@@ -13834,7 +13852,7 @@ function copyRecoveryCodes() {
 }
 
 function copyTOTPSecret() {
-    navigator.clipboard.writeText(_totpSecret)
+    navigator.clipboard.writeText(_tempTfaSecret)
         .then(() => showToast('Secret key copied', 'success'))
         .catch(() => showToast('Copy failed', 'error'));
 }
@@ -13876,7 +13894,7 @@ function back2FAToQR() {
     document.getElementById('2fa-verify-code').value = '';
     document.getElementById('2fa-verify-error').style.display = 'none';
 }
-    
+
 //==========================================================================//
 //==================== TWO-FACTOR AUTHENTICATION ENDS =====================//
 //==========================================================================//
