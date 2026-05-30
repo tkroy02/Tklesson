@@ -8564,30 +8564,43 @@ window.verify2FASetup = async function() {
 
     setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', true);
 
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_tfaSecret)
-    });
-
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _tfaFailCount++;
-        shakeOTPInputs('tfa-otp-inputs');
-        document.getElementById('2fa-verify-error').style.display = 'block';
-        document.getElementById('2fa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${TFA_MAX_ATTEMPTS - _tfaFailCount} attempt(s) left.`;
-        clearOTPInputs('tfa-otp-inputs');
-        setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', false);
-        return;
-    }
-
-    // Code valid — generate backup codes
-    _tfaBackupCodes = generateBackupCodes(8);
-    const hashedCodes = _tfaBackupCodes.map(c => btoa(c)); // base64 as lightweight hash for demo; use SHA-256 in production
-
-    // Save to Firestore
     try {
+        // ✅ NEW: Initiate challenge via cloud function
+        const initiateTFA = httpsCallable(functions, 'initiateSchoolUserTFA');
+        const initiateResult = await initiateTFA({
+            schoolId: schoolId,
+            role: 'student',
+            isSetupMode: true,
+            pendingSecret: _tfaSecret
+        });
+
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifySchoolUserTFA');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
+            _tfaFailCount++;
+            shakeOTPInputs('tfa-otp-inputs');
+            document.getElementById('2fa-verify-error').style.display = 'block';
+            document.getElementById('2fa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${TFA_MAX_ATTEMPTS - _tfaFailCount} attempt(s) left.`;
+            clearOTPInputs('tfa-otp-inputs');
+            setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', false);
+            return;
+        }
+
+        // Code valid — generate backup codes
+        _tfaBackupCodes = generateBackupCodes(8);
+        const hashedCodes = _tfaBackupCodes.map(c => btoa(c));
+
+        // Save to Firestore
         const user = auth.currentUser;
         await setDoc(doc(db, userPath()), {
             twoFactorEnabled: true,
@@ -8684,19 +8697,25 @@ window.confirm2FADisable = async function() {
         const credential = EmailAuthProvider.credential(user.email, password);
         await reauthenticateWithCredential(user, credential);
 
-        // 2. Fetch stored secret
-        const snap = await getDoc(doc(db, userPath()));
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
-
-        // 3. Validate OTP
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        // ✅ NEW: Initiate challenge via cloud function (no setup mode)
+        const initiateTFA = httpsCallable(functions, 'initiateSchoolUserTFA');
+        const initiateResult = await initiateTFA({
+            schoolId: schoolId,
+            role: 'student'
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifySchoolUserTFA');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
             shakeOTPInputs('tfa-disable-otp-inputs');
             errorText.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
@@ -8705,7 +8724,7 @@ window.confirm2FADisable = async function() {
             return;
         }
 
-        // 4. Remove 2FA from Firestore
+        // Remove 2FA from Firestore
         await setDoc(doc(db, userPath()), {
             twoFactorEnabled: false,
             twoFactorSecret: null,
@@ -8802,7 +8821,6 @@ function generateBackupCodes(count) {
     }
     return codes;
 }
-
 
 </script>
 </body>
