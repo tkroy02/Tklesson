@@ -2050,143 +2050,144 @@ async function verifyTFASetup() {
     }
     
     setVerifyButtonLoading(true);
-    document.getElementById('tfa-setup-error').style.display = 'none';
+document.getElementById('tfa-setup-error').style.display = 'none';
+
+try {
+    // STEP 1: Call initiateTFA to get a challenge token (with setup mode)
+    const initiateTFA = httpsCallable(functions, 'initiateTFA');
+    const initiateResult = await initiateTFA({ isSetupMode: true });
+    
+    if (!initiateResult.data || !initiateResult.data.challengeToken) {
+        throw new Error('Failed to initiate TFA challenge');
+    }
+    
+    const challengeToken = initiateResult.data.challengeToken;
+    
+    // STEP 2: Call verifyTOTP with the challenge token and 6-digit code
+    const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+    const verifyResult = await verifyTOTP({ 
+        challengeToken: challengeToken, 
+        token: code 
+    });
+    
+    if (!verifyResult.data.valid) {
+        tfaFailCount++;
+        shakeOTPInputs('tfa-setup-otp-inputs');
+        clearOTPInputs('tfa-setup-otp-inputs');
+        document.getElementById('tfa-setup-error-text').textContent = 
+            `Invalid code. ${MAX_TFA_ATTEMPTS - tfaFailCount} attempts left.`;
+        document.getElementById('tfa-setup-error').style.display = 'block';
+        setVerifyButtonLoading(false);
+        return;
+    }
+    
+    // STEP 3: Save 2FA secret to admins collection
+    await setDoc(doc(db, 'admins', currentUser.uid), {
+        twoFactorEnabled: true,
+        twoFactorSecret: currentTfaSecret,
+        twoFactorEnabledAt: new Date().toISOString()
+    }, { merge: true });
+    
+    goToTFAStep(3);
+    await loadTFAStatus();
+    
+} catch (err) {
+    console.error('Save TFA error:', err);
+    
+    // Handle specific error messages
+    if (err.message && err.message.includes('2FA not enabled')) {
+        document.getElementById('tfa-setup-error-text').textContent = 
+            'Please enable 2FA in your account settings first, then try again.';
+    } else if (err.message && err.message.includes('Challenge expired')) {
+        document.getElementById('tfa-setup-error-text').textContent = 
+            'Challenge expired. Please refresh and try again.';
+    } else {
+        document.getElementById('tfa-setup-error-text').textContent = 
+            err.message || 'Failed to verify. Please try again.';
+    }
+    document.getElementById('tfa-setup-error').style.display = 'block';
+}
+
+setVerifyButtonLoading(false);
+}
+
+// ── Open Disable Modal ──
+function openTFADisableModal() {
+    document.getElementById('tfa-disable-password').value = '';
+    clearOTPInputs('tfa-disable-otp-inputs');
+    setupOTPInputs('tfa-disable-otp-inputs');
+    document.getElementById('tfa-disable-error').style.display = 'none';
+    document.getElementById('tfa-disable-modal').style.display = 'flex';
+}
+
+// ── Step Navigation ──
+function goToTFAStep(step) {
+    [1, 2, 3].forEach(n => {
+        const el = document.getElementById(`tfa-step-${n}`);
+        if (el) el.style.display = n === step ? 'block' : 'none';
+    });
+    
+    if (step === 2) {
+        document.getElementById('tfa-modal-title').textContent = 'Verify Your Code';
+        clearOTPInputs('tfa-setup-otp-inputs');
+        setupOTPInputs('tfa-setup-otp-inputs');
+        document.getElementById('tfa-setup-error').style.display = 'none';
+    }
+    if (step === 3) {
+        document.getElementById('tfa-modal-title').textContent = 'Setup Complete';
+    }
+}
+
+// ── Confirm Disable TFA ──
+async function confirmDisableTFA() {
+    const password = document.getElementById('tfa-disable-password').value;
+    const code = getOTPCode('tfa-disable-otp-inputs');
+    
+    if (!password) {
+        document.getElementById('tfa-disable-error-text').textContent = 'Please enter your password.';
+        document.getElementById('tfa-disable-error').style.display = 'block';
+        return;
+    }
+    if (code.length !== 6) {
+        shakeOTPInputs('tfa-disable-otp-inputs');
+        return;
+    }
     
     try {
-        // STEP 1: Call initiateTFA to get a challenge token
-        const initiateTFA = httpsCallable(functions, 'initiateTFA');
-        const initiateResult = await initiateTFA({});
+        const credential = EmailAuthProvider.credential(currentUser.email, password);
+        await reauthenticateWithCredential(currentUser, credential);
         
-        if (!initiateResult.data || !initiateResult.data.challengeToken) {
-            throw new Error('Failed to initiate TFA challenge');
-        }
+        const snap = await getDoc(doc(db, 'admins', currentUser.uid));
+        const secret = snap.data()?.twoFactorSecret;
         
-        const challengeToken = initiateResult.data.challengeToken;
-        
-        // STEP 2: Call verifyTOTP with the challenge token and 6-digit code
         const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
-        const verifyResult = await verifyTOTP({ 
-            challengeToken: challengeToken, 
-            token: code 
-        });
+        const result = await verifyTOTP({ secret, token: code });
         
-        if (!verifyResult.data.valid) {
-            tfaFailCount++;
-            shakeOTPInputs('tfa-setup-otp-inputs');
-            clearOTPInputs('tfa-setup-otp-inputs');
-            document.getElementById('tfa-setup-error-text').textContent = 
-                `Invalid code. ${MAX_TFA_ATTEMPTS - tfaFailCount} attempts left.`;
-            document.getElementById('tfa-setup-error').style.display = 'block';
-            setVerifyButtonLoading(false);
+        if (!result.data.valid) {
+            document.getElementById('tfa-disable-error-text').textContent = 'Invalid authenticator code.';
+            document.getElementById('tfa-disable-error').style.display = 'block';
+            shakeOTPInputs('tfa-disable-otp-inputs');
+            clearOTPInputs('tfa-disable-otp-inputs');
             return;
         }
         
-        // STEP 3: Save 2FA secret to admins collection
         await setDoc(doc(db, 'admins', currentUser.uid), {
-            twoFactorEnabled: true,
-            twoFactorSecret: currentTfaSecret,
-            twoFactorEnabledAt: new Date().toISOString()
+            twoFactorEnabled: false,
+            twoFactorSecret: null,
+            twoFactorDisabledAt: new Date().toISOString()
         }, { merge: true });
         
-        goToTFAStep(3);
+        closeTFADisable();
         await loadTFAStatus();
+        alert('2FA has been disabled successfully.');
         
     } catch (err) {
-        console.error('Save TFA error:', err);
-        
-        // Handle specific error messages
-        if (err.message && err.message.includes('2FA not enabled')) {
-            document.getElementById('tfa-setup-error-text').textContent = 
-                'Please enable 2FA in your account settings first, then try again.';
-        } else if (err.message && err.message.includes('Challenge expired')) {
-            document.getElementById('tfa-setup-error-text').textContent = 
-                'Challenge expired. Please refresh and try again.';
-        } else {
-            document.getElementById('tfa-setup-error-text').textContent = 
-                'Failed to verify. Please try again.';
-        }
-        document.getElementById('tfa-setup-error').style.display = 'block';
+        console.error('Disable TFA error:', err);
+        document.getElementById('tfa-disable-error-text').textContent = 
+            err.code === 'auth/wrong-password' ? 'Incorrect password.' : 'Verification failed.';
+        document.getElementById('tfa-disable-error').style.display = 'block';
     }
-    
-    setVerifyButtonLoading(false);
-}    
-    // ── Open Disable Modal ──
-    function openTFADisableModal() {
-        document.getElementById('tfa-disable-password').value = '';
-        clearOTPInputs('tfa-disable-otp-inputs');
-        setupOTPInputs('tfa-disable-otp-inputs');
-        document.getElementById('tfa-disable-error').style.display = 'none';
-        document.getElementById('tfa-disable-modal').style.display = 'flex';
-    }
-
-    // ── Step Navigation ──
-    function goToTFAStep(step) {
-        [1, 2, 3].forEach(n => {
-            const el = document.getElementById(`tfa-step-${n}`);
-            if (el) el.style.display = n === step ? 'block' : 'none';
-        });
-        
-        if (step === 2) {
-            document.getElementById('tfa-modal-title').textContent = 'Verify Your Code';
-            clearOTPInputs('tfa-setup-otp-inputs');
-            setupOTPInputs('tfa-setup-otp-inputs');
-            document.getElementById('tfa-setup-error').style.display = 'none';
-        }
-        if (step === 3) {
-            document.getElementById('tfa-modal-title').textContent = 'Setup Complete';
-        }
-    }
-
-    // ── Verify Setup ──
-        async function confirmDisableTFA() {
-        const password = document.getElementById('tfa-disable-password').value;
-        const code = getOTPCode('tfa-disable-otp-inputs');
-        
-        if (!password) {
-            document.getElementById('tfa-disable-error-text').textContent = 'Please enter your password.';
-            document.getElementById('tfa-disable-error').style.display = 'block';
-            return;
-        }
-        if (code.length !== 6) {
-            shakeOTPInputs('tfa-disable-otp-inputs');
-            return;
-        }
-        
-        try {
-            const credential = EmailAuthProvider.credential(currentUser.email, password);
-            await reauthenticateWithCredential(currentUser, credential);
-            
-            const snap = await getDoc(doc(db, 'admins', currentUser.uid));
-            const secret = snap.data()?.twoFactorSecret;
-            
-            const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
-            const result = await verifyTOTP({ secret, token: code });
-            
-            if (!result.data.valid) {
-                document.getElementById('tfa-disable-error-text').textContent = 'Invalid authenticator code.';
-                document.getElementById('tfa-disable-error').style.display = 'block';
-                shakeOTPInputs('tfa-disable-otp-inputs');
-                clearOTPInputs('tfa-disable-otp-inputs');
-                return;
-            }
-            
-            await setDoc(doc(db, 'admins', currentUser.uid), {
-                twoFactorEnabled: false,
-                twoFactorSecret: null,
-                twoFactorDisabledAt: new Date().toISOString()
-            }, { merge: true });
-            
-            closeTFADisable();
-            await loadTFAStatus();
-            alert('2FA has been disabled successfully.');
-            
-        } catch (err) {
-            console.error('Disable TFA error:', err);
-            document.getElementById('tfa-disable-error-text').textContent = 
-                err.code === 'auth/wrong-password' ? 'Incorrect password.' : 'Verification failed.';
-            document.getElementById('tfa-disable-error').style.display = 'block';
-        }
-    }
+}
     
     // ── Close Setup ──
     function closeTFASetup() {
