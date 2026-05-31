@@ -13275,7 +13275,7 @@ window.saveTutorPassword = async function() {
 };
 
 // ================================================================
-//  2FA — TUTOR (modular SDK — Firestore: tutors/{uid})
+//  2FA — TUTOR (compat SDK — Firestore: tutors/{uid})
 // ================================================================
 
 let _tTfaSecret         = null;
@@ -13315,9 +13315,8 @@ async function loadTutorTFAStatus() {
     const statusText = document.getElementById('tutor-tfa-status-text');
 
     try {
-        const { getDoc, doc } = window.firebaseModules;
-        const snap    = await getDoc(doc(db, 'tutors', user.uid));
-        const data    = snap.exists() ? snap.data() : {};
+        const snap    = await db.collection('tutors').doc(user.uid).get();
+        const data    = snap.exists ? snap.data() : {};
         const enabled = data.twoFactorEnabled === true;
 
         if (enabled) {
@@ -13341,9 +13340,8 @@ window.openTutor2FAFlow = async function() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-        const { getDoc, doc } = window.firebaseModules;
-        const snap    = await getDoc(doc(db, 'tutors', user.uid));
-        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
+        const snap    = await db.collection('tutors').doc(user.uid).get();
+        const enabled = snap.exists && snap.data().twoFactorEnabled === true;
         if (enabled) { openTTFADisable(); } else { openTTFASetup(); }
     } catch {
         alert('Error loading 2FA status. Please try again.');
@@ -13414,8 +13412,7 @@ window.verifyTTFASetup = async function() {
     try {
         // Step 1: Get challenge token (setup mode)
         if (!_tTfaChallengeToken) {
-            const { httpsCallable } = window.firebaseModules;
-            const initiateTFA = httpsCallable(functions, 'initiateTFA');
+            const initiateTFA = firebase.functions().httpsCallable('initiateTFA');
             const initResult  = await initiateTFA({
                 context:       'tutors',
                 isSetupMode:   true,
@@ -13425,8 +13422,7 @@ window.verifyTTFASetup = async function() {
         }
 
         // Step 2: Verify server-side
-        const { httpsCallable } = window.firebaseModules;
-        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP   = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: _tTfaChallengeToken,
             token: code
@@ -13434,7 +13430,7 @@ window.verifyTTFASetup = async function() {
 
         if (!verifyResult.data.valid) {
             _tTfaFailCount++;
-            _tTfaChallengeToken = null; // force new challenge next attempt
+            _tTfaChallengeToken = null;
             shakeTTFAOTPInputs('t-tfa-otp-inputs');
             const left = T_TFA_MAX_ATTEMPTS - _tTfaFailCount;
             document.getElementById('t-tfa-verify-error').innerHTML =
@@ -13449,8 +13445,7 @@ window.verifyTTFASetup = async function() {
         _tTfaBackupCodes = generateTTFABackupCodes(8);
         const hashedCodes = _tTfaBackupCodes.map(c => btoa(c));
 
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'tutors', auth.currentUser.uid), {
+        await db.collection('tutors').doc(auth.currentUser.uid).update({
             twoFactorEnabled:     true,
             twoFactorSecret:      _tTfaSecret,
             twoFactorBackupCodes: hashedCodes,
@@ -13537,13 +13532,11 @@ window.confirmTTFADisable = async function() {
         const user = auth.currentUser;
 
         // Step 1: Re-authenticate
-        const { EmailAuthProvider, reauthenticateWithCredential } = window.firebaseModules;
-        const credential = EmailAuthProvider.credential(user.email, password);
-        await reauthenticateWithCredential(user, credential);
+        const credential = firebase.auth.EmailAuthProvider.credential(user.email, password);
+        await user.reauthenticateWithCredential(credential);
 
         // Step 2: Get challenge token (normal mode — 2FA already enabled)
-        const { httpsCallable } = window.firebaseModules;
-        const initiateTFA  = httpsCallable(functions, 'initiateTFA');
+        const initiateTFA  = firebase.functions().httpsCallable('initiateTFA');
         const initResult   = await initiateTFA({ context: 'tutors' });
 
         if (!initResult.data?.challengeToken) {
@@ -13551,7 +13544,7 @@ window.confirmTTFADisable = async function() {
         }
 
         // Step 3: Verify server-side
-        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP   = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: initResult.data.challengeToken,
             token: code
@@ -13567,8 +13560,7 @@ window.confirmTTFADisable = async function() {
         }
 
         // Step 4: Disable in Firestore
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'tutors', user.uid), {
+        await db.collection('tutors').doc(user.uid).update({
             twoFactorEnabled:     false,
             twoFactorSecret:      null,
             twoFactorBackupCodes: [],
