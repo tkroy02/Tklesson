@@ -13275,27 +13275,32 @@ window.saveTutorPassword = async function() {
 };
 
 // ================================================================
-//  2FA — TUTOR (compat SDK — Firestore: tutors/{uid})
+//  2FA — TUTOR (modular SDK — Firestore: tutors/{uid})
 // ================================================================
 
-let _tTfaSecret = null;
-let _tTfaBackupCodes = [];
-let _tTfaFailCount = 0;
+let _tTfaSecret         = null;
+let _tTfaBackupCodes    = [];
+let _tTfaFailCount      = 0;
+let _tTfaChallengeToken = null;
 const T_TFA_MAX_ATTEMPTS = 5;
 
-// ── Load libraries ─────────────────────────────────────────
+// ── Generate base32 secret client-side (no OTPAuth needed) ─
+function generateBase32SecretTutor(bytes = 20) {
+    const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const raw = new Uint8Array(bytes);
+    crypto.getRandomValues(raw);
+    let out = '';
+    for (let i = 0; i < bytes; i++) out += B32[raw[i] % 32];
+    return out;
+}
+
+// ── Load QRCode library only ───────────────────────────────
 function loadTTFALibraries() {
     return new Promise((resolve, reject) => {
-        if (window.OTPAuth && window.QRCode) { resolve(); return; }
+        if (window.QRCode) { resolve(); return; }
         const qr = document.createElement('script');
         qr.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-        qr.onload = () => {
-            const otp = document.createElement('script');
-            otp.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
-            otp.onload = resolve;
-            otp.onerror = reject;
-            document.head.appendChild(otp);
-        };
+        qr.onload = resolve;
         qr.onerror = reject;
         document.head.appendChild(qr);
     });
@@ -13305,12 +13310,16 @@ function loadTTFALibraries() {
 async function loadTutorTFAStatus() {
     const user = auth.currentUser;
     if (!user) return;
-    const btn = document.getElementById('tutor-tfa-action-btn');
+
+    const btn        = document.getElementById('tutor-tfa-action-btn');
     const statusText = document.getElementById('tutor-tfa-status-text');
+
     try {
-        const snap = await db.collection('tutors').doc(user.uid).get();
-        const data = snap.exists ? snap.data() : {};
+        const { getDoc, doc } = window.firebaseModules;
+        const snap    = await getDoc(doc(db, 'tutors', user.uid));
+        const data    = snap.exists() ? snap.data() : {};
         const enabled = data.twoFactorEnabled === true;
+
         if (enabled) {
             statusText.innerHTML = '<span class="t-tfa-badge-on"><i class="fas fa-check-circle"></i> Enabled</span>';
             btn.style.cssText = 'padding:8px 18px; border-radius:8px; font-weight:600; font-size:0.85rem; cursor:pointer; font-family:Inter,sans-serif; transition:all 0.3s; min-width:90px; background:#fef2f2; color:#ef4444; border:1.5px solid #fecaca;';
@@ -13332,10 +13341,11 @@ window.openTutor2FAFlow = async function() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-        const snap = await db.collection('tutors').doc(user.uid).get();
-        const enabled = snap.exists && snap.data().twoFactorEnabled === true;
+        const { getDoc, doc } = window.firebaseModules;
+        const snap    = await getDoc(doc(db, 'tutors', user.uid));
+        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
         if (enabled) { openTTFADisable(); } else { openTTFASetup(); }
-    } catch (err) {
+    } catch {
         alert('Error loading 2FA status. Please try again.');
     }
 };
@@ -13346,25 +13356,22 @@ async function openTTFASetup() {
     catch { alert('Unable to load security libraries. Please check your connection.'); return; }
 
     const user = auth.currentUser;
-    const totp = new OTPAuth.TOTP({
-        issuer: 'Tklesson (Tutors)',
-        label: `Tutor:${user.email}`,
-        algorithm: 'SHA1',
-        digits: 6,
-        period: 30,
-        secret: new OTPAuth.Secret()
-    });
 
-    _tTfaSecret = totp.secret.base32;
-    _tTfaFailCount = 0;
+    _tTfaSecret         = generateBase32SecretTutor();
+    _tTfaFailCount      = 0;
+    _tTfaChallengeToken = null;
 
     document.getElementById('t-tfa-manual-key').textContent =
         _tTfaSecret.match(/.{1,4}/g).join(' ');
 
+    const label  = encodeURIComponent(`Tutor:${user.email}`);
+    const issuer = encodeURIComponent('Tklesson (Tutors)');
+    const otpUri = `otpauth://totp/${issuer}:${label}?secret=${_tTfaSecret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+
     const container = document.getElementById('t-tfa-qr-container');
     container.innerHTML = '';
     new QRCode(container, {
-        text: totp.toString(),
+        text: otpUri,
         width: 180, height: 180,
         colorDark: '#0b3d91', colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M
@@ -13402,37 +13409,52 @@ window.verifyTTFASetup = async function() {
     const code = getTTFAOTPValue('t-tfa-otp-inputs');
     if (code.length !== 6) { shakeTTFAOTPInputs('t-tfa-otp-inputs'); return; }
 
-    setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text',
-        't-tfa-verify-spinner', true);
-
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_tTfaSecret)
-    });
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _tTfaFailCount++;
-        shakeTTFAOTPInputs('t-tfa-otp-inputs');
-        const left = T_TFA_MAX_ATTEMPTS - _tTfaFailCount;
-        document.getElementById('t-tfa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
-        document.getElementById('t-tfa-verify-error').style.display = 'block';
-        clearTTFAOTPInputs('t-tfa-otp-inputs');
-        setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text',
-            't-tfa-verify-spinner', false);
-        return;
-    }
-
-    _tTfaBackupCodes = generateTTFABackupCodes(8);
-    const hashedCodes = _tTfaBackupCodes.map(c => btoa(c));
+    setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text', 't-tfa-verify-spinner', true);
 
     try {
-        await db.collection('tutors').doc(auth.currentUser.uid).update({
-            twoFactorEnabled: true,
-            twoFactorSecret: _tTfaSecret,
+        // Step 1: Get challenge token (setup mode)
+        if (!_tTfaChallengeToken) {
+            const { httpsCallable } = window.firebaseModules;
+            const initiateTFA = httpsCallable(functions, 'initiateTFA');
+            const initResult  = await initiateTFA({
+                context:       'tutors',
+                isSetupMode:   true,
+                pendingSecret: _tTfaSecret
+            });
+            _tTfaChallengeToken = initResult.data.challengeToken;
+        }
+
+        // Step 2: Verify server-side
+        const { httpsCallable } = window.firebaseModules;
+        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: _tTfaChallengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
+            _tTfaFailCount++;
+            _tTfaChallengeToken = null; // force new challenge next attempt
+            shakeTTFAOTPInputs('t-tfa-otp-inputs');
+            const left = T_TFA_MAX_ATTEMPTS - _tTfaFailCount;
+            document.getElementById('t-tfa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
+            document.getElementById('t-tfa-verify-error').style.display = 'block';
+            clearTTFAOTPInputs('t-tfa-otp-inputs');
+            setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text', 't-tfa-verify-spinner', false);
+            return;
+        }
+
+        // Step 3: Save to Firestore
+        _tTfaBackupCodes = generateTTFABackupCodes(8);
+        const hashedCodes = _tTfaBackupCodes.map(c => btoa(c));
+
+        const { doc, updateDoc } = window.firebaseModules;
+        await updateDoc(doc(db, 'tutors', auth.currentUser.uid), {
+            twoFactorEnabled:     true,
+            twoFactorSecret:      _tTfaSecret,
             twoFactorBackupCodes: hashedCodes,
-            twoFactorEnabledAt: new Date().toISOString()
+            twoFactorEnabledAt:   new Date().toISOString()
         });
 
         const grid = document.getElementById('t-tfa-backup-codes-grid');
@@ -13444,19 +13466,18 @@ window.verifyTTFASetup = async function() {
         await loadTutorTFAStatus();
 
     } catch (err) {
-        console.error('Tutor 2FA save error:', err);
+        console.error('Tutor 2FA setup error:', err);
         document.getElementById('t-tfa-verify-error').innerHTML =
-            '<i class="fas fa-exclamation-circle"></i> Failed to save. Please try again.';
+            '<i class="fas fa-exclamation-circle"></i> Failed to verify. Please try again.';
         document.getElementById('t-tfa-verify-error').style.display = 'block';
     }
 
-    setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text',
-        't-tfa-verify-spinner', false);
+    setTTFABtnLoading('t-tfa-verify-btn', 't-tfa-verify-btn-text', 't-tfa-verify-spinner', false);
 };
 
 window.copyTTFABackupCodes = function() {
     navigator.clipboard.writeText(_tTfaBackupCodes.join('\n')).then(() => {
-        const btn = event.target.closest('button');
+        const btn  = event.target.closest('button');
         const orig = btn.innerHTML;
         btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
         setTimeout(() => btn.innerHTML = orig, 2000);
@@ -13466,8 +13487,9 @@ window.copyTTFABackupCodes = function() {
 window.closeTTFASetup = function() {
     document.getElementById('tutor-tfa-setup-modal').style.display = 'none';
     document.body.style.overflow = '';
-    _tTfaSecret = null;
-    _tTfaBackupCodes = [];
+    _tTfaSecret         = null;
+    _tTfaBackupCodes    = [];
+    _tTfaChallengeToken = null;
 };
 
 // ── DISABLE FLOW ───────────────────────────────────────────
@@ -13487,7 +13509,7 @@ window.closeTTFADisable = function() {
 
 window.toggleTTFADisablePassword = function() {
     const input = document.getElementById('t-tfa-disable-password');
-    const icon = document.getElementById('t-tfa-disable-eye');
+    const icon  = document.getElementById('t-tfa-disable-eye');
     const isPassword = input.type === 'password';
     input.type = isPassword ? 'text' : 'password';
     icon.classList.toggle('fa-eye', !isPassword);
@@ -13496,7 +13518,7 @@ window.toggleTTFADisablePassword = function() {
 
 window.confirmTTFADisable = async function() {
     const password = document.getElementById('t-tfa-disable-password').value;
-    const code = getTTFAOTPValue('t-tfa-disable-otp-inputs');
+    const code     = getTTFAOTPValue('t-tfa-disable-otp-inputs');
     const errorEl  = document.getElementById('t-tfa-disable-error');
     const errorTxt = document.getElementById('t-tfa-disable-error-text');
     errorEl.style.display = 'none';
@@ -13509,41 +13531,48 @@ window.confirmTTFADisable = async function() {
         shakeTTFAOTPInputs('t-tfa-disable-otp-inputs'); return;
     }
 
-    setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text',
-        't-tfa-disable-spinner', true);
+    setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text', 't-tfa-disable-spinner', true);
 
     try {
         const user = auth.currentUser;
-        const credential = firebase.auth.EmailAuthProvider.credential(
-            user.email, password
-        );
-        await user.reauthenticateWithCredential(credential);
 
-        const snap = await db.collection('tutors').doc(user.uid).get();
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
+        // Step 1: Re-authenticate
+        const { EmailAuthProvider, reauthenticateWithCredential } = window.firebaseModules;
+        const credential = EmailAuthProvider.credential(user.email, password);
+        await reauthenticateWithCredential(user, credential);
 
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        // Step 2: Get challenge token (normal mode — 2FA already enabled)
+        const { httpsCallable } = window.firebaseModules;
+        const initiateTFA  = httpsCallable(functions, 'initiateTFA');
+        const initResult   = await initiateTFA({ context: 'tutors' });
+
+        if (!initResult.data?.challengeToken) {
+            throw new Error('Failed to initiate 2FA challenge');
+        }
+
+        // Step 3: Verify server-side
+        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initResult.data.challengeToken,
+            token: code
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!verifyResult.data.valid) {
             shakeTTFAOTPInputs('t-tfa-disable-otp-inputs');
             errorTxt.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
             clearTTFAOTPInputs('t-tfa-disable-otp-inputs');
-            setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text',
-                't-tfa-disable-spinner', false);
+            setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text', 't-tfa-disable-spinner', false);
             return;
         }
 
-        await db.collection('tutors').doc(user.uid).update({
-            twoFactorEnabled: false,
-            twoFactorSecret: null,
+        // Step 4: Disable in Firestore
+        const { doc, updateDoc } = window.firebaseModules;
+        await updateDoc(doc(db, 'tutors', user.uid), {
+            twoFactorEnabled:     false,
+            twoFactorSecret:      null,
             twoFactorBackupCodes: [],
-            twoFactorDisabledAt: new Date().toISOString()
+            twoFactorDisabledAt:  new Date().toISOString()
         });
 
         closeTTFADisable();
@@ -13551,14 +13580,12 @@ window.confirmTTFADisable = async function() {
 
     } catch (err) {
         console.error('Tutor disable 2FA error:', err);
-        const msg = err.code === 'auth/wrong-password' ||
-                    err.code === 'auth/invalid-credential'
+        const msg = err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
             ? 'Incorrect password. Please try again.'
             : 'Something went wrong. Please try again.';
         errorTxt.textContent = msg;
         errorEl.style.display = 'block';
-        setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text',
-            't-tfa-disable-spinner', false);
+        setTTFABtnLoading('t-tfa-disable-confirm-btn', 't-tfa-disable-btn-text', 't-tfa-disable-spinner', false);
     }
 };
 
@@ -13585,12 +13612,9 @@ function wireTTFAOTPInputs(containerId) {
             e.preventDefault();
             const pasted = (e.clipboardData || window.clipboardData)
                 .getData('text').replace(/\D/g, '').slice(0, 6);
-            pasted.split('').forEach((char, idx) => {
-                if (fresh[idx]) fresh[idx].value = char;
-            });
+            pasted.split('').forEach((char, idx) => { if (fresh[idx]) fresh[idx].value = char; });
             const nextEmpty = [...fresh].findIndex(inp => !inp.value);
-            if (nextEmpty !== -1) fresh[nextEmpty].focus();
-            else fresh[5].focus();
+            if (nextEmpty !== -1) fresh[nextEmpty].focus(); else fresh[5].focus();
         });
         if (i === 0) setTimeout(() => input.focus(), 100);
     });
@@ -13614,9 +13638,9 @@ function shakeTTFAOTPInputs(containerId) {
 }
 
 function setTTFABtnLoading(btnId, textId, spinnerId, loading) {
-    document.getElementById(btnId).disabled = loading;
-    document.getElementById(textId).style.display = loading ? 'none' : 'inline';
-    document.getElementById(spinnerId).style.display = loading ? 'inline' : 'none';
+    document.getElementById(btnId).disabled           = loading;
+    document.getElementById(textId).style.display     = loading ? 'none'   : 'inline';
+    document.getElementById(spinnerId).style.display  = loading ? 'inline' : 'none';
 }
 
 function generateTTFABackupCodes(count) {
@@ -13631,7 +13655,7 @@ function generateTTFABackupCodes(count) {
 
 //========================================================================================//
 //                     ACCOUNT SETTINGS SECTION ENDS HERE                                 //
-//=========================================================================================//
+//========================================================================================//
 
 </script>    
 
