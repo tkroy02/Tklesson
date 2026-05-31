@@ -1057,27 +1057,17 @@ onAuthStateChanged(auth, (user) => {
 });
 
 // Logout
-function logout() {
+async function logout() {
+    try {
+        if (auth.currentUser) {
+            await logAuditAction('logout', '', `${auth.currentUser.email} logged out`);
+        }
+    } catch (e) { console.error('Logout log error:', e); }
+    
     signOut(auth).then(() => {
         window.location.href = 'support1-login.html';
     });
 }
-        
-// Navigation
-document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', function() {
-        const pageId = this.getAttribute('data-page');
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-        this.classList.add('active');
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        document.getElementById(pageId).classList.add('active');
-
-        if (pageId === 'ticketing') loadTickets();
-        if (pageId === 'knowledge-base') loadKnowledgeBase();
-        if (pageId === 'audit-log') loadAuditLog();
-        
-    });
-});
 
         
 // Search
@@ -1286,6 +1276,7 @@ async function loadUserManagement(uid, type, info) {
 async function sendPasswordReset(email) {
     try {
         await sendPasswordResetEmail(auth, email);
+        await logAuditAction('password_reset', email, `Password reset email sent to ${email}`);
         alert(`Password reset email sent to ${email}`);
     } catch (error) {
         console.error('Password reset error:', error);
@@ -1310,6 +1301,8 @@ async function disableUser2FA(uid, type, name) {
         } else if (type === 'tutor') {
             await setDoc(doc(db, 'tutors', uid), data, { merge: true });
         }
+        
+        await logAuditAction('2fa_disabled', name, `2FA disabled for ${name} (${uid.substring(0, 8)}...)`);
         alert(`2FA disabled for ${name}`);
     } catch (error) {
         console.error('2FA disable error:', error);
@@ -1484,8 +1477,9 @@ async function submitTicket() {
     const user = auth.currentUser;
     
     try {
+        const ticketId = generateTicketId();
         await setDoc(doc(collection(db, 'support_tickets')), {
-            ticketId: generateTicketId(),
+            ticketId: ticketId,
             category: category,
             subject: subject,
             agentAction: agentAction,
@@ -1496,6 +1490,7 @@ async function submitTicket() {
             resolvedAt: null
         });
         
+        await logAuditAction('ticket_created', subject, `Ticket ${ticketId} created — ${category}`);
         closeNewTicket();
         loadTickets();
     } catch (error) {
@@ -1503,32 +1498,40 @@ async function submitTicket() {
         alert('Error creating ticket. Please try again.');
     }
 }
-
+        
 async function resolveTicket(ticketDocId) {
     if (!confirm('Mark this ticket as resolved?')) return;
     
     try {
+        const snap = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const ticket = snap.data();
+        
         await setDoc(doc(db, 'support_tickets', ticketDocId), {
             status: 'resolved',
             resolvedAt: new Date().toISOString()
         }, { merge: true });
         
+        await logAuditAction('ticket_resolved', ticket.subject, `Ticket ${ticket.ticketId} resolved`);
         loadTickets();
     } catch (error) {
         console.error('Resolve error:', error);
         alert('Error resolving ticket.');
     }
 }
-
+        
 async function reopenTicket(ticketDocId) {
     if (!confirm('Reopen this ticket?')) return;
     
     try {
+        const snap = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const ticket = snap.data();
+        
         await setDoc(doc(db, 'support_tickets', ticketDocId), {
             status: 'open',
             resolvedAt: null
         }, { merge: true });
         
+        await logAuditAction('user_lookup', query, `Searched for "${query}" — ${results.length} results`);
         loadTickets();
     } catch (error) {
         console.error('Reopen error:', error);
@@ -1613,6 +1616,29 @@ function renderTicketCard(ticket, type) {
 //=============================================================//
 // ================ TICKETING SECTION STOPS HERE=================//
 //==============================================================//
+
+// ====================================================
+// AUDIT LOGGER
+// ====================================================
+async function logAuditAction(action, target, details) {
+    try {
+        const user = auth.currentUser;
+        if (!user) return;
+        
+        await setDoc(doc(collection(db, 'support_audit_log')), {
+            agentId: user.uid,
+            agentEmail: user.email,
+            action: action,
+            target: target || '',
+            details: details || '',
+            timestamp: new Date().toISOString()
+        });
+    } catch (e) {
+        console.error('Audit log error:', e);
+    }
+}
+
+        
         
 // ====================================================
 // GLOBALIZE FUNCTIONS — for inline onclick handlers
