@@ -935,72 +935,77 @@ function renderSearchResults(results) {
 //==============USER MANAGEMENT SECTION STARTS HERE ==================//
 //===================================================================//
 
-function loadUserManagement(uid, type, info) {
+async function loadUserManagement(uid, type, info) {
     const container = document.getElementById('user-management-content');
     
-    container.innerHTML = `
-        <div class="search-section" style="margin-bottom: 20px;">
-            <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 20px;">
-                <div class="avatar" style="width: 48px; height: 48px; font-size: 1rem;">
-                    ${info.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)}
-                </div>
-                <div>
-                    <h4 style="margin: 0; font-size: 1rem;">${info.name}</h4>
-                    <span style="font-size: 0.85rem; color: var(--text-muted);">${info.email}</span>
-                </div>
-                <span class="badge ${info.role === 'Student' ? 'badge-student' : 'badge-tutor'}" style="margin-left: auto;">${info.role}</span>
-            </div>
-            
-            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${info.email}')" style="width: auto; padding: 10px 18px;">
-                    <i class="fas fa-key"></i> Send Password Reset
-                </button>
-                <button class="btn btn-sm" onclick="disableUser2FA('${uid}', '${type}', '${info.name.replace(/'/g, "\\'")}')" 
-                    style="width: auto; padding: 10px 18px; background: #fff7ed; color: #c2410c; border: 1.5px solid #fed7aa;">
-                    <i class="fas fa-shield-alt"></i> Disable 2FA
-                </button>
-            </div>
-        </div>
-    `;
-}
-
-// Send password reset
-async function sendPasswordReset(email) {
-    try {
-        await sendPasswordResetEmail(auth, email);
-        alert(`Password reset email sent to ${email}`);
-    } catch (error) {
-        console.error('Password reset error:', error);
-        alert('Error sending password reset: ' + error.message);
-    }
-}
-
-// Disable 2FA for user
-async function disableUser2FA(uid, type, name) {
-    if (!confirm(`Are you sure you want to disable 2FA for ${name}?`)) return;
+    // Show loading
+    container.innerHTML = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading user details...</p></div>';
     
     try {
+        let userData = {};
+        
         if (type === 'student') {
-            await setDoc(doc(db, 'students', uid), {
-                twoFactorEnabled: false,
-                twoFactorSecret: null,
-                twoFactorBackupCodes: [],
-                twoFactorDisabledBy: auth.currentUser.uid,
-                twoFactorDisabledAt: new Date().toISOString()
-            }, { merge: true });
+            const snap = await getDoc(doc(db, 'students', uid));
+            if (snap.exists()) userData = snap.data();
         } else if (type === 'tutor') {
-            await setDoc(doc(db, 'tutors', uid), {
-                twoFactorEnabled: false,
-                twoFactorSecret: null,
-                twoFactorBackupCodes: [],
-                twoFactorDisabledBy: auth.currentUser.uid,
-                twoFactorDisabledAt: new Date().toISOString()
-            }, { merge: true });
+            const snap = await getDoc(doc(db, 'tutors', uid));
+            if (snap.exists()) userData = snap.data();
         }
-        alert(`2FA disabled for ${name}`);
+        
+        const phone = userData.phone || userData.personal?.phone || 'Not provided';
+        const status = type === 'student' ? (userData.status || 'active') : (userData.approved ? 'approved' : 'pending');
+        const statusColor = status === 'active' || status === 'approved' ? 'var(--success)' : 'var(--danger)';
+        
+        container.innerHTML = `
+            <div class="search-section" style="margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 20px;">
+                    <div class="avatar" style="width: 48px; height: 48px; font-size: 1rem;">
+                        ${info.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)}
+                    </div>
+                    <div>
+                        <h4 style="margin: 0; font-size: 1rem;">${info.name}</h4>
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">${info.email}</span>
+                    </div>
+                    <span class="badge ${info.role === 'Student' ? 'badge-student' : 'badge-tutor'}" style="margin-left: auto;">${info.role}</span>
+                </div>
+                
+                <!-- Account Details -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; padding: 16px; background: #f8fafc; border-radius: 10px;">
+                    <div>
+                        <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Phone Number</span>
+                        <p style="font-size: 0.9rem; font-weight: 600; color: var(--navy); margin: 4px 0 0;">${phone}</p>
+                    </div>
+                    <div>
+                        <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Account Status</span>
+                        <p style="font-size: 0.9rem; font-weight: 600; color: ${statusColor}; margin: 4px 0 0; display: flex; align-items: center; gap: 4px;">
+                            <i class="fas fa-circle" style="font-size: 0.45rem;"></i> ${status}
+                        </p>
+                    </div>
+                    <div>
+                        <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">User ID</span>
+                        <p style="font-size: 0.78rem; font-weight: 500; color: var(--text-muted); margin: 4px 0 0; font-family: monospace;">${uid.substring(0, 12)}...</p>
+                    </div>
+                    <div id="card-last4-container">
+                        <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Card (Last 4)</span>
+                        <p style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); margin: 4px 0 0; font-style: italic;">Coming soon</p>
+                    </div>
+                </div>
+                
+                <!-- Actions -->
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${info.email}')" style="width: auto; padding: 10px 18px;">
+                        <i class="fas fa-key"></i> Send Password Reset
+                    </button>
+                    <button class="btn btn-sm" onclick="disableUser2FA('${uid}', '${type}', '${info.name.replace(/'/g, "\\'")}')" 
+                        style="width: auto; padding: 10px 18px; background: #fff7ed; color: #c2410c; border: 1.5px solid #fed7aa;">
+                        <i class="fas fa-shield-alt"></i> Disable 2FA
+                    </button>
+                </div>
+            </div>
+        `;
     } catch (error) {
-        console.error('2FA disable error:', error);
-        alert('Error disabling 2FA: ' + error.message);
+        console.error('Error loading user details:', error);
+        container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading user details</p></div>';
     }
 }
 
