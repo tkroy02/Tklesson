@@ -10542,9 +10542,8 @@ async function loadStudentTFAStatus() {
     const statusText = document.getElementById('student-tfa-status-text');
 
     try {
-        const { getDoc, doc } = window.firebaseModules;
-        const snap   = await getDoc(doc(db, 'students', user.uid));
-        const data   = snap.exists() ? snap.data() : {};
+        const snap   = await db.collection('students').doc(user.uid).get();
+        const data   = snap.exists ? snap.data() : {};
         const enabled = data.twoFactorEnabled === true;
 
         if (enabled) {
@@ -10568,9 +10567,8 @@ window.openStudent2FAFlow = async function() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-        const { getDoc, doc } = window.firebaseModules;
-        const snap    = await getDoc(doc(db, 'students', user.uid));
-        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
+        const snap    = await db.collection('students').doc(user.uid).get();
+        const enabled = snap.exists && snap.data().twoFactorEnabled === true;
         if (enabled) { openSTFADisable(); } else { openSTFASetup(); }
     } catch {
         alert('Error loading 2FA status. Please try again.');
@@ -10641,8 +10639,7 @@ window.verifySTFASetup = async function() {
     try {
         // Step 1: Get challenge token (setup mode)
         if (!_sTfaChallengeToken) {
-            const { httpsCallable } = window.firebaseModules;
-            const initiateTFA = httpsCallable(functions, 'initiateTFA');
+            const initiateTFA = firebase.functions().httpsCallable('initiateTFA');
             const initResult  = await initiateTFA({
                 context:       'students',
                 isSetupMode:   true,
@@ -10652,8 +10649,7 @@ window.verifySTFASetup = async function() {
         }
 
         // Step 2: Verify server-side
-        const { httpsCallable } = window.firebaseModules;
-        const verifyTOTP  = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP  = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: _sTfaChallengeToken,
             token: code
@@ -10661,7 +10657,7 @@ window.verifySTFASetup = async function() {
 
         if (!verifyResult.data.valid) {
             _sTfaFailCount++;
-            _sTfaChallengeToken = null; // force new challenge next attempt
+            _sTfaChallengeToken = null;
             shakeSTFAOTPInputs('s-tfa-otp-inputs');
             const left = S_TFA_MAX_ATTEMPTS - _sTfaFailCount;
             document.getElementById('s-tfa-verify-error').innerHTML =
@@ -10676,8 +10672,7 @@ window.verifySTFASetup = async function() {
         _sTfaBackupCodes = generateSTFABackupCodes(8);
         const hashedCodes = _sTfaBackupCodes.map(c => btoa(c));
 
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'students', auth.currentUser.uid), {
+        await db.collection('students').doc(auth.currentUser.uid).update({
             twoFactorEnabled:    true,
             twoFactorSecret:     _sTfaSecret,
             twoFactorBackupCodes: hashedCodes,
@@ -10764,13 +10759,11 @@ window.confirmSTFADisable = async function() {
         const user = auth.currentUser;
 
         // Step 1: Re-authenticate
-        const { EmailAuthProvider, reauthenticateWithCredential } = window.firebaseModules;
-        const credential = EmailAuthProvider.credential(user.email, password);
-        await reauthenticateWithCredential(user, credential);
+        const credential = firebase.auth.EmailAuthProvider.credential(user.email, password);
+        await user.reauthenticateWithCredential(credential);
 
         // Step 2: Get challenge token (normal mode — 2FA already enabled)
-        const { httpsCallable } = window.firebaseModules;
-        const initiateTFA  = httpsCallable(functions, 'initiateTFA');
+        const initiateTFA  = firebase.functions().httpsCallable('initiateTFA');
         const initResult   = await initiateTFA({ context: 'students' });
 
         if (!initResult.data?.challengeToken) {
@@ -10778,7 +10771,7 @@ window.confirmSTFADisable = async function() {
         }
 
         // Step 3: Verify server-side
-        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP   = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: initResult.data.challengeToken,
             token: code
@@ -10794,8 +10787,7 @@ window.confirmSTFADisable = async function() {
         }
 
         // Step 4: Disable in Firestore
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'students', user.uid), {
+        await db.collection('students').doc(user.uid).update({
             twoFactorEnabled:     false,
             twoFactorSecret:      null,
             twoFactorBackupCodes: [],
@@ -10815,7 +10807,7 @@ window.confirmSTFADisable = async function() {
         setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text', 's-tfa-disable-spinner', false);
     }
 };
-
+  
 // ── SHARED HELPERS ─────────────────────────────────────────
 function wireSTFAOTPInputs(containerId) {
     const inputs = document.querySelectorAll(`#${containerId} .s-otp-digit`);
