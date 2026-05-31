@@ -1353,69 +1353,7 @@ async function reopenTicket(ticketDocId) {
     }
 }
 
-async function loadTickets() {
-    const unresolvedContainer = document.getElementById('unresolved-tickets');
-    const resolvedContainer   = document.getElementById('resolved-tickets');
-
-    try {
-        const q    = query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(100));
-        const snap = await getDocs(q);
-
-        const unresolved = [];
-        const resolved   = [];
-
-        snap.forEach(d => {
-            const data = d.data();
-            if (data.status === 'resolved') resolved.push({ id: d.id, ...data });
-            else unresolved.push({ id: d.id, ...data });
-        });
-
-        unresolvedContainer.innerHTML = unresolved.length === 0
-            ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No unresolved tickets</p></div>'
-            : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
-
-        resolvedContainer.innerHTML = resolved.length === 0
-            ? '<div class="results-placeholder"><i class="fas fa-check-double"></i><p>No resolved tickets yet</p></div>'
-            : resolved.map(t => renderTicketCard(t, 'resolved')).join('');
-
-    } catch (error) {
-        console.error('Load tickets error:', error);
-        unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
-    }
-}
-
-function renderTicketCard(ticket, type) {
-    const time = new Date(ticket.createdAt).toLocaleString('en-US', {
-        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-    });
-    const resolvedTime = ticket.resolvedAt
-        ? new Date(ticket.resolvedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-        : '';
-
-    return `
-        <div class="ticket-card">
-            <div class="ticket-dot ${type}"></div>
-            <div class="ticket-body">
-                <div class="ticket-subject">${ticket.subject}</div>
-                <div class="ticket-meta">
-                    <span class="ticket-id">${ticket.ticketId}</span>
-                    <span class="ticket-badge badge-${ticket.category}">${ticket.category}</span>
-                    <span><i class="fas fa-user"></i> ${ticket.agentEmail}</span>
-                    <span><i class="fas fa-clock"></i> ${time}</span>
-                    ${type === 'resolved' ? `<span style="color: var(--danger);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
-                </div>
-                <div class="ticket-action">${ticket.agentAction}</div>
-            </div>
-            <div class="ticket-actions">
-                ${type === 'unresolved'
-                    ? `<button class="btn-resolve" onclick="resolveTicket('${ticket.id}')"><i class="fas fa-check"></i> Resolve</button>`
-                    : `<button class="btn-reopen" onclick="reopenTicket('${ticket.id}')"><i class="fas fa-redo"></i> Reopen</button>`
-                }
-            </div>
-        </div>`;
-}
-
-    let lastVisibleTicket = null;
+let lastVisibleTicket  = null;
 const TICKETS_PER_PAGE = 20;
 
 async function loadTickets(loadMore = false) {
@@ -1423,13 +1361,23 @@ async function loadTickets(loadMore = false) {
     const resolvedContainer   = document.getElementById('resolved-tickets');
 
     try {
-        let q = query(
-            collection(db, 'support_tickets'),
-            orderBy('createdAt', 'desc'),
-            limit(100)
-        );
+        // Always reload unresolved in full
+        if (!loadMore) {
+            const unresolvedSnap = await getDocs(
+                query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(200))
+            );
+            const unresolved = [];
+            unresolvedSnap.forEach(d => {
+                const data = d.data();
+                if (data.status !== 'resolved') unresolved.push({ id: d.id, ...data });
+            });
 
-        // Resolved query with pagination
+            unresolvedContainer.innerHTML = unresolved.length === 0
+                ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No unresolved tickets</p></div>'
+                : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
+        }
+
+        // Paginated resolved query
         let resolvedQuery = query(
             collection(db, 'support_tickets'),
             orderBy('createdAt', 'desc'),
@@ -1481,6 +1429,37 @@ async function loadTickets(loadMore = false) {
         console.error('Load tickets error:', error);
         unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
     }
+}
+
+function renderTicketCard(ticket, type) {
+    const time = new Date(ticket.createdAt).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const resolvedTime = ticket.resolvedAt
+        ? new Date(ticket.resolvedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '';
+
+    return `
+        <div class="ticket-card">
+            <div class="ticket-dot ${type}"></div>
+            <div class="ticket-body">
+                <div class="ticket-subject">${ticket.subject}</div>
+                <div class="ticket-meta">
+                    <span class="ticket-id">${ticket.ticketId}</span>
+                    <span class="ticket-badge badge-${ticket.category}">${ticket.category}</span>
+                    <span><i class="fas fa-user"></i> ${ticket.agentEmail}</span>
+                    <span><i class="fas fa-clock"></i> ${time}</span>
+                    ${type === 'resolved' ? `<span style="color: var(--danger);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
+                </div>
+                <div class="ticket-action">${ticket.agentAction}</div>
+            </div>
+            <div class="ticket-actions">
+                ${type === 'unresolved'
+                    ? `<button class="btn-resolve" onclick="resolveTicket('${ticket.id}')"><i class="fas fa-check"></i> Resolve</button>`
+                    : `<button class="btn-reopen" onclick="reopenTicket('${ticket.id}')"><i class="fas fa-redo"></i> Reopen</button>`
+                }
+            </div>
+        </div>`;
 }
 
 // ════════════════════════════════════════════════════════
