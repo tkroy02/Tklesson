@@ -10502,27 +10502,32 @@ window.saveStudentPassword = async function() {
 };
 
 // ================================================================
-//  2FA — STUDENT (compat SDK — Firestore: students/{uid})
+//  2FA — STUDENT (modular SDK — Firestore: students/{uid})
 // ================================================================
 
-let _sTfaSecret = null;
-let _sTfaBackupCodes = [];
-let _sTfaFailCount = 0;
+let _sTfaSecret       = null;
+let _sTfaBackupCodes  = [];
+let _sTfaFailCount    = 0;
+let _sTfaChallengeToken = null;
 const S_TFA_MAX_ATTEMPTS = 5;
 
-// ── Load libraries ─────────────────────────────────────────
+// ── Generate base32 secret client-side (no OTPAuth needed) ─
+function generateBase32Secret(bytes = 20) {
+    const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const raw = new Uint8Array(bytes);
+    crypto.getRandomValues(raw);
+    let out = '';
+    for (let i = 0; i < bytes; i++) out += B32[raw[i] % 32];
+    return out;
+}
+
+// ── Load QRCode library only ───────────────────────────────
 function loadSTFALibraries() {
     return new Promise((resolve, reject) => {
-        if (window.OTPAuth && window.QRCode) { resolve(); return; }
+        if (window.QRCode) { resolve(); return; }
         const qr = document.createElement('script');
         qr.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-        qr.onload = () => {
-            const otp = document.createElement('script');
-            otp.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
-            otp.onload = resolve;
-            otp.onerror = reject;
-            document.head.appendChild(otp);
-        };
+        qr.onload = resolve;
         qr.onerror = reject;
         document.head.appendChild(qr);
     });
@@ -10533,12 +10538,13 @@ async function loadStudentTFAStatus() {
     const user = auth.currentUser;
     if (!user) return;
 
-    const btn = document.getElementById('student-tfa-action-btn');
+    const btn        = document.getElementById('student-tfa-action-btn');
     const statusText = document.getElementById('student-tfa-status-text');
 
     try {
-        const snap = await db.collection('students').doc(user.uid).get();
-        const data = snap.exists ? snap.data() : {};
+        const { getDoc, doc } = window.firebaseModules;
+        const snap   = await getDoc(doc(db, 'students', user.uid));
+        const data   = snap.exists() ? snap.data() : {};
         const enabled = data.twoFactorEnabled === true;
 
         if (enabled) {
@@ -10562,10 +10568,11 @@ window.openStudent2FAFlow = async function() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-        const snap = await db.collection('students').doc(user.uid).get();
-        const enabled = snap.exists && snap.data().twoFactorEnabled === true;
+        const { getDoc, doc } = window.firebaseModules;
+        const snap    = await getDoc(doc(db, 'students', user.uid));
+        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
         if (enabled) { openSTFADisable(); } else { openSTFASetup(); }
-    } catch (err) {
+    } catch {
         alert('Error loading 2FA status. Please try again.');
     }
 };
@@ -10576,25 +10583,22 @@ async function openSTFASetup() {
     catch { alert('Unable to load security libraries. Please check your connection.'); return; }
 
     const user = auth.currentUser;
-    const totp = new OTPAuth.TOTP({
-        issuer: 'Tklesson (Students)',
-        label: user.email,
-        algorithm: 'SHA1',
-        digits: 6,
-        period: 30,
-        secret: new OTPAuth.Secret()
-    });
 
-    _sTfaSecret = totp.secret.base32;
+    _sTfaSecret    = generateBase32Secret();
     _sTfaFailCount = 0;
+    _sTfaChallengeToken = null;
 
     document.getElementById('s-tfa-manual-key').textContent =
         _sTfaSecret.match(/.{1,4}/g).join(' ');
 
+    const label     = encodeURIComponent(user.email);
+    const issuer    = encodeURIComponent('Tklesson (Students)');
+    const otpUri    = `otpauth://totp/${issuer}:${label}?secret=${_sTfaSecret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+
     const container = document.getElementById('s-tfa-qr-container');
     container.innerHTML = '';
     new QRCode(container, {
-        text: totp.toString(),
+        text: otpUri,
         width: 180, height: 180,
         colorDark: '#0b3d91', colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M
@@ -10632,37 +10636,52 @@ window.verifySTFASetup = async function() {
     const code = getSTFAOTPValue('s-tfa-otp-inputs');
     if (code.length !== 6) { shakeSTFAOTPInputs('s-tfa-otp-inputs'); return; }
 
-    setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text',
-        's-tfa-verify-spinner', true);
-
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_sTfaSecret)
-    });
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _sTfaFailCount++;
-        shakeSTFAOTPInputs('s-tfa-otp-inputs');
-        const left = S_TFA_MAX_ATTEMPTS - _sTfaFailCount;
-        document.getElementById('s-tfa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
-        document.getElementById('s-tfa-verify-error').style.display = 'block';
-        clearSTFAOTPInputs('s-tfa-otp-inputs');
-        setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text',
-            's-tfa-verify-spinner', false);
-        return;
-    }
-
-    _sTfaBackupCodes = generateSTFABackupCodes(8);
-    const hashedCodes = _sTfaBackupCodes.map(c => btoa(c));
+    setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text', 's-tfa-verify-spinner', true);
 
     try {
-        await db.collection('students').doc(auth.currentUser.uid).update({
-            twoFactorEnabled: true,
-            twoFactorSecret: _sTfaSecret,
+        // Step 1: Get challenge token (setup mode)
+        if (!_sTfaChallengeToken) {
+            const { httpsCallable } = window.firebaseModules;
+            const initiateTFA = httpsCallable(functions, 'initiateTFA');
+            const initResult  = await initiateTFA({
+                context:       'students',
+                isSetupMode:   true,
+                pendingSecret: _sTfaSecret
+            });
+            _sTfaChallengeToken = initResult.data.challengeToken;
+        }
+
+        // Step 2: Verify server-side
+        const { httpsCallable } = window.firebaseModules;
+        const verifyTOTP  = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: _sTfaChallengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
+            _sTfaFailCount++;
+            _sTfaChallengeToken = null; // force new challenge next attempt
+            shakeSTFAOTPInputs('s-tfa-otp-inputs');
+            const left = S_TFA_MAX_ATTEMPTS - _sTfaFailCount;
+            document.getElementById('s-tfa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
+            document.getElementById('s-tfa-verify-error').style.display = 'block';
+            clearSTFAOTPInputs('s-tfa-otp-inputs');
+            setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text', 's-tfa-verify-spinner', false);
+            return;
+        }
+
+        // Step 3: Save to Firestore
+        _sTfaBackupCodes = generateSTFABackupCodes(8);
+        const hashedCodes = _sTfaBackupCodes.map(c => btoa(c));
+
+        const { doc, updateDoc } = window.firebaseModules;
+        await updateDoc(doc(db, 'students', auth.currentUser.uid), {
+            twoFactorEnabled:    true,
+            twoFactorSecret:     _sTfaSecret,
             twoFactorBackupCodes: hashedCodes,
-            twoFactorEnabledAt: new Date().toISOString()
+            twoFactorEnabledAt:  new Date().toISOString()
         });
 
         const grid = document.getElementById('s-tfa-backup-codes-grid');
@@ -10674,19 +10693,18 @@ window.verifySTFASetup = async function() {
         await loadStudentTFAStatus();
 
     } catch (err) {
-        console.error('Student 2FA save error:', err);
+        console.error('Student 2FA setup error:', err);
         document.getElementById('s-tfa-verify-error').innerHTML =
-            '<i class="fas fa-exclamation-circle"></i> Failed to save. Please try again.';
+            '<i class="fas fa-exclamation-circle"></i> Failed to verify. Please try again.';
         document.getElementById('s-tfa-verify-error').style.display = 'block';
     }
 
-    setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text',
-        's-tfa-verify-spinner', false);
+    setSTFABtnLoading('s-tfa-verify-btn', 's-tfa-verify-btn-text', 's-tfa-verify-spinner', false);
 };
 
 window.copySTFABackupCodes = function() {
     navigator.clipboard.writeText(_sTfaBackupCodes.join('\n')).then(() => {
-        const btn = event.target.closest('button');
+        const btn  = event.target.closest('button');
         const orig = btn.innerHTML;
         btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
         setTimeout(() => btn.innerHTML = orig, 2000);
@@ -10696,8 +10714,9 @@ window.copySTFABackupCodes = function() {
 window.closeSTFASetup = function() {
     document.getElementById('student-tfa-setup-modal').style.display = 'none';
     document.body.style.overflow = '';
-    _sTfaSecret = null;
-    _sTfaBackupCodes = [];
+    _sTfaSecret         = null;
+    _sTfaBackupCodes    = [];
+    _sTfaChallengeToken = null;
 };
 
 // ── DISABLE FLOW ───────────────────────────────────────────
@@ -10717,7 +10736,7 @@ window.closeSTFADisable = function() {
 
 window.toggleSTFADisablePassword = function() {
     const input = document.getElementById('s-tfa-disable-password');
-    const icon = document.getElementById('s-tfa-disable-eye');
+    const icon  = document.getElementById('s-tfa-disable-eye');
     const isPassword = input.type === 'password';
     input.type = isPassword ? 'text' : 'password';
     icon.classList.toggle('fa-eye', !isPassword);
@@ -10726,7 +10745,7 @@ window.toggleSTFADisablePassword = function() {
 
 window.confirmSTFADisable = async function() {
     const password = document.getElementById('s-tfa-disable-password').value;
-    const code = getSTFAOTPValue('s-tfa-disable-otp-inputs');
+    const code     = getSTFAOTPValue('s-tfa-disable-otp-inputs');
     const errorEl  = document.getElementById('s-tfa-disable-error');
     const errorTxt = document.getElementById('s-tfa-disable-error-text');
     errorEl.style.display = 'none';
@@ -10739,41 +10758,48 @@ window.confirmSTFADisable = async function() {
         shakeSTFAOTPInputs('s-tfa-disable-otp-inputs'); return;
     }
 
-    setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text',
-        's-tfa-disable-spinner', true);
+    setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text', 's-tfa-disable-spinner', true);
 
     try {
         const user = auth.currentUser;
-        const credential = firebase.auth.EmailAuthProvider.credential(
-            user.email, password
-        );
-        await user.reauthenticateWithCredential(credential);
 
-        const snap = await db.collection('students').doc(user.uid).get();
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
+        // Step 1: Re-authenticate
+        const { EmailAuthProvider, reauthenticateWithCredential } = window.firebaseModules;
+        const credential = EmailAuthProvider.credential(user.email, password);
+        await reauthenticateWithCredential(user, credential);
 
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        // Step 2: Get challenge token (normal mode — 2FA already enabled)
+        const { httpsCallable } = window.firebaseModules;
+        const initiateTFA  = httpsCallable(functions, 'initiateTFA');
+        const initResult   = await initiateTFA({ context: 'students' });
+
+        if (!initResult.data?.challengeToken) {
+            throw new Error('Failed to initiate 2FA challenge');
+        }
+
+        // Step 3: Verify server-side
+        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initResult.data.challengeToken,
+            token: code
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!verifyResult.data.valid) {
             shakeSTFAOTPInputs('s-tfa-disable-otp-inputs');
             errorTxt.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
             clearSTFAOTPInputs('s-tfa-disable-otp-inputs');
-            setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text',
-                's-tfa-disable-spinner', false);
+            setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text', 's-tfa-disable-spinner', false);
             return;
         }
 
-        await db.collection('students').doc(user.uid).update({
-            twoFactorEnabled: false,
-            twoFactorSecret: null,
+        // Step 4: Disable in Firestore
+        const { doc, updateDoc } = window.firebaseModules;
+        await updateDoc(doc(db, 'students', user.uid), {
+            twoFactorEnabled:     false,
+            twoFactorSecret:      null,
             twoFactorBackupCodes: [],
-            twoFactorDisabledAt: new Date().toISOString()
+            twoFactorDisabledAt:  new Date().toISOString()
         });
 
         closeSTFADisable();
@@ -10781,14 +10807,12 @@ window.confirmSTFADisable = async function() {
 
     } catch (err) {
         console.error('Student disable 2FA error:', err);
-        const msg = err.code === 'auth/wrong-password' ||
-                    err.code === 'auth/invalid-credential'
+        const msg = err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
             ? 'Incorrect password. Please try again.'
             : 'Something went wrong. Please try again.';
         errorTxt.textContent = msg;
         errorEl.style.display = 'block';
-        setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text',
-            's-tfa-disable-spinner', false);
+        setSTFABtnLoading('s-tfa-disable-confirm-btn', 's-tfa-disable-btn-text', 's-tfa-disable-spinner', false);
     }
 };
 
@@ -10815,12 +10839,9 @@ function wireSTFAOTPInputs(containerId) {
             e.preventDefault();
             const pasted = (e.clipboardData || window.clipboardData)
                 .getData('text').replace(/\D/g, '').slice(0, 6);
-            pasted.split('').forEach((char, idx) => {
-                if (fresh[idx]) fresh[idx].value = char;
-            });
+            pasted.split('').forEach((char, idx) => { if (fresh[idx]) fresh[idx].value = char; });
             const nextEmpty = [...fresh].findIndex(inp => !inp.value);
-            if (nextEmpty !== -1) fresh[nextEmpty].focus();
-            else fresh[5].focus();
+            if (nextEmpty !== -1) fresh[nextEmpty].focus(); else fresh[5].focus();
         });
         if (i === 0) setTimeout(() => input.focus(), 100);
     });
@@ -10844,9 +10865,9 @@ function shakeSTFAOTPInputs(containerId) {
 }
 
 function setSTFABtnLoading(btnId, textId, spinnerId, loading) {
-    document.getElementById(btnId).disabled = loading;
-    document.getElementById(textId).style.display = loading ? 'none' : 'inline';
-    document.getElementById(spinnerId).style.display = loading ? 'inline' : 'none';
+    document.getElementById(btnId).disabled                        = loading;
+    document.getElementById(textId).style.display                 = loading ? 'none'   : 'inline';
+    document.getElementById(spinnerId).style.display              = loading ? 'inline' : 'none';
 }
 
 function generateSTFABackupCodes(count) {
@@ -10859,9 +10880,9 @@ function generateSTFABackupCodes(count) {
     return codes;
 }
 
-  //=============================================================================
-  //                    ACCOUNT SETTINGS SECTION ENDS HERE
-  //==============================================================================
+//=============================================================================
+//                    ACCOUNT SETTINGS SECTION ENDS HERE
+//=============================================================================
   
 </script>    
 </body>
