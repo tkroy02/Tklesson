@@ -134,6 +134,20 @@
         border-color: var(--gold);
     }
 
+
+.email-link {
+    color: var(--navy);
+    text-decoration: none;
+    font-weight: 500;
+    border-bottom: 1px dashed var(--gold);
+    transition: var(--transition);
+}
+
+.email-link:hover {
+    color: var(--gold);
+    border-bottom-style: solid;
+}
+        
     /* Results */
     .results-section {
         min-height: 300px;
@@ -588,9 +602,16 @@
     </div>
 </div>
             <div class="page" id="user-management">
-                <h2>User Management</h2>
-                <p class="subtitle">Manage user roles, suspensions, and data</p>
-            </div>
+    <h2>User Management</h2>
+    <p class="subtitle">Manage user account settings and security</p>
+    
+    <div id="user-management-content">
+        <div class="results-placeholder">
+            <i class="fas fa-user-cog"></i>
+            <p>Click an email from User Lookup to manage a user</p>
+        </div>
+    </div>
+</div>
             <div class="page" id="knowledge-base">
                 <h2>Knowledge Base</h2>
                 <p class="subtitle">Support articles and documentation</p>
@@ -634,6 +655,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getAuth, onAuthStateChanged, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 // Firebase configuration
 const config = await fetch('https://us-central1-tk-scheduler.cloudfunctions.net/getClientConfig')
@@ -737,7 +759,7 @@ function renderSearchResults(results) {
     const resultsSection = document.getElementById('results-section');
     
     if (results.length === 0) {
-        resultsSection.innerHTML = '<div class="results-placeholder"><i class="fas fa-search"></i><p>No results found</p></div>';
+        resultsSection.innerHTML = '<div class="results-placeholder"><i class="fas fa-search"></i><p>No results found. Email not in database.</p></div>';
         return;
     }
     
@@ -754,7 +776,11 @@ function renderSearchResults(results) {
                     <div class="avatar">${initials}</div>
                     <div class="details">
                         <h4>${user.name}</h4>
-                        <span>${user.email}</span>
+                        <span>
+                            <a href="#" class="email-link" data-email="${user.email}" data-name="${user.name}" data-id="${user.id}" data-type="${user.type}" data-role="${user.role}">
+                                ${user.email}
+                            </a>
+                        </span>
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
@@ -768,7 +794,106 @@ function renderSearchResults(results) {
     });
     
     resultsSection.innerHTML = html;
+    
+    // Make emails clickable — navigate to User Management
+    document.querySelectorAll('.email-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const email = this.getAttribute('data-email');
+            const name = this.getAttribute('data-name');
+            const uid = this.getAttribute('data-id');
+            const type = this.getAttribute('data-type');
+            const role = this.getAttribute('data-role');
+            
+            // Switch to User Management tab
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            document.querySelector('.nav-item[data-page="user-management"]').classList.add('active');
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('user-management').classList.add('active');
+            
+            // Load user details
+            loadUserManagement(uid, type, { email, name, role });
+        });
+    });
 }
+
+//===================================================================//
+//==============USER MANAGEMENT SECTION STARTS HERE ==================//
+//===================================================================//
+
+function loadUserManagement(uid, type, info) {
+    const container = document.getElementById('user-management-content');
+    
+    container.innerHTML = `
+        <div class="search-section" style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 20px;">
+                <div class="avatar" style="width: 48px; height: 48px; font-size: 1rem;">
+                    ${info.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)}
+                </div>
+                <div>
+                    <h4 style="margin: 0; font-size: 1rem;">${info.name}</h4>
+                    <span style="font-size: 0.85rem; color: var(--text-muted);">${info.email}</span>
+                </div>
+                <span class="badge ${info.role === 'Student' ? 'badge-student' : 'badge-tutor'}" style="margin-left: auto;">${info.role}</span>
+            </div>
+            
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${info.email}')" style="width: auto; padding: 10px 18px;">
+                    <i class="fas fa-key"></i> Send Password Reset
+                </button>
+                <button class="btn btn-sm" onclick="disableUser2FA('${uid}', '${type}', '${info.name.replace(/'/g, "\\'")}')" 
+                    style="width: auto; padding: 10px 18px; background: #fff7ed; color: #c2410c; border: 1.5px solid #fed7aa;">
+                    <i class="fas fa-shield-alt"></i> Disable 2FA
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+// Send password reset
+async function sendPasswordReset(email) {
+    try {
+        await sendPasswordResetEmail(auth, email);
+        alert(`Password reset email sent to ${email}`);
+    } catch (error) {
+        console.error('Password reset error:', error);
+        alert('Error sending password reset: ' + error.message);
+    }
+}
+
+// Disable 2FA for user
+async function disableUser2FA(uid, type, name) {
+    if (!confirm(`Are you sure you want to disable 2FA for ${name}?`)) return;
+    
+    try {
+        if (type === 'student') {
+            await setDoc(doc(db, 'students', uid), {
+                twoFactorEnabled: false,
+                twoFactorSecret: null,
+                twoFactorBackupCodes: [],
+                twoFactorDisabledBy: auth.currentUser.uid,
+                twoFactorDisabledAt: new Date().toISOString()
+            }, { merge: true });
+        } else if (type === 'tutor') {
+            await setDoc(doc(db, 'tutors', uid), {
+                twoFactorEnabled: false,
+                twoFactorSecret: null,
+                twoFactorBackupCodes: [],
+                twoFactorDisabledBy: auth.currentUser.uid,
+                twoFactorDisabledAt: new Date().toISOString()
+            }, { merge: true });
+        }
+        alert(`2FA disabled for ${name}`);
+    } catch (error) {
+        console.error('2FA disable error:', error);
+        alert('Error disabling 2FA: ' + error.message);
+    }
+}
+
+//===============================================================================//
+//================USER MANAGEMENT SECTION ENDS HERE =============================//
+//==============================================================================//
+        
 </script>
     
 </body>
