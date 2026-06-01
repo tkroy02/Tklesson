@@ -2352,7 +2352,7 @@ function escapeHtml(text) {
 // ════════════════════════════════════════════════════════
 
 // ====================================================
-// CREDIT MANAGEMENT (Lead Only)
+// CREDIT MANAGEMENT (Lead Only) — FIXED
 // ====================================================
 let creditStudents = [];
 let selectedCreditStudent = null;
@@ -2379,19 +2379,25 @@ async function loadCreditStudents() {
 }
 
 function filterCreditStudents() {
-    const query = document.getElementById('credit-student-search').value.toLowerCase().trim();
+    const searchVal = document.getElementById('credit-student-search').value.toLowerCase().trim();
     const select = document.getElementById('credit-student-select');
 
-    if (!creditStudents || creditStudents.length === 0) return;
-    const filtered = query 
-        ? creditStudents.filter(s => 
-            (s.fullName || '').toLowerCase().includes(query) ||
-            (s.email || '').toLowerCase().includes(query)
+    if (!creditStudents || creditStudents.length === 0) {
+        select.innerHTML = '<option value="">No students loaded yet...</option>';
+        return;
+    }
+
+    const filtered = searchVal
+        ? creditStudents.filter(s =>
+            (s.fullName || '').toLowerCase().includes(searchVal) ||
+            (s.email    || '').toLowerCase().includes(searchVal)
         )
         : creditStudents;
-    
+
     select.innerHTML = '<option value="">Select a student...</option>' +
-        filtered.map(s => `<option value="${s.id}">${s.fullName || 'Unknown'} (${s.email || 'N/A'})</option>`).join('');
+        filtered.map(s =>
+            `<option value="${s.id}">${s.fullName || 'Unknown'} (${s.email || 'N/A'})</option>`
+        ).join('');
 }
 
 async function onCreditStudentSelect() {
@@ -2485,7 +2491,6 @@ async function adjustCredits() {
     
     const sessions = count * (PACKAGE_SIZES[packageType] || 1);
     
-    // Confirm deduction
     if (action === 'deduct') {
         const student = creditStudents.find(s => s.id === studentId);
         const currentBalance = student?.packageBalances?.[packageType] || 0;
@@ -2515,11 +2520,12 @@ async function adjustCredits() {
             if (newBalance < 0) newBalance = 0;
         }
         
-        // Update Firestore
-        await setDoc(doc(db, 'students', studentId), {
+        // ✅ Use updateDoc — properly resolves dot-notation to nested paths
+        const { updateDoc: updateDocFn } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+        await updateDocFn(doc(db, 'students', studentId), {
             [`packageBalances.${packageType}`]: newBalance,
             lastUpdated: new Date().toISOString()
-        }, { merge: true });
+        });
         
         // Log transaction
         await setDoc(doc(collection(db, 'creditTransactions')), {
@@ -2537,14 +2543,12 @@ async function adjustCredits() {
             timestamp: new Date().toISOString()
         });
         
-        // Audit log
         await logAuditAction(
             action === 'add' ? 'credits_added' : 'credits_deducted',
             studentData.fullName || studentId,
             `${action === 'add' ? 'Added' : 'Deducted'} ${sessions} ${packageType} session${sessions > 1 ? 's' : ''} ${action === 'add' ? 'to' : 'from'} ${studentData.fullName || studentId}. Reason: ${reason}`
         );
         
-        // Reset form
         document.getElementById('credit-reason').value = '';
         document.getElementById('credit-package-count').value = '1';
         document.getElementById('credit-preview').style.display = 'none';
@@ -2620,7 +2624,6 @@ async function loadCreditTransactions(studentId) {
     }
 }
 
-// Initialize when tab is clicked
 function loadCreditManagement() {
     loadCreditStudents();
     document.getElementById('credit-balance-section').style.display = 'none';
@@ -2629,7 +2632,6 @@ function loadCreditManagement() {
     document.getElementById('credit-student-select').value = '';
     selectedCreditStudent = null;
 }
-
     
 // ════════════════════════════════════════════════════════
 // GLOBALIZE FOR INLINE ONCLICK HANDLERS
