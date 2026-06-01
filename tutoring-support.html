@@ -1582,6 +1582,10 @@ async function copyVerbiage(key) {
 // ════════════════════════════════════════════════════════
 // TICKETING
 // ════════════════════════════════════════════════════════
+let allTickets = [];
+let lastVisibleTicket  = null;
+const TICKETS_PER_PAGE = 20;
+
 function openNewTicket() {
     document.getElementById('new-ticket-form').style.display = 'block';
     document.getElementById('ticket-category').value = '';
@@ -1673,82 +1677,103 @@ async function reopenTicket(ticketDocId) {
     }
 }
 
-let lastVisibleTicket  = null;
-const TICKETS_PER_PAGE = 20;
-
 async function loadTickets(loadMore = false) {
     const unresolvedContainer = document.getElementById('unresolved-tickets');
     const resolvedContainer   = document.getElementById('resolved-tickets');
 
     try {
-        // Always reload unresolved in full
         if (!loadMore) {
-            const unresolvedSnap = await getDocs(
+            const snap = await getDocs(
                 query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(200))
             );
-            const unresolved = [];
-            unresolvedSnap.forEach(d => {
-                const data = d.data();
-                if (data.status !== 'resolved') unresolved.push({ id: d.id, ...data });
-            });
-
-            unresolvedContainer.innerHTML = unresolved.length === 0
-                ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No unresolved tickets</p></div>'
-                : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
-        }
-
-        // Paginated resolved query
-        let resolvedQuery = query(
-            collection(db, 'support_tickets'),
-            orderBy('createdAt', 'desc'),
-            limit(TICKETS_PER_PAGE)
-        );
-
-        if (loadMore && lastVisibleTicket) {
-            const { startAfter } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-            resolvedQuery = query(
+            allTickets = [];
+            snap.forEach(d => allTickets.push({ id: d.id, ...d.data() }));
+            filterTickets();
+        } else {
+            let resolvedQuery = query(
                 collection(db, 'support_tickets'),
                 orderBy('createdAt', 'desc'),
-                startAfter(lastVisibleTicket),
                 limit(TICKETS_PER_PAGE)
             );
-        }
 
-        const snap = await getDocs(resolvedQuery);
-        lastVisibleTicket = snap.docs[snap.docs.length - 1];
+            if (lastVisibleTicket) {
+                const { startAfter } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+                resolvedQuery = query(
+                    collection(db, 'support_tickets'),
+                    orderBy('createdAt', 'desc'),
+                    startAfter(lastVisibleTicket),
+                    limit(TICKETS_PER_PAGE)
+                );
+            }
 
-        const resolved = [];
-        snap.forEach(d => {
-            const data = d.data();
-            if (data.status === 'resolved') resolved.push({ id: d.id, ...data });
-        });
+            const snap = await getDocs(resolvedQuery);
+            lastVisibleTicket = snap.docs[snap.docs.length - 1];
 
-        const html = resolved.map(t => renderTicketCard(t, 'resolved')).join('');
+            const resolved = [];
+            snap.forEach(d => {
+                const data = d.data();
+                if (data.status === 'resolved') resolved.push({ id: d.id, ...data });
+            });
 
-        if (loadMore) {
+            const html = resolved.map(t => renderTicketCard(t, 'resolved')).join('');
             document.getElementById('load-more-btn')?.remove();
             resolvedContainer.insertAdjacentHTML('beforeend', html);
-        } else {
-            resolvedContainer.innerHTML = resolved.length === 0
-                ? '<div class="results-placeholder"><i class="fas fa-check-double"></i><p>No resolved tickets yet</p></div>'
-                : html;
-        }
 
-        if (snap.docs.length === TICKETS_PER_PAGE) {
-            resolvedContainer.insertAdjacentHTML('beforeend', `
-                <button id="load-more-btn" onclick="loadTickets(true)"
-                    style="width: 100%; padding: 12px; margin-top: 10px; background: #f8fafc;
-                    border: 1.5px solid var(--border); border-radius: var(--radius);
-                    font-size: 0.85rem; font-weight: 600; color: var(--text-muted);
-                    cursor: pointer; font-family: inherit;">
-                    <i class="fas fa-chevron-down"></i> Load More
-                </button>`);
+            if (snap.docs.length === TICKETS_PER_PAGE) {
+                resolvedContainer.insertAdjacentHTML('beforeend', `
+                    <button id="load-more-btn" onclick="loadTickets(true)"
+                        style="width: 100%; padding: 12px; margin-top: 10px; background: #f8fafc;
+                        border: 1.5px solid var(--border); border-radius: var(--radius);
+                        font-size: 0.85rem; font-weight: 600; color: var(--text-muted);
+                        cursor: pointer; font-family: inherit;">
+                        <i class="fas fa-chevron-down"></i> Load More
+                    </button>`);
+            }
         }
 
     } catch (error) {
         console.error('Load tickets error:', error);
-        unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
+        document.getElementById('unresolved-tickets').innerHTML = 
+            '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
     }
+}
+
+function filterTickets() {
+    const searchQuery = document.getElementById('ticket-search')?.value?.toLowerCase()?.trim() || '';
+    const categoryFilter = document.getElementById('ticket-filter-category')?.value || 'all';
+    const statusFilter = document.getElementById('ticket-filter-status')?.value || 'all';
+    
+    let filtered = [...allTickets];
+    
+    if (searchQuery) {
+        filtered = filtered.filter(t => 
+            (t.subject || '').toLowerCase().includes(searchQuery) ||
+            (t.ticketId || '').toLowerCase().includes(searchQuery) ||
+            (t.agentEmail || '').toLowerCase().includes(searchQuery) ||
+            (t.agentAction || '').toLowerCase().includes(searchQuery)
+        );
+    }
+    
+    if (categoryFilter !== 'all') {
+        filtered = filtered.filter(t => t.category === categoryFilter);
+    }
+    
+    if (statusFilter === 'open') {
+        filtered = filtered.filter(t => t.status !== 'resolved');
+    } else if (statusFilter === 'resolved') {
+        filtered = filtered.filter(t => t.status === 'resolved');
+    }
+    
+    const unresolved = filtered.filter(t => t.status !== 'resolved');
+    const resolved = filtered.filter(t => t.status === 'resolved');
+    
+    document.getElementById('unresolved-tickets').innerHTML = unresolved.length === 0
+        ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No matching unresolved tickets</p></div>'
+        : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
+    
+    document.getElementById('resolved-tickets').innerHTML = resolved.length === 0
+        ? '<div class="results-placeholder"><i class="fas fa-check-double"></i><p>No matching resolved tickets</p></div>'
+        : resolved.map(t => renderTicketCard(t, 'resolved')).join('');
 }
 
 function renderTicketCard(ticket, type) {
@@ -1781,7 +1806,7 @@ function renderTicketCard(ticket, type) {
             </div>
         </div>`;
 }
-
+    
 // ════════════════════════════════════════════════════════
 // AUDIT LOG
 // ════════════════════════════════════════════════════════
@@ -2720,6 +2745,7 @@ window.onCreditStudentSelect = onCreditStudentSelect;
 window.onCreditActionChange = onCreditActionChange;
 window.updateCreditPreview = updateCreditPreview;
 window.adjustCredits = adjustCredits;
+window.filterTickets = filterTickets;
     
 </script>
 
