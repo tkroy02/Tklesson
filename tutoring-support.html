@@ -1933,27 +1933,59 @@ async function initSupportChat(user) {
     }
 }
 
-// ── Resolve contact name from both document structures ───
+// ── Resolve contact info from any document structure ─────
 async function resolveContactInfo(chat) {
     const PLACEHOLDERS = ['tutor', 'student', 'admin support', 'admin', 'unknown'];
 
-    const userType = chat.participantTypes
-        ? Object.entries(chat.participantTypes).find(([k, v]) =>
-            k !== 'admin' && (v === 'student' || v === 'tutor'))
-        : null;
+    // ── Step 1: Determine contactId and contactType ──────
+    let contactId   = null;
+    let contactType = 'student';
 
-    const contactId   = userType ? userType[0] : chat.studentId || null;
-    const contactType = userType ? userType[1] : (chat.chatType === 'support_student' ? 'student' : 'student');
+    // Structure A: has participantTypes map (admin-created chats)
+    if (chat.participantTypes) {
+        const entry = Object.entries(chat.participantTypes).find(
+            ([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor')
+        );
+        if (entry) {
+            contactId   = entry[0];
+            contactType = entry[1];
+        }
+    }
 
-    // Check participantNames — but reject generic placeholders
-    const storedName = contactId && chat.participantNames?.[contactId];
-    const isPlaceholder = !storedName || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
+    // Structure B: student-initiated (support_student_...)
+    // has studentId as top-level field, no participantTypes
+    if (!contactId && chat.studentId) {
+        contactId   = chat.studentId;
+        contactType = 'student';
+    }
+
+    // Structure C: tutor-initiated (support_VpeX...)
+    // has participants array but no participantTypes
+    if (!contactId && chat.participants) {
+        contactId = chat.participants.find(id => id !== 'admin') || null;
+        // Determine type from chatType field or document ID
+        if (contactId) {
+            contactType = (chat.chatType?.includes('tutor') || chat.id?.includes('tutor'))
+                ? 'tutor'
+                : 'student';
+        }
+    }
+
+    // ── Step 2: Try stored name, reject placeholders ─────
+    const storedName  = contactId ? chat.participantNames?.[contactId] : null;
+    const isPlaceholder = !storedName
+        || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
 
     if (!isPlaceholder) {
         return { name: storedName, contactId, contactType };
     }
 
-    // Name is missing or a placeholder — fetch real name from Firestore
+    // ── Step 3: Try studentName / participantNames directly ──
+    if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
+        return { name: chat.studentName, contactId, contactType: 'student' };
+    }
+
+    // ── Step 4: Fetch real name from Firestore ───────────
     if (contactId) {
         try {
             const collectionName = contactType === 'tutor' ? 'tutors' : 'students';
@@ -1970,11 +2002,7 @@ async function resolveContactInfo(chat) {
         }
     }
 
-    // student-initiated — try studentName field directly
-    if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
-        return { name: chat.studentName, contactId, contactType: 'student' };
-    }
-
+    // ── Step 5: Last resort ──────────────────────────────
     return {
         name:        contactType === 'tutor' ? 'Tutor' : 'Student',
         contactId,
@@ -1982,55 +2010,15 @@ async function resolveContactInfo(chat) {
     };
 }
 
-    // ── Structure 3: tutor-initiated or other (support_VpeX...) ──
-    // participantNames exists but no participantTypes
-    if (chat.participants && chat.participantNames) {
-        const contactId = chat.participants.find(id => id !== 'admin');
-        if (contactId) {
-            const name = chat.participantNames[contactId];
-            if (name) {
-                // Determine type from collection or ID pattern
-                const contactType = chat.chatType?.includes('tutor') ? 'tutor' : 'student';
-                return { name, contactId, contactType };
-            }
-
-            // Name missing — determine collection and fetch
-            const contactType = chat.chatType?.includes('tutor') ? 'tutor' : 'student';
-            try {
-                const collectionName = contactType === 'tutor' ? 'tutors' : 'students';
-                const snap = await getDoc(doc(db, collectionName, contactId));
-                if (snap.exists()) {
-                    const data = snap.data();
-                    const name = contactType === 'tutor'
-                        ? (data.personal?.fullName || data.fullName || 'Unknown Tutor')
-                        : (data.fullName || data.name || 'Unknown Student');
-                    return { name, contactId, contactType };
-                }
-            } catch (err) {
-                console.error('Contact name fetch error:', err);
-            }
-
-            return {
-                name:        contactType === 'tutor' ? 'Tutor' : 'Student',
-                contactId,
-                contactType
-            };
-        }
-    }
-
-    // ── Last resort ──
-    return { name: 'Unknown', contactId: null, contactType: 'student' };
-}
-    
 // ── Enrich all chats with resolved names ─────────────────
 async function enrichChats(chats) {
     return Promise.all(chats.map(async chat => {
         const resolved = await resolveContactInfo(chat);
         return {
             ...chat,
-            _resolvedName:    resolved.name,
-            _contactId:       resolved.contactId,
-            _contactType:     resolved.contactType
+            _resolvedName:  resolved.name,
+            _contactId:     resolved.contactId,
+            _contactType:   resolved.contactType
         };
     }));
 }
@@ -2050,9 +2038,6 @@ function listenToChats() {
                 const raw = [];
                 snap.forEach(d => {
                     const data = d.data();
-                    // Catch both document structures:
-                    // 1. admin-created: participants array contains 'admin'
-                    // 2. student/tutor-initiated: chatType is 'support_student'
                     if (
                         (data.participants && data.participants.includes('admin')) ||
                         data.chatType === 'support_student'
@@ -2106,18 +2091,19 @@ function renderChatContactList() {
 
     container.innerHTML = '';
     chats.forEach(chat => {
-        const isUnclaimed   = !chat.assignedTo;
-        const displayName   = chat._resolvedName  || 'Unknown';
-        const contactType   = chat._contactType   || 'student';
-        const unread        = chat.unreadCounts?.['admin'] || 0;
-        const lastMsg       = chat.lastMessage     || 'No messages yet';
-        const lastTime      = chat.lastMessageAt
-            ? formatChatTime(chat.lastMessageAt.toDate
-                ? chat.lastMessageAt.toDate()
-                : new Date(chat.lastMessageAt))
+        const isUnclaimed  = !chat.assignedTo;
+        const displayName  = chat._resolvedName || 'Unknown';
+        const contactType  = chat._contactType  || 'student';
+        const unread       = chat.unreadCounts?.['admin'] || 0;
+        const lastMsg      = chat.lastMessage    || 'No messages yet';
+        const lastTime     = chat.lastMessageAt
+            ? formatChatTime(
+                chat.lastMessageAt.toDate
+                    ? chat.lastMessageAt.toDate()
+                    : new Date(chat.lastMessageAt))
             : '';
-        const initials      = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        const assignedText  = chat.assignedTo
+        const initials     = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const assignedText = chat.assignedTo
             ? (chat.assignedTo === uid
                 ? 'Claimed by you'
                 : `Claimed by ${chat.assignedName || 'agent'}`)
@@ -2153,8 +2139,8 @@ function updateChatTabBadges() {
     const mineBadge      = document.getElementById('mine-badge');
 
     if (unclaimedBadge) {
-        unclaimedBadge.textContent    = unclaimed.length;
-        unclaimedBadge.style.display  = unclaimed.length > 0 ? 'flex' : 'none';
+        unclaimedBadge.textContent   = unclaimed.length;
+        unclaimedBadge.style.display = unclaimed.length > 0 ? 'flex' : 'none';
     }
     if (mineBadge) {
         const unreadMine = mine.reduce((sum, c) => sum + (c.unreadCounts?.['admin'] || 0), 0);
@@ -2173,15 +2159,14 @@ async function openSupportChat(chat) {
     document.getElementById('chat-empty-state').style.display = 'none';
     document.getElementById('chat-active-area').style.display = 'flex';
 
-    // Use pre-resolved name and type
     const contactName = chat._resolvedName || 'User';
     const contactType = chat._contactType  || 'student';
     const initials    = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-    document.getElementById('active-chat-avatar').textContent       = initials;
-    document.getElementById('active-chat-avatar').style.background  = contactType === 'tutor' ? '#065f46' : '#1e40af';
-    document.getElementById('active-chat-name').textContent         = contactName;
-    document.getElementById('active-chat-meta').textContent         = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
+    document.getElementById('active-chat-avatar').textContent      = initials;
+    document.getElementById('active-chat-avatar').style.background = contactType === 'tutor' ? '#065f46' : '#1e40af';
+    document.getElementById('active-chat-name').textContent        = contactName;
+    document.getElementById('active-chat-meta').textContent        = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
         chat.assignedTo
             ? (chat.assignedTo === supportChat.agentUid
                 ? 'Claimed by you'
@@ -2189,7 +2174,6 @@ async function openSupportChat(chat) {
             : 'Unclaimed'
     }`;
 
-    // Claim/unclaim buttons
     const claimBtn   = document.getElementById('claim-btn');
     const unclaimBtn = document.getElementById('unclaim-btn');
 
@@ -2204,7 +2188,6 @@ async function openSupportChat(chat) {
         unclaimBtn.style.display = 'none';
     }
 
-    // Claimed-by banner
     const banner = document.getElementById('claimed-by-banner');
     if (chat.assignedTo && chat.assignedTo !== supportChat.agentUid) {
         banner.style.display    = 'block';
@@ -2238,8 +2221,6 @@ function loadSupportMessages(chatId) {
                     container.innerHTML = '';
                     snap.forEach(d => {
                         const msg    = d.data();
-                        // A message is "sent" (by support side) if senderId is 'admin'
-                        // or any support agent UID or starts with 'support'
                         const isSent = msg.senderId === 'admin'
                             || msg.senderId === supportChat.agentUid
                             || (msg.senderId && msg.senderId.startsWith('support'));
@@ -2280,7 +2261,6 @@ async function sendSupportMessage() {
         const contact   = supportChat.currentContact;
         const contactId = contact._contactId;
 
-        // Send as 'admin' to stay fully compatible with student/tutor chat
         await addDoc(col(db, 'chats', supportChat.currentChatId, 'messages'), {
             text:       text,
             senderId:   'admin',
