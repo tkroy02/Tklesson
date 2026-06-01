@@ -2354,354 +2354,547 @@ function escapeHtml(text) {
 // ====================================================
 // CREDIT MANAGEMENT (Lead Only)
 // ====================================================
-let creditStudents = [];
-let selectedCreditStudent = null;
+// =============================================================
+// CREDIT MANAGEMENT MODULE
+// Call CreditManager.load() whenever the tab is opened.
+// Call CreditManager.init() once on DOMContentLoaded (or after
+// the HTML section has been injected into the page).
+// =============================================================
 
-const PACKAGE_SIZES = {
-    hourly: 1,
-    bronze: 4,
-    silver: 8,
-    gold: 12
-};
+const CreditManager = (() => {
 
-async function loadCreditStudents() {
-    try {
-        const snap = await getDocs(collection(db, 'students'));
-        creditStudents = [];
-        snap.forEach(doc => {
-            creditStudents.push({ id: doc.id, ...doc.data() });
+    // ── Constants ─────────────────────────────────────────────
+    const PACKAGE_SIZES = { hourly: 1, bronze: 4, silver: 8, gold: 12 };
+
+    const BAL_THEME = {
+        hourly: { bg: '#dbeafe', color: '#1e40af' },
+        bronze: { bg: '#fef3c7', color: '#92400e' },
+        silver: { bg: '#e0e7ff', color: '#3730a3' },
+        gold:   { bg: '#fefce8', color: '#a16207' },
+    };
+
+    // ── Module state ──────────────────────────────────────────
+    let students        = [];   // full list loaded from Firestore
+    let activeStudentId = null;
+    let currentAction   = 'add';
+    let isInitialized   = false;
+
+    // ── DOM references (resolved once) ────────────────────────
+    let el = {};
+
+    function resolveEls() {
+        el = {
+            search:        document.getElementById('cm-search'),
+            clearBtn:      document.getElementById('cm-clear'),
+            studentSelect: document.getElementById('cm-student-select'),
+            loadStatus:    document.getElementById('cm-load-status'),
+            studentPanel:  document.getElementById('cm-student-panel'),
+            balances:      document.getElementById('cm-balances'),
+            refreshBtn:    document.getElementById('cm-refresh'),
+            toggleBtns:    document.querySelectorAll('.cm-toggle-btn'),
+            packageSelect: document.getElementById('cm-package'),
+            countInput:    document.getElementById('cm-count'),
+            reasonInput:   document.getElementById('cm-reason'),
+            preview:       document.getElementById('cm-preview'),
+            errorBanner:   document.getElementById('cm-error'),
+            submitBtn:     document.getElementById('cm-submit'),
+            submitIcon:    document.getElementById('cm-submit-icon'),
+            submitLabel:   document.getElementById('cm-submit-label'),
+            transactions:  document.getElementById('cm-transactions'),
+        };
+    }
+
+    // ── Utilities ─────────────────────────────────────────────
+
+    function debounce(fn, ms = 200) {
+        let timer;
+        return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+    }
+
+    function setStatus(msg) {
+        el.loadStatus.textContent = msg;
+        el.loadStatus.style.display = msg ? 'block' : 'none';
+    }
+
+    function showError(msg) {
+        el.errorBanner.textContent = msg;
+        el.errorBanner.style.display = 'block';
+        el.errorBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function hideError() {
+        el.errorBanner.style.display = 'none';
+    }
+
+    function setSubmitLoading(loading) {
+        el.submitBtn.disabled = loading;
+        if (loading) {
+            el.submitIcon.className = 'fas fa-spinner fa-spin';
+            el.submitLabel.textContent = 'Processing…';
+        } else {
+            syncSubmitBtn();
+        }
+    }
+
+    // ── Sync submit button to current action ──────────────────
+
+    function syncSubmitBtn() {
+        const isAdd = currentAction === 'add';
+        el.submitBtn.className = `cm-submit ${isAdd ? 'is-add' : 'is-deduct'}`;
+        el.submitIcon.className = `fas ${isAdd ? 'fa-plus-circle' : 'fa-minus-circle'}`;
+        el.submitLabel.textContent = isAdd ? 'Add credits' : 'Deduct credits';
+    }
+
+    // ── Wire all event listeners (called once) ────────────────
+
+    function wireEvents() {
+        // Search: debounced filter + clear button visibility
+        const debouncedFilter = debounce(renderStudentOptions, 180);
+        el.search.addEventListener('input', () => {
+            el.clearBtn.style.display = el.search.value ? 'block' : 'none';
+            debouncedFilter();
         });
-        console.log('✅ Loaded', creditStudents.length, 'students');
-        filterCreditStudents();
-    } catch (error) {
-        console.error('Error loading students:', error);
+
+        el.clearBtn.addEventListener('click', () => {
+            el.search.value = '';
+            el.clearBtn.style.display = 'none';
+            renderStudentOptions();
+            el.search.focus();
+        });
+
+        // Student select
+        el.studentSelect.addEventListener('change', onStudentChange);
+
+        // Refresh button
+        el.refreshBtn.addEventListener('click', () => {
+            if (activeStudentId) updateBalanceDisplay(activeStudentId);
+        });
+
+        // Action toggle
+        el.toggleBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                el.toggleBtns.forEach(b => b.classList.remove('is-active'));
+                btn.classList.add('is-active');
+                currentAction = btn.dataset.val;
+                syncSubmitBtn();
+                renderPreview();
+            });
+        });
+
+        // Preview updates
+        el.packageSelect.addEventListener('change', renderPreview);
+        el.countInput.addEventListener('input', renderPreview);
+
+        // Hide error when user edits
+        el.reasonInput.addEventListener('input', hideError);
+        el.countInput.addEventListener('input', hideError);
+
+        // Submit
+        el.submitBtn.addEventListener('click', handleSubmit);
     }
-}
 
-function filterCreditStudents() {
-    const searchInput = document.getElementById('credit-student-search');
-    const select = document.getElementById('credit-student-select');
-    
-    if (!searchInput || !select) return;
-    if (!creditStudents || creditStudents.length === 0) {
-        select.innerHTML = '<option value="">No students loaded yet...</option>';
-        return;
+    // ── Load students from Firestore ──────────────────────────
+
+    async function loadStudents() {
+        setStatus('Loading students…');
+        el.studentSelect.innerHTML = '<option value="">Loading…</option>';
+        el.studentSelect.disabled = true;
+
+        try {
+            const snap = await getDocs(collection(db, 'students'));
+            students = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderStudentOptions();
+            setStatus('');
+        } catch (err) {
+            console.error('[CreditManager] Failed to load students:', err);
+            el.studentSelect.innerHTML = '<option value="">Error loading students</option>';
+            setStatus('Could not load students. Please refresh.');
+        } finally {
+            el.studentSelect.disabled = false;
+        }
     }
 
-    const searchVal = searchInput.value.toLowerCase().trim();
+    // ── Render dropdown options ────────────────────────────────
+    // (called on load and on every search keystroke)
 
-    const filtered = searchVal
-        ? creditStudents.filter(s => {
-            const name = (s.fullName || '').toLowerCase();
-            const email = (s.email || '').toLowerCase();
-            return name.includes(searchVal) || email.includes(searchVal);
-        })
-        : creditStudents;
+    function renderStudentOptions() {
+        const query = el.search.value.toLowerCase().trim();
 
-    if (filtered.length === 0) {
-        select.innerHTML = '<option value="">No matching students...</option>';
-    } else {
-        select.innerHTML = '<option value="">Select a student...</option>' +
-            filtered.map(s =>
-                `<option value="${s.id}">${s.fullName || 'Unknown'} (${s.email || 'N/A'})</option>`
+        const matches = query
+            ? students.filter(s =>
+                (s.fullName || '').toLowerCase().includes(query) ||
+                (s.email    || '').toLowerCase().includes(query))
+            : students;
+
+        if (students.length === 0) {
+            el.studentSelect.innerHTML = '<option value="">No students found</option>';
+            return;
+        }
+
+        const placeholder = matches.length === 0
+            ? '<option value="">No students match your search</option>'
+            : '<option value="">— choose a student —</option>';
+
+        el.studentSelect.innerHTML = placeholder +
+            matches.map(s =>
+                `<option value="${s.id}">${s.fullName || 'Unknown'} (${s.email || 'no email'})</option>`
             ).join('');
-    }
-}
 
-function onCreditStudentSelect() {
-    const studentId = document.getElementById('credit-student-select').value;
-    
-    if (!studentId) {
-        document.getElementById('credit-balance-section').style.display = 'none';
-        document.getElementById('credit-add-section').style.display = 'none';
-        document.getElementById('credit-transactions').innerHTML = '';
-        selectedCreditStudent = null;
-        return;
+        // Restore selected value if it's still in the filtered set
+        if (activeStudentId && matches.some(s => s.id === activeStudentId)) {
+            el.studentSelect.value = activeStudentId;
+        }
     }
-    
-    selectedCreditStudent = studentId;
-    updateBalanceDisplay(studentId);
-    loadCreditTransactions(studentId);
-    document.getElementById('credit-balance-section').style.display = 'block';
-    document.getElementById('credit-add-section').style.display = 'block';
-}
 
-async function updateBalanceDisplay(studentId) {
-    try {
-        const snap = await getDoc(doc(db, 'students', studentId));
-        if (!snap.exists()) return;
-        
-        const balances = snap.data().packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
-        const types = ['hourly', 'bronze', 'silver', 'gold'];
-        const colors = { hourly: '#dbeafe', bronze: '#fef3c7', silver: '#e0e7ff', gold: '#fefce8' };
-        const textColors = { hourly: '#1e40af', bronze: '#92400e', silver: '#3730a3', gold: '#a16207' };
-        
-        document.getElementById('credit-balances').innerHTML = types.map(type => `
-            <div style="background: ${colors[type]}; border-radius: 10px; padding: 16px; text-align: center;">
-                <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: ${textColors[type]}; margin-bottom: 4px;">${type}</div>
-                <div style="font-size: 1.4rem; font-weight: 700; color: ${textColors[type]};">${balances[type]}</div>
-                <div style="font-size: 0.7rem; color: ${textColors[type]}; opacity: 0.7;">sessions</div>
+    // ── Handle student selection ──────────────────────────────
+
+    async function onStudentChange() {
+        const id = el.studentSelect.value;
+
+        if (!id) {
+            activeStudentId = null;
+            el.studentPanel.style.display = 'none';
+            return;
+        }
+
+        activeStudentId = id;
+        resetForm();
+        el.studentPanel.style.display = 'block';
+
+        // Load balance + history in parallel
+        await Promise.all([
+            updateBalanceDisplay(id),
+            loadTransactions(id),
+        ]);
+    }
+
+    // ── Balance display ───────────────────────────────────────
+
+    async function updateBalanceDisplay(studentId) {
+        el.balances.innerHTML = renderBalanceSkeleton();
+
+        try {
+            const snap = await getDoc(doc(db, 'students', studentId));
+            if (!snap.exists()) return;
+
+            const data = snap.data();
+            const b = data.packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
+
+            // Keep local cache in sync so validation checks are accurate
+            const idx = students.findIndex(s => s.id === studentId);
+            if (idx !== -1) students[idx].packageBalances = b;
+
+            el.balances.innerHTML = Object.entries(BAL_THEME).map(([type, theme]) => `
+                <div class="cm-bal-card" style="background:${theme.bg}; color:${theme.color};">
+                    <div class="cm-bal-label">${type}</div>
+                    <div class="cm-bal-count">${b[type] ?? 0}</div>
+                    <div class="cm-bal-unit">sessions</div>
+                </div>
+            `).join('');
+
+            renderPreview();
+        } catch (err) {
+            console.error('[CreditManager] Balance load error:', err);
+            el.balances.innerHTML = '<p style="color:var(--danger);font-size:0.83rem;">Failed to load balances.</p>';
+        }
+    }
+
+    function renderBalanceSkeleton() {
+        return Object.values(BAL_THEME).map(theme => `
+            <div class="cm-bal-card" style="background:${theme.bg}; opacity:0.4;">
+                <div class="cm-bal-label">…</div>
+                <div class="cm-bal-count">—</div>
+                <div class="cm-bal-unit">sessions</div>
             </div>
         `).join('');
-        
-        updateCreditPreview();
-    } catch (error) {
-        console.error('Error loading balances:', error);
     }
-}
 
-function onCreditActionChange() {
-    const action = document.getElementById('credit-action').value;
-    const btn = document.getElementById('credit-submit-btn');
-    
-    if (action === 'deduct') {
-        btn.innerHTML = '<i class="fas fa-minus-circle"></i> Deduct Credits';
-        btn.style.background = 'var(--danger)';
-    } else {
-        btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add Credits';
-        btn.style.background = 'var(--navy)';
-    }
-    updateCreditPreview();
-}
+    // ── Live preview ──────────────────────────────────────────
 
-function updateCreditPreview() {
-    const preview = document.getElementById('credit-preview');
-    const action = document.getElementById('credit-action').value;
-    const packageType = document.getElementById('credit-package-type').value;
-    const count = parseInt(document.getElementById('credit-package-count').value) || 1;
-    const sessions = count * (PACKAGE_SIZES[packageType] || 1);
-    
-    const verb = action === 'add' ? 'Adding' : 'Deducting';
-    const color = action === 'add' ? '#166534' : '#991b1b';
-    const bg = action === 'add' ? '#f0fdf4' : '#fef2f2';
-    const border = action === 'add' ? '#bbf7d0' : '#fecaca';
-    
-    preview.style.display = 'block';
-    preview.style.background = bg;
-    preview.style.border = `1px solid ${border}`;
-    preview.style.color = color;
-    preview.innerHTML = `<strong>${verb}:</strong> ${count} × ${packageType} package${count > 1 ? 's' : ''} = <strong>${sessions} session${sessions > 1 ? 's' : ''}</strong>`;
-}
+    function renderPreview() {
+        const pkg      = el.packageSelect.value;
+        const count    = parseInt(el.countInput.value) || 0;
+        const sessions = count * (PACKAGE_SIZES[pkg] || 1);
 
-async function sendCreditNotification(studentId, studentData, packageType, sessions, reason, action) {
-    try {
-        await setDoc(doc(collection(db, 'notifications')), {
-            userId: studentId,
-            userType: 'student',
-            studentName: studentData.fullName || 'Student',
-            studentEmail: studentData.email || '',
-            title: action === 'credit_deducted' ? '⚠️ Credits Deducted' : '🎉 Credits Added',
-            message: `Support ${action === 'credit_deducted' ? 'deducted' : 'added'} ${sessions} ${packageType} session${sessions > 1 ? 's' : ''} ${action === 'credit_deducted' ? 'from' : 'to'} your account. Reason: ${reason}`,
-            type: action === 'credit_deducted' ? 'credit_deduction' : 'credit_addition',
-            amount: action === 'credit_deducted' ? -sessions : sessions,
-            packageType: packageType,
-            reason: reason,
-            createdAt: new Date(),
-            isRead: false,
-            actionRequired: false,
-            agentId: auth.currentUser.uid,
-            agentEmail: auth.currentUser.email
-        });
-    } catch (error) {
-        console.error('Error sending credit notification:', error);
-    }
-}
-
-async function adjustCredits() {
-    const studentId = selectedCreditStudent;
-    const action = document.getElementById('credit-action').value;
-    const packageType = document.getElementById('credit-package-type').value;
-    const count = parseInt(document.getElementById('credit-package-count').value);
-    const reason = document.getElementById('credit-reason').value.trim();
-    const errorEl = document.getElementById('credit-error');
-    
-    errorEl.style.display = 'none';
-    
-    if (!studentId) { showCreditError('Please select a student.'); return; }
-    if (!count || count < 1 || count > 100) { showCreditError('Enter a valid number of packages (1-100).'); return; }
-    if (!reason) { showCreditError('Please provide a reason for this adjustment.'); return; }
-    
-    const sessions = count * (PACKAGE_SIZES[packageType] || 1);
-    
-    if (action === 'deduct') {
-        const student = creditStudents.find(s => s.id === studentId);
-        const currentBalance = student?.packageBalances?.[packageType] || 0;
-        if (sessions > currentBalance) {
-            showCreditError(`Cannot deduct ${sessions} sessions. Current ${packageType} balance is only ${currentBalance}.`);
+        if (!count || count < 1) {
+            el.preview.style.display = 'none';
             return;
         }
-        if (!confirm(`Deduct ${sessions} session${sessions > 1 ? 's' : ''} (${count} ${packageType} package${count > 1 ? 's' : ''}) from this student?\n\nReason: ${reason}`)) return;
-    }
-    
-    const btn = document.getElementById('credit-submit-btn');
-    btn.disabled = true;
-    const originalHTML = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-    
-    try {
-        const studentSnap = await getDoc(doc(db, 'students', studentId));
-        const studentData = studentSnap.data();
-        const currentBalances = studentData.packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
-        const currentBalance = currentBalances[packageType] || 0;
-        
-        let newBalance;
-        if (action === 'add') {
-            newBalance = currentBalance + sessions;
-        } else {
-            newBalance = currentBalance - sessions;
-            if (newBalance < 0) newBalance = 0;
-        }
-        
-        const { updateDoc: updateDocFn } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-        await updateDocFn(doc(db, 'students', studentId), {
-            [`packageBalances.${packageType}`]: newBalance,
-            lastUpdated: new Date().toISOString()
-        });
-        
-        await setDoc(doc(collection(db, 'creditTransactions')), {
-            studentId: studentId,
-            studentName: studentData.fullName || 'Unknown',
-            agentId: auth.currentUser.uid,
-            agentEmail: auth.currentUser.email,
-            type: action === 'add' ? 'credit_added' : 'credit_deducted',
-            packageType: packageType,
-            packages: count,
-            sessions: sessions,
-            previousBalance: currentBalance,
-            newBalance: newBalance,
-            reason: reason,
-            timestamp: new Date().toISOString()
-        });
-        
-        await sendCreditNotification(
-            studentId, 
-            studentData, 
-            packageType, 
-            sessions, 
-            reason, 
-            action === 'add' ? 'credit_added' : 'credit_deducted'
-        );
-        
-        await logAuditAction(
-            action === 'add' ? 'credits_added' : 'credits_deducted',
-            studentData.fullName || studentId,
-            `${action === 'add' ? 'Added' : 'Deducted'} ${sessions} ${packageType} session${sessions > 1 ? 's' : ''} ${action === 'add' ? 'to' : 'from'} ${studentData.fullName || studentId}. Reason: ${reason}`
-        );
-        
-        document.getElementById('credit-reason').value = '';
-        document.getElementById('credit-package-count').value = '1';
-        document.getElementById('credit-preview').style.display = 'none';
-        
-        await updateBalanceDisplay(studentId);
-        await loadCreditTransactions(studentId);
-        
-    } catch (error) {
-        console.error('Credit adjustment error:', error);
-        showCreditError('Error adjusting credits: ' + error.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalHTML;
-        onCreditActionChange();
-    }
-}
 
-function showCreditError(msg) {
-    const errorEl = document.getElementById('credit-error');
-    errorEl.textContent = msg;
-    errorEl.style.display = 'block';
-}
+        const isAdd  = currentAction === 'add';
+        const bgCol  = isAdd ? '#f0fdf4' : '#fef2f2';
+        const bdCol  = isAdd ? '#bbf7d0' : '#fecaca';
+        const txCol  = isAdd ? '#166534' : '#991b1b';
+        const verb   = isAdd ? 'Adding' : 'Deducting';
 
-async function loadCreditTransactions(studentId) {
-    const container = document.getElementById('credit-transactions');
-    if (!container) return;
-    
-    try {
-        const q = query(
-            collection(db, 'creditTransactions'),
-            where('studentId', '==', studentId),
-            orderBy('timestamp', 'desc'),
-            limit(20)
-        );
-        const snap = await getDocs(q);
-        
-        if (snap.empty) {
-            container.innerHTML = '<div class="results-placeholder"><i class="fas fa-history"></i><p>No transactions for this student</p></div>';
-            return;
+        el.preview.style.cssText = `display:block; background:${bgCol}; border:1px solid ${bdCol}; color:${txCol};`;
+        el.preview.innerHTML = `
+            <strong>${verb}:</strong>
+            ${count} × ${pkg} package${count !== 1 ? 's' : ''}
+            = <strong>${sessions} session${sessions !== 1 ? 's' : ''}</strong>
+        `;
+    }
+
+    // ── Validation ────────────────────────────────────────────
+
+    function validate() {
+        const pkg    = el.packageSelect.value;
+        const count  = parseInt(el.countInput.value);
+        const reason = el.reasonInput.value.trim();
+
+        if (!activeStudentId)                   return 'Please select a student first.';
+        if (!count || count < 1 || count > 100) return 'Enter a valid package count between 1 and 100.';
+        if (!reason)                            return 'A reason is required for every credit adjustment.';
+
+        if (currentAction === 'deduct') {
+            const student    = students.find(s => s.id === activeStudentId);
+            const sessions   = count * (PACKAGE_SIZES[pkg] || 1);
+            const balance    = student?.packageBalances?.[pkg] ?? 0;
+            if (sessions > balance) {
+                return `Cannot deduct ${sessions} sessions — current ${pkg} balance is only ${balance}.`;
+            }
         }
-        
-        container.innerHTML = `
-            <h4 style="color: var(--navy); margin-bottom: 12px;">Recent Transactions</h4>
-            ${snap.docs.map(d => {
-                const t = d.data();
-                const time = new Date(t.timestamp).toLocaleString('en-US', {
-                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                });
-                const isAdd = t.type === 'credit_added';
-                const color = isAdd ? 'var(--success)' : 'var(--danger)';
-                const icon = isAdd ? 'fa-plus-circle' : 'fa-minus-circle';
-                const bg = isAdd ? '#f0fdf4' : '#fef2f2';
-                
-                return `
-                    <div style="background: ${bg}; border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <span style="color: ${color}; font-weight: 600;">
-                                <i class="fas ${icon}"></i> ${isAdd ? '+' : '-'}${t.sessions} ${t.packageType} session${t.sessions > 1 ? 's' : ''}
-                            </span>
-                            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
-                                ${t.reason} — by ${t.agentEmail} on ${time}
-                            </div>
-                        </div>
-                        <span style="font-size: 0.78rem; color: var(--text-muted);">
-                            ${t.previousBalance} → ${t.newBalance}
-                        </span>
+
+        return null; // all good
+    }
+
+    // ── Submit handler ────────────────────────────────────────
+
+    async function handleSubmit() {
+        hideError();
+
+        const validationError = validate();
+        if (validationError) { showError(validationError); return; }
+
+        const pkg      = el.packageSelect.value;
+        const count    = parseInt(el.countInput.value);
+        const reason   = el.reasonInput.value.trim();
+        const sessions = count * (PACKAGE_SIZES[pkg] || 1);
+
+        // Confirm destructive action
+        if (currentAction === 'deduct') {
+            const ok = confirm(
+                `Deduct ${sessions} session${sessions !== 1 ? 's' : ''} (${count} ${pkg} package${count !== 1 ? 's' : ''}) from this student?\n\nReason: ${reason}`
+            );
+            if (!ok) return;
+        }
+
+        setSubmitLoading(true);
+
+        try {
+            // ── Fetch latest student data ──────────────────────
+            const studentSnap = await getDoc(doc(db, 'students', activeStudentId));
+            const studentData = studentSnap.data();
+            const prevBalances = studentData.packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
+            const prevBalance  = prevBalances[pkg] ?? 0;
+
+            const newBalance = currentAction === 'add'
+                ? prevBalance + sessions
+                : Math.max(0, prevBalance - sessions);
+
+            // ── Update student doc (dot-notation — Firestore-safe) ──
+            const { updateDoc: updateDocFn } = await import(
+                'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js'
+            );
+            await updateDocFn(doc(db, 'students', activeStudentId), {
+                [`packageBalances.${pkg}`]: newBalance,
+                lastUpdated: new Date().toISOString(),
+            });
+
+            // ── Log transaction ────────────────────────────────
+            await setDoc(doc(collection(db, 'creditTransactions')), {
+                studentId:       activeStudentId,
+                studentName:     studentData.fullName || 'Unknown',
+                agentId:         auth.currentUser.uid,
+                agentEmail:      auth.currentUser.email,
+                type:            currentAction === 'add' ? 'credit_added' : 'credit_deducted',
+                packageType:     pkg,
+                packages:        count,
+                sessions:        sessions,
+                previousBalance: prevBalance,
+                newBalance:      newBalance,
+                reason:          reason,
+                timestamp:       new Date().toISOString(),
+            });
+
+            // ── Audit log ──────────────────────────────────────
+            await logAuditAction(
+                currentAction === 'add' ? 'credits_added' : 'credits_deducted',
+                studentData.fullName || activeStudentId,
+                `${currentAction === 'add' ? 'Added' : 'Deducted'} ${sessions} ${pkg} session${sessions !== 1 ? 's' : ''} ${currentAction === 'add' ? 'to' : 'from'} ${studentData.fullName || activeStudentId}. Reason: ${reason}`
+            );
+
+            // ── Notification ───────────────────────────────────
+            await sendCreditNotification(
+                activeStudentId,
+                studentData,
+                pkg,
+                sessions,
+                reason,
+                currentAction === 'add' ? 'credit_added' : 'credit_deducted'
+            );
+
+            // ── Reset form fields only ─────────────────────────
+            el.reasonInput.value = '';
+            el.countInput.value  = '1';
+            el.preview.style.display = 'none';
+
+            // ── Refresh display ────────────────────────────────
+            await Promise.all([
+                updateBalanceDisplay(activeStudentId),
+                loadTransactions(activeStudentId),
+            ]);
+
+        } catch (err) {
+            console.error('[CreditManager] Adjustment failed:', err);
+            showError('Something went wrong: ' + err.message);
+        } finally {
+            setSubmitLoading(false);
+        }
+    }
+
+    // ── Transaction history ───────────────────────────────────
+
+    async function loadTransactions(studentId) {
+        el.transactions.innerHTML = `
+            <p class="cm-status-text">
+                <i class="fas fa-spinner fa-spin"></i>&nbsp; Loading transactions…
+            </p>
+        `;
+
+        try {
+            const q = query(
+                collection(db, 'creditTransactions'),
+                where('studentId', '==', studentId),
+                orderBy('timestamp', 'desc'),
+                limit(20)
+            );
+            const snap = await getDocs(q);
+
+            if (snap.empty) {
+                el.transactions.innerHTML = `
+                    <div class="cm-empty">
+                        <i class="fas fa-history"></i>
+                        No transactions on record for this student.
                     </div>
                 `;
-            }).join('')}
-        `;
-    } catch (error) {
-        console.error('Error loading transactions:', error);
-        container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading transactions</p></div>';
-    }
-}
+                return;
+            }
 
+            el.transactions.innerHTML = snap.docs.map(d => {
+                const t     = d.data();
+                const isAdd = t.type === 'credit_added';
+                const color = isAdd ? '#166534' : '#991b1b';
+                const bg    = isAdd ? '#f0fdf4'  : '#fef2f2';
+                const icon  = isAdd ? 'fa-plus-circle' : 'fa-minus-circle';
+                const sign  = isAdd ? '+' : '−';
+                const time  = new Date(t.timestamp).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                });
+
+                return `
+                    <div class="cm-tx-item" style="background:${bg};">
+                        <div>
+                            <div class="cm-tx-main" style="color:${color};">
+                                <i class="fas ${icon}"></i>
+                                ${sign}${t.sessions} ${t.packageType} session${t.sessions !== 1 ? 's' : ''}
+                            </div>
+                            <div class="cm-tx-meta">
+                                ${t.reason} — ${t.agentEmail}, ${time}
+                            </div>
+                        </div>
+                        <div class="cm-tx-delta">${t.previousBalance} → ${t.newBalance}</div>
+                    </div>
+                `;
+            }).join('');
+
+        } catch (err) {
+            console.error('[CreditManager] Transaction load failed:', err);
+            el.transactions.innerHTML = `
+                <p style="color:var(--danger); font-size:0.84rem;">
+                    Failed to load transaction history.
+                </p>
+            `;
+        }
+    }
+
+    // ── Reset form (not student selection) ───────────────────
+
+    function resetForm() {
+        el.reasonInput.value     = '';
+        el.countInput.value      = '1';
+        el.preview.style.display = 'none';
+        hideError();
+
+        // Reset action to "add"
+        currentAction = 'add';
+        el.toggleBtns.forEach(b =>
+            b.classList.toggle('is-active', b.dataset.val === 'add')
+        );
+        syncSubmitBtn();
+    }
+
+    // ── Notification helper (preserved from original) ─────────
+
+    async function sendCreditNotification(studentId, studentData, packageType, sessions, reason, action) {
+        try {
+            await setDoc(doc(collection(db, 'notifications')), {
+                userId:       studentId,
+                userType:     'student',
+                studentName:  studentData.fullName || 'Student',
+                studentEmail: studentData.email    || '',
+                title:   action === 'credit_deducted' ? '⚠️ Credits Deducted' : '🎉 Credits Added',
+                message: `Support ${action === 'credit_deducted' ? 'deducted' : 'added'} ${sessions} ${packageType} session${sessions !== 1 ? 's' : ''} ${action === 'credit_deducted' ? 'from' : 'to'} your account. Reason: ${reason}`,
+                type:         action === 'credit_deducted' ? 'credit_deduction' : 'credit_addition',
+                amount:       action === 'credit_deducted' ? -sessions : sessions,
+                packageType:  packageType,
+                reason:       reason,
+                createdAt:    serverTimestamp(),
+                isRead:       false,
+                actionRequired: false,
+                agentId:      auth.currentUser.uid,
+                agentEmail:   auth.currentUser.email,
+            });
+        } catch (err) {
+            // Non-fatal — log but don't surface to user
+            console.error('[CreditManager] Notification failed:', err);
+        }
+    }
+
+    // ── Public API ────────────────────────────────────────────
+
+    return {
+
+        // Call once after the HTML is in the DOM (e.g. DOMContentLoaded
+        // or after dynamic injection). Safe to call multiple times.
+        init() {
+            if (isInitialized) return;
+            resolveEls();
+            wireEvents();
+            syncSubmitBtn();
+            isInitialized = true;
+        },
+
+        // Call every time the Credit Management tab is opened.
+        // Re-fetches the student list and resets the form.
+        load() {
+            this.init(); // safe no-op if already initialized
+            resetForm();
+            activeStudentId = null;
+            el.studentPanel.style.display = 'none';
+            el.studentSelect.value = '';
+            el.search.value = '';
+            el.clearBtn.style.display = 'none';
+            el.transactions.innerHTML = '';
+            loadStudents();
+        },
+    };
+
+})();
+
+// ── Drop-in replacement for old loadCreditManagement() ───────
 function loadCreditManagement() {
-    loadCreditStudents();
-    document.getElementById('credit-balance-section').style.display = 'none';
-    document.getElementById('credit-add-section').style.display = 'none';
-    document.getElementById('credit-transactions').innerHTML = '';
-    document.getElementById('credit-student-select').value = '';
-    selectedCreditStudent = null;
-    
-    // Wire up search and form listeners
-    const searchInput = document.getElementById('credit-student-search');
-    if (searchInput) {
-        searchInput.removeEventListener('input', filterCreditStudents);
-        searchInput.addEventListener('input', filterCreditStudents);
-    }
-    
-    const actionSelect = document.getElementById('credit-action');
-    if (actionSelect) {
-        actionSelect.removeEventListener('change', onCreditActionChange);
-        actionSelect.addEventListener('change', onCreditActionChange);
-    }
-    
-    const packageSelect = document.getElementById('credit-package-type');
-    if (packageSelect) {
-        packageSelect.removeEventListener('change', updateCreditPreview);
-        packageSelect.addEventListener('change', updateCreditPreview);
-    }
-    
-    const countInput = document.getElementById('credit-package-count');
-    if (countInput) {
-        countInput.removeEventListener('input', updateCreditPreview);
-        countInput.addEventListener('input', updateCreditPreview);
-    }
-    
-    const studentSelect = document.getElementById('credit-student-select');
-    if (studentSelect) {
-        studentSelect.removeEventListener('change', onCreditStudentSelect);
-        studentSelect.addEventListener('change', onCreditStudentSelect);
-    }
+    CreditManager.load();
 }
     
 // ════════════════════════════════════════════════════════
