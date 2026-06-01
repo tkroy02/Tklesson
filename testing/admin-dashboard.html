@@ -9672,7 +9672,7 @@ window.saveAdminPassword = async function() {
 };
 
 // ================================================================
-//  ADMIN 2FA (modular SDK — Firestore: admins/{uid})
+//  ADMIN 2FA (compat SDK — Firestore: admins/{uid})
 // ================================================================
 
 let _aTfaSecret         = null;
@@ -9703,14 +9703,42 @@ function loadATFALibraries() {
     });
 }
 
+// ── Load status from Firestore ─────────────────────────────
+async function refreshAdminTFAStatus() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const btn        = document.getElementById('admin-tfa-action-btn');
+    const statusText = document.getElementById('admin-tfa-status-text');
+
+    try {
+        const snap    = await db.collection('admins').doc(user.uid).get();
+        const data    = snap.exists ? snap.data() : {};
+        const enabled = data.twoFactorEnabled === true;
+
+        if (enabled) {
+            statusText.innerHTML = '<span class="tfa-badge-on"><i class="fas fa-check-circle"></i> Enabled</span>';
+            btn.style.cssText = 'min-width:90px; background:#fef2f2; color:#e74c3c; border:1.5px solid #fecaca; font-weight:600;';
+            btn.innerHTML = '<i class="fas fa-lock-open"></i> Disable';
+        } else {
+            statusText.innerHTML = '<span class="tfa-badge-off"><i class="fas fa-times-circle"></i> Not enabled</span>';
+            btn.style.cssText = 'min-width:90px;';
+            btn.innerHTML = '<i class="fas fa-shield-alt"></i> Enable';
+        }
+    } catch (err) {
+        console.error('Admin 2FA status error:', err);
+        statusText.textContent = 'Unable to load';
+        btn.innerHTML = 'Retry';
+    }
+}
+
 // ── Entry point ────────────────────────────────────────────
 window.openAdmin2FAFlow = async function() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-        const { getDoc, doc } = window.firebaseModules;
-        const snap    = await getDoc(doc(db, 'admins', user.uid));
-        const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
+        const snap    = await db.collection('admins').doc(user.uid).get();
+        const enabled = snap.exists && snap.data().twoFactorEnabled === true;
         if (enabled) { openATFADisable(); } else { openATFASetup(); }
     } catch {
         alert('Error loading 2FA status. Please try again.');
@@ -9781,8 +9809,7 @@ window.verifyATFASetup = async function() {
     try {
         // Step 1: Get challenge token (setup mode)
         if (!_aTfaChallengeToken) {
-            const { httpsCallable } = window.firebaseModules;
-            const initiateTFA = httpsCallable(functions, 'initiateTFA');
+            const initiateTFA = firebase.functions().httpsCallable('initiateTFA');
             const initResult  = await initiateTFA({
                 context:       'admins',
                 isSetupMode:   true,
@@ -9792,8 +9819,7 @@ window.verifyATFASetup = async function() {
         }
 
         // Step 2: Verify server-side
-        const { httpsCallable } = window.firebaseModules;
-        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP   = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: _aTfaChallengeToken,
             token: code
@@ -9801,7 +9827,7 @@ window.verifyATFASetup = async function() {
 
         if (!verifyResult.data.valid) {
             _aTfaFailCount++;
-            _aTfaChallengeToken = null; // force new challenge next attempt
+            _aTfaChallengeToken = null;
             shakeATFAOTPInputs('a-tfa-otp-inputs');
             const left = A_TFA_MAX_ATTEMPTS - _aTfaFailCount;
             document.getElementById('a-tfa-verify-error').innerHTML =
@@ -9816,8 +9842,7 @@ window.verifyATFASetup = async function() {
         _aTfaBackupCodes = generateATFABackupCodes(8);
         const hashedCodes = _aTfaBackupCodes.map(c => btoa(c));
 
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'admins', auth.currentUser.uid), {
+        await db.collection('admins').doc(auth.currentUser.uid).update({
             twoFactorEnabled:     true,
             twoFactorSecret:      _aTfaSecret,
             twoFactorBackupCodes: hashedCodes,
@@ -9907,13 +9932,11 @@ window.confirmATFADisable = async function() {
         const user = auth.currentUser;
 
         // Step 1: Re-authenticate
-        const { EmailAuthProvider, reauthenticateWithCredential } = window.firebaseModules;
-        const credential = EmailAuthProvider.credential(user.email, password);
-        await reauthenticateWithCredential(user, credential);
+        const credential = firebase.auth.EmailAuthProvider.credential(user.email, password);
+        await user.reauthenticateWithCredential(credential);
 
         // Step 2: Get challenge token (normal mode — 2FA already enabled)
-        const { httpsCallable } = window.firebaseModules;
-        const initiateTFA  = httpsCallable(functions, 'initiateTFA');
+        const initiateTFA  = firebase.functions().httpsCallable('initiateTFA');
         const initResult   = await initiateTFA({ context: 'admins' });
 
         if (!initResult.data?.challengeToken) {
@@ -9921,7 +9944,7 @@ window.confirmATFADisable = async function() {
         }
 
         // Step 3: Verify server-side
-        const verifyTOTP   = httpsCallable(functions, 'verifyTOTP');
+        const verifyTOTP   = firebase.functions().httpsCallable('verifyTOTP');
         const verifyResult = await verifyTOTP({
             challengeToken: initResult.data.challengeToken,
             token: code
@@ -9937,8 +9960,7 @@ window.confirmATFADisable = async function() {
         }
 
         // Step 4: Disable in Firestore
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'admins', user.uid), {
+        await db.collection('admins').doc(user.uid).update({
             twoFactorEnabled:     false,
             twoFactorSecret:      null,
             twoFactorBackupCodes: [],
@@ -10038,8 +10060,7 @@ async function adminResetTutor2FA(tutorId) {
     if (!confirmed) return;
 
     try {
-        const { doc, updateDoc } = window.firebaseModules;
-        await updateDoc(doc(db, 'tutors', tutorId), {
+        await db.collection('tutors').doc(tutorId).update({
             twoFactorEnabled:       false,
             twoFactorSecret:        null,
             twoFactorBackupCodes:   [],
