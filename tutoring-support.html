@@ -2303,7 +2303,7 @@ const PACKAGE_SIZES = {
 // Load all students for the dropdown
 async function loadCreditStudents() {
     try {
-        const snap = await db.collection('students').get();
+        const snap = await getDocs(collection(db, 'students'));
         creditStudents = [];
         snap.forEach(doc => {
             creditStudents.push({ id: doc.id, ...doc.data() });
@@ -2349,10 +2349,10 @@ async function onCreditStudentSelect() {
 
 async function updateBalanceDisplay(studentId) {
     try {
-        const doc = await db.collection('students').doc(studentId).get();
-        if (!doc.exists) return;
+        const snap = await getDoc(doc(db, 'students', studentId));
+        if (!snap.exists()) return;
         
-        const balances = doc.data().packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
+        const balances = snap.data().packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
         const types = ['hourly', 'bronze', 'silver', 'gold'];
         const colors = { hourly: '#dbeafe', bronze: '#fef3c7', silver: '#e0e7ff', gold: '#fefce8' };
         const textColors = { hourly: '#1e40af', bronze: '#92400e', silver: '#3730a3', gold: '#a16207' };
@@ -2433,11 +2433,12 @@ async function adjustCredits() {
     
     const btn = document.getElementById('credit-submit-btn');
     btn.disabled = true;
+    const originalHTML = btn.innerHTML;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
     
     try {
-        const studentDoc = await db.collection('students').doc(studentId).get();
-        const studentData = studentDoc.data();
+        const studentSnap = await getDoc(doc(db, 'students', studentId));
+        const studentData = studentSnap.data();
         const currentBalances = studentData.packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
         const currentBalance = currentBalances[packageType] || 0;
         
@@ -2450,13 +2451,13 @@ async function adjustCredits() {
         }
         
         // Update Firestore
-        await db.collection('students').doc(studentId).update({
+        await setDoc(doc(db, 'students', studentId), {
             [`packageBalances.${packageType}`]: newBalance,
             lastUpdated: new Date().toISOString()
-        });
+        }, { merge: true });
         
         // Log transaction
-        await db.collection('creditTransactions').add({
+        await setDoc(doc(collection(db, 'creditTransactions')), {
             studentId: studentId,
             studentName: studentData.fullName || 'Unknown',
             agentId: auth.currentUser.uid,
@@ -2491,6 +2492,7 @@ async function adjustCredits() {
         showCreditError('Error adjusting credits: ' + error.message);
     } finally {
         btn.disabled = false;
+        btn.innerHTML = originalHTML;
         onCreditActionChange();
     }
 }
@@ -2505,11 +2507,13 @@ async function loadCreditTransactions(studentId) {
     const container = document.getElementById('credit-transactions');
     
     try {
-        const snap = await db.collection('creditTransactions')
-            .where('studentId', '==', studentId)
-            .orderBy('timestamp', 'desc')
-            .limit(20)
-            .get();
+        const q = query(
+            collection(db, 'creditTransactions'),
+            where('studentId', '==', studentId),
+            orderBy('timestamp', 'desc'),
+            limit(20)
+        );
+        const snap = await getDocs(q);
         
         if (snap.empty) {
             container.innerHTML = '<div class="results-placeholder"><i class="fas fa-history"></i><p>No transactions for this student</p></div>';
@@ -2518,8 +2522,8 @@ async function loadCreditTransactions(studentId) {
         
         container.innerHTML = `
             <h4 style="color: var(--navy); margin-bottom: 12px;">Recent Transactions</h4>
-            ${snap.docs.map(doc => {
-                const t = doc.data();
+            ${snap.docs.map(d => {
+                const t = d.data();
                 const time = new Date(t.timestamp).toLocaleString('en-US', {
                     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                 });
@@ -2560,6 +2564,7 @@ function loadCreditManagement() {
     document.getElementById('credit-student-select').value = '';
     selectedCreditStudent = null;
 }
+
     
 // ════════════════════════════════════════════════════════
 // GLOBALIZE FOR INLINE ONCLICK HANDLERS
