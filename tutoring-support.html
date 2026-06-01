@@ -1935,49 +1935,52 @@ async function initSupportChat(user) {
 
 // ── Resolve contact name from both document structures ───
 async function resolveContactInfo(chat) {
+    const PLACEHOLDERS = ['tutor', 'student', 'admin support', 'admin', 'unknown'];
 
-    // ── Structure 1: admin-created (admin_tutor_... / admin_student_...) ──
-    // Has participantTypes and participantNames maps
     const userType = chat.participantTypes
         ? Object.entries(chat.participantTypes).find(([k, v]) =>
             k !== 'admin' && (v === 'student' || v === 'tutor'))
         : null;
 
-    if (userType) {
-        const contactId   = userType[0];
-        const contactType = userType[1];
-        const name        = chat.participantNames?.[contactId];
-        if (name) return { name, contactId, contactType };
+    const contactId   = userType ? userType[0] : chat.studentId || null;
+    const contactType = userType ? userType[1] : (chat.chatType === 'support_student' ? 'student' : 'student');
+
+    // Check participantNames — but reject generic placeholders
+    const storedName = contactId && chat.participantNames?.[contactId];
+    const isPlaceholder = !storedName || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
+
+    if (!isPlaceholder) {
+        return { name: storedName, contactId, contactType };
     }
 
-    // ── Structure 2: student-initiated (support_student_...) ──
-    // Has studentId + studentName as top-level fields
-    if (chat.chatType === 'support_student' && chat.studentId) {
-        const name = chat.studentName
-            || chat.participantNames?.[chat.studentId]
-            || null;
-
-        if (name) {
-            return { name, contactId: chat.studentId, contactType: 'student' };
-        }
-
-        // studentName missing — fetch from Firestore
+    // Name is missing or a placeholder — fetch real name from Firestore
+    if (contactId) {
         try {
-            const snap = await getDoc(doc(db, 'students', chat.studentId));
+            const collectionName = contactType === 'tutor' ? 'tutors' : 'students';
+            const snap = await getDoc(doc(db, collectionName, contactId));
             if (snap.exists()) {
                 const data = snap.data();
-                return {
-                    name:        data.fullName || data.name || 'Unknown Student',
-                    contactId:   chat.studentId,
-                    contactType: 'student'
-                };
+                const name = contactType === 'tutor'
+                    ? (data.personal?.fullName || data.fullName || data.name || null)
+                    : (data.fullName || data.name || null);
+                if (name) return { name, contactId, contactType };
             }
         } catch (err) {
-            console.error('Student name fetch error:', err);
+            console.error('Name fetch error:', err);
         }
-
-        return { name: 'Student', contactId: chat.studentId, contactType: 'student' };
     }
+
+    // student-initiated — try studentName field directly
+    if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
+        return { name: chat.studentName, contactId, contactType: 'student' };
+    }
+
+    return {
+        name:        contactType === 'tutor' ? 'Tutor' : 'Student',
+        contactId,
+        contactType
+    };
+}
 
     // ── Structure 3: tutor-initiated or other (support_VpeX...) ──
     // participantNames exists but no participantTypes
