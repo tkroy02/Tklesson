@@ -2203,17 +2203,20 @@ function updateChatTabBadges() {
 
 // ── Open a chat ──────────────────────────────────────────
 async function openSupportChat(chat) {
-    supportChat.currentChatId  = chat.id;
-    supportChat.currentContact = chat;
+    // Always use the freshest version from allChats, not the passed-in snapshot
+    const freshChat = supportChat.allChats.find(c => c.id === chat.id) || chat;
+    
+    supportChat.currentChatId  = freshChat.id;
+    supportChat.currentContact = freshChat;
 
     renderChatContactList();
 
     document.getElementById('chat-empty-state').style.display = 'none';
     document.getElementById('chat-active-area').style.display = 'flex';
 
-    const contactName = chat._resolvedName || 'User';
-    const contactType = chat._contactType  || 'student';
-    const isClosed    = chat.status === 'closed';
+    const contactName = freshChat._resolvedName || 'User';
+    const contactType = freshChat._contactType  || 'student';
+    const isClosed    = freshChat.status === 'closed';
     const initials    = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
     document.getElementById('active-chat-avatar').textContent      = initials;
@@ -2222,14 +2225,13 @@ async function openSupportChat(chat) {
     document.getElementById('active-chat-meta').textContent        = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
         isClosed
             ? 'Closed'
-            : chat.assignedTo
-                ? (chat.assignedTo === supportChat.agentUid
+            : freshChat.assignedTo
+                ? (freshChat.assignedTo === supportChat.agentUid
                     ? 'Claimed by you'
-                    : `Claimed by ${chat.assignedName || 'another agent'}`)
+                    : `Claimed by ${freshChat.assignedName || 'another agent'}`)
                 : 'Unclaimed'
     }`;
 
-    // Claim / Unclaim / Close buttons
     const claimBtn     = document.getElementById('claim-btn');
     const unclaimBtn   = document.getElementById('unclaim-btn');
     const closeChatBtn = document.getElementById('close-chat-btn');
@@ -2238,11 +2240,11 @@ async function openSupportChat(chat) {
         claimBtn.style.display     = 'none';
         unclaimBtn.style.display   = 'none';
         closeChatBtn.style.display = 'none';
-    } else if (!chat.assignedTo) {
+    } else if (!freshChat.assignedTo) {
         claimBtn.style.display     = 'inline-flex';
         unclaimBtn.style.display   = 'none';
         closeChatBtn.style.display = 'none';
-    } else if (chat.assignedTo === supportChat.agentUid) {
+    } else if (freshChat.assignedTo === supportChat.agentUid) {
         claimBtn.style.display     = 'none';
         unclaimBtn.style.display   = 'inline-flex';
         closeChatBtn.style.display = 'inline-flex';
@@ -2252,144 +2254,23 @@ async function openSupportChat(chat) {
         closeChatBtn.style.display = 'none';
     }
 
-    // Claimed-by banner
     const banner = document.getElementById('claimed-by-banner');
-    if (!isClosed && chat.assignedTo && chat.assignedTo !== supportChat.agentUid) {
+    if (!isClosed && freshChat.assignedTo && freshChat.assignedTo !== supportChat.agentUid) {
         banner.style.display    = 'block';
         banner.style.background = '#fff7ed';
         banner.style.color      = '#c2410c';
-        banner.textContent      = `⚠️ This chat is claimed by ${chat.assignedName || 'another agent'}`;
+        banner.textContent      = `⚠️ This chat is claimed by ${freshChat.assignedName || 'another agent'}`;
     } else if (isClosed) {
         banner.style.display    = 'block';
         banner.style.background = '#f1f5f9';
         banner.style.color      = 'var(--text-muted)';
-        banner.textContent      = `✓ This conversation was closed${chat.closedByName ? ` by ${chat.closedByName}` : ''}`;
+        banner.textContent      = `✓ This conversation was closed${freshChat.closedByName ? ` by ${freshChat.closedByName}` : ''}`;
     } else {
         banner.style.display = 'none';
     }
 
-    loadSupportMessages(chat.id);
-    await markSupportChatRead(chat.id);
-}
-
-// ── Load messages (real-time) ────────────────────────────
-function loadSupportMessages(chatId) {
-    if (supportChat.messagesUnsub) supportChat.messagesUnsub();
-
-    const container = document.getElementById('support-messages');
-    container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading...</div>';
-
-    import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js")
-        .then(({ onSnapshot, collection: col, query, orderBy }) => {
-            supportChat.messagesUnsub = onSnapshot(
-                query(col(db, 'chats', chatId, 'messages'), orderBy('timestamp', 'asc')),
-                (snap) => {
-                    if (snap.empty) {
-                        container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">No messages yet.</div>';
-                        return;
-                    }
-                    container.innerHTML = '';
-                    snap.forEach(d => {
-                        const msg    = d.data();
-                        const isSent = msg.senderId === 'admin'
-                            || msg.senderId === supportChat.agentUid
-                            || (msg.senderId && msg.senderId.startsWith('support'));
-                        const time   = msg.timestamp?.toDate
-                            ? formatChatTime(msg.timestamp.toDate())
-                            : '';
-                        const el     = document.createElement('div');
-                        el.className = isSent ? 'support-msg-sent' : 'support-msg-received';
-                        el.innerHTML = `
-                            <div>${escapeHtml(msg.text)}</div>
-                            <div class="support-msg-time">${isSent ? (msg.senderName || 'Support') + ' · ' : ''}${time}</div>`;
-                        container.appendChild(el);
-                    });
-                    container.scrollTop = container.scrollHeight;
-                },
-                (err) => {
-                    console.error('Messages listener error:', err);
-                    container.innerHTML = '<div style="color:var(--danger); text-align:center; padding:20px; font-size:0.82rem;">Error loading messages.</div>';
-                }
-            );
-        });
-}
-
-// ── Send message ─────────────────────────────────────────
-async function sendSupportMessage() {
-    const input = document.getElementById('support-chat-input');
-    const text  = input?.value.trim();
-    if (!text || !supportChat.currentChatId) return;
-
-    input.value        = '';
-    input.style.height = 'auto';
-
-    try {
-        const { addDoc, updateDoc, collection: col, doc: docRef } =
-            await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-
-        const chatRef   = docRef(db, 'chats', supportChat.currentChatId);
-        const contact   = supportChat.currentContact;
-        const contactId = contact._contactId;
-
-        await addDoc(col(db, 'chats', supportChat.currentChatId, 'messages'), {
-            text:       text,
-            senderId:   'admin',
-            senderName: supportChat.agentName,
-            timestamp:  new Date(),
-            read:       false,
-            type:       'text'
-        });
-
-        const updateData = {
-            lastMessage:   text,
-            lastMessageAt: new Date(),
-            lastMessageBy: 'admin',
-            lastUpdated:   new Date(),
-            status:        'active'
-        };
-
-        if (contactId) {
-            updateData[`unreadCounts.${contactId}`] =
-                (contact.unreadCounts?.[contactId] || 0) + 1;
-        }
-
-        await updateDoc(chatRef, updateData);
-        await logAuditAction(
-            'chat_message_sent',
-            contact._resolvedName || 'user',
-            `Message sent in chat ${supportChat.currentChatId}`
-        );
-
-    } catch (err) {
-        console.error('Send message error:', err);
-        alert('Failed to send message. Please try again.');
-    }
-}
-
-// ── Claim chat ───────────────────────────────────────────
-async function claimChat() {
-    if (!supportChat.currentChatId) return;
-
-    try {
-        const { updateDoc, doc: docRef } =
-            await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-
-        await updateDoc(docRef(db, 'chats', supportChat.currentChatId), {
-            assignedTo:   supportChat.agentUid,
-            assignedName: supportChat.agentName,
-            claimedAt:    new Date()
-        });
-
-        await logAuditAction(
-            'chat_claimed',
-            supportChat.currentContact?._resolvedName || '',
-            `Chat ${supportChat.currentChatId} claimed by ${supportChat.agentName}`
-        );
-
-    } catch (err) {
-        console.error('Claim error:', err);
-        alert('Failed to claim chat.');
-    }
+    loadSupportMessages(freshChat.id);
+    await markSupportChatRead(freshChat.id);
 }
 
 // ── Unclaim chat ─────────────────────────────────────────
@@ -2397,20 +2278,30 @@ async function unclaimChat() {
     if (!supportChat.currentChatId) return;
     if (!confirm('Release this chat back to the queue?')) return;
 
+    const chatIdToRelease = supportChat.currentChatId;
+
     try {
         const { updateDoc, doc: docRef } =
             await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
 
-        await updateDoc(docRef(db, 'chats', supportChat.currentChatId), {
+        await updateDoc(docRef(db, 'chats', chatIdToRelease), {
             assignedTo:   null,
             assignedName: null,
             claimedAt:    null
         });
 
+        // Optimistically patch local state so re-claim works on fresh data
+        const idx = supportChat.allChats.findIndex(c => c.id === chatIdToRelease);
+        if (idx !== -1) {
+            supportChat.allChats[idx].assignedTo   = null;
+            supportChat.allChats[idx].assignedName = null;
+            supportChat.allChats[idx].claimedAt    = null;
+        }
+
         await logAuditAction(
             'chat_released',
             supportChat.currentContact?._resolvedName || '',
-            `Chat ${supportChat.currentChatId} released by ${supportChat.agentName}`
+            `Chat ${chatIdToRelease} released by ${supportChat.agentName}`
         );
 
     } catch (err) {
