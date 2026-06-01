@@ -2286,6 +2286,280 @@ function escapeHtml(text) {
 // ════════════════════════════════════════════════════════
 // END SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
+
+// ====================================================
+// CREDIT MANAGEMENT (Lead Only)
+// ====================================================
+let creditStudents = [];
+let selectedCreditStudent = null;
+
+const PACKAGE_SIZES = {
+    hourly: 1,
+    bronze: 4,
+    silver: 8,
+    gold: 12
+};
+
+// Load all students for the dropdown
+async function loadCreditStudents() {
+    try {
+        const snap = await db.collection('students').get();
+        creditStudents = [];
+        snap.forEach(doc => {
+            creditStudents.push({ id: doc.id, ...doc.data() });
+        });
+        filterCreditStudents();
+    } catch (error) {
+        console.error('Error loading students:', error);
+    }
+}
+
+function filterCreditStudents() {
+    const query = document.getElementById('credit-student-search').value.toLowerCase().trim();
+    const select = document.getElementById('credit-student-select');
+    
+    const filtered = query 
+        ? creditStudents.filter(s => 
+            (s.fullName || '').toLowerCase().includes(query) ||
+            (s.email || '').toLowerCase().includes(query)
+        )
+        : creditStudents;
+    
+    select.innerHTML = '<option value="">Select a student...</option>' +
+        filtered.map(s => `<option value="${s.id}">${s.fullName || 'Unknown'} (${s.email || 'N/A'})</option>`).join('');
+}
+
+async function onCreditStudentSelect() {
+    const studentId = document.getElementById('credit-student-select').value;
+    
+    if (!studentId) {
+        document.getElementById('credit-balance-section').style.display = 'none';
+        document.getElementById('credit-add-section').style.display = 'none';
+        document.getElementById('credit-transactions').innerHTML = '';
+        selectedCreditStudent = null;
+        return;
+    }
+    
+    selectedCreditStudent = studentId;
+    await updateBalanceDisplay(studentId);
+    await loadCreditTransactions(studentId);
+    document.getElementById('credit-balance-section').style.display = 'block';
+    document.getElementById('credit-add-section').style.display = 'block';
+}
+
+async function updateBalanceDisplay(studentId) {
+    try {
+        const doc = await db.collection('students').doc(studentId).get();
+        if (!doc.exists) return;
+        
+        const balances = doc.data().packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
+        const types = ['hourly', 'bronze', 'silver', 'gold'];
+        const colors = { hourly: '#dbeafe', bronze: '#fef3c7', silver: '#e0e7ff', gold: '#fefce8' };
+        const textColors = { hourly: '#1e40af', bronze: '#92400e', silver: '#3730a3', gold: '#a16207' };
+        
+        document.getElementById('credit-balances').innerHTML = types.map(type => `
+            <div style="background: ${colors[type]}; border-radius: 10px; padding: 16px; text-align: center;">
+                <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: ${textColors[type]}; margin-bottom: 4px;">${type}</div>
+                <div style="font-size: 1.4rem; font-weight: 700; color: ${textColors[type]};">${balances[type]}</div>
+                <div style="font-size: 0.7rem; color: ${textColors[type]}; opacity: 0.7;">sessions</div>
+            </div>
+        `).join('');
+        
+        updateCreditPreview();
+    } catch (error) {
+        console.error('Error loading balances:', error);
+    }
+}
+
+function onCreditActionChange() {
+    const action = document.getElementById('credit-action').value;
+    const btn = document.getElementById('credit-submit-btn');
+    
+    if (action === 'deduct') {
+        btn.innerHTML = '<i class="fas fa-minus-circle"></i> Deduct Credits';
+        btn.style.background = 'var(--danger)';
+    } else {
+        btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add Credits';
+        btn.style.background = 'var(--navy)';
+    }
+    updateCreditPreview();
+}
+
+function updateCreditPreview() {
+    const preview = document.getElementById('credit-preview');
+    const action = document.getElementById('credit-action').value;
+    const packageType = document.getElementById('credit-package-type').value;
+    const count = parseInt(document.getElementById('credit-package-count').value) || 1;
+    const sessions = count * (PACKAGE_SIZES[packageType] || 1);
+    
+    const verb = action === 'add' ? 'Adding' : 'Deducting';
+    const color = action === 'add' ? '#166534' : '#991b1b';
+    const bg = action === 'add' ? '#f0fdf4' : '#fef2f2';
+    const border = action === 'add' ? '#bbf7d0' : '#fecaca';
+    
+    preview.style.display = 'block';
+    preview.style.background = bg;
+    preview.style.border = `1px solid ${border}`;
+    preview.style.color = color;
+    preview.innerHTML = `<strong>${verb}:</strong> ${count} × ${packageType} package${count > 1 ? 's' : ''} = <strong>${sessions} session${sessions > 1 ? 's' : ''}</strong>`;
+}
+
+async function adjustCredits() {
+    const studentId = selectedCreditStudent;
+    const action = document.getElementById('credit-action').value;
+    const packageType = document.getElementById('credit-package-type').value;
+    const count = parseInt(document.getElementById('credit-package-count').value);
+    const reason = document.getElementById('credit-reason').value.trim();
+    const errorEl = document.getElementById('credit-error');
+    
+    errorEl.style.display = 'none';
+    
+    if (!studentId) { showCreditError('Please select a student.'); return; }
+    if (!count || count < 1 || count > 100) { showCreditError('Enter a valid number of packages (1-100).'); return; }
+    if (!reason) { showCreditError('Please provide a reason for this adjustment.'); return; }
+    
+    const sessions = count * (PACKAGE_SIZES[packageType] || 1);
+    
+    // Confirm deduction
+    if (action === 'deduct') {
+        const student = creditStudents.find(s => s.id === studentId);
+        const currentBalance = student?.packageBalances?.[packageType] || 0;
+        if (sessions > currentBalance) {
+            showCreditError(`Cannot deduct ${sessions} sessions. Current ${packageType} balance is only ${currentBalance}.`);
+            return;
+        }
+        if (!confirm(`Deduct ${sessions} session${sessions > 1 ? 's' : ''} (${count} ${packageType} package${count > 1 ? 's' : ''}) from this student?\n\nReason: ${reason}`)) return;
+    }
+    
+    const btn = document.getElementById('credit-submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    
+    try {
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        const studentData = studentDoc.data();
+        const currentBalances = studentData.packageBalances || { hourly: 0, bronze: 0, silver: 0, gold: 0 };
+        const currentBalance = currentBalances[packageType] || 0;
+        
+        let newBalance;
+        if (action === 'add') {
+            newBalance = currentBalance + sessions;
+        } else {
+            newBalance = currentBalance - sessions;
+            if (newBalance < 0) newBalance = 0;
+        }
+        
+        // Update Firestore
+        await db.collection('students').doc(studentId).update({
+            [`packageBalances.${packageType}`]: newBalance,
+            lastUpdated: new Date().toISOString()
+        });
+        
+        // Log transaction
+        await db.collection('creditTransactions').add({
+            studentId: studentId,
+            studentName: studentData.fullName || 'Unknown',
+            agentId: auth.currentUser.uid,
+            agentEmail: auth.currentUser.email,
+            type: action === 'add' ? 'credit_added' : 'credit_deducted',
+            packageType: packageType,
+            packages: count,
+            sessions: sessions,
+            previousBalance: currentBalance,
+            newBalance: newBalance,
+            reason: reason,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Audit log
+        await logAuditAction(
+            action === 'add' ? 'credits_added' : 'credits_deducted',
+            studentData.fullName || studentId,
+            `${action === 'add' ? 'Added' : 'Deducted'} ${sessions} ${packageType} session${sessions > 1 ? 's' : ''} ${action === 'add' ? 'to' : 'from'} ${studentData.fullName || studentId}. Reason: ${reason}`
+        );
+        
+        // Reset form
+        document.getElementById('credit-reason').value = '';
+        document.getElementById('credit-package-count').value = '1';
+        document.getElementById('credit-preview').style.display = 'none';
+        
+        await updateBalanceDisplay(studentId);
+        await loadCreditTransactions(studentId);
+        
+    } catch (error) {
+        console.error('Credit adjustment error:', error);
+        showCreditError('Error adjusting credits: ' + error.message);
+    } finally {
+        btn.disabled = false;
+        onCreditActionChange();
+    }
+}
+
+function showCreditError(msg) {
+    const errorEl = document.getElementById('credit-error');
+    errorEl.textContent = msg;
+    errorEl.style.display = 'block';
+}
+
+async function loadCreditTransactions(studentId) {
+    const container = document.getElementById('credit-transactions');
+    
+    try {
+        const snap = await db.collection('creditTransactions')
+            .where('studentId', '==', studentId)
+            .orderBy('timestamp', 'desc')
+            .limit(20)
+            .get();
+        
+        if (snap.empty) {
+            container.innerHTML = '<div class="results-placeholder"><i class="fas fa-history"></i><p>No transactions for this student</p></div>';
+            return;
+        }
+        
+        container.innerHTML = `
+            <h4 style="color: var(--navy); margin-bottom: 12px;">Recent Transactions</h4>
+            ${snap.docs.map(doc => {
+                const t = doc.data();
+                const time = new Date(t.timestamp).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                });
+                const isAdd = t.type === 'credit_added';
+                const color = isAdd ? 'var(--success)' : 'var(--danger)';
+                const icon = isAdd ? 'fa-plus-circle' : 'fa-minus-circle';
+                const bg = isAdd ? '#f0fdf4' : '#fef2f2';
+                
+                return `
+                    <div style="background: ${bg}; border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="color: ${color}; font-weight: 600;">
+                                <i class="fas ${icon}"></i> ${isAdd ? '+' : '-'}${t.sessions} ${t.packageType} session${t.sessions > 1 ? 's' : ''}
+                            </span>
+                            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
+                                ${t.reason} — by ${t.agentEmail} on ${time}
+                            </div>
+                        </div>
+                        <span style="font-size: 0.78rem; color: var(--text-muted);">
+                            ${t.previousBalance} → ${t.newBalance}
+                        </span>
+                    </div>
+                `;
+            }).join('')}
+        `;
+    } catch (error) {
+        console.error('Error loading transactions:', error);
+        container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading transactions</p></div>';
+    }
+}
+
+// Initialize when tab is clicked
+function loadCreditManagement() {
+    loadCreditStudents();
+    document.getElementById('credit-balance-section').style.display = 'none';
+    document.getElementById('credit-add-section').style.display = 'none';
+    document.getElementById('credit-transactions').innerHTML = '';
+    document.getElementById('credit-student-select').value = '';
+    selectedCreditStudent = null;
+}
     
 // ════════════════════════════════════════════════════════
 // GLOBALIZE FOR INLINE ONCLICK HANDLERS
@@ -2312,6 +2586,11 @@ window.unclaimChat          = unclaimChat;
 window.closeActiveChat      = closeActiveChat;
 window.handleSupportTyping  = handleSupportTyping;
 window.handleSupportChatKey = handleSupportChatKey;
+window.filterCreditStudents = filterCreditStudents;
+window.onCreditStudentSelect = onCreditStudentSelect;
+window.onCreditActionChange = onCreditActionChange;
+window.updateCreditPreview = updateCreditPreview;
+window.adjustCredits = adjustCredits;
     
 </script>
 
