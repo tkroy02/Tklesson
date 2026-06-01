@@ -1173,7 +1173,6 @@
 <div id="support-typing" style="display: none; padding: 6px 16px; font-size: 0.75rem; color: var(--text-muted); font-style: italic;">
     <i class="fas fa-ellipsis-h"></i> <span id="support-typing-name"></span> is typing...
 </div>
-
         <!-- Input -->
         <div style="padding: 12px; border-top: 1px solid var(--border); background: white; display: flex; gap: 8px; align-items: flex-end;">
             <textarea id="support-chat-input"
@@ -1936,24 +1935,54 @@ async function initSupportChat(user) {
     }
 }
 
-// ── Resolve contact name from both document structures ───
+// ── Resolve contact info from any document structure ─────
 async function resolveContactInfo(chat) {
-    const userType = chat.participantTypes
-        ? Object.entries(chat.participantTypes).find(([k, v]) =>
-            k !== 'admin' && (v === 'student' || v === 'tutor'))
-        : null;
+    const PLACEHOLDERS = ['tutor', 'student', 'admin support', 'admin', 'unknown'];
 
-    const contactId   = userType ? userType[0] : chat.studentId || null;
-    const contactType = userType ? userType[1] : (chat.chatType === 'support_student' ? 'student' : 'student');
+    let contactId   = null;
+    let contactType = 'student';
 
-    if (contactId && chat.participantNames?.[contactId]) {
-        return {
-            name: chat.participantNames[contactId],
-            contactId,
-            contactType
-        };
+    // Structure A: has participantTypes map (admin-created chats)
+    if (chat.participantTypes) {
+        const entry = Object.entries(chat.participantTypes).find(
+            ([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor')
+        );
+        if (entry) {
+            contactId   = entry[0];
+            contactType = entry[1];
+        }
     }
 
+    // Structure B: student-initiated (support_student_...)
+    if (!contactId && chat.studentId) {
+        contactId   = chat.studentId;
+        contactType = 'student';
+    }
+
+    // Structure C: tutor-initiated (support_VpeX...)
+    if (!contactId && chat.participants) {
+        contactId = chat.participants.find(id => id !== 'admin') || null;
+        if (contactId) {
+            contactType = (chat.chatType?.includes('tutor') || chat.id?.includes('tutor'))
+                ? 'tutor'
+                : 'student';
+        }
+    }
+
+    // Try stored name, reject placeholders
+    const storedName    = contactId ? chat.participantNames?.[contactId] : null;
+    const isPlaceholder = !storedName || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
+
+    if (!isPlaceholder) {
+        return { name: storedName, contactId, contactType };
+    }
+
+    // Try studentName field directly
+    if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
+        return { name: chat.studentName, contactId, contactType: 'student' };
+    }
+
+    // Fetch real name from Firestore
     if (contactId) {
         try {
             const collectionName = contactType === 'tutor' ? 'tutors' : 'students';
@@ -1961,12 +1990,12 @@ async function resolveContactInfo(chat) {
             if (snap.exists()) {
                 const data = snap.data();
                 const name = contactType === 'tutor'
-                    ? (data.personal?.fullName || data.fullName || 'Unknown Tutor')
-                    : (data.fullName || 'Unknown Student');
-                return { name, contactId, contactType };
+                    ? (data.personal?.fullName || data.fullName || data.name || null)
+                    : (data.fullName || data.name || null);
+                if (name) return { name, contactId, contactType };
             }
         } catch (err) {
-            console.error('Name resolution error:', err);
+            console.error('Name fetch error:', err);
         }
     }
 
@@ -1983,9 +2012,9 @@ async function enrichChats(chats) {
         const resolved = await resolveContactInfo(chat);
         return {
             ...chat,
-            _resolvedName:    resolved.name,
-            _contactId:       resolved.contactId,
-            _contactType:     resolved.contactType
+            _resolvedName:  resolved.name,
+            _contactId:     resolved.contactId,
+            _contactType:   resolved.contactType
         };
     }));
 }
@@ -1995,7 +2024,7 @@ function listenToChats() {
     if (supportChat.chatsUnsub) supportChat.chatsUnsub();
 
     import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js")
-        .then(({ onSnapshot, query, orderBy, collection: col, updateDoc, doc: docRef }) => {
+        .then(({ onSnapshot, query, orderBy, collection: col }) => {
             const chatsQuery = query(
                 col(db, 'chats'),
                 orderBy('lastMessageAt', 'desc')
@@ -2004,18 +2033,21 @@ function listenToChats() {
             supportChat.chatsUnsub = onSnapshot(chatsQuery, async (snap) => {
                 const raw = [];
 
+                // Auto-reopen closed chats when customer sends a new message
                 snap.docChanges().forEach(change => {
-                    // Auto-reopen closed chats when customer sends a new message
                     if (change.type === 'modified') {
-                        const data    = change.doc.data();
+                        const data              = change.doc.data();
                         const isCustomerMessage = data.lastMessageBy !== 'admin'
                             && data.status === 'closed'
                             && data.lastMessage;
 
                         if (isCustomerMessage) {
-                            updateDoc(docRef(db, 'chats', change.doc.id), {
-                                status: 'active'
-                            });
+                            import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js")
+                                .then(({ updateDoc, doc: docRef }) => {
+                                    updateDoc(docRef(db, 'chats', change.doc.id), {
+                                        status: 'active'
+                                    });
+                                });
                         }
                     }
                 });
@@ -2084,31 +2116,35 @@ function renderChatContactList() {
     container.innerHTML = '';
     chats.forEach(chat => {
         const isUnclaimed   = !chat.assignedTo;
-        const displayName   = chat._resolvedName  || 'Unknown';
-        const contactType   = chat._contactType   || 'student';
+        const isClosed      = chat.status === 'closed';
+        const displayName   = chat._resolvedName || 'Unknown';
+        const contactType   = chat._contactType  || 'student';
         const unread        = chat.unreadCounts?.['admin'] || 0;
-        const lastMsg       = chat.lastMessage     || 'No messages yet';
+        const lastMsg       = chat.lastMessage    || 'No messages yet';
         const lastTime      = chat.lastMessageAt
-            ? formatChatTime(chat.lastMessageAt.toDate
-                ? chat.lastMessageAt.toDate()
-                : new Date(chat.lastMessageAt))
+            ? formatChatTime(
+                chat.lastMessageAt.toDate
+                    ? chat.lastMessageAt.toDate()
+                    : new Date(chat.lastMessageAt))
             : '';
         const initials      = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-        const assignedText = chat.status === 'closed'
+        const assignedText  = isClosed
             ? 'Closed'
             : chat.assignedTo
                 ? (chat.assignedTo === uid ? 'Claimed by you' : `Claimed by ${chat.assignedName || 'agent'}`)
                 : 'Unclaimed';
 
-        const assignedColor = chat.status === 'closed'
+        const assignedColor = isClosed
             ? 'var(--text-muted)'
             : isUnclaimed ? 'var(--gold)' : 'var(--text-muted)';
 
-        const assignedIcon = chat.status === 'closed' ? 'check-circle' : isUnclaimed ? 'circle' : 'user-check';
+        const assignedIcon  = isClosed
+            ? 'check-circle'
+            : isUnclaimed ? 'circle' : 'user-check';
 
         const el = document.createElement('div');
-        el.className = `chat-contact-item${isUnclaimed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
+        el.className = `chat-contact-item${isUnclaimed && !isClosed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
         el.innerHTML = `
             <div class="chat-contact-avatar ${contactType}">${initials}</div>
             <div class="chat-contact-info">
@@ -2120,7 +2156,7 @@ function renderChatContactList() {
             </div>
             <div class="chat-contact-meta">
                 <span class="chat-time">${lastTime}</span>
-                ${unread > 0 ? `<div class="chat-unread-badge">${unread}</div>` : ''}
+                ${unread > 0 && !isClosed ? `<div class="chat-unread-badge">${unread}</div>` : ''}
             </div>`;
 
         el.addEventListener('click', () => openSupportChat(chat));
@@ -2137,8 +2173,8 @@ function updateChatTabBadges() {
     const mineBadge      = document.getElementById('mine-badge');
 
     if (unclaimedBadge) {
-        unclaimedBadge.textContent    = unclaimed.length;
-        unclaimedBadge.style.display  = unclaimed.length > 0 ? 'flex' : 'none';
+        unclaimedBadge.textContent   = unclaimed.length;
+        unclaimedBadge.style.display = unclaimed.length > 0 ? 'flex' : 'none';
     }
     if (mineBadge) {
         const unreadMine = mine.reduce((sum, c) => sum + (c.unreadCounts?.['admin'] || 0), 0);
@@ -2159,47 +2195,57 @@ async function openSupportChat(chat) {
 
     const contactName = chat._resolvedName || 'User';
     const contactType = chat._contactType  || 'student';
+    const isClosed    = chat.status === 'closed';
     const initials    = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-    document.getElementById('active-chat-avatar').textContent       = initials;
-    document.getElementById('active-chat-avatar').style.background  = contactType === 'tutor' ? '#065f46' : '#1e40af';
-    document.getElementById('active-chat-name').textContent         = contactName;
-    document.getElementById('active-chat-meta').textContent         = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
-        chat.assignedTo
-            ? (chat.assignedTo === supportChat.agentUid
-                ? 'Claimed by you'
-                : `Claimed by ${chat.assignedName || 'another agent'}`)
-            : 'Unclaimed'
+    document.getElementById('active-chat-avatar').textContent      = initials;
+    document.getElementById('active-chat-avatar').style.background = contactType === 'tutor' ? '#065f46' : '#1e40af';
+    document.getElementById('active-chat-name').textContent        = contactName;
+    document.getElementById('active-chat-meta').textContent        = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
+        isClosed
+            ? 'Closed'
+            : chat.assignedTo
+                ? (chat.assignedTo === supportChat.agentUid
+                    ? 'Claimed by you'
+                    : `Claimed by ${chat.assignedName || 'another agent'}`)
+                : 'Unclaimed'
     }`;
 
-    // Claim/unclaim buttons
-    const claimBtn   = document.getElementById('claim-btn');
-    const unclaimBtn = document.getElementById('unclaim-btn');
-
-    if (!chat.assignedTo) {
-        claimBtn.style.display   = 'inline-flex';
-        unclaimBtn.style.display = 'none';
-    } else if (chat.assignedTo === supportChat.agentUid) {
-        claimBtn.style.display   = 'none';
-        unclaimBtn.style.display = 'inline-flex';
-    } else {
-        claimBtn.style.display   = 'none';
-        unclaimBtn.style.display = 'none';
-    }
-
-    // Close button
+    // Claim / Unclaim / Close buttons
+    const claimBtn     = document.getElementById('claim-btn');
+    const unclaimBtn   = document.getElementById('unclaim-btn');
     const closeChatBtn = document.getElementById('close-chat-btn');
-    if (closeChatBtn) {
-        closeChatBtn.style.display = chat.status === 'closed' ? 'none' : 'inline-flex';
+
+    if (isClosed) {
+        claimBtn.style.display     = 'none';
+        unclaimBtn.style.display   = 'none';
+        closeChatBtn.style.display = 'none';
+    } else if (!chat.assignedTo) {
+        claimBtn.style.display     = 'inline-flex';
+        unclaimBtn.style.display   = 'none';
+        closeChatBtn.style.display = 'none';
+    } else if (chat.assignedTo === supportChat.agentUid) {
+        claimBtn.style.display     = 'none';
+        unclaimBtn.style.display   = 'inline-flex';
+        closeChatBtn.style.display = 'inline-flex';
+    } else {
+        claimBtn.style.display     = 'none';
+        unclaimBtn.style.display   = 'none';
+        closeChatBtn.style.display = 'none';
     }
 
     // Claimed-by banner
     const banner = document.getElementById('claimed-by-banner');
-    if (chat.assignedTo && chat.assignedTo !== supportChat.agentUid) {
+    if (!isClosed && chat.assignedTo && chat.assignedTo !== supportChat.agentUid) {
         banner.style.display    = 'block';
         banner.style.background = '#fff7ed';
         banner.style.color      = '#c2410c';
         banner.textContent      = `⚠️ This chat is claimed by ${chat.assignedName || 'another agent'}`;
+    } else if (isClosed) {
+        banner.style.display    = 'block';
+        banner.style.background = '#f1f5f9';
+        banner.style.color      = 'var(--text-muted)';
+        banner.textContent      = `✓ This conversation was closed${chat.closedByName ? ` by ${chat.closedByName}` : ''}`;
     } else {
         banner.style.display = 'none';
     }
@@ -2281,7 +2327,7 @@ async function sendSupportMessage() {
             lastMessageAt: new Date(),
             lastMessageBy: 'admin',
             lastUpdated:   new Date(),
-            status:        'active'
+            status:        'active'   // auto-reopen if closed
         };
 
         if (contactId) {
@@ -2355,7 +2401,7 @@ async function unclaimChat() {
     }
 }
 
-// ── Close chat ───────────────────────────────────────────
+// ── Close conversation ───────────────────────────────────
 async function closeCurrentChat() {
     if (!supportChat.currentChatId) return;
     if (!confirm('Close this conversation? It will be hidden from active queues but saved in All.')) return;
@@ -2402,7 +2448,7 @@ async function markSupportChatRead(chatId) {
     }
 }
 
-// ── Close active chat ────────────────────────────────────
+// ── Close active chat (UI only) ──────────────────────────
 function closeActiveChat() {
     if (supportChat.messagesUnsub) {
         supportChat.messagesUnsub();
@@ -2464,7 +2510,6 @@ function escapeHtml(text) {
 // ════════════════════════════════════════════════════════
 // END SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
-
 // ====================================================
 // CREDIT MANAGEMENT (Lead Only) — FIXED
 // ====================================================
