@@ -1881,18 +1881,69 @@ async function initSupportChat(user) {
     }
 }
 
+// ── Resolve contact name from both document structures ───
+async function resolveContactInfo(chat) {
+    // Structure 1: admin_tutor_... / admin_student_... (admin dashboard created)
+    // Has participantTypes and participantNames maps
+    const userType = chat.participantTypes
+        ? Object.entries(chat.participantTypes).find(([k, v]) =>
+            k !== 'admin' && (v === 'student' || v === 'tutor'))
+        : null;
+
+    const contactId   = userType ? userType[0] : chat.studentId || null;
+    const contactType = userType ? userType[1] : (chat.chatType === 'support_student' ? 'student' : 'student');
+
+    // Try participantNames first (admin-created chats have this)
+    if (contactId && chat.participantNames?.[contactId]) {
+        return {
+            name: chat.participantNames[contactId],
+            contactId,
+            contactType
+        };
+    }
+
+    // Structure 2: support_student_... / support_VpeX... (student/tutor initiated)
+    // No participantNames — fetch name directly from Firestore
+    if (contactId) {
+        try {
+            const collectionName = contactType === 'tutor' ? 'tutors' : 'students';
+            const snap = await getDoc(doc(db, collectionName, contactId));
+            if (snap.exists()) {
+                const data = snap.data();
+                const name = contactType === 'tutor'
+                    ? (data.personal?.fullName || data.fullName || 'Unknown Tutor')
+                    : (data.fullName || 'Unknown Student');
+                return { name, contactId, contactType };
+            }
+        } catch (err) {
+            console.error('Name resolution error:', err);
+        }
+    }
+
+    // Last resort fallback
+    return {
+        name:        contactType === 'tutor' ? 'Tutor' : 'Student',
+        contactId,
+        contactType
+    };
+}
+
+// ── Enrich all chats with resolved names ─────────────────
+async function enrichChats(chats) {
+    return Promise.all(chats.map(async chat => {
+        const resolved = await resolveContactInfo(chat);
+        return {
+            ...chat,
+            _resolvedName:    resolved.name,
+            _contactId:       resolved.contactId,
+            _contactType:     resolved.contactType
+        };
+    }));
+}
+
 // ── Real-time chat list listener ─────────────────────────
 function listenToChats() {
     if (supportChat.chatsUnsub) supportChat.chatsUnsub();
-
-    // Listen to all chats where 'admin' is a participant
-    // (same structure the admin dashboard uses)
-    const { onSnapshot, collection: col, query: q, orderBy: ob } = {
-        onSnapshot: window._fbOnSnapshot,
-        collection: window._fbCollection,
-        query:      window._fbQuery,
-        orderBy:    window._fbOrderBy
-    };
 
     import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js")
         .then(({ onSnapshot, query, orderBy, collection: col }) => {
@@ -1901,15 +1952,22 @@ function listenToChats() {
                 orderBy('lastMessageAt', 'desc')
             );
 
-            supportChat.chatsUnsub = onSnapshot(chatsQuery, (snap) => {
-                supportChat.allChats = [];
+            supportChat.chatsUnsub = onSnapshot(chatsQuery, async (snap) => {
+                const raw = [];
                 snap.forEach(d => {
                     const data = d.data();
-                    // Only show chats that involve 'admin' (student/tutor initiated)
-                    if (data.participants && data.participants.includes('admin')) {
-                        supportChat.allChats.push({ id: d.id, ...data });
+                    // Catch both document structures:
+                    // 1. admin-created: participants array contains 'admin'
+                    // 2. student/tutor-initiated: chatType is 'support_student'
+                    if (
+                        (data.participants && data.participants.includes('admin')) ||
+                        data.chatType === 'support_student'
+                    ) {
+                        raw.push({ id: d.id, ...data });
                     }
                 });
+
+                supportChat.allChats = await enrichChats(raw);
                 renderChatContactList();
                 updateChatTabBadges();
             });
@@ -1943,33 +2001,32 @@ function renderChatContactList() {
         container.innerHTML = `
             <div class="chat-empty" style="padding: 30px 20px;">
                 <i class="fas fa-inbox" style="font-size: 1.8rem; opacity: 0.2; margin-bottom: 8px;"></i>
-                <p style="font-size: 0.82rem;">${tab === 'unclaimed' ? 'No unclaimed chats' : tab === 'mine' ? 'No chats claimed yet' : 'No chats yet'}</p>
+                <p style="font-size: 0.82rem;">${
+                    tab === 'unclaimed' ? 'No unclaimed chats' :
+                    tab === 'mine'      ? 'No chats claimed yet' :
+                                          'No chats yet'
+                }</p>
             </div>`;
         return;
     }
 
     container.innerHTML = '';
     chats.forEach(chat => {
-        const isUnclaimed  = !chat.assignedTo;
-        const userType     = chat.participantTypes
-            ? Object.entries(chat.participantTypes).find(([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor'))
-            : null;
-        const contactType  = userType ? userType[1] : 'student';
-        const contactId    = userType ? userType[0] : null;
-        const contactName  = contactId && chat.participantNames
-            ? (chat.participantNames[contactId] || 'Unknown')
-            : (chat.studentId ? 'Student' : 'Unknown');
-
-        // Handle support_student chatType (student-initiated)
-        const displayName  = contactName;
-        const unread       = chat.unreadCounts?.['admin'] || 0;
-        const lastMsg      = chat.lastMessage || 'No messages yet';
-        const lastTime     = chat.lastMessageAt
-            ? formatChatTime(chat.lastMessageAt.toDate ? chat.lastMessageAt.toDate() : new Date(chat.lastMessageAt))
+        const isUnclaimed   = !chat.assignedTo;
+        const displayName   = chat._resolvedName  || 'Unknown';
+        const contactType   = chat._contactType   || 'student';
+        const unread        = chat.unreadCounts?.['admin'] || 0;
+        const lastMsg       = chat.lastMessage     || 'No messages yet';
+        const lastTime      = chat.lastMessageAt
+            ? formatChatTime(chat.lastMessageAt.toDate
+                ? chat.lastMessageAt.toDate()
+                : new Date(chat.lastMessageAt))
             : '';
-        const initials     = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        const assignedText = chat.assignedTo
-            ? (chat.assignedTo === uid ? `Claimed by you` : `Claimed by ${chat.assignedName || 'agent'}`)
+        const initials      = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const assignedText  = chat.assignedTo
+            ? (chat.assignedTo === uid
+                ? 'Claimed by you'
+                : `Claimed by ${chat.assignedName || 'agent'}`)
             : 'Unclaimed';
 
         const el = document.createElement('div');
@@ -2002,12 +2059,12 @@ function updateChatTabBadges() {
     const mineBadge      = document.getElementById('mine-badge');
 
     if (unclaimedBadge) {
-        unclaimedBadge.textContent = unclaimed.length;
-        unclaimedBadge.style.display = unclaimed.length > 0 ? 'flex' : 'none';
+        unclaimedBadge.textContent    = unclaimed.length;
+        unclaimedBadge.style.display  = unclaimed.length > 0 ? 'flex' : 'none';
     }
     if (mineBadge) {
         const unreadMine = mine.reduce((sum, c) => sum + (c.unreadCounts?.['admin'] || 0), 0);
-        mineBadge.textContent = unreadMine;
+        mineBadge.textContent   = unreadMine;
         mineBadge.style.display = unreadMine > 0 ? 'flex' : 'none';
     }
 }
@@ -2017,28 +2074,26 @@ async function openSupportChat(chat) {
     supportChat.currentChatId  = chat.id;
     supportChat.currentContact = chat;
 
-    // Update contact list highlight
     renderChatContactList();
 
-    // Show active area, hide empty state
-    document.getElementById('chat-empty-state').style.display  = 'none';
-    document.getElementById('chat-active-area').style.display  = 'flex';
+    document.getElementById('chat-empty-state').style.display = 'none';
+    document.getElementById('chat-active-area').style.display = 'flex';
 
-    // Populate header
-    const userType  = chat.participantTypes
-        ? Object.entries(chat.participantTypes).find(([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor'))
-        : null;
-    const contactId   = userType ? userType[0] : chat.studentId;
-    const contactType = userType ? userType[1] : 'student';
-    const contactName = contactId && chat.participantNames
-        ? (chat.participantNames[contactId] || 'User')
-        : 'User';
+    // Use pre-resolved name and type
+    const contactName = chat._resolvedName || 'User';
+    const contactType = chat._contactType  || 'student';
     const initials    = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-    document.getElementById('active-chat-avatar').textContent  = initials;
-    document.getElementById('active-chat-avatar').style.background = contactType === 'tutor' ? '#065f46' : '#1e40af';
-    document.getElementById('active-chat-name').textContent    = contactName;
-    document.getElementById('active-chat-meta').textContent    = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${chat.assignedTo ? (chat.assignedTo === supportChat.agentUid ? 'Claimed by you' : `Claimed by ${chat.assignedName || 'another agent'}`) : 'Unclaimed'}`;
+    document.getElementById('active-chat-avatar').textContent       = initials;
+    document.getElementById('active-chat-avatar').style.background  = contactType === 'tutor' ? '#065f46' : '#1e40af';
+    document.getElementById('active-chat-name').textContent         = contactName;
+    document.getElementById('active-chat-meta').textContent         = `${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
+        chat.assignedTo
+            ? (chat.assignedTo === supportChat.agentUid
+                ? 'Claimed by you'
+                : `Claimed by ${chat.assignedName || 'another agent'}`)
+            : 'Unclaimed'
+    }`;
 
     // Claim/unclaim buttons
     const claimBtn   = document.getElementById('claim-btn');
@@ -2066,10 +2121,7 @@ async function openSupportChat(chat) {
         banner.style.display = 'none';
     }
 
-    // Load messages
     loadSupportMessages(chat.id);
-
-    // Mark as read
     await markSupportChatRead(chat.id);
 }
 
@@ -2091,12 +2143,18 @@ function loadSupportMessages(chatId) {
                     }
                     container.innerHTML = '';
                     snap.forEach(d => {
-                        const msg     = d.data();
-                        const isSent  = msg.senderId === 'admin' || msg.senderId === supportChat.agentUid;
-                        const time    = msg.timestamp?.toDate ? formatChatTime(msg.timestamp.toDate()) : '';
-                        const el      = document.createElement('div');
-                        el.className  = isSent ? 'support-msg-sent' : 'support-msg-received';
-                        el.innerHTML  = `
+                        const msg    = d.data();
+                        // A message is "sent" (by support side) if senderId is 'admin'
+                        // or any support agent UID or starts with 'support'
+                        const isSent = msg.senderId === 'admin'
+                            || msg.senderId === supportChat.agentUid
+                            || (msg.senderId && msg.senderId.startsWith('support'));
+                        const time   = msg.timestamp?.toDate
+                            ? formatChatTime(msg.timestamp.toDate())
+                            : '';
+                        const el     = document.createElement('div');
+                        el.className = isSent ? 'support-msg-sent' : 'support-msg-received';
+                        el.innerHTML = `
                             <div>${escapeHtml(msg.text)}</div>
                             <div class="support-msg-time">${isSent ? (msg.senderName || 'Support') + ' · ' : ''}${time}</div>`;
                         container.appendChild(el);
@@ -2117,21 +2175,18 @@ async function sendSupportMessage() {
     const text  = input?.value.trim();
     if (!text || !supportChat.currentChatId) return;
 
-    input.value = '';
+    input.value        = '';
     input.style.height = 'auto';
 
     try {
-        const { addDoc, updateDoc, collection: col, doc: docRef, serverTimestamp, increment } =
+        const { addDoc, updateDoc, collection: col, doc: docRef } =
             await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
 
-        const chatRef = docRef(db, 'chats', supportChat.currentChatId);
-        const contact = supportChat.currentContact;
-        const userType = contact.participantTypes
-            ? Object.entries(contact.participantTypes).find(([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor'))
-            : null;
-        const contactId = userType ? userType[0] : contact.studentId;
+        const chatRef   = docRef(db, 'chats', supportChat.currentChatId);
+        const contact   = supportChat.currentContact;
+        const contactId = contact._contactId;
 
-        // Add message — send as 'admin' to stay compatible with student/tutor chat
+        // Send as 'admin' to stay fully compatible with student/tutor chat
         await addDoc(col(db, 'chats', supportChat.currentChatId, 'messages'), {
             text:       text,
             senderId:   'admin',
@@ -2141,21 +2196,24 @@ async function sendSupportMessage() {
             type:       'text'
         });
 
-        // Update chat metadata
         const updateData = {
-            lastMessage:    text,
-            lastMessageAt:  new Date(),
-            lastMessageBy:  'admin',
-            lastUpdated:    new Date()
+            lastMessage:   text,
+            lastMessageAt: new Date(),
+            lastMessageBy: 'admin',
+            lastUpdated:   new Date()
         };
 
         if (contactId) {
-            updateData[`unreadCounts.${contactId}`] = (contact.unreadCounts?.[contactId] || 0) + 1;
+            updateData[`unreadCounts.${contactId}`] =
+                (contact.unreadCounts?.[contactId] || 0) + 1;
         }
 
         await updateDoc(chatRef, updateData);
-
-        await logAuditAction('chat_message_sent', contact.participantNames?.[contactId] || 'user', `Message sent in chat ${supportChat.currentChatId}`);
+        await logAuditAction(
+            'chat_message_sent',
+            contact._resolvedName || 'user',
+            `Message sent in chat ${supportChat.currentChatId}`
+        );
 
     } catch (err) {
         console.error('Send message error:', err);
@@ -2177,9 +2235,11 @@ async function claimChat() {
             claimedAt:    new Date()
         });
 
-        await logAuditAction('chat_claimed', supportChat.currentContact?.participantNames
-            ? Object.values(supportChat.currentContact.participantNames).find(n => n !== 'Admin Support') || ''
-            : '', `Chat ${supportChat.currentChatId} claimed by ${supportChat.agentName}`);
+        await logAuditAction(
+            'chat_claimed',
+            supportChat.currentContact?._resolvedName || '',
+            `Chat ${supportChat.currentChatId} claimed by ${supportChat.agentName}`
+        );
 
     } catch (err) {
         console.error('Claim error:', err);
@@ -2202,7 +2262,11 @@ async function unclaimChat() {
             claimedAt:    null
         });
 
-        await logAuditAction('chat_released', '', `Chat ${supportChat.currentChatId} released by ${supportChat.agentName}`);
+        await logAuditAction(
+            'chat_released',
+            supportChat.currentContact?._resolvedName || '',
+            `Chat ${supportChat.currentChatId} released by ${supportChat.agentName}`
+        );
 
     } catch (err) {
         console.error('Unclaim error:', err);
