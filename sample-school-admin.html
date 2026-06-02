@@ -57,6 +57,9 @@
             min-height: 100vh;
         }
 
+        body { display: none; }
+        body.auth-ready { display: block; }
+        
         /* Sidebar Styles */
         .sidebar {
             width: 280px;
@@ -1633,58 +1636,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, fetchSignInMethodsForEmail, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
-
-        // Firebase configuration
-        const firebaseConfig = {
-            apiKey: "AIzaSyDq9F28x6D4ivUJoT3ycHRlU_c-YNctFtE",
-            authDomain: "email-notifications-1c77b.firebaseapp.com",
-            projectId: "email-notifications-1c77b",
-            storageBucket: "email-notifications-1c77b.firebasestorage.app",
-            messagingSenderId: "272046681025",
-            appId: "1:272046681025:web:e0aff95e41caa65c6d1d40"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        // Secondary auth for creating users without logging out admin
-        let secondaryApp = null;
-        let secondaryAuth = null;
-
-        function getSecondaryAuth() {
-            if (!secondaryApp) {
-                secondaryApp = initializeApp(firebaseConfig, 'secondary');
-                secondaryAuth = getAuth(secondaryApp);
-            }
-            return secondaryAuth;
-        }
-
-        async function cleanupSecondaryApp() {
-            if (secondaryApp) {
-                try {
-                    await secondaryApp.delete();
-                } catch (e) {
-                    console.log('Cleanup error:', e);
-                }
-                secondaryApp = null;
-                secondaryAuth = null;
-            }
-        }
-
-        const schoolId = sessionStorage.getItem('schoolId');
-        const userRole = sessionStorage.getItem('userRole');
-
-        if (!schoolId || userRole !== 'admin') {
-            window.location.href = 'school-hub.html';
-        }
-
-        let currentSelectedRole = 'student';
-
-        // Toggle mobile sidebar
-        window.toggleSidebar = function() {
-            document.getElementById('sidebar').classList.toggle('open');
-        };
+        import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
 // Show page function
 window.showPage = function(pageId, element = null) {
@@ -1710,6 +1662,53 @@ window.showPage = function(pageId, element = null) {
     
     document.getElementById('sidebar').classList.remove('open');
 };
+        
+        // Firebase configuration
+     const firebaseConfig = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig')
+    .then(r => r.json());
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        window.auth = auth; window.db = db;
+        
+        // Secondary auth for creating users without logging out admin
+        let secondaryApp = null;
+        let secondaryAuth = null;
+
+        function getSecondaryAuth() {
+    if (!secondaryApp) {
+        secondaryApp = initializeApp(firebaseConfig, 'secondary');
+        secondaryAuth = getAuth(secondaryApp);
+    }
+    return secondaryAuth;
+}
+
+        async function cleanupSecondaryApp() {
+            if (secondaryApp) {
+                try {
+                    await secondaryApp.delete();
+                } catch (e) {
+                    console.log('Cleanup error:', e);
+                }
+                secondaryApp = null;
+                secondaryAuth = null;
+            }
+        }
+
+        const schoolId = sessionStorage.getItem('schoolId');
+        const userRole = sessionStorage.getItem('userRole');
+
+        //if (!schoolId || userRole !== 'school_admin') {
+          //  window.location.href = 'school-hub.html';
+        //}
+
+        let currentSelectedRole = 'student';
+
+        // Toggle mobile sidebar
+        window.toggleSidebar = function() {
+            document.getElementById('sidebar').classList.toggle('open');
+        };
 
         // Modal functions
         window.openAddUserModal = function(role) {
@@ -2381,44 +2380,48 @@ window.goToTeacherPage = function(page) {
                 });
             }
         };
+    
+       // Auth state listener
+let authInitialized = false;
 
-        // Auth state listener
-        onAuthStateChanged(auth, async (user) => {
-            if (!user) {
-                sessionStorage.clear();
-                window.location.href = 'school-login.html';
-                return;
-            }
-            
-            try {
-                const adminRef = doc(db, 'schooladmins', user.uid);
-                const adminSnap = await getDoc(adminRef);
-                
-                if (!adminSnap.exists() || adminSnap.data().schoolId !== schoolId) {
-                    sessionStorage.clear();
-                    await signOut(auth);
-                    window.location.href = 'school-login.html';
-                    return;
-                }
-                
-                const adminData = adminSnap.data();
-                if (adminData.displayName) {
-                    sessionStorage.setItem('adminName', adminData.displayName);
-                }
-                
-                showPage('dashboard');
-                loadOverview();
-            } catch (error) {
-                console.error('Auth state error:', error);
-                if (error.code === 'permission-denied') {
-                    alert('You do not have permission to access this school.');
-                    sessionStorage.clear();
-                    await signOut(auth);
-                    window.location.href = 'school-login.html';
-                }
-            }
-        });
+onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+        console.log('❌ No user, redirecting to login');
+        sessionStorage.clear();
+        window.location.href = 'school-login.html';
+        return;
+    }
 
+    console.log('✅ User authenticated:', user.uid);
+
+    try {
+        const adminRef = doc(db, 'schooladmins', user.uid);
+        const adminSnap = await getDoc(adminRef);
+
+        if (!adminSnap.exists() || adminSnap.data().schoolId !== schoolId) {
+            console.log('❌ School mismatch or no admin doc. Logging out.');
+            sessionStorage.clear();
+            await signOut(auth);
+            window.location.href = 'school-login.html';
+            return;
+        }
+
+        const adminData = adminSnap.data();
+        if (adminData.displayName) {
+            sessionStorage.setItem('adminName', adminData.displayName);
+        }
+
+        // ✅ Only show page after auth is fully verified
+        document.body.classList.add('auth-ready');
+        showPage('dashboard');
+        loadOverview();
+    } catch (error) {
+        console.error('Auth state error:', error);
+        sessionStorage.clear();
+        await signOut(auth);
+        window.location.href = 'school-login.html';
+    }
+});
         // Clean up secondary app on page unload
         window.addEventListener('beforeunload', () => {
             cleanupSecondaryApp();
@@ -3742,30 +3745,43 @@ window.verifyAdminTFASetup = async function() {
     setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
         'admin-tfa-verify-spinner', true);
 
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1', digits: 6, period: 30,
-        secret: OTPAuth.Secret.fromBase32(_adminTfaSecret)
-    });
-    const delta = totp.validate({ token: code, window: 1 });
-
-    if (delta === null) {
-        _adminTfaFailCount++;
-        shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
-        document.getElementById('admin-tfa-verify-error').innerHTML =
-            `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
-        document.getElementById('admin-tfa-verify-error').style.display = 'block';
-        clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
-        setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
-            'admin-tfa-verify-spinner', false);
-        return;
-    }
-
-    // Generate backup codes
-    _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
-    const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
-
     try {
+        // ✅ NEW: Initiate challenge via cloud function
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({
+            context: 'schooladmins',
+            isSetupMode: true,
+            pendingSecret: _adminTfaSecret
+        });
+
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
+            _adminTfaFailCount++;
+            shakeAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            const left = ADMIN_TFA_MAX_ATTEMPTS - _adminTfaFailCount;
+            document.getElementById('admin-tfa-verify-error').innerHTML =
+                `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} left.`;
+            document.getElementById('admin-tfa-verify-error').style.display = 'block';
+            clearAdminTFAOTPInputs('admin-tfa-otp-inputs');
+            setAdminTFABtnLoading('admin-tfa-verify-btn', 'admin-tfa-verify-btn-text',
+                'admin-tfa-verify-spinner', false);
+            return;
+        }
+
+        // Generate backup codes
+        _adminTfaBackupCodes = generateAdminTFABackupCodes(8);
+        const hashedCodes = _adminTfaBackupCodes.map(c => btoa(c));
+
         await setDoc(doc(db, 'schooladmins', auth.currentUser.uid), {
             twoFactorEnabled: true,
             twoFactorSecret: _adminTfaSecret,
@@ -3852,20 +3868,29 @@ window.confirmAdminTFADisable = async function() {
 
     try {
         const user = auth.currentUser;
+
+        // Re-authenticate with password
         const credential = EmailAuthProvider.credential(user.email, password);
         await reauthenticateWithCredential(user, credential);
 
-        const snap = await getDoc(doc(db, 'schooladmins', user.uid));
-        const storedSecret = snap.data()?.twoFactorSecret;
-        if (!storedSecret) throw new Error('No secret found');
-
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1', digits: 6, period: 30,
-            secret: OTPAuth.Secret.fromBase32(storedSecret)
+        // ✅ NEW: Initiate challenge via cloud function (no setup mode)
+        const initiateTFA = httpsCallable(functions, 'initiateTFA');
+        const initiateResult = await initiateTFA({
+            context: 'schooladmins'
         });
-        const delta = totp.validate({ token: code, window: 1 });
 
-        if (delta === null) {
+        if (!initiateResult.data?.challengeToken) {
+            throw new Error('Failed to initiate challenge');
+        }
+
+        // ✅ NEW: Verify code via cloud function
+        const verifyTOTP = httpsCallable(functions, 'verifyTOTP');
+        const verifyResult = await verifyTOTP({
+            challengeToken: initiateResult.data.challengeToken,
+            token: code
+        });
+
+        if (!verifyResult.data.valid) {
             shakeAdminTFAOTPInputs('admin-tfa-disable-otp-inputs');
             errorTxt.textContent = 'Incorrect authenticator code. Please try again.';
             errorEl.style.display = 'block';
@@ -3963,11 +3988,22 @@ function generateAdminTFABackupCodes(count) {
     }
     return codes;
 }
-
+        
 // ================================================================
 //  ADMIN — RESET USER 2FA
 // ================================================================
 window.adminReset2FA = async function(userId, userName, role) {
+    // Only super admin can reset another admin's 2FA
+    if (role === 'school_admin') {
+        alert(
+            'Cannot reset another admin\'s 2FA from here.\n\n' +
+            'If you are locked out, use one of your backup codes to sign in, then disable 2FA from Settings.\n\n' +
+            'If you lost your backup codes, contact Tklesson admin for assistance.'
+        );
+        return;
+    }
+
+    // ── Confirmation ──
     const confirmed = confirm(
         `Reset 2FA for ${userName}?\n\n` +
         `This will disable two-factor authentication for this ${role}. ` +
@@ -3989,12 +4025,11 @@ window.adminReset2FA = async function(userId, userName, role) {
         }, { merge: true });
 
         // Update local array so the shield icon updates immediately
-        // without a full reload
         if (role === 'student') {
             const student = allStudents.find(s => s.id === userId);
             if (student) student.twoFactorEnabled = false;
             renderStudentPage();
-        } else {
+        } else if (role === 'teacher') {
             const teacher = allTeachers.find(t => t.id === userId);
             if (teacher) teacher.twoFactorEnabled = false;
             renderTeacherPage();
@@ -4437,32 +4472,6 @@ window.openCustomerPortal = async function() {
         alert('Error opening billing portal: ' + error.message);
     }
 };
-
-function showPage(pageId) {
-    // Hide all pages
-    document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
-    
-    // Show the target page
-    const targetPage = document.getElementById(pageId);
-    if (targetPage) targetPage.classList.add('active');
-    
-    // Highlight the corresponding nav link
-    document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
-    const navLink = document.querySelector(`[data-page="${pageId}"]`);
-    if (navLink) navLink.classList.add('active');
-    
-    // Load page-specific data
-    if (pageId === 'dashboard') { loadOverview(); loadActivityFeed(); }
-    if (pageId === 'students') loadStudents();
-    if (pageId === 'teachers') loadTeachers();
-    if (pageId === 'subscription') loadSubscription();
-    if (pageId === 'courses') loadAllCourses();
-    if (pageId === 'enrolments') loadAllEnrolments();
-    if (pageId === 'gradebooks') loadGradebookTeachers();
-    if (pageId === 'assignments-log') loadAssignmentLog();
-    if (pageId === 'quiz-monitor') loadQuizMonitorStudents();
-    if (pageId === 'settings') { loadSchoolSettings(); loadAdminSecuritySettings(); }
-}
         
     </script>
 </body>
