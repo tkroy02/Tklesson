@@ -1935,6 +1935,7 @@ window.showPage = function(pageId, element = null) {
     loadSchoolSettings();
     loadAdminSecuritySettings();
     loadExportStudents()
+    loadRCStudents();       
 }
     
     document.getElementById('sidebar').classList.remove('open');
@@ -5312,8 +5313,366 @@ function h(val) {
         .replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-        
-        
+
+// ================================================================
+//  REPORT CARD EXPORT
+// ================================================================
+
+let rcStudentCache = [];
+
+async function loadRCStudents() {
+    const select = document.getElementById('rc-student-select');
+    if (!select) return;
+    try {
+        if (rcStudentCache.length === 0) {
+            const q = query(
+                collection(db, `schools/${schoolId}/users`),
+                where('role', '==', 'student')
+            );
+            const snap = await getDocs(q);
+            rcStudentCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        }
+        select.innerHTML = '<option value="">-- Select a student --</option>' +
+            rcStudentCache
+                .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''))
+                .map(s => `<option value="${s.id}">${s.displayName || 'Unknown'} (${s.email || ''})</option>`)
+                .join('');
+    } catch (err) {
+        console.error('RC student load error:', err);
+    }
+}
+
+window.onRCStudentChange = function() {
+    const val = document.getElementById('rc-student-select').value;
+    document.getElementById('rc-period-section').style.display = val ? 'block' : 'none';
+    document.getElementById('rc-status').style.display = 'none';
+
+    // Initialize year display
+    const yearEl = document.getElementById('rc-year-display');
+    if (yearEl && !yearEl.textContent.trim()) {
+        yearEl.textContent = new Date().getFullYear();
+    }
+};
+
+window.changeRCYear = function(delta) {
+    const el = document.getElementById('rc-year-display');
+    el.textContent = (parseInt(el.textContent) || new Date().getFullYear()) + delta;
+};
+
+window.runReportCardExport = async function() {
+    const studentId = document.getElementById('rc-student-select').value;
+    const term      = document.getElementById('rc-term-select').value;
+    const year      = document.getElementById('rc-year-display').textContent.trim();
+    const format    = document.querySelector('input[name="rc-format"]:checked')?.value || 'pdf';
+
+    if (!studentId) return;
+
+    const btn = document.getElementById('rc-download-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+    showRCStatus('Fetching records...', 'info');
+
+    try {
+        // ── Student profile ──────────────────────────────────
+        const studentSnap = await getDoc(doc(db, `schools/${schoolId}/users`, studentId));
+        const studentData = studentSnap.exists() ? studentSnap.data() : {};
+        const studentName = studentData.displayName || studentData.email || studentId;
+        const gradeLevel  = studentData.gradeLevel || 'N/A';
+
+        // ── School name ──────────────────────────────────────
+        const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
+        const schoolName = schoolSnap.exists() ? (schoolSnap.data().name || schoolId) : schoolId;
+
+        // ── Gradebook records for this student/term/year ─────
+        const gradebooksSnap = await getDocs(
+            collection(db, `schools/${schoolId}/gradebooks`)
+        );
+
+        const termLabels = {
+            'fall-semester':   'Fall Semester',
+            'spring-semester': 'Spring Semester',
+            'winter-semester': 'Winter Semester',
+            'september-term':  'September Term',
+            'january-term':    'January Term',
+            'may-term':        'May Term'
+        };
+
+        const rows = [];
+        gradebooksSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data.term !== term || String(data.year) !== String(year)) return;
+            const entry = data.entries?.[studentId];
+            if (!entry) return;
+
+            const scores = [
+                entry.assessment1, entry.assessment2, entry.assessment3,
+                entry.midterm, entry.final
+            ].filter(v => v !== undefined && v !== '');
+
+            const avg = scores.length
+                ? (scores.reduce((a, b) => a + Number(b), 0) / scores.length).toFixed(1)
+                : null;
+
+            rows.push({
+                subjectName:  data.subjectName || '—',
+                assessment1:  entry.assessment1 ?? '—',
+                assessment2:  entry.assessment2 ?? '—',
+                assessment3:  entry.assessment3 ?? '—',
+                midterm:      entry.midterm     ?? '—',
+                final:        entry.final       ?? '—',
+                average:      avg || '—',
+                grade:        entry.grade       || '—',
+                comment:      entry.comment     || ''
+            });
+        });
+
+        rows.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+        // ── Overall average ──────────────────────────────────
+        const numericAvgs = rows
+            .map(r => parseFloat(r.average))
+            .filter(v => !isNaN(v));
+        const overallAvg = numericAvgs.length
+            ? (numericAvgs.reduce((a, b) => a + b, 0) / numericAvgs.length).toFixed(1)
+            : null;
+
+        // ── Audit log ────────────────────────────────────────
+        await setDoc(doc(collection(db, `schools/${schoolId}/exportAuditLog`)), {
+            exportedBy:      auth.currentUser.uid,
+            exportedByEmail: auth.currentUser.email,
+            exportType:      'report_card',
+            studentName:     studentName,
+            term:            termLabels[term],
+            year:            year,
+            format:          format,
+            timestamp:       new Date().toISOString(),
+            schoolId:        schoolId
+        });
+
+        // ── Generate ─────────────────────────────────────────
+        if (format === 'pdf') {
+            generateReportCardPDF(
+                studentName, gradeLevel, schoolName,
+                termLabels[term], year, rows, overallAvg
+            );
+        } else {
+            generateReportCardCSV(
+                studentName, gradeLevel, schoolName,
+                termLabels[term], year, rows, overallAvg
+            );
+        }
+
+        showRCStatus(
+            `Report card generated for <strong>${studentName}</strong>.`,
+            'success'
+        );
+
+    } catch (err) {
+        console.error('Report card export error:', err);
+        showRCStatus('Export failed: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-download"></i> Generate Report Card';
+    }
+};
+
+// ── PDF ──────────────────────────────────────────────────────
+function generateReportCardPDF(studentName, gradeLevel, schoolName, term, year, rows, overallAvg) {
+    const ts = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+
+    const gradeColor = (grade) => {
+        if (!grade || grade === '—') return '#718096';
+        if (grade.startsWith('A')) return '#166534';
+        if (grade.startsWith('B')) return '#1e40af';
+        if (grade.startsWith('C')) return '#854d0e';
+        return '#991b1b';
+    };
+
+    const subjectRows = rows.length === 0
+        ? '<tr><td colspan="7" style="text-align:center;padding:20px;color:#718096;font-style:italic;">No grades recorded for this term.</td></tr>'
+        : rows.map(r => `
+            <tr>
+                <td style="padding:10px 14px;">
+                    <strong>${h(r.subjectName)}</strong>
+                    ${r.comment ? `<div style="font-size:0.78rem;color:#718096;font-style:italic;margin-top:3px;">
+                        <i>"${h(r.comment)}"</i></div>` : ''}
+                </td>
+                <td style="text-align:center;padding:10px 8px;">${r.assessment1 !== '—' ? r.assessment1 + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;">${r.assessment2 !== '—' ? r.assessment2 + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;">${r.assessment3 !== '—' ? r.assessment3 + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;">${r.midterm !== '—' ? r.midterm + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;">${r.final !== '—' ? r.final + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;font-weight:700;">${r.average !== '—' ? r.average + '%' : '—'}</td>
+                <td style="text-align:center;padding:10px 8px;font-weight:800;color:${gradeColor(r.grade)};">${h(r.grade)}</td>
+            </tr>`).join('');
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Report Card — ${h(studentName)}</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: Georgia, 'Times New Roman', serif; color:#0a1628;
+           background:white; padding:40px; font-size:13px; line-height:1.6; }
+    .header { display:flex; justify-content:space-between; align-items:flex-start;
+              border-bottom:3px solid #0a1628; padding-bottom:20px; margin-bottom:6px; }
+    .header-left h1 { font-size:22px; font-weight:700; }
+    .header-left p  { font-size:12px; color:#718096; margin-top:3px; }
+    .header-right   { text-align:right; font-size:11px; color:#718096; }
+    .gold-bar { height:4px; background:linear-gradient(90deg,#d4a843,#f0d78c,#d4a843);
+                margin-bottom:24px; border-radius:2px; }
+    .student-block { display:grid; grid-template-columns:1fr 1fr 1fr;
+                     gap:16px; margin-bottom:24px;
+                     background:#f8fafc; border:1px solid #e2e8f0;
+                     border-radius:10px; padding:16px; }
+    .student-block .field-label { font-size:0.7rem; text-transform:uppercase;
+                                   letter-spacing:0.5px; color:#718096; margin-bottom:3px; }
+    .student-block .field-value { font-size:0.95rem; font-weight:700; color:#0a1628; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    thead th { background:#0a1628; color:white; padding:10px 14px;
+               text-align:left; font-size:11px; text-transform:uppercase;
+               letter-spacing:0.5px; }
+    thead th:not(:first-child) { text-align:center; }
+    tbody td { border-bottom:1px solid #e2e8f0; }
+    tbody tr:nth-child(even) td { background:#f8fafc; }
+    .overall { margin-top:20px; padding:14px 18px;
+               background:#f8fafc; border:1.5px solid #e2e8f0;
+               border-radius:10px; display:flex;
+               justify-content:space-between; align-items:center; }
+    .overall .label { font-size:0.85rem; font-weight:700; color:#0a1628; }
+    .overall .value { font-size:1.4rem; font-weight:800; color:#0a1628; }
+    .footer { margin-top:36px; padding-top:14px; border-top:1px solid #e2e8f0;
+              font-size:10px; color:#a0aec0; text-align:center; }
+    @media print {
+        body { padding:20px; }
+        thead th { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="header-left">
+        <h1>${h(schoolName)}</h1>
+        <p>Student Report Card — Confidential</p>
+    </div>
+    <div class="header-right">
+        <div>Generated: ${ts}</div>
+        <div>${term} ${year}</div>
+    </div>
+</div>
+<div class="gold-bar"></div>
+
+<div class="student-block">
+    <div>
+        <div class="field-label">Student Name</div>
+        <div class="field-value">${h(studentName)}</div>
+    </div>
+    <div>
+        <div class="field-label">Grade Level</div>
+        <div class="field-value">${h(gradeLevel)}</div>
+    </div>
+    <div>
+        <div class="field-label">Term</div>
+        <div class="field-value">${term} ${year}</div>
+    </div>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th style="min-width:160px;">Subject</th>
+            <th>Assess. 1</th>
+            <th>Assess. 2</th>
+            <th>Assess. 3</th>
+            <th>Midterm</th>
+            <th>Final</th>
+            <th>Average</th>
+            <th>Grade</th>
+        </tr>
+    </thead>
+    <tbody>${subjectRows}</tbody>
+</table>
+
+${overallAvg ? `
+<div class="overall">
+    <span class="label">Overall Average</span>
+    <span class="value">${overallAvg}%</span>
+</div>` : ''}
+
+<div class="footer">
+    This report card is an official academic record of ${h(schoolName)}.
+    Issued via Tklesson For Schools. — ${ts}
+</div>
+
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const win  = window.open(url, '_blank');
+    if (win) {
+        win.addEventListener('load', () => setTimeout(() => win.print(), 500));
+    } else {
+        triggerDownload(blob, `${sanitizeFilename(studentName)}_report_card_${term.replace(/\s/g,'_')}_${year}.html`);
+    }
+}
+
+// ── CSV ──────────────────────────────────────────────────────
+function generateReportCardCSV(studentName, gradeLevel, schoolName, term, year, rows, overallAvg) {
+    const ts = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+    const lines = [];
+
+    lines.push(`"REPORT CARD — ${esc(schoolName)}"`);
+    lines.push(`"Student: ${esc(studentName)}"`);
+    lines.push(`"Grade Level: ${esc(gradeLevel)}"`);
+    lines.push(`"Term: ${esc(term)} ${year}"`);
+    lines.push(`"Generated: ${ts}"`);
+    lines.push('');
+    lines.push('"Subject","Assessment 1","Assessment 2","Assessment 3","Midterm","Final","Average","Grade","Teacher Comment"');
+
+    if (rows.length === 0) {
+        lines.push('"No grades recorded for this term."');
+    } else {
+        rows.forEach(r => {
+            lines.push([
+                esc(r.subjectName),
+                r.assessment1 !== '—' ? r.assessment1 + '%' : '—',
+                r.assessment2 !== '—' ? r.assessment2 + '%' : '—',
+                r.assessment3 !== '—' ? r.assessment3 + '%' : '—',
+                r.midterm     !== '—' ? r.midterm     + '%' : '—',
+                r.final       !== '—' ? r.final       + '%' : '—',
+                r.average     !== '—' ? r.average     + '%' : '—',
+                esc(r.grade),
+                esc(r.comment || '')
+            ].map(v => `"${v}"`).join(','));
+        });
+        if (overallAvg) {
+            lines.push('');
+            lines.push(`"Overall Average","${overallAvg}%"`);
+        }
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    triggerDownload(blob, `${sanitizeFilename(studentName)}_report_card_${term.replace(/\s/g,'_')}_${year}.csv`);
+}
+
+// ── Status helper ────────────────────────────────────────────
+function showRCStatus(msg, type) {
+    const el = document.getElementById('rc-status');
+    const styles = {
+        info:    { bg:'#f0f9ff', border:'#bae6fd', color:'#0369a1' },
+        success: { bg:'#f0fdf4', border:'#bbf7d0', color:'#166534' },
+        error:   { bg:'#fef2f2', border:'#fecaca', color:'#dc2626' }
+    };
+    const s = styles[type] || styles.info;
+    el.innerHTML = msg;
+    el.style.cssText = `display:block; padding:10px 16px; border-radius:10px;
+        font-size:0.85rem; margin-bottom:16px;
+        background:${s.bg}; border:1.5px solid ${s.border}; color:${s.color};`;
+}
+               
     </script>
 </body>
 </html>
