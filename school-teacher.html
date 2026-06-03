@@ -1989,6 +1989,35 @@
         </div>
     </div>
 
+    <!-- ==================== STUDENT COMMENT MODAL ==================== -->
+<div id="comment-modal" class="modal">
+    <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">
+            <h3 id="comment-modal-title">Teacher Comment</h3>
+            <button class="modal-close" onclick="closeCommentModal()">&times;</button>
+        </div>
+        <div style="margin-bottom: 8px;">
+            <label style="display:block; font-size:0.85rem; font-weight:600; color:var(--text-dark); margin-bottom:6px;">
+                Comment <span style="font-weight:400; color:var(--text-muted);">(max 200 characters)</span>
+            </label>
+            <textarea id="comment-textarea" class="form-input" rows="4"
+                maxlength="200"
+                placeholder="e.g. Jane has shown great improvement this semester..."
+                style="resize: vertical; min-height: 100px; font-family: inherit;"></textarea>
+            <div style="text-align:right; font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+                <span id="comment-char-count">0</span>/200
+            </div>
+        </div>
+        <div id="comment-modal-status" style="display:none; font-size:0.82rem; padding:8px 12px; border-radius:8px; margin-bottom:8px;"></div>
+        <div class="modal-footer">
+            <button class="btn btn-outline btn-sm" onclick="closeCommentModal()">Cancel</button>
+            <button class="btn btn-primary btn-sm" id="comment-submit-btn" onclick="saveComment()">
+                <i class="fas fa-save"></i> Save Comment
+            </button>
+        </div>
+    </div>
+</div>
+
    <!-- ==================== FIREBASE SDK ==================== -->
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -3025,7 +3054,12 @@ window.loadGradebook = async function() {
 
                             return `
                                 <tr>
-                                    <td class="student-name-cell">${sname}</td>
+                                    <td class="student-name-cell">
+    <span onclick="openCommentModal('${sid}', '${sname.replace(/'/g, "\\'")}', '${subjectId}', '${term}', '${year}')"
+        style="cursor:pointer; color:var(--primary); text-decoration:underline; text-decoration-style:dotted;">
+        ${sname}
+    </span>
+</td>
                                     ${columns.map(col => {
                                         const fieldKey = col.toLowerCase().replace(/\s+/g, '');
                                         const value = entry[fieldKey] !== undefined ? entry[fieldKey] : '';
@@ -4074,7 +4108,100 @@ function generateTFABackupCodes(count) {
     }
     return codes;
 }
-        
+
+// ========== STUDENT COMMENT MODAL ==========
+let _commentContext = null;
+
+window.openCommentModal = async function(studentId, studentName, subjectId, term, year) {
+    _commentContext = { studentId, studentName, subjectId, term, year };
+
+    document.getElementById('comment-modal-title').textContent = `Comment — ${studentName}`;
+    document.getElementById('comment-modal-status').style.display = 'none';
+
+    const btn = document.getElementById('comment-submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+
+    document.getElementById('comment-modal').classList.add('active');
+
+    // Load existing comment if any
+    try {
+        const gradebookKey = `${subjectId}_${term}_${year}`;
+        const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${gradebookKey}`);
+        const snap = await getDoc(gradebookRef);
+        const existing = snap.exists()
+            ? (snap.data().entries?.[studentId]?.comment || '')
+            : '';
+
+        const textarea = document.getElementById('comment-textarea');
+        textarea.value = existing;
+        document.getElementById('comment-char-count').textContent = existing.length;
+
+        textarea.oninput = function() {
+            document.getElementById('comment-char-count').textContent = this.value.length;
+        };
+
+    } catch (err) {
+        console.error('Error loading comment:', err);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-save"></i> Save Comment';
+        document.getElementById('comment-textarea').focus();
+    }
+};
+
+window.closeCommentModal = function() {
+    document.getElementById('comment-modal').classList.remove('active');
+    document.getElementById('comment-textarea').value = '';
+    document.getElementById('comment-char-count').textContent = '0';
+    _commentContext = null;
+};
+
+window.saveComment = async function() {
+    if (!_commentContext) return;
+
+    const { studentId, subjectId, term, year } = _commentContext;
+    const comment = document.getElementById('comment-textarea').value.trim();
+    const statusEl = document.getElementById('comment-modal-status');
+    const btn = document.getElementById('comment-submit-btn');
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    statusEl.style.display = 'none';
+
+    try {
+        const gradebookKey = `${subjectId}_${term}_${year}`;
+        const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${gradebookKey}`);
+        const snap = await getDoc(gradebookRef);
+
+        const existingEntries = snap.exists() ? (snap.data().entries || {}) : {};
+        const studentEntry = existingEntries[studentId] || {};
+
+        if (comment) {
+            studentEntry.comment = comment;
+        } else {
+            delete studentEntry.comment;
+        }
+
+        existingEntries[studentId] = studentEntry;
+
+        await setDoc(gradebookRef, { entries: existingEntries }, { merge: true });
+
+        statusEl.textContent = '✓ Comment saved';
+        statusEl.style.cssText = 'display:block; font-size:0.82rem; padding:8px 12px; border-radius:8px; margin-bottom:8px; background:#f0fdf4; border:1px solid #bbf7d0; color:#166534;';
+
+        setTimeout(() => closeCommentModal(), 1000);
+
+    } catch (err) {
+        console.error('Error saving comment:', err);
+        statusEl.textContent = 'Error saving comment. Please try again.';
+        statusEl.style.cssText = 'display:block; font-size:0.82rem; padding:8px 12px; border-radius:8px; margin-bottom:8px; background:#fef2f2; border:1px solid #fecaca; color:#dc2626;';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-save"></i> Save Comment';
+    }
+};
+    
     </script>
 </body>
 </html>
