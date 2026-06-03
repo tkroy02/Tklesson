@@ -5488,15 +5488,12 @@ function generateReportCardPDF(studentName, gradeLevel, schoolName, term, year, 
         return '#991b1b';
     };
 
+    // ── Tier 1: Grades table ─────────────────────────────
     const subjectRows = rows.length === 0
-        ? '<tr><td colspan="7" style="text-align:center;padding:20px;color:#718096;font-style:italic;">No grades recorded for this term.</td></tr>'
+        ? '<tr><td colspan="8" style="text-align:center;padding:20px;color:#718096;font-style:italic;">No grades recorded for this term.</td></tr>'
         : rows.map(r => `
             <tr>
-                <td style="padding:10px 14px;">
-                    <strong>${h(r.subjectName)}</strong>
-                    ${r.comment ? `<div style="font-size:0.78rem;color:#718096;font-style:italic;margin-top:3px;">
-                        <i>"${h(r.comment)}"</i></div>` : ''}
-                </td>
+                <td style="padding:10px 14px;"><strong>${h(r.subjectName)}</strong></td>
                 <td style="text-align:center;padding:10px 8px;">${r.assessment1 !== '—' ? r.assessment1 + '%' : '—'}</td>
                 <td style="text-align:center;padding:10px 8px;">${r.assessment2 !== '—' ? r.assessment2 + '%' : '—'}</td>
                 <td style="text-align:center;padding:10px 8px;">${r.assessment3 !== '—' ? r.assessment3 + '%' : '—'}</td>
@@ -5505,6 +5502,29 @@ function generateReportCardPDF(studentName, gradeLevel, schoolName, term, year, 
                 <td style="text-align:center;padding:10px 8px;font-weight:700;">${r.average !== '—' ? r.average + '%' : '—'}</td>
                 <td style="text-align:center;padding:10px 8px;font-weight:800;color:${gradeColor(r.grade)};">${h(r.grade)}</td>
             </tr>`).join('');
+
+    // ── Tier 2: Comments (only subjects with a comment) ──
+    const commentRows = rows.filter(r => r.comment && r.comment.trim() !== '');
+    const tier2 = commentRows.length === 0 ? '' : `
+        <div style="margin-top:28px;">
+            <h3 style="font-size:13px; font-weight:700; color:#0a1628;
+                text-transform:uppercase; letter-spacing:1px;
+                border-left:4px solid #d4a843; padding-left:10px;
+                margin-bottom:16px;">Teacher Comments</h3>
+            ${commentRows.map(r => `
+                <div style="margin-bottom:14px; padding:12px 16px;
+                    background:#f8fafc; border:1px solid #e2e8f0;
+                    border-radius:8px;">
+                    <div style="font-weight:700; font-size:12px;
+                        color:#0a1628; margin-bottom:4px;">
+                        ${h(r.subjectName)}
+                    </div>
+                    <div style="font-size:12px; color:#4a5568;
+                        font-style:italic; line-height:1.6;">
+                        "${h(r.comment)}"
+                    </div>
+                </div>`).join('')}
+        </div>`;
 
     const html = `<!DOCTYPE html>
 <html>
@@ -5526,9 +5546,9 @@ function generateReportCardPDF(studentName, gradeLevel, schoolName, term, year, 
                      gap:16px; margin-bottom:24px;
                      background:#f8fafc; border:1px solid #e2e8f0;
                      border-radius:10px; padding:16px; }
-    .student-block .field-label { font-size:0.7rem; text-transform:uppercase;
-                                   letter-spacing:0.5px; color:#718096; margin-bottom:3px; }
-    .student-block .field-value { font-size:0.95rem; font-weight:700; color:#0a1628; }
+    .field-label { font-size:0.7rem; text-transform:uppercase;
+                   letter-spacing:0.5px; color:#718096; margin-bottom:3px; }
+    .field-value { font-size:0.95rem; font-weight:700; color:#0a1628; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     thead th { background:#0a1628; color:white; padding:10px 14px;
                text-align:left; font-size:11px; text-transform:uppercase;
@@ -5601,6 +5621,8 @@ ${overallAvg ? `
     <span class="value">${overallAvg}%</span>
 </div>` : ''}
 
+${tier2}
+
 <div class="footer">
     This report card is an official academic record of ${h(schoolName)}.
     Issued via Tklesson For Schools. — ${ts}
@@ -5619,18 +5641,21 @@ ${overallAvg ? `
     }
 }
 
-// ── CSV ──────────────────────────────────────────────────────
 function generateReportCardCSV(studentName, gradeLevel, schoolName, term, year, rows, overallAvg) {
     const ts = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
     const lines = [];
 
+    // ── Header ───────────────────────────────────────────
     lines.push(`"REPORT CARD — ${esc(schoolName)}"`);
     lines.push(`"Student: ${esc(studentName)}"`);
     lines.push(`"Grade Level: ${esc(gradeLevel)}"`);
     lines.push(`"Term: ${esc(term)} ${year}"`);
     lines.push(`"Generated: ${ts}"`);
     lines.push('');
-    lines.push('"Subject","Assessment 1","Assessment 2","Assessment 3","Midterm","Final","Average","Grade","Teacher Comment"');
+
+    // ── Tier 1: Grades ───────────────────────────────────
+    lines.push('"=== GRADES ==="');
+    lines.push('"Subject","Assessment 1","Assessment 2","Assessment 3","Midterm","Final","Average","Grade"');
 
     if (rows.length === 0) {
         lines.push('"No grades recorded for this term."');
@@ -5644,20 +5669,34 @@ function generateReportCardCSV(studentName, gradeLevel, schoolName, term, year, 
                 r.midterm     !== '—' ? r.midterm     + '%' : '—',
                 r.final       !== '—' ? r.final       + '%' : '—',
                 r.average     !== '—' ? r.average     + '%' : '—',
-                esc(r.grade),
-                esc(r.comment || '')
+                esc(r.grade)
             ].map(v => `"${v}"`).join(','));
         });
+
         if (overallAvg) {
             lines.push('');
             lines.push(`"Overall Average","${overallAvg}%"`);
         }
     }
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    triggerDownload(blob, `${sanitizeFilename(studentName)}_report_card_${term.replace(/\s/g,'_')}_${year}.csv`);
-}
+    // ── Tier 2: Comments ─────────────────────────────────
+    const commentRows = rows.filter(r => r.comment && r.comment.trim() !== '');
+    if (commentRows.length > 0) {
+        lines.push('');
+        lines.push('"=== TEACHER COMMENTS ==="');
+        lines.push('"Subject","Comment"');
+        commentRows.forEach(r => {
+            lines.push(`"${esc(r.subjectName)}","${esc(r.comment)}"`);
+        });
+    }
 
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    triggerDownload(
+        blob,
+        `${sanitizeFilename(studentName)}_report_card_${term.replace(/\s/g,'_')}_${year}.csv`
+    );
+}
+        
 // ── Status helper ────────────────────────────────────────────
 function showRCStatus(msg, type) {
     const el = document.getElementById('rc-status');
