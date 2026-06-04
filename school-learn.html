@@ -8352,11 +8352,17 @@ window.markNudgeRead = async function(notificationId) {
 async function loadNewAssignmentNotifications(studentUid) {
     try {
         const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
-        const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', studentUid));
+        const subjectsQuery = query(subjectsRef,
+            where('studentIds', 'array-contains', studentUid));
         const subjectsSnap = await getDocs(subjectsQuery);
         const mySubjectIds = subjectsSnap.docs.map(d => d.id);
 
         if (mySubjectIds.length === 0) return [];
+
+        // Load dismissed assignment IDs from sessionStorage
+        const dismissed = JSON.parse(
+            sessionStorage.getItem('dismissedAssignments') || '[]'
+        );
 
         let assignments = [];
         for (const subjectId of mySubjectIds) {
@@ -8366,27 +8372,48 @@ async function loadNewAssignmentNotifications(studentUid) {
             snap.docs.forEach(d => {
                 const data = d.data();
                 const deletedFor = data.deletedFor || [];
-                if (!deletedFor.includes(studentUid)) {
-                    const createdAt = data.createdAt ? new Date(data.createdAt).getTime() : 0;
-                    if (createdAt > studentLastSeen) {
-                        assignments.push({
-                            type: 'assignment',
-                            title: data.title,
-                            subjectName: data.subjectName,
-                            teacherName: data.teacherName,
-                            date: data.createdAt,
-                            assignmentId: d.id
-                        });
-                    }
+
+                // Skip if deleted for this student or already dismissed
+                if (!deletedFor.includes(studentUid) &&
+                    !dismissed.includes(d.id)) {
+                    assignments.push({
+                        type:         'assignment',
+                        id:           d.id,
+                        title:        data.title,
+                        subjectName:  data.subjectName,
+                        teacherName:  data.teacherName,
+                        date:         data.createdAt,
+                        assignmentId: d.id
+                    });
                 }
             });
         }
+
+        // Sort newest first
+        assignments.sort((a, b) => new Date(b.date) - new Date(a.date));
         return assignments;
+
     } catch (error) {
         console.error('Error loading assignment notifications:', error);
         return [];
     }
 }
+
+window.dismissAssignmentNotification = function(assignmentId) {
+    const dismissed = JSON.parse(
+        sessionStorage.getItem('dismissedAssignments') || '[]'
+    );
+    if (!dismissed.includes(assignmentId)) {
+        dismissed.push(assignmentId);
+        sessionStorage.setItem('dismissedAssignments', JSON.stringify(dismissed));
+    }
+    _activeAssignments = _activeAssignments.filter(a => a.id !== assignmentId);
+    rebuildNotificationDropdown();
+    // Navigate to assignments page
+    showPage('assignments',
+        document.querySelector('.sidebar-menu a[onclick*="assignments"]'));
+    toggleStudentNotifications();
+};
 
 function updateStudentBellBadge(count) {
     const badge = document.getElementById('student-bell-badge');
@@ -8435,13 +8462,13 @@ function updateStudentNotificationsDropdown(notifications) {
             title  = n.title;
             body   = n.message;
             action = `markNudgeRead('${n.id}')`;
-        } else {
-            icon = 'fa-paper-plane';
-            color = 'var(--accent)';
-            title = 'New Assignment';
-            body = `<strong>${n.title}</strong> from ${n.teacherName} in <strong>${n.subjectName}</strong>`;
-            action = `showPage('assignments', document.querySelector('.sidebar-menu a[onclick*=\"assignments\"]')); toggleStudentNotifications();`;
-        }
+        } else if (n.type === 'assignment') {
+    icon   = 'fa-paper-plane';
+    color  = 'var(--accent)';
+    title  = 'New Assignment';
+    body   = `<strong>${n.title}</strong> from ${n.teacherName} in <strong>${n.subjectName}</strong>`;
+    action = `dismissAssignmentNotification('${n.id}')`;
+}
 
         const date = new Date(n.date).toLocaleDateString('en-US', {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -8488,6 +8515,16 @@ window.toggleStudentNotifications = function() {
 window.markAllStudentNotificationsRead = function() {
     studentLastSeen = Date.now();
     sessionStorage.setItem('studentLastSeen', studentLastSeen.toString());
+
+    // Persist all current assignment dismissals
+    const currentDismissed = JSON.parse(
+        sessionStorage.getItem('dismissedAssignments') || '[]'
+    );
+    _activeAssignments.forEach(a => {
+        if (!currentDismissed.includes(a.id)) currentDismissed.push(a.id);
+    });
+    sessionStorage.setItem('dismissedAssignments', JSON.stringify(currentDismissed));
+
     _activeNudges      = [];
     _activeEnrolments  = [];
     _activeAssignments = [];
@@ -8520,7 +8557,7 @@ document.addEventListener('click', function(event) {
         dropdown.style.display = 'none';
     }
 });
-
+       
 // ================================================================
 //  TWO-FACTOR AUTHENTICATION (TOTP)
 //  Libraries loaded from cdnjs — otpauth + qrcode
