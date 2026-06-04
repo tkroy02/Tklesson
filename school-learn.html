@@ -8288,6 +8288,7 @@ let studentLastSeen = parseInt(sessionStorage.getItem('studentLastSeen') || '0')
 let _activeNudges = [];
 let _activeEnrolments = [];
 let _activeAssignments = [];
+let _activeAnnouncements = [];
 
 function startStudentNotificationListener() {
     const user = auth.currentUser;
@@ -8362,11 +8363,16 @@ window.dismissEnrolmentNotification = function(enrolmentId) {
     }, (err) => {
         console.error('Nudge notification listener error:', err);
     });
+
+    // Check for new announcements
+    checkNewAnnouncements();
+    
 }
 
 function rebuildNotificationDropdown() {
     const allNotifications = [
         ..._activeEnrolments,
+        ..._activeAnnouncements,
         ..._activeAssignments,
         ..._activeNudges
     ];
@@ -8494,7 +8500,6 @@ function updateStudentNotificationsDropdown(notifications) {
                 title = 'Enrolment Rejected';
                 body = `Your request for <strong>${n.subjectName}</strong> was declined`;
             }
-            
             action = `dismissEnrolmentNotification('${n.enrolmentId}')`;
             
         } else if (n.type === 'nudge') {
@@ -8503,13 +8508,21 @@ function updateStudentNotificationsDropdown(notifications) {
             title  = n.title;
             body   = n.message;
             action = `markNudgeRead('${n.id}')`;
+            
         } else if (n.type === 'assignment') {
-    icon   = 'fa-paper-plane';
-    color  = 'var(--accent)';
-    title  = 'New Assignment';
-    body   = `<strong>${n.title}</strong> from ${n.teacherName} in <strong>${n.subjectName}</strong>`;
-    action = `dismissAssignmentNotification('${n.id}')`;
-}
+            icon   = 'fa-paper-plane';
+            color  = 'var(--accent)';
+            title  = 'New Assignment';
+            body   = `<strong>${n.title}</strong> from ${n.teacherName} in <strong>${n.subjectName}</strong>`;
+            action = `dismissAssignmentNotification('${n.id}')`;
+            
+        } else if (n.type === 'announcement') {
+            icon   = 'fa-bullhorn';
+            color  = 'var(--primary)';
+            title  = n.title;
+            body   = n.message;
+            action = `dismissAnnouncementNotification('${n.id}')`;
+        }
 
         const date = new Date(n.date).toLocaleDateString('en-US', {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -8536,6 +8549,23 @@ function updateStudentNotificationsDropdown(notifications) {
     }).join('');
 }
 
+window.dismissAnnouncementNotification = function(annId) {
+    _activeAnnouncements = _activeAnnouncements
+        .filter(a => a.id !== annId);
+    rebuildNotificationDropdown();
+
+    // Navigate to announcements page
+    showPage('announcements',
+        document.querySelector('.sidebar-menu a[onclick*="announcements"]'));
+    toggleStudentNotifications();
+
+    // Update lastSeen to now
+    sessionStorage.setItem(
+        'lastAnnouncementSeen',
+        new Date().toISOString()
+    );
+};
+       
 window.toggleStudentNotifications = function() {
     const dropdown = document.getElementById('student-notifications-dropdown');
     if (!dropdown) return;
@@ -8577,6 +8607,13 @@ window.markAllStudentNotificationsRead = function() {
     sessionStorage.setItem('dismissedEnrolments',
         JSON.stringify(currentDismissedEnrolments));
 
+    // Clear announcements
+    _activeAnnouncements = [];
+    sessionStorage.setItem(
+        'lastAnnouncementSeen',
+        new Date().toISOString()
+    );
+
     _activeNudges      = [];
     _activeEnrolments  = [];
     _activeAssignments = [];
@@ -8609,6 +8646,71 @@ document.addEventListener('click', function(event) {
         dropdown.style.display = 'none';
     }
 });
+
+
+
+       // ========================================
+// 📢 ANNOUNCEMENT BELL CHECK
+// ========================================
+async function checkNewAnnouncements() {
+    const user = auth.currentUser;
+    if (!user || isAdmin()) return;
+
+    try {
+        const lastSeen = sessionStorage.getItem('lastAnnouncementSeen') || '1970-01-01T00:00:00.000Z';
+
+        // Get student's grade and subjects for filtering
+        const userSnap = await getDoc(
+            doc(db, `schools/${schoolId}/users/${user.uid}`)
+        );
+        const userData   = userSnap.exists() ? userSnap.data() : {};
+        const gradeLevel = userData.gradeLevel || null;
+
+        const subjectsSnap = await getDocs(
+            query(
+                collection(db, `schools/${schoolId}/subjects`),
+                where('studentIds', 'array-contains', user.uid)
+            )
+        );
+        const mySubjectIds = subjectsSnap.docs.map(d => d.id);
+
+        // Fetch active announcements newer than lastSeen
+        const snap = await getDocs(
+            query(
+                collection(db, `schools/${schoolId}/announcements`),
+                where('active', '==', true),
+                orderBy('createdAt', 'desc'),
+                limit(50)
+            )
+        );
+
+        const newAnns = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(a =>
+                a.createdAt > lastSeen &&
+                isAnnouncementForMe(
+                    a, user.uid, gradeLevel, mySubjectIds, 'student'
+                )
+            );
+
+        if (newAnns.length === 0) return;
+
+        // Add to active announcements store
+        _activeAnnouncements = newAnns.map(a => ({
+            type:    'announcement',
+            id:      a.id,
+            title:   a.title,
+            message: a.body,
+            date:    a.createdAt
+        }));
+
+        rebuildNotificationDropdown();
+
+    } catch (err) {
+        console.error('Announcement bell check error:', err);
+    }
+}
+       
        
 // ================================================================
 //  TWO-FACTOR AUTHENTICATION (TOTP)
