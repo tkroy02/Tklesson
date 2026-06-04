@@ -3655,11 +3655,12 @@ window.checkEnrolmentBadge = async function() {
     }
 };
 
-        // ========================================
+ // ========================================
 // 🔔 NOTIFICATION SYSTEM
 // ========================================
 
 let notificationsListener = null;
+let _teacherActiveAnnouncements = [];
 
 function startNotificationListener() {
     const user = auth.currentUser;
@@ -3684,8 +3685,123 @@ function startNotificationListener() {
     }, (error) => {
         console.error('Notification listener error:', error);
     });
+
+    // ── Check new announcements ──────────────────────────────
+checkTeacherNewAnnouncements();
+    
 }
 
+async function checkTeacherNewAnnouncements() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+        const lastSeen = sessionStorage.getItem(
+            'lastTeacherAnnouncementSeen'
+        ) || '1970-01-01T00:00:00.000Z';
+
+        const snap = await getDocs(
+            query(
+                collection(db, `schools/${schoolId}/announcements`),
+                where('active', '==', true),
+                orderBy('createdAt', 'desc'),
+                limit(50)
+            )
+        );
+
+        const newAnns = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(a =>
+                a.createdAt > lastSeen &&
+                isTeacherAnnouncementForMe(a, user.uid)
+            );
+
+        if (newAnns.length === 0) return;
+
+        _teacherActiveAnnouncements = newAnns;
+
+        // Add to bell badge count
+        const current = parseInt(
+            document.getElementById('bell-badge')?.textContent || '0'
+        );
+        updateBellBadge(current + newAnns.length);
+
+        // Prepend to notifications dropdown
+        const list = document.getElementById('notifications-list');
+        if (!list) return;
+
+        const annHTML = newAnns.map(a => {
+            const date = new Date(a.createdAt).toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+            return `
+            <div style="padding:12px 16px; border-bottom:1px solid var(--border);
+                cursor:pointer; transition:var(--transition);"
+                onclick="dismissTeacherAnnouncement('${a.id}')"
+                onmouseover="this.style.background='var(--accent-light)'"
+                onmouseout="this.style.background=''">
+                <div style="display:flex; align-items:flex-start; gap:10px;">
+                    <div style="background:rgba(11,61,145,0.1); border-radius:50%;
+                        width:32px; height:32px; display:flex; align-items:center;
+                        justify-content:center; flex-shrink:0;">
+                        <i class="fas fa-bullhorn"
+                            style="color:var(--primary); font-size:0.75rem;"></i>
+                    </div>
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:0.82rem; font-weight:600;
+                            color:var(--text-dark); margin-bottom:2px;">
+                            📢 ${a.title}
+                        </div>
+                        <div style="font-size:0.75rem; color:var(--text-gray);
+                            white-space:nowrap; overflow:hidden;
+                            text-overflow:ellipsis;">
+                            ${a.body?.substring(0, 80)}${a.body?.length > 80 ? '...' : ''}
+                        </div>
+                        <div style="font-size:0.7rem; color:var(--text-muted);
+                            margin-top:4px;">
+                            <i class="fas fa-clock"></i> ${date}
+                        </div>
+                    </div>
+                    <span style="width:8px; height:8px; background:var(--primary);
+                        border-radius:50%; flex-shrink:0; margin-top:4px;"></span>
+                </div>
+            </div>`;
+        }).join('');
+
+        const isEmpty = list.innerHTML.includes('All caught up') ||
+                        list.innerHTML.includes('No notifications');
+        list.innerHTML = annHTML + (isEmpty ? '' : list.innerHTML);
+
+    } catch (err) {
+        console.error('Teacher announcement check error:', err);
+    }
+}
+
+window.dismissTeacherAnnouncement = function(annId) {
+    _teacherActiveAnnouncements = _teacherActiveAnnouncements
+        .filter(a => a.id !== annId);
+
+    // Update badge
+    const remaining = _teacherActiveAnnouncements.length;
+    const bellBadge = document.getElementById('bell-badge');
+    const current   = parseInt(bellBadge?.textContent || '0');
+    updateBellBadge(Math.max(0, current - 1));
+
+    // Remove from DOM
+    sessionStorage.setItem(
+        'lastTeacherAnnouncementSeen',
+        new Date().toISOString()
+    );
+
+    // Navigate to announcements
+    showPage('announcements',
+        document.querySelector('.sidebar-menu a[onclick*="announcements"]'));
+
+    const dropdown = document.getElementById('notifications-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
+};
+    
 function updateBellBadge(count) {
     const badge = document.getElementById('bell-badge');
     if (!badge) return;
@@ -3753,11 +3869,15 @@ window.toggleNotifications = function() {
 };
 
 window.markAllNotificationsRead = function() {
-    // For now, just close the dropdown. Teachers manage requests from the enrolment tab.
+    _teacherActiveAnnouncements = [];
+    sessionStorage.setItem(
+        'lastTeacherAnnouncementSeen',
+        new Date().toISOString()
+    );
     const dropdown = document.getElementById('notifications-dropdown');
     if (dropdown) dropdown.style.display = 'none';
 };
-
+    
 // Close dropdown when clicking outside
 document.addEventListener('click', function(event) {
     const bell = document.getElementById('notification-bell');
