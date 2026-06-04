@@ -6028,6 +6028,7 @@ window.closePastQuestions = closePastQuestions;
 //.....................................//
 
 // Listen for authentication state changes
+// Listen for authentication state changes
 onAuthStateChanged(auth, async (user) => {
     
     // If no user is signed in, redirect to login
@@ -6036,9 +6037,6 @@ onAuthStateChanged(auth, async (user) => {
         window.location.href = 'school-login.html';
         return;
     }
-
-    // ✅ Only now reveal the page
-    document.body.classList.add('auth-ready');
     
     // Get stored user role from session
     const currentRole = sessionStorage.getItem('userRole');
@@ -6046,16 +6044,13 @@ onAuthStateChanged(auth, async (user) => {
     
     // Verify user exists in the correct Firestore collection based on role
     if (currentRole === 'school_admin') {
-        // Check admin collection
         const adminRef = doc(db, 'schooladmins', user.uid);
         const adminSnap = await getDoc(adminRef);
         
-        // Validate admin belongs to this school
         if (adminSnap.exists() && adminSnap.data().schoolId === schoolId) {
             userExists = true;
         }
     } else {
-        // Check student/user collection scoped to school
         const userRef = doc(db, `schools/${schoolId}/users/${user.uid}`);
         const userSnap = await getDoc(userRef);
         
@@ -6064,9 +6059,6 @@ onAuthStateChanged(auth, async (user) => {
         }
     }
     
-    // Load textbook units data (cached after first load)
-    await loadTextbookUnits();
-    
     // If user not found in expected collection, sign out and redirect
     if (!userExists) {
         sessionStorage.clear();
@@ -6074,18 +6066,37 @@ onAuthStateChanged(auth, async (user) => {
         window.location.href = 'school-login.html';
         return;
     }
+
+    // ── Throttled lastSeenAt update ──────────────────────────
+    const userRef = doc(db, currentRole === 'school_admin' 
+        ? 'schooladmins' 
+        : `schools/${schoolId}/users`, user.uid);
+    const userSnap = await getDoc(userRef);
+    const userData = userSnap.data();
+    const lastSeen = userData.lastSeenAt ? new Date(userData.lastSeenAt) : null;
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+    if (!lastSeen || lastSeen < oneHourAgo) {
+        updateDoc(userRef, {
+            lastSeenAt: new Date().toISOString()
+        }).catch(err => console.warn('lastSeenAt update failed:', err));
+    }
+
+    // ✅ Only now reveal the page
+    document.body.classList.add('auth-ready');
+    
+    // Load textbook units data (cached after first load)
+    await loadTextbookUnits();
     
     // User is authenticated and verified — initialize the app
     updateUserProfileDisplay(user);
     showPage('dashboard');
     
-    // Load dashboard data in parallel
     await updateDashboardStats();
     await updateRecentActivity();
     await updateMyCoursesDisplay();
     await updateAllCoursesDisplay();
     
-    // Initialize course search functionality
     setupCourseSearch();
 });
 
