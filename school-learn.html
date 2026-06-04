@@ -3837,6 +3837,9 @@ let currentQuiz = null;
 let currentQuestionIndex = 0;
 let userAnswers = [];
 let correctAnswers = 0;
+let _activeNudges     = [];
+let _activeEnrolments = [];
+let _activeAssignments = [];
 
 
 function startQuiz(type) {
@@ -8263,7 +8266,7 @@ window.deleteEnrolmentRequest = deleteEnrolmentRequest;
 // ========================================
 
 let studentNotificationsListener = null;
-let studentLastSeen = Date.now(); // track when student last checked
+let studentLastSeen = parseInt(sessionStorage.getItem('studentLastSeen') || '0');
 
 function startStudentNotificationListener() {
     const user = auth.currentUser;
@@ -8298,9 +8301,16 @@ function startStudentNotificationListener() {
                 ...assignmentNotifications
             ];
 
-            allNotifications.sort((a, b) => new Date(b.date) - new Date(a.date));
-            updateStudentBellBadge(allNotifications.length);
-            updateStudentNotificationsDropdown(allNotifications);
+            _activeEnrolments  = recentUpdates.map(e => ({
+    type:        'enrolment',
+    status:      e.status,
+    subjectName: e.subjectName,
+    studentName: e.studentName,
+    date:        e.resolvedAt || e.requestedAt,
+    enrolmentId: e.id
+}));
+_activeAssignments = assignmentNotifications;
+rebuildNotificationDropdown();
         });
     }, (error) => {
         console.error('Student notification listener error:', error);
@@ -8314,8 +8324,17 @@ function startStudentNotificationListener() {
     );
 
     onSnapshot(notifQuery, (snap) => {
-        const nudges = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        if (nudges.length === 0) return;
+    _activeNudges = snap.docs.map(d => ({ id: d.id, ...d.data() })).map(n => ({
+        type:    'nudge',
+        id:      n.id,
+        title:   n.title   || 'Notification',
+        message: n.message || '',
+        date:    n.createdAt || new Date().toISOString()
+    }));
+    rebuildNotificationDropdown();
+}, (err) => {
+    console.error('Nudge notification listener error:', err);
+});
 
         // Merge into dropdown alongside existing notifications
         const list = document.getElementById('student-notifications-list');
@@ -8383,6 +8402,9 @@ window.markNudgeRead = async function(notificationId) {
         await updateDoc(doc(db, 'notifications', notificationId), {
             isRead: true
         });
+        // Remove from local state immediately — don't wait for snapshot
+        _activeNudges = _activeNudges.filter(n => n.id !== notificationId);
+        rebuildNotificationDropdown();
     } catch (err) {
         console.error('Mark nudge read error:', err);
     }
@@ -8439,6 +8461,17 @@ function updateStudentBellBadge(count) {
     }
 }
 
+function rebuildNotificationDropdown() {
+    const all = [
+        ..._activeNudges,
+        ..._activeEnrolments,
+        ..._activeAssignments
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    updateStudentBellBadge(all.length);
+    updateStudentNotificationsDropdown(all);
+}
+       
 function updateStudentNotificationsDropdown(notifications) {
     const list = document.getElementById('student-notifications-list');
     if (!list) return;
@@ -8468,6 +8501,12 @@ function updateStudentNotificationsDropdown(notifications) {
                 body = `Your request for <strong>${n.subjectName}</strong> was declined`;
             }
             action = `showPage('enrolment', document.querySelector('.sidebar-menu a[onclick*=\"enrolment\"]')); toggleStudentNotifications();`;
+        } else if (n.type === 'nudge') {
+            icon   = 'fa-bell';
+            color  = '#ca8a04';
+            title  = n.title;
+            body   = n.message;
+            action = `markNudgeRead('${n.id}')`;
         } else {
             icon = 'fa-paper-plane';
             color = 'var(--accent)';
@@ -8507,28 +8546,38 @@ window.toggleStudentNotifications = function() {
     
     if (dropdown.style.display === 'none' || !dropdown.style.display) {
         dropdown.style.display = 'block';
-        studentLastSeen = Date.now(); // mark as seen
+        studentLastSeen = Date.now();
+        sessionStorage.setItem('studentLastSeen', Date.now().toString());
         // Re-run listener to clear badge
         if (studentNotificationsListener) {
-            // small delay to let the UI update
             setTimeout(() => startStudentNotificationListener(), 500);
         }
     } else {
         dropdown.style.display = 'none';
     }
 };
-
+       
 window.markAllStudentNotificationsRead = function() {
     studentLastSeen = Date.now();
+    sessionStorage.setItem('studentLastSeen', studentLastSeen.toString());
+    _activeNudges      = [];
+    _activeEnrolments  = [];
+    _activeAssignments = [];
+
+    // Mark all nudges as read in Firestore
+    _activeNudges.forEach(n => {
+        updateDoc(doc(db, 'notifications', n.id), { isRead: true })
+            .catch(err => console.error('Mark read error:', err));
+    });
+
     updateStudentBellBadge(0);
     const list = document.getElementById('student-notifications-list');
-    if (list) {
-        list.innerHTML = `
-            <p style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 0.85rem;">
-                <i class="fas fa-check-circle" style="display: block; font-size: 1.5rem; margin-bottom: 8px; opacity: 0.4;"></i>
-                All caught up!
-            </p>`;
-    }
+    if (list) list.innerHTML = `
+        <p style="text-align:center; padding:30px; color:var(--text-muted); font-size:0.85rem;">
+            <i class="fas fa-check-circle" style="display:block; font-size:1.5rem;
+                margin-bottom:8px; opacity:0.4;"></i>
+            All caught up!
+        </p>`;
     const dropdown = document.getElementById('student-notifications-dropdown');
     if (dropdown) dropdown.style.display = 'none';
 };
@@ -8543,7 +8592,6 @@ document.addEventListener('click', function(event) {
         dropdown.style.display = 'none';
     }
 });
-
 
 // ================================================================
 //  TWO-FACTOR AUTHENTICATION (TOTP)
