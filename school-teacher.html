@@ -1354,6 +1354,7 @@
     <li><a href="#" onclick="showPage('gradebook', this)"><i class="fas fa-table"></i> <span>Gradebook</span></a></li>
     <li><a href="#" onclick="showPage('enrolment', this)"><i class="fas fa-user-check"></i> <span>Enrolment</span></a></li>
     <li><a href="#" onclick="showPage('announcements', this)"><i class="fas fa-bullhorn"></i><span>Announcements</span></a></li>
+    <li><a href="#" onclick="showPage('calendar', this)"><i class="fas fa-calendar-alt"></i><span>Calendar</span></a></li>
     <li><a href="#" onclick="showPage('settings', this)"><i class="fas fa-cog"></i> <span>Settings</span></a></li>
     <li><a href="#" onclick="logout()"><i class="fas fa-sign-out-alt"></i> <span>Log Out</span></a></li>
 </ul>
@@ -1670,6 +1671,21 @@
             <i class="fas fa-spinner fa-spin" style="display:block;
                 font-size:2rem; margin-bottom:10px;"></i>
             Loading announcements...
+        </p>
+    </div>
+</div>
+
+<!-- ==================== CALENDAR ==================== -->
+
+<div id="calendar" class="page">
+    <div class="page-header">
+        <h1 class="page-title">School Calendar</h1>
+    </div>
+    <div id="teacher-calendar-container">
+        <p style="text-align:center; padding:40px; color:var(--text-muted);">
+            <i class="fas fa-spinner fa-spin" style="display:block;
+                font-size:2rem; margin-bottom:10px;"></i>
+            Loading calendar...
         </p>
     </div>
 </div>
@@ -2084,6 +2100,7 @@
             if (pageId === 'gradebook') loadGradebookSelector();
             if (pageId === 'settings') loadSettings();
             if (pageId === 'enrolment') loadEnrolment();
+            if (pageId === 'calendar') loadTeacherCalendar();
             if (pageId === 'announcements') loadTeacherAnnouncements();
         };
 
@@ -4419,6 +4436,163 @@ function isTeacherAnnouncementForMe(ann, uid) {
         default:             return true;
     }
 }
+
+// ========================================
+// 📅 TEACHER CALENDAR
+// ========================================
+
+let teacherCalPastOpen = false;
+
+window.loadTeacherCalendar = async function() {
+    const container = document.getElementById('teacher-calendar-container');
+    if (!container) return;
+
+    try {
+        const snap = await getDocs(
+            query(
+                collection(db, `schools/${schoolId}/calendar`),
+                orderBy('startDate', 'asc')
+            )
+        );
+
+        const today    = new Date().toISOString().split('T')[0];
+        const events   = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const upcoming = events.filter(e => e.endDate >= today);
+        const past     = events.filter(e => e.endDate < today).reverse();
+
+        const TYPES = {
+            exam:    { label:'Exam / Test',  emoji:'📝', color:'#dc2626', bg:'#fef2f2', border:'#fecaca' },
+            holiday: { label:'Holiday',      emoji:'🎉', color:'#166534', bg:'#f0fdf4', border:'#bbf7d0' },
+            break:   { label:'Break',        emoji:'☀️', color:'#1e40af', bg:'#eff6ff', border:'#bfdbfe' },
+            event:   { label:'School Event', emoji:'📅', color:'#92400e', bg:'#fffbeb', border:'#fde68a' },
+            other:   { label:'Other',        emoji:'📌', color:'#374151', bg:'#f9fafb', border:'#e5e7eb' }
+        };
+
+        function fmtDate(dateStr) {
+            if (!dateStr) return '—';
+            const [y, m, d] = dateStr.split('-');
+            return new Date(y, m - 1, d).toLocaleDateString('en-US', {
+                weekday:'short', month:'short',
+                day:'numeric', year:'numeric'
+            });
+        }
+
+        function renderEvent(e, isPast) {
+            const t       = TYPES[e.type] || TYPES.other;
+            const isSame  = e.startDate === e.endDate;
+            const isNow   = e.startDate <= today && e.endDate >= today;
+            return `
+            <div style="display:flex; gap:14px; padding:14px 0;
+                border-bottom:1px solid var(--border);
+                align-items:flex-start;
+                opacity:${isPast ? '0.6' : '1'};">
+                <div style="background:${t.bg};
+                    border:1.5px solid ${t.border};
+                    border-radius:10px; padding:8px 12px;
+                    text-align:center; min-width:70px; flex-shrink:0;">
+                    <div style="font-size:1.4rem;">${t.emoji}</div>
+                    <div style="font-size:0.65rem; font-weight:700;
+                        color:${t.color}; margin-top:2px;
+                        text-transform:uppercase;
+                        letter-spacing:0.3px;">${t.label}</div>
+                </div>
+                <div style="flex:1; min-width:0;">
+                    <div style="display:flex; align-items:center;
+                        gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+                        <strong style="font-size:0.95rem;
+                            color:var(--text-dark);">${e.title}</strong>
+                        ${isNow && !isPast
+                            ? `<span style="background:${t.bg};
+                                color:${t.color};
+                                border:1px solid ${t.border};
+                                padding:2px 8px; border-radius:50px;
+                                font-size:0.68rem; font-weight:700;">
+                                NOW
+                               </span>`
+                            : ''}
+                    </div>
+                    <div style="font-size:0.82rem;
+                        color:var(--text-muted);
+                        margin-bottom:${e.notes ? '6px' : '0'};">
+                        <i class="fas fa-calendar"
+                            style="margin-right:4px;"></i>
+                        ${isSame
+                            ? fmtDate(e.startDate)
+                            : `${fmtDate(e.startDate)} — ${fmtDate(e.endDate)}`}
+                    </div>
+                    ${e.notes
+                        ? `<div style="font-size:0.82rem;
+                            color:var(--text-gray);
+                            font-style:italic;">${e.notes}</div>`
+                        : ''}
+                </div>
+            </div>`;
+        }
+
+        let html = `
+        <div class="card" style="margin-bottom:20px;">
+            <h3 style="color:var(--primary); margin-bottom:16px;">
+                <i class="fas fa-calendar-day"
+                    style="margin-right:8px;"></i>Upcoming & Current
+            </h3>
+            ${upcoming.length === 0
+                ? `<p style="text-align:center; padding:20px;
+                    color:var(--text-muted); font-size:0.85rem;">
+                    No upcoming events scheduled.
+                   </p>`
+                : upcoming.map(e => renderEvent(e, false)).join('')
+            }
+        </div>`;
+
+        if (past.length > 0) {
+            html += `
+            <div class="card">
+                <h3 style="color:var(--primary); margin-bottom:0;
+                    display:flex; justify-content:space-between;
+                    align-items:center; cursor:pointer;"
+                    onclick="toggleTeacherCalPast()">
+                    <span>
+                        <i class="fas fa-history"
+                            style="margin-right:8px;"></i>Past Events
+                        <span style="font-size:0.78rem;
+                            color:var(--text-muted); font-weight:500;
+                            margin-left:8px;">${past.length}</span>
+                    </span>
+                    <i id="teacher-cal-past-chevron"
+                        class="fas fa-chevron-down"
+                        style="color:var(--text-muted);
+                        transition:transform 0.3s;"></i>
+                </h3>
+                <div id="teacher-cal-past-wrapper"
+                    style="max-height:0; overflow:hidden;
+                    transition:max-height 0.3s ease;">
+                    <div style="margin-top:16px;">
+                        ${past.map(e => renderEvent(e, true)).join('')}
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        container.innerHTML = html;
+
+    } catch (err) {
+        console.error('Teacher calendar error:', err);
+        container.innerHTML = `<p style="color:var(--danger);
+            text-align:center; padding:30px;">
+            Could not load calendar. Please try again.
+        </p>`;
+    }
+};
+
+window.toggleTeacherCalPast = function() {
+    teacherCalPastOpen = !teacherCalPastOpen;
+    const wrapper = document.getElementById('teacher-cal-past-wrapper');
+    const chevron = document.getElementById('teacher-cal-past-chevron');
+    if (wrapper) wrapper.style.maxHeight =
+        teacherCalPastOpen ? '600px' : '0';
+    if (chevron) chevron.style.transform =
+        teacherCalPastOpen ? 'rotate(180deg)' : 'rotate(0deg)';
+};
     
     </script>
 </body>
