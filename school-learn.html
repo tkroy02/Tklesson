@@ -8281,12 +8281,30 @@ function startStudentNotificationListener() {
     studentNotificationsListener = onSnapshot(q, (snap) => {
         const allEnrolments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         
-        const recentUpdates = allEnrolments.filter(e => {
-            const updatedAt = e.resolvedAt
-                ? new Date(e.resolvedAt).getTime()
-                : new Date(e.requestedAt).getTime();
-            return updatedAt > studentLastSeen && e.status !== 'pending';
-        });
+        const dismissed = JSON.parse(
+    sessionStorage.getItem('dismissedEnrolments') || '[]'
+);
+
+const recentUpdates = allEnrolments.filter(e =>
+    e.status !== 'pending' &&
+    !dismissed.includes(e.id)
+);
+
+window.dismissEnrolmentNotification = function(enrolmentId) {
+    const dismissed = JSON.parse(
+        sessionStorage.getItem('dismissedEnrolments') || '[]'
+    );
+    if (!dismissed.includes(enrolmentId)) {
+        dismissed.push(enrolmentId);
+        sessionStorage.setItem('dismissedEnrolments',
+            JSON.stringify(dismissed));
+    }
+    _activeEnrolments = _activeEnrolments.filter(e => e.enrolmentId !== enrolmentId);
+    rebuildNotificationDropdown();
+    showPage('enrolment',
+        document.querySelector('.sidebar-menu a[onclick*="enrolment"]'));
+    toggleStudentNotifications();
+};
 
         loadNewAssignmentNotifications(user.uid).then(assignmentNotifications => {
             _activeEnrolments = recentUpdates.map(e => ({
@@ -8455,7 +8473,9 @@ function updateStudentNotificationsDropdown(notifications) {
                 title = 'Enrolment Rejected';
                 body = `Your request for <strong>${n.subjectName}</strong> was declined`;
             }
-            action = `showPage('enrolment', document.querySelector('.sidebar-menu a[onclick*=\"enrolment\"]')); toggleStudentNotifications();`;
+            
+            action = `dismissEnrolmentNotification('${n.enrolmentId}')`;
+            
         } else if (n.type === 'nudge') {
             icon   = 'fa-bell';
             color  = '#ca8a04';
@@ -8524,6 +8544,17 @@ window.markAllStudentNotificationsRead = function() {
         if (!currentDismissed.includes(a.id)) currentDismissed.push(a.id);
     });
     sessionStorage.setItem('dismissedAssignments', JSON.stringify(currentDismissed));
+
+    // Persist all current enrolment dismissals
+    const currentDismissedEnrolments = JSON.parse(
+        sessionStorage.getItem('dismissedEnrolments') || '[]'
+    );
+    _activeEnrolments.forEach(e => {
+        if (!currentDismissedEnrolments.includes(e.enrolmentId))
+            currentDismissedEnrolments.push(e.enrolmentId);
+    });
+    sessionStorage.setItem('dismissedEnrolments',
+        JSON.stringify(currentDismissedEnrolments));
 
     _activeNudges      = [];
     _activeEnrolments  = [];
