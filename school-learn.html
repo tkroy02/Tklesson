@@ -8271,40 +8271,110 @@ function startStudentNotificationListener() {
 
     if (studentNotificationsListener) studentNotificationsListener();
 
+    // ── Existing enrolment listener ──────────────────────
     const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
     const q = query(enrolmentsRef, where('studentId', '==', user.uid));
 
     studentNotificationsListener = onSnapshot(q, (snap) => {
         const allEnrolments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         
-        // Find recently updated (last 24 hours or since last seen)
         const recentUpdates = allEnrolments.filter(e => {
-            const updatedAt = e.resolvedAt ? new Date(e.resolvedAt).getTime() : new Date(e.requestedAt).getTime();
+            const updatedAt = e.resolvedAt
+                ? new Date(e.resolvedAt).getTime()
+                : new Date(e.requestedAt).getTime();
             return updatedAt > studentLastSeen && e.status !== 'pending';
         });
 
-        // Find new assignments
         loadNewAssignmentNotifications(user.uid).then(assignmentNotifications => {
             const allNotifications = [
                 ...recentUpdates.map(e => ({
-                    type: 'enrolment',
-                    status: e.status,
+                    type:        'enrolment',
+                    status:      e.status,
                     subjectName: e.subjectName,
                     studentName: e.studentName,
-                    date: e.resolvedAt || e.requestedAt,
+                    date:        e.resolvedAt || e.requestedAt,
                     enrolmentId: e.id
                 })),
                 ...assignmentNotifications
             ];
 
-            // Sort by date, newest first
             allNotifications.sort((a, b) => new Date(b.date) - new Date(a.date));
-
             updateStudentBellBadge(allNotifications.length);
             updateStudentNotificationsDropdown(allNotifications);
         });
     }, (error) => {
         console.error('Student notification listener error:', error);
+    });
+
+    // ── NEW: Listen to notifications collection ──────────
+    const notifQuery = query(
+        collection(db, 'notifications'),
+        where('userId',  '==', user.uid),
+        where('isRead',  '==', false)
+    );
+
+    onSnapshot(notifQuery, (snap) => {
+        const nudges = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (nudges.length === 0) return;
+
+        // Merge into dropdown alongside existing notifications
+        const list = document.getElementById('student-notifications-list');
+        const bell = document.getElementById('student-bell-badge');
+
+        // Get current badge count and add nudge count
+        const currentCount = parseInt(bell?.textContent || '0');
+        updateStudentBellBadge(currentCount + nudges.length);
+
+        // Prepend nudge notifications to the dropdown
+        const existingHTML = list?.innerHTML || '';
+        const nudgeHTML = nudges.map(n => {
+            const date = n.createdAt
+                ? new Date(n.createdAt).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                  })
+                : '';
+
+            return `
+            <div style="padding:12px 16px; border-bottom:1px solid var(--border);
+                cursor:pointer; transition:var(--transition);"
+                onclick="markNudgeRead('${n.id}')"
+                onmouseover="this.style.background='var(--accent-light)'"
+                onmouseout="this.style.background=''">
+                <div style="display:flex; align-items:flex-start; gap:10px;">
+                    <div style="background:#fef9c315; border-radius:50%; width:32px;
+                        height:32px; display:flex; align-items:center;
+                        justify-content:center; flex-shrink:0;
+                        background:rgba(234,179,8,0.15);">
+                        <i class="fas fa-bell" style="color:#ca8a04; font-size:0.75rem;"></i>
+                    </div>
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:0.82rem; font-weight:600;
+                            color:var(--text-dark); margin-bottom:2px;">
+                            ${n.title || 'Notification'}
+                        </div>
+                        <div style="font-size:0.75rem; color:var(--text-gray);">
+                            ${n.message || ''}
+                        </div>
+                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:4px;">
+                            <i class="fas fa-clock"></i> ${date}
+                        </div>
+                    </div>
+                    <span style="width:8px; height:8px; background:var(--danger);
+                        border-radius:50%; flex-shrink:0; margin-top:4px;"></span>
+                </div>
+            </div>`;
+        }).join('');
+
+        // Replace empty state if present, otherwise prepend
+        if (list) {
+            const isEmpty = list.innerHTML.includes('All caught up') ||
+                            list.innerHTML.includes('No notifications');
+            list.innerHTML = nudgeHTML + (isEmpty ? '' : existingHTML);
+        }
+
+    }, (err) => {
+        console.error('Nudge notification listener error:', err);
     });
 }
 
