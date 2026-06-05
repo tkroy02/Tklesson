@@ -382,12 +382,6 @@
             background: var(--background-alt);
         }
 
-        .radio-label input:checked + span,
-        .checkbox-label input:checked + span {
-            color: var(--primary);
-            font-weight: 600;
-        }
-
         /* Buttons */
         .btn {
             display: inline-flex;
@@ -464,6 +458,24 @@
             background: #fef2f2;
             border: 1.5px solid #fecaca;
             color: #991b1b;
+        }
+
+        /* Card for review */
+        .review-card {
+            padding: 24px;
+            margin-bottom: 20px;
+            background: var(--background-light);
+            border-radius: var(--border-radius-sm);
+            border: 1px solid var(--border);
+        }
+
+        .review-card h3 {
+            margin-bottom: 12px;
+        }
+
+        .review-card p {
+            margin: 0;
+            line-height: 1.6;
         }
 
         /* Responsive */
@@ -696,19 +708,19 @@
             <h2>Review Your Application</h2>
             <p class="section-desc">Please verify all information before submitting</p>
 
-            <div class="card" style="padding:24px;margin-bottom:20px;background:var(--background-light);border-radius:var(--border-radius-sm);">
-                <h3 style="margin-bottom:12px;"><i class="fas fa-school" style="margin-right:8px;color:var(--primary);"></i>School</h3>
-                <p style="margin:0;" id="review-school"></p>
+            <div class="review-card">
+                <h3><i class="fas fa-school" style="margin-right:8px;color:var(--primary);"></i>School</h3>
+                <p id="review-school"></p>
             </div>
 
-            <div class="card" style="padding:24px;margin-bottom:20px;background:var(--background-light);border-radius:var(--border-radius-sm);">
-                <h3 style="margin-bottom:12px;"><i class="fas fa-user" style="margin-right:8px;color:var(--primary);"></i>Parent / Guardian</h3>
-                <p style="margin:0;" id="review-parent"></p>
+            <div class="review-card">
+                <h3><i class="fas fa-user" style="margin-right:8px;color:var(--primary);"></i>Parent / Guardian</h3>
+                <p id="review-parent"></p>
             </div>
 
-            <div class="card" style="padding:24px;margin-bottom:20px;background:var(--background-light);border-radius:var(--border-radius-sm);">
-                <h3 style="margin-bottom:12px;"><i class="fas fa-child" style="margin-right:8px;color:var(--primary);"></i>Student</h3>
-                <p style="margin:0;" id="review-student"></p>
+            <div class="review-card">
+                <h3><i class="fas fa-child" style="margin-right:8px;color:var(--primary);"></i>Student</h3>
+                <p id="review-student"></p>
             </div>
 
             <div class="form-actions">
@@ -741,7 +753,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import { getFirestore, collection, getDocs, setDoc, doc, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getFirestore, collection, getDocs, setDoc, doc, query, where, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
     const config = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig')
         .then(r => r.json());
@@ -753,6 +765,8 @@
     let selectedSchool = null;
     let currentStep = 1;
     let allSchools = [];
+    let submissionsToday = 0;
+    const MAX_SUBMISSIONS_PER_SESSION = 3;
 
     // ── Load schools ───────────────────────────────────────────
     async function loadSchools() {
@@ -768,18 +782,18 @@
 
     // ── Search schools ─────────────────────────────────────────
     window.searchSchools = function() {
-        const query = document.getElementById('school-search').value.toLowerCase().trim();
+        const searchQuery = document.getElementById('school-search').value.toLowerCase().trim();
         const results = document.getElementById('school-results');
 
-        if (!query) {
+        if (!searchQuery) {
             results.classList.remove('show');
             return;
         }
 
         const filtered = allSchools.filter(s =>
-            (s.name || '').toLowerCase().includes(query) ||
-            (s.city || '').toLowerCase().includes(query) ||
-            (s.country || '').toLowerCase().includes(query)
+            (s.name || '').toLowerCase().includes(searchQuery) ||
+            (s.city || '').toLowerCase().includes(searchQuery) ||
+            (s.country || '').toLowerCase().includes(searchQuery)
         ).slice(0, 8);
 
         if (filtered.length === 0) {
@@ -822,6 +836,10 @@
                 showStatus('Please fill in all required parent fields.', 'error');
                 return;
             }
+            if (!isValidEmail(email)) {
+                showStatus('Please enter a valid email address.', 'error');
+                return;
+            }
         }
         if (step === 4) {
             const sFirstName = document.getElementById('student-first-name').value.trim();
@@ -846,7 +864,6 @@
         document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
         document.getElementById(`section-${step}`).classList.add('active');
 
-        // Update progress
         for (let i = 1; i <= 4; i++) {
             const circle = document.getElementById(`step-circle-${i}`);
             const line   = document.getElementById(`step-line-${i}`);
@@ -868,6 +885,15 @@
         document.getElementById('form-status').style.display = 'none';
     }
 
+    // ── Validation ─────────────────────────────────────────────
+    function isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    }
+
+    function sanitizeInput(str) {
+        return str.replace(/<[^>]*>/g, '').trim();
+    }
+
     // ── Populate review ────────────────────────────────────────
     function populateReview() {
         document.getElementById('review-school').innerHTML = `
@@ -875,10 +901,10 @@
             <span style="color:var(--text-muted);">${selectedSchool.location}</span>
         `;
 
-        const pFirst = document.getElementById('parent-first-name').value.trim();
-        const pLast  = document.getElementById('parent-last-name').value.trim();
-        const pEmail = document.getElementById('parent-email').value.trim();
-        const pPhone = document.getElementById('parent-phone').value.trim();
+        const pFirst = sanitizeInput(document.getElementById('parent-first-name').value);
+        const pLast  = sanitizeInput(document.getElementById('parent-last-name').value);
+        const pEmail = sanitizeInput(document.getElementById('parent-email').value);
+        const pPhone = sanitizeInput(document.getElementById('parent-phone').value);
         const pRel   = document.querySelector('input[name="relationship"]:checked')?.value || '';
 
         document.getElementById('review-parent').innerHTML = `
@@ -887,13 +913,13 @@
             <span style="color:var(--text-muted);">Relationship: ${pRel.charAt(0).toUpperCase() + pRel.slice(1)}</span>
         `;
 
-        const sFirst  = document.getElementById('student-first-name').value.trim();
-        const sLast   = document.getElementById('student-last-name').value.trim();
+        const sFirst  = sanitizeInput(document.getElementById('student-first-name').value);
+        const sLast   = sanitizeInput(document.getElementById('student-last-name').value);
         const sGrade  = document.getElementById('student-grade').value;
         const sDob    = document.getElementById('student-dob').value || 'Not provided';
         const sGender = document.getElementById('student-gender').value || 'Not provided';
-        const sSchool = document.getElementById('student-current-school').value.trim() || 'Not provided';
-        const sNotes  = document.getElementById('student-notes').value.trim() || 'None';
+        const sSchool = sanitizeInput(document.getElementById('student-current-school').value) || 'Not provided';
+        const sNotes  = sanitizeInput(document.getElementById('student-notes').value) || 'None';
 
         document.getElementById('review-student').innerHTML = `
             <strong>${sFirst} ${sLast}</strong><br>
@@ -906,6 +932,13 @@
     // ── Submit ─────────────────────────────────────────────────
     window.submitApplication = async function() {
         const btn = document.getElementById('btn-submit');
+        
+        // Rate limit check
+        if (submissionsToday >= MAX_SUBMISSIONS_PER_SESSION) {
+            showStatus('You have reached the maximum number of applications for this session. Please try again later.', 'error');
+            return;
+        }
+
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
 
@@ -913,23 +946,45 @@
             const appData = {
                 schoolId: selectedSchool.id,
                 schoolName: selectedSchool.name,
-                parentFirstName: document.getElementById('parent-first-name').value.trim(),
-                parentLastName: document.getElementById('parent-last-name').value.trim(),
-                parentEmail: document.getElementById('parent-email').value.trim(),
-                parentPhone: document.getElementById('parent-phone').value.trim(),
+                parentFirstName: sanitizeInput(document.getElementById('parent-first-name').value),
+                parentLastName: sanitizeInput(document.getElementById('parent-last-name').value),
+                parentEmail: sanitizeInput(document.getElementById('parent-email').value),
+                parentPhone: sanitizeInput(document.getElementById('parent-phone').value),
                 relationship: document.querySelector('input[name="relationship"]:checked')?.value || '',
-                studentFirstName: document.getElementById('student-first-name').value.trim(),
-                studentLastName: document.getElementById('student-last-name').value.trim(),
+                studentFirstName: sanitizeInput(document.getElementById('student-first-name').value),
+                studentLastName: sanitizeInput(document.getElementById('student-last-name').value),
                 studentDOB: document.getElementById('student-dob').value || '',
                 studentGender: document.getElementById('student-gender').value || '',
                 studentGrade: document.getElementById('student-grade').value,
-                studentCurrentSchool: document.getElementById('student-current-school').value.trim() || '',
-                studentNotes: document.getElementById('student-notes').value.trim() || '',
+                studentCurrentSchool: sanitizeInput(document.getElementById('student-current-school').value) || '',
+                studentNotes: sanitizeInput(document.getElementById('student-notes').value) || '',
                 status: 'unverified',
                 submittedAt: new Date().toISOString()
             };
 
+            // Check for duplicate submissions from same email within 1 hour
+            const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+            const existingQuery = query(
+                collection(db, `schools/${selectedSchool.id}/parentApplications`),
+                where('parentEmail', '==', appData.parentEmail),
+                where('submittedAt', '>', oneHourAgo)
+            );
+            const existingSnap = await getDocs(existingQuery);
+            
+            if (!existingSnap.empty) {
+                showStatus('An application from this email was already submitted recently. Please wait before applying again.', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Application';
+                return;
+            }
+
             await setDoc(doc(collection(db, `schools/${selectedSchool.id}/parentApplications`)), appData);
+
+            submissionsToday++;
+            
+            // Clear sensitive data from memory
+            document.getElementById('parent-email').value = '';
+            document.getElementById('parent-phone').value = '';
 
             document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
             document.getElementById('section-success').classList.add('active');
@@ -950,11 +1005,24 @@
         el.textContent = msg;
         el.className = `form-status ${type}`;
         el.style.display = 'block';
+        // Auto-hide success messages
+        if (type === 'success') {
+            setTimeout(() => { el.style.display = 'none'; }, 5000);
+        }
     }
 
     // ── Character counter ──────────────────────────────────────
     document.getElementById('student-notes').addEventListener('input', function() {
         document.getElementById('notes-char-count').textContent = this.value.length;
+    });
+
+    // ── Close school results on outside click ──────────────────
+    document.addEventListener('click', function(e) {
+        const results = document.getElementById('school-results');
+        const search  = document.getElementById('school-search');
+        if (results && search && !results.contains(e.target) && e.target !== search) {
+            results.classList.remove('show');
+        }
     });
 </script>
 
