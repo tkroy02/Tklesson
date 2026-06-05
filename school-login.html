@@ -1027,19 +1027,29 @@
                     }
                 }
 
-                // Check school user
-                if (!userRole) {
-                    const userDoc = await db.collection('schools').doc(finalSchoolId).collection('users').doc(user.uid).get();
-                    if (!userDoc.exists) {
-                        await auth.signOut();
-                        showError('You are not registered at this school. Please select the correct school or contact your administrator.');
-                        loginButton.classList.remove('loading');
-                        loginButton.disabled = false;
-                        return;
-                    }
-                    userData = userDoc.data();
-                    userRole = userData.role || 'student';
-                }
+                // Check parent collection
+if (!userRole) {
+    const parentDoc = await db.collection('schoolparents').doc(user.uid).get();
+    if (parentDoc.exists && parentDoc.data().schoolId === finalSchoolId) {
+        userData = parentDoc.data();
+        userRole = 'parent';
+    }
+}
+
+// Check school user (student/teacher)
+if (!userRole) {
+    const userDoc = await db.collection('schools').doc(finalSchoolId)
+        .collection('users').doc(user.uid).get();
+    if (!userDoc.exists) {
+        await auth.signOut();
+        showError('You are not registered at this school. Please select the correct school or contact your administrator.');
+        loginButton.classList.remove('loading');
+        loginButton.disabled = false;
+        return;
+    }
+    userData = userDoc.data();
+    userRole = userData.role || 'student';
+}
 
                 // Get school info
                 const schoolDoc = await db.collection('schools').doc(finalSchoolId).get();
@@ -1047,17 +1057,21 @@
 
                 // Get TFA doc
                 let userDocForTFA = null;
-                if (userRole === 'school_admin') {
-                    userDocForTFA = schoolAdminDoc.data();
-                } else {
-                    const userSnap = await db.collection('schools').doc(finalSchoolId).collection('users').doc(user.uid).get();
-                    userDocForTFA = userSnap.exists ? userSnap.data() : {};
-                }
+if (userRole === 'school_admin') {
+    userDocForTFA = schoolAdminDoc.data();
+} else if (userRole === 'parent') {
+    const parentSnap = await db.collection('schoolparents').doc(user.uid).get();
+    userDocForTFA = parentSnap.exists ? parentSnap.data() : {};
+} else {
+    const userSnap = await db.collection('schools').doc(finalSchoolId)
+        .collection('users').doc(user.uid).get();
+    userDocForTFA = userSnap.exists ? userSnap.data() : {};
+}
 
                 _pendingSession = {
                     schoolId: finalSchoolId,
                     userRole,
-                    userDisplayName: userData.displayName || user.email,
+                    userDisplayName: userData.displayName || userData.name || user.email,
                     userEmail: user.email,
                     userUid: user.uid,
                     schoolName: schoolData.name || 'Your School',
@@ -1296,10 +1310,15 @@
                     const updatedCodes = [..._pendingSession.tfaBackupCodes];
                     updatedCodes.splice(match, 1);
 
-                    const userDocRef = _pendingSession.userRole === 'school_admin'
-                        ? db.collection('schooladmins').doc(_pendingSession.userUid)
-                        : db.collection('schools').doc(_pendingSession.schoolId)
-                            .collection('users').doc(_pendingSession.userUid);
+                   let userDocRef;
+if (_pendingSession.userRole === 'school_admin') {
+    userDocRef = db.collection('schooladmins').doc(_pendingSession.userUid);
+} else if (_pendingSession.userRole === 'parent') {
+    userDocRef = db.collection('schoolparents').doc(_pendingSession.userUid);
+} else {
+    userDocRef = db.collection('schools').doc(_pendingSession.schoolId)
+        .collection('users').doc(_pendingSession.userUid);
+}
 
                     await userDocRef.set({ twoFactorBackupCodes: updatedCodes }, { merge: true });
 
