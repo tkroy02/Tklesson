@@ -8483,11 +8483,18 @@ async function loadParents() {
         const pSnap = await getDocs(
             query(collection(db, `schools/${schoolId}/users`), where('role', '==', 'parent'))
         );
-        const portalByEmail = {};
-        pSnap.docs.forEach(d => {
-            const data = d.data();
-            if (data.email) portalByEmail[data.email.toLowerCase()] = { id: d.id, ...data };
-        });
+        const portalByEmail  = {};
+const revokedByEmail = {};
+pSnap.docs.forEach(d => {
+    const data = d.data();
+    if (!data.email) return;
+    const key = data.email.toLowerCase();
+    if (data.portalAccessRevoked === true) {
+        revokedByEmail[key] = { id: d.id, ...data };
+    } else {
+        portalByEmail[key]  = { id: d.id, ...data };
+    }
+});
 
         // Build parents map from student.parents[]
         const map = {};
@@ -8497,10 +8504,11 @@ async function loadParents() {
                 const key = p.email.toLowerCase();
                 if (!map[key]) {
                     map[key] = {
-                        name:          p.name  || '',
-                        email:         p.email,
-                        children:      [],
-                        portalAccount: portalByEmail[key] || null
+                        name:           p.name  || '',
+                        email:          p.email,
+                        children:       [],
+                        portalAccount:  portalByEmail[key]  || null,
+                        revokedAccount: revokedByEmail[key] || null
                     };
                 }
                 if (!map[key].name && p.name) map[key].name = p.name;
@@ -8556,7 +8564,8 @@ function renderParentsTable() {
     }
 
     tbody.innerHTML = filteredParentsData.map(p => {
-        const hasPortal  = !!p.portalAccount;
+        const hasPortal   = !!p.portalAccount;
+        const isRevoked   = !hasPortal && !!p.revokedAccount;
         const safeEmail  = p.email.replace(/'/g, "\\'");
         const safeName   = (p.name || p.email).replace(/'/g, "\\'");
         const childIds   = p.children.map(c => c.id).join(',');
@@ -8569,49 +8578,107 @@ function renderParentsTable() {
             <td data-label="Linked Children"
                 style="font-size:0.85rem; color:var(--text-muted);">${childNames}</td>
             <td data-label="Portal Access">
-                ${hasPortal
-                    ? `<span style="background:#f0fdf4; color:#166534;
-                        border:1px solid #bbf7d0; padding:3px 10px;
-                        border-radius:50px; font-size:0.75rem; font-weight:700;">
-                        <i class="fas fa-check-circle"></i> Active
-                       </span>`
-                    : `<span style="background:#f1f5f9; color:var(--text-muted);
-                        border:1px solid var(--border); padding:3px 10px;
-                        border-radius:50px; font-size:0.75rem; font-weight:700;">
-                        No Access
-                       </span>`
-                }
-            </td>
+    ${hasPortal
+        ? `<span style="background:#f0fdf4; color:#166534;
+            border:1px solid #bbf7d0; padding:3px 10px;
+            border-radius:50px; font-size:0.75rem; font-weight:700;">
+            <i class="fas fa-check-circle"></i> Active
+           </span>`
+        : isRevoked
+            ? `<span style="background:#fff7ed; color:#c2410c;
+                border:1px solid #fed7aa; padding:3px 10px;
+                border-radius:50px; font-size:0.75rem; font-weight:700;">
+                <i class="fas fa-ban"></i> Revoked
+               </span>`
+            : `<span style="background:#f1f5f9; color:var(--text-muted);
+                border:1px solid var(--border); padding:3px 10px;
+                border-radius:50px; font-size:0.75rem; font-weight:700;">
+                No Access
+               </span>`
+    }
+</td>
             <td data-label="Actions">
-                ${hasPortal
-                    ? `<button class="btn btn-outline btn-sm"
-                            onclick="resetPassword('${safeEmail}')"
-                            title="Reset Password">
-                           <i class="fas fa-key"></i>
-                       </button>
-                       <button class="btn btn-sm"
-                           style="background:#eef3fb; color:var(--primary);
-                           border:1.5px solid #bfdbfe;"
-                           onclick="resendParentAccess('${safeEmail}', '${safeName}')"
-                           title="Resend Access Email">
-                           <i class="fas fa-paper-plane"></i> Resend
-                       </button>
-                       <button class="btn btn-sm"
-                           style="background:#fef2f2; color:var(--danger);
-                           border:1.5px solid #fecaca;"
-                           onclick="revokeParentAccess('${p.portalAccount.id}', '${safeName}')">
-                           <i class="fas fa-ban"></i> Revoke
-                       </button>`
-                    : `<button class="btn btn-accent btn-sm"
-                           onclick="grantParentAccess('${safeEmail}', '${safeName}', '${childIds}')">
-                           <i class="fas fa-unlock"></i> Grant Access
-                       </button>`
-                }
-            </td>
+    ${hasPortal
+        ? `<button class="btn btn-outline btn-sm"
+                onclick="resetPassword('${safeEmail}')"
+                title="Reset Password">
+               <i class="fas fa-key"></i>
+           </button>
+           <button class="btn btn-sm"
+               style="background:#eef3fb; color:var(--primary);
+               border:1.5px solid #bfdbfe;"
+               onclick="resendParentAccess('${safeEmail}', '${safeName}')"
+               title="Resend Access Email">
+               <i class="fas fa-paper-plane"></i> Resend
+           </button>
+           <button class="btn btn-sm"
+               style="background:#fef2f2; color:var(--danger);
+               border:1.5px solid #fecaca;"
+               onclick="revokeParentAccess('${p.portalAccount.id}', '${safeName}')">
+               <i class="fas fa-ban"></i> Revoke
+           </button>`
+        : isRevoked
+            ? `<button class="btn btn-sm"
+                   style="background:#f0fdf4; color:#166534;
+                   border:1.5px solid #bbf7d0;"
+                   onclick="regrantParentAccess('${p.revokedAccount.id}', '${safeEmail}', '${safeName}')">
+                   <i class="fas fa-redo"></i> Restore Access
+               </button>`
+            : `<button class="btn btn-accent btn-sm"
+                   onclick="grantParentAccess('${safeEmail}', '${safeName}', '${childIds}')">
+                   <i class="fas fa-unlock"></i> Grant Access
+               </button>`
+    }
+</td>
         </tr>`;
     }).join('');
 }
 
+// ── Regrant Portal Access ─────────────────────────────────────
+window.regrantParentAccess = async function(uid, email, name) {
+    if (!confirm(
+        `Restore portal access for ${name} (${email})?\n\n` +
+        `A password reset link will be sent so they can log back in.`
+    )) return;
+
+    try {
+        await updateDoc(doc(db, `schools/${schoolId}/users`, uid), {
+            portalAccessRevoked: false,
+            revokedAt:           null,
+            revokedBy:           null,
+            reactivatedAt:       new Date().toISOString(),
+            reactivatedBy:       auth.currentUser?.uid
+        });
+
+        await sendPasswordResetEmail(auth, email);
+
+        const schoolNameStr = sessionStorage.getItem('schoolName') || 'your school';
+        const subject = encodeURIComponent(`Your Parent Portal Access Has Been Restored — ${schoolNameStr}`);
+        const body = encodeURIComponent(
+`Hello ${name},
+
+Your parent portal access for ${schoolNameStr} has been restored.
+
+A password reset link has been sent to this email address. Please check your inbox (and spam folder) to set a new password, then log in at:
+
+  https://tklesson.com/school-login.html
+
+If you have any questions, please contact your school administrator.
+
+Best regards,
+${schoolNameStr}`
+        );
+
+        window.open(`mailto:${email}?subject=${subject}&body=${body}`, '_blank');
+        showToast(`✅ Access restored for ${name}. Password reset email sent.`);
+        await loadParents();
+
+    } catch (err) {
+        console.error('regrantParentAccess error:', err);
+        alert('Error restoring access: ' + err.message);
+    }
+};
+        
 // ── Grant Portal Access ───────────────────────────────────────
 window.grantParentAccess = async function(email, name, childIdsStr) {
     const childIds = childIdsStr.split(',').filter(Boolean);
@@ -8732,7 +8799,11 @@ window.revokeParentAccess = async function(uid, name) {
         `Revoke portal access for ${name}?\n\nThey will no longer be able to log in to the parent portal.`
     )) return;
     try {
-        await deleteDoc(doc(db, `schools/${schoolId}/users/${uid}`));
+        await updateDoc(doc(db, `schools/${schoolId}/users`, uid), {
+            portalAccessRevoked: true,
+            revokedAt:           new Date().toISOString(),
+            revokedBy:           auth.currentUser?.uid
+        });
         showToast(`Portal access revoked for ${name}.`);
         await loadParents();
     } catch (err) {
@@ -8740,7 +8811,6 @@ window.revokeParentAccess = async function(uid, name) {
         alert('Error revoking access. Please try again.');
     }
 };
-
     
 // ════════════════════════════════════════════════════════════════
 //  APPLICATIONS
