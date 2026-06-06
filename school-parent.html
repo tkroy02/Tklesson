@@ -899,23 +899,43 @@
 </div>
 
         
-        <!-- ────────────────────────────────────────
-             ASSIGNMENTS PAGE
-             ──────────────────────────────────────── -->
-        <div id="assignments" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Assignments</h1>
-            </div>
-            <p class="page-subtitle">Track your child's assignments</p>
-            <div class="card">
-                <div id="assignments-content">
-                    <div class="placeholder">
-                        <i class="fas fa-tasks"></i>
-                        <p>Select a child to view their assignments</p>
-                    </div>
-                </div>
+       <!-- ═══════════════════════════════════════════
+     ASSIGNMENTS PAGE
+     ═══════════════════════════════════════════ -->
+<div id="assignments" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Assignments</h1>
+    </div>
+    <p class="page-subtitle">View assignments posted by your child's teachers</p>
+
+    <!-- Child Sub-Tabs -->
+    <div id="assignments-child-tabs" class="child-tabs-container"></div>
+
+    <!-- Subject Filter -->
+    <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: flex-end;">
+        <div class="form-group" style="max-width: 300px; margin-bottom: 0;">
+            <label>Filter by Subject</label>
+            <select id="assignments-subject-filter" class="form-input" onchange="filterParentAssignments()">
+                <option value="all">All Subjects</option>
+            </select>
+        </div>
+        <span id="assignments-count" style="font-size: 0.85rem; color: var(--text-muted); padding-bottom: 12px;"></span>
+    </div>
+
+    <!-- Assignments List -->
+    <div class="card">
+        <h3 style="margin-bottom: 16px;">
+            <i class="fas fa-clipboard-list" style="margin-right: 8px;"></i>
+            Assignments from Teachers
+        </h3>
+        <div id="assignments-content">
+            <div class="placeholder">
+                <i class="fas fa-clipboard-list"></i>
+                <p>Loading assignments...</p>
             </div>
         </div>
+    </div>
+</div>
 
         <!-- ────────────────────────────────────────
              REPORT CARDS PAGE
@@ -1158,6 +1178,11 @@
                 if (pageId === 'gradebook') {
                     renderGradebookChildTabs();
                 }
+
+                if (pageId === 'assignments') {
+                    renderAssignmentsChildTabs();
+                }
+                
             });
         });
 
@@ -2130,6 +2155,283 @@
                 closeParentCommentModal();
             }
         });
+
+// ═══════════════════════════════════════════════════════════════
+//  ASSIGNMENTS PAGE STATE
+// ═══════════════════════════════════════════════════════════════
+        let currentAssignmentsChildIndex = 0;
+        let allParentAssignments = [];       // all assignments for selected child
+        let parentSubjectFilters = [];      // available subjects for filtering
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER ASSIGNMENTS CHILD SUB-TABS
+// ═══════════════════════════════════════════════════════════════
+        function renderAssignmentsChildTabs() {
+            const tabsContainer = document.getElementById('assignments-child-tabs');
+            const content = document.getElementById('assignments-content');
+
+            if (!linkedStudents || linkedStudents.length === 0) {
+                tabsContainer.innerHTML = '';
+                content.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-child"></i>
+                        <p>No children linked to your account</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Check for pre-selected child
+            const preselectedId = sessionStorage.getItem('selectedChildId');
+            if (preselectedId) {
+                const foundIndex = linkedStudents.findIndex(s => s.id === preselectedId);
+                if (foundIndex >= 0) {
+                    currentAssignmentsChildIndex = foundIndex;
+                }
+                sessionStorage.removeItem('selectedChildId');
+            }
+
+            tabsContainer.innerHTML = linkedStudents
+                .map((student, idx) => {
+                    const initials = (student.displayName || 'S')
+                        .split(' ')
+                        .map(name => name[0])
+                        .join('')
+                        .toUpperCase()
+                        .slice(0, 2);
+
+                    const isActive = idx === currentAssignmentsChildIndex;
+
+                    return `
+                        <button
+                            class="child-tab ${isActive ? 'active' : ''}"
+                            data-index="${idx}"
+                            onclick="switchAssignmentsChildTab(${idx})"
+                        >
+                            <i class="fas fa-user-graduate"></i>
+                            ${student.displayName || 'Student'} (${initials})
+                        </button>
+                    `;
+                })
+                .join('');
+
+            // Load assignments for selected child
+            loadParentAssignments();
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  SWITCH ASSIGNMENTS CHILD TAB
+// ═══════════════════════════════════════════════════════════════
+        window.switchAssignmentsChildTab = function(index) {
+            currentAssignmentsChildIndex = index;
+
+            const allTabs = document.querySelectorAll('#assignments-child-tabs .child-tab');
+            allTabs.forEach((tab, idx) => {
+                if (idx === index) {
+                    tab.classList.add('active');
+                } else {
+                    tab.classList.remove('active');
+                }
+            });
+
+            // Reset subject filter
+            const subjectFilter = document.getElementById('assignments-subject-filter');
+            if (subjectFilter) subjectFilter.value = 'all';
+
+            loadParentAssignments();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  LOAD PARENT ASSIGNMENTS
+// ═══════════════════════════════════════════════════════════════
+        async function loadParentAssignments() {
+            const container = document.getElementById('assignments-content');
+            const subjectFilter = document.getElementById('assignments-subject-filter');
+            const countLabel = document.getElementById('assignments-count');
+
+            if (!linkedStudents.length || currentAssignmentsChildIndex >= linkedStudents.length) {
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-user"></i>
+                        <p>No child selected</p>
+                    </div>
+                `;
+                if (countLabel) countLabel.textContent = '';
+                return;
+            }
+
+            const student = linkedStudents[currentAssignmentsChildIndex];
+
+            container.innerHTML = `
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                    <i class="fas fa-spinner fa-spin"></i> Loading assignments for ${student.displayName || 'student'}...
+                </p>
+            `;
+
+            try {
+                // Get all subjects this student is enrolled in
+                const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+                const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', student.id));
+                const subjectsSnap = await getDocs(subjectsQuery);
+
+                if (subjectsSnap.empty) {
+                    container.innerHTML = `
+                        <div class="placeholder">
+                            <i class="fas fa-book"></i>
+                            <p>${student.displayName || 'This student'} is not enrolled in any subjects yet.</p>
+                        </div>
+                    `;
+                    if (countLabel) countLabel.textContent = '';
+                    if (subjectFilter) {
+                        subjectFilter.innerHTML = '<option value="all">All Subjects</option>';
+                    }
+                    return;
+                }
+
+                // Build subject lookup and populate filter dropdown
+                const mySubjectIds = subjectsSnap.docs.map(doc => doc.id);
+                const subjectNames = {};
+                parentSubjectFilters = [];
+
+                subjectsSnap.docs.forEach(doc => {
+                    const data = doc.data();
+                    subjectNames[doc.id] = data.name || 'Unknown Subject';
+                    parentSubjectFilters.push({
+                        id: doc.id,
+                        name: data.name || 'Unknown Subject'
+                    });
+                });
+
+                // Sort subjects alphabetically
+                parentSubjectFilters.sort((a, b) => a.name.localeCompare(b.name));
+
+                // Populate subject filter dropdown
+                if (subjectFilter) {
+                    const currentValue = subjectFilter.value;
+                    subjectFilter.innerHTML = '<option value="all">All Subjects</option>' +
+                        parentSubjectFilters
+                            .map(s => `<option value="${s.id}">${s.name}</option>`)
+                            .join('');
+                    subjectFilter.value = currentValue || 'all';
+                }
+
+                // Fetch assignments for all enrolled subjects
+                allParentAssignments = [];
+
+                for (const subjectId of mySubjectIds) {
+                    const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
+                    const q = query(assignmentsRef, where('subjectId', '==', subjectId));
+                    const snap = await getDocs(q);
+
+                    snap.docs.forEach(doc => {
+                        const data = doc.data();
+                        allParentAssignments.push({
+                            id: doc.id,
+                            ...data,
+                            _subjectName: subjectNames[subjectId] || data.subjectName || 'Unknown Subject'
+                        });
+                    });
+                }
+
+                // Sort by most recent first
+                allParentAssignments.sort((a, b) => {
+                    const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+                    const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+                    return dateB - dateA;
+                });
+
+                // Apply current filter and render
+                filterParentAssignments();
+
+            } catch (error) {
+                console.error('Error loading assignments:', error);
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Error loading assignments. Please try again.</p>
+                    </div>
+                `;
+            }
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  FILTER PARENT ASSIGNMENTS BY SUBJECT
+// ═══════════════════════════════════════════════════════════════
+        window.filterParentAssignments = function() {
+            const container = document.getElementById('assignments-content');
+            const subjectFilter = document.getElementById('assignments-subject-filter');
+            const countLabel = document.getElementById('assignments-count');
+            const selectedSubject = subjectFilter ? subjectFilter.value : 'all';
+
+            // Filter assignments
+            let filtered = allParentAssignments;
+            if (selectedSubject !== 'all') {
+                filtered = allParentAssignments.filter(a => a.subjectId === selectedSubject);
+            }
+
+            // Update count label
+            if (countLabel) {
+                countLabel.textContent = filtered.length === 1
+                    ? '1 assignment'
+                    : `${filtered.length} assignments`;
+            }
+
+            // Empty state
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-clipboard-list"></i>
+                        <p>No assignments found${selectedSubject !== 'all' ? ' for this subject' : ''}.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Render assignment cards
+            const MAX_VISIBLE = 40;
+            const displayed = filtered.slice(0, MAX_VISIBLE);
+            const hiddenCount = filtered.length - MAX_VISIBLE;
+
+            container.innerHTML = `
+                ${hiddenCount > 0 ? `
+                    <div style="background: #fef3c7; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #92400e;">
+                        ⚠️ Showing ${MAX_VISIBLE} most recent. ${hiddenCount} older assignment${hiddenCount !== 1 ? 's' : ''} not shown.
+                    </div>
+                ` : ''}
+                <div style="max-height: 600px; overflow-y: auto; padding-right: 4px;">
+                    ${displayed.map(a => {
+                        const createdAt = a.createdAt?.toDate
+                            ? a.createdAt.toDate()
+                            : new Date(a.createdAt || 0);
+
+                        return `
+                        <div style="
+                            padding: 16px;
+                            border: 1px solid var(--border);
+                            border-radius: var(--border-radius-sm);
+                            margin-bottom: 12px;
+                            background: var(--background);
+                            transition: all 0.3s ease;
+                        ">
+                            <div style="font-size: 0.75rem; color: var(--primary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px;">
+                                <i class="fas fa-book"></i> ${a._subjectName || a.subjectName || 'Subject'}
+                            </div>
+                            <h4 style="color: var(--text-dark); margin: 0 0 6px 0; font-size: 1rem;">
+                                ${a.title || 'Untitled Assignment'}
+                            </h4>
+                            <p style="color: var(--text-gray); font-size: 0.9rem; line-height: 1.5; margin: 0 0 8px 0;">
+                                ${a.description || 'No description provided.'}
+                            </p>
+                            <div style="font-size: 0.78rem; color: var(--text-muted);">
+                                <i class="fas fa-chalkboard-teacher"></i> ${a.teacherName || 'Teacher'} · 
+                                <i class="fas fa-clock"></i> ${timeAgo(createdAt.getTime())}
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+            `;
+        };
+        
         
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
