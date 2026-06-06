@@ -806,6 +806,30 @@
         <div class="sidebar-footer">Parent Portal v1.0</div>
     </nav>
 
+<!-- ═══════════════════════════════════════════
+     PARENT NOTIFICATION BELL
+     ═══════════════════════════════════════════ -->
+<div style="position: fixed; top: 20px; right: 28px; z-index: 250;">
+    <button id="parent-notification-bell" onclick="toggleParentNotifications()" 
+            style="background: var(--background); border: 1px solid var(--border); border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; box-shadow: var(--shadow-sm); transition: var(--transition);">
+        <i class="fas fa-bell" style="font-size: 1.1rem; color: var(--text-gray);"></i>
+        <span id="parent-bell-badge" style="display: none; position: absolute; top: -4px; right: -4px; background: var(--danger); color: white; font-size: 0.65rem; font-weight: 700; width: 18px; height: 18px; border-radius: 50%; align-items: center; justify-content: center; line-height: 1;">0</span>
+    </button>
+    
+    <div id="parent-notifications-dropdown" style="display: none; position: absolute; top: 52px; right: 0; width: 360px; max-height: 400px; overflow-y: auto; background: var(--background); border: 1px solid var(--border); border-radius: var(--border-radius-sm); box-shadow: var(--shadow-lg); z-index: 260;">
+        <div style="padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+            <h4 style="margin: 0; font-size: 0.9rem; font-weight: 700; color: var(--text-dark);">Notifications</h4>
+            <button onclick="markAllParentNotificationsRead()" style="background: none; border: none; color: var(--accent); font-size: 0.75rem; cursor: pointer; font-weight: 600;">Clear all</button>
+        </div>
+        <div id="parent-notifications-list">
+            <p style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 0.85rem;">
+                <i class="fas fa-bell-slash" style="display: block; font-size: 1.5rem; margin-bottom: 8px; opacity: 0.4;"></i>
+                No notifications yet
+            </p>
+        </div>
+    </div>
+</div>
+    
     <!-- ═══════════════════════════════════════════
          MAIN CONTENT AREA
          ═══════════════════════════════════════════ -->
@@ -1660,7 +1684,7 @@
 // ═══════════════════════════════════════════════════════════════
 //  AUTHENTICATION GUARD
 // ═══════════════════════════════════════════════════════════════
-        onAuthStateChanged(auth, async (user) => {
+                onAuthStateChanged(auth, async (user) => {
             if (!user) {
                 sessionStorage.clear();
                 window.location.href = 'school-login.html';
@@ -1719,8 +1743,13 @@
             if (document.getElementById('my-children').classList.contains('active')) {
                 renderChildrenSubTabs();
             }
-        });
 
+            // ═══════════════════════════════════════
+            // Start parent notification listener
+            // ═══════════════════════════════════════
+            startParentNotificationListener();
+        });
+        
 // ═══════════════════════════════════════════════════════════════
 //  NAVIGATION LOGIC
 // ═══════════════════════════════════════════════════════════════
@@ -4991,6 +5020,280 @@ function parentGenerateBackupCodes(count = 8) {
     });
 });
 
+// ═══════════════════════════════════════════════════════════════
+//  PARENT NOTIFICATION SYSTEM
+// ═══════════════════════════════════════════════════════════════
+
+        let _parentActiveNotifications = [];
+        let parentNotificationsListener = null;
+
+// ═══════════════════════════════════════════════════════════════
+//  START PARENT NOTIFICATION LISTENER
+// ═══════════════════════════════════════════════════════════════
+        function startParentNotificationListener() {
+            if (!linkedStudents || linkedStudents.length === 0) return;
+            if (parentNotificationsListener) parentNotificationsListener();
+
+            const unsubscribers = [];
+
+            // Watch enrolments for all linked children
+            for (const student of linkedStudents) {
+                const enrolmentsRef = collection(db, `schools/${schoolId}/enrolments`);
+                const q = query(enrolmentsRef, where('studentId', '==', student.id));
+
+                const unsub = onSnapshot(q, (snap) => {
+                    const dismissed = JSON.parse(sessionStorage.getItem('parentDismissedEnrolments') || '[]');
+
+                    snap.docChanges().forEach(change => {
+                        if (change.type === 'modified' || change.type === 'added') {
+                            const data = change.doc.data();
+                            if (data.status === 'enrolled' && !dismissed.includes(change.doc.id)) {
+                                _parentActiveNotifications.push({
+                                    type: 'enrolment',
+                                    id: change.doc.id,
+                                    title: 'Enrolment Approved',
+                                    message: `${student.displayName || 'Child'} was enrolled in ${data.subjectName || 'a subject'}`,
+                                    date: data.resolvedAt || data.requestedAt || new Date().toISOString(),
+                                    studentId: student.id,
+                                    link: 'my-children'
+                                });
+                            }
+                        }
+                    });
+                    refreshParentNotifications();
+                }, (err) => {
+                    console.error('Parent enrolment listener error:', err);
+                });
+                unsubscribers.push(unsub);
+            }
+
+            // Watch announcements
+            const annRef = collection(db, `schools/${schoolId}/announcements`);
+            const annQ = query(annRef, where('active', '==', true));
+
+            const annUnsub = onSnapshot(annQ, (snap) => {
+                const dismissed = JSON.parse(sessionStorage.getItem('parentDismissedAnnouncements') || '[]');
+                const lastSeen = sessionStorage.getItem('parentLastAnnouncementSeen') || '';
+
+                snap.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        const data = change.doc.data();
+                        const createdAt = data.createdAt || new Date().toISOString();
+
+                        if (!dismissed.includes(change.doc.id) && createdAt > lastSeen) {
+                            // Check if announcement is relevant to any child
+                            let isRelevant = false;
+                            const t = data.target;
+                            if (!t || t.type === 'all' || t.type === 'all-parents' || t.type === 'all-students') {
+                                isRelevant = true;
+                            } else if (t.type === 'by-grade') {
+                                isRelevant = linkedStudents.some(s => s.gradeLevel === t.grade);
+                            } else if (t.type === 'by-subject') {
+                                isRelevant = true; // Simplified — full check would need subject data
+                            } else if (t.type === 'specific') {
+                                isRelevant = (t.persons || []).some(p =>
+                                    linkedStudents.some(s => s.id === p.id)
+                                );
+                            }
+
+                            if (isRelevant) {
+                                _parentActiveNotifications.push({
+                                    type: 'announcement',
+                                    id: change.doc.id,
+                                    title: data.title || 'New Announcement',
+                                    message: data.body || '',
+                                    date: createdAt,
+                                    link: 'announcements'
+                                });
+                            }
+                        }
+                    }
+                });
+                refreshParentNotifications();
+            }, (err) => {
+                console.error('Parent announcement listener error:', err);
+            });
+            unsubscribers.push(annUnsub);
+
+            // Store unsubscribers for cleanup
+            parentNotificationsListener = () => {
+                unsubscribers.forEach(u => u());
+            };
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  REFRESH NOTIFICATION DISPLAY
+// ═══════════════════════════════════════════════════════════════
+        function refreshParentNotifications() {
+            // Deduplicate and sort
+            const seen = new Set();
+            _parentActiveNotifications = _parentActiveNotifications
+                .filter(n => {
+                    const key = n.type + '_' + n.id;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                })
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            updateParentBellBadge(_parentActiveNotifications.length);
+            updateParentNotificationsDropdown(_parentActiveNotifications);
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  UPDATE BELL BADGE
+// ═══════════════════════════════════════════════════════════════
+        function updateParentBellBadge(count) {
+            const badge = document.getElementById('parent-bell-badge');
+            if (!badge) return;
+
+            if (count > 0) {
+                badge.textContent = count > 99 ? '99+' : count;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  UPDATE NOTIFICATIONS DROPDOWN
+// ═══════════════════════════════════════════════════════════════
+        function updateParentNotificationsDropdown(notifications) {
+            const list = document.getElementById('parent-notifications-list');
+            if (!list) return;
+
+            if (notifications.length === 0) {
+                list.innerHTML = `
+                    <p style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 0.85rem;">
+                        <i class="fas fa-check-circle" style="display: block; font-size: 1.5rem; margin-bottom: 8px; opacity: 0.4;"></i>
+                        All caught up!
+                    </p>`;
+                return;
+            }
+
+            list.innerHTML = notifications.map(n => {
+                let icon, color;
+
+                if (n.type === 'enrolment') {
+                    icon = 'fa-check-circle';
+                    color = 'var(--success)';
+                } else if (n.type === 'announcement') {
+                    icon = 'fa-bullhorn';
+                    color = 'var(--primary)';
+                } else {
+                    icon = 'fa-bell';
+                    color = 'var(--accent)';
+                }
+
+                const date = new Date(n.date).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                });
+
+                return `
+                <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-light); cursor: pointer; transition: var(--transition);" 
+                     onclick="dismissParentNotification('${n.type}', '${n.id}', '${n.link || ''}')"
+                     onmouseover="this.style.background='var(--accent-light)'" 
+                     onmouseout="this.style.background=''">
+                    <div style="display: flex; align-items: flex-start; gap: 10px;">
+                        <div style="background: ${color}15; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                            <i class="fas ${icon}" style="color: ${color}; font-size: 0.75rem;"></i>
+                        </div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div style="font-size: 0.82rem; font-weight: 600; color: var(--text-dark); margin-bottom: 2px;">${n.title}</div>
+                            <div style="font-size: 0.75rem; color: var(--text-gray);">${n.message}</div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
+                                <i class="fas fa-clock"></i> ${date}
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  TOGGLE NOTIFICATIONS DROPDOWN
+// ═══════════════════════════════════════════════════════════════
+        window.toggleParentNotifications = function() {
+            const dropdown = document.getElementById('parent-notifications-dropdown');
+            if (!dropdown) return;
+
+            if (dropdown.style.display === 'none' || !dropdown.style.display) {
+                dropdown.style.display = 'block';
+            } else {
+                dropdown.style.display = 'none';
+            }
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  DISMISS A SINGLE NOTIFICATION
+// ═══════════════════════════════════════════════════════════════
+        window.dismissParentNotification = function(type, id, link) {
+            const storageKey = type === 'enrolment' ? 'parentDismissedEnrolments' :
+                               type === 'announcement' ? 'parentDismissedAnnouncements' :
+                               'parentDismissedNotifications';
+
+            const dismissed = JSON.parse(sessionStorage.getItem(storageKey) || '[]');
+            if (!dismissed.includes(id)) {
+                dismissed.push(id);
+                sessionStorage.setItem(storageKey, JSON.stringify(dismissed));
+            }
+
+            _parentActiveNotifications = _parentActiveNotifications.filter(n => !(n.type === type && n.id === id));
+            refreshParentNotifications();
+
+            // Navigate to relevant page
+            if (link) {
+                const navItem = document.querySelector(`.nav-item[data-page="${link}"]`);
+                if (navItem) navItem.click();
+            }
+
+            toggleParentNotifications();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  MARK ALL AS READ
+// ═══════════════════════════════════════════════════════════════
+        window.markAllParentNotificationsRead = function() {
+            const enrolmentIds = _parentActiveNotifications
+                .filter(n => n.type === 'enrolment')
+                .map(n => n.id);
+            const announcementIds = _parentActiveNotifications
+                .filter(n => n.type === 'announcement')
+                .map(n => n.id);
+
+            const dismissedEnrolments = JSON.parse(sessionStorage.getItem('parentDismissedEnrolments') || '[]');
+            enrolmentIds.forEach(id => {
+                if (!dismissedEnrolments.includes(id)) dismissedEnrolments.push(id);
+            });
+            sessionStorage.setItem('parentDismissedEnrolments', JSON.stringify(dismissedEnrolments));
+
+            const dismissedAnnouncements = JSON.parse(sessionStorage.getItem('parentDismissedAnnouncements') || '[]');
+            announcementIds.forEach(id => {
+                if (!dismissedAnnouncements.includes(id)) dismissedAnnouncements.push(id);
+            });
+            sessionStorage.setItem('parentDismissedAnnouncements', JSON.stringify(dismissedAnnouncements));
+
+            sessionStorage.setItem('parentLastAnnouncementSeen', new Date().toISOString());
+
+            _parentActiveNotifications = [];
+            refreshParentNotifications();
+
+            document.getElementById('parent-notifications-dropdown').style.display = 'none';
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  CLOSE DROPDOWN WHEN CLICKING OUTSIDE
+// ═══════════════════════════════════════════════════════════════
+        document.addEventListener('click', function(event) {
+            const bell = document.getElementById('parent-notification-bell');
+            const dropdown = document.getElementById('parent-notifications-dropdown');
+            if (!bell || !dropdown) return;
+
+            if (!bell.contains(event.target) && !dropdown.contains(event.target)) {
+                dropdown.style.display = 'none';
+            }
+        });
+        
         
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
