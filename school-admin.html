@@ -8524,8 +8524,8 @@ async function loadParents() {
 }
 
 window.filterParents = function() {
-    const search  = document.getElementById('parents-search')?.value?.toLowerCase().trim() || '';
-    const access  = document.getElementById('parents-access-filter')?.value || 'all';
+    const search = document.getElementById('parents-search')?.value?.toLowerCase().trim() || '';
+    const access = document.getElementById('parents-access-filter')?.value || 'all';
 
     filteredParentsData = [...allParentsData];
     if (search)           filteredParentsData = filteredParentsData.filter(p =>
@@ -8537,6 +8537,51 @@ window.filterParents = function() {
     renderParentsTable();
 };
 
+function renderParentsTable() {
+    const tbody   = document.getElementById('parents-tbody');
+    const countEl = document.getElementById('parents-count');
+
+    const activeCount = allParentsData.filter(p => p.portalAccount).length;
+    if (countEl) countEl.textContent =
+        `${filteredParentsData.length} of ${allParentsData.length} · ${activeCount} with portal access`;
+
+    if (filteredParentsData.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;
+            padding:40px; color:var(--text-muted);">
+            ${allParentsData.length === 0
+                ? 'No parents found. Add parent details to students via <strong>Edit Student</strong>.'
+                : 'No parents match your search.'}
+        </td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = filteredParentsData.map(p => {
+        const hasPortal  = !!p.portalAccount;
+        const safeEmail  = p.email.replace(/'/g, "\\'");
+        const safeName   = (p.name || p.email).replace(/'/g, "\\'");
+        const childIds   = p.children.map(c => c.id).join(',');
+        const childNames = p.children.map(c => c.name).join(', ');
+
+        return `
+        <tr>
+            <td data-label="Name"><strong>${p.name || '—'}</strong></td>
+            <td data-label="Email">${p.email}</td>
+            <td data-label="Linked Children"
+                style="font-size:0.85rem; color:var(--text-muted);">${childNames}</td>
+            <td data-label="Portal Access">
+                ${hasPortal
+                    ? `<span style="background:#f0fdf4; color:#166534;
+                        border:1px solid #bbf7d0; padding:3px 10px;
+                        border-radius:50px; font-size:0.75rem; font-weight:700;">
+                        <i class="fas fa-check-circle"></i> Active
+                       </span>`
+                    : `<span style="background:#f1f5f9; color:var(--text-muted);
+                        border:1px solid var(--border); padding:3px 10px;
+                        border-radius:50px; font-size:0.75rem; font-weight:700;">
+                        No Access
+                       </span>`
+                }
+            </td>
             <td data-label="Actions">
                 ${hasPortal
                     ? `<button class="btn btn-outline btn-sm"
@@ -8557,9 +8602,15 @@ window.filterParents = function() {
                            onclick="revokeParentAccess('${p.portalAccount.id}', '${safeName}')">
                            <i class="fas fa-ban"></i> Revoke
                        </button>`
-                    : `<span style="font-size:0.82rem; color:var(--text-muted);">—</span>`
+                    : `<button class="btn btn-accent btn-sm"
+                           onclick="grantParentAccess('${safeEmail}', '${safeName}', '${childIds}')">
+                           <i class="fas fa-unlock"></i> Grant Access
+                       </button>`
                 }
             </td>
+        </tr>`;
+    }).join('');
+}
 
 // ── Grant Portal Access ───────────────────────────────────────
 window.grantParentAccess = async function(email, name, childIdsStr) {
@@ -8567,7 +8618,7 @@ window.grantParentAccess = async function(email, name, childIdsStr) {
 
     if (!confirm(
         `Grant parent portal access to ${name} (${email})?\n\n` +
-        `A temporary password will be generated. Please share it securely.`
+        `A temporary password will be generated and an email will be opened for you to send.`
     )) return;
 
     const adminUser = auth.currentUser;
@@ -8578,13 +8629,13 @@ window.grantParentAccess = async function(email, name, childIdsStr) {
     try {
         const methods = await fetchSignInMethodsForEmail(auth, email);
         if (methods.length > 0) {
-            alert(`An account already exists for ${email}.\nUse the Reset Password button to send a reset link.`);
+            alert(`An account already exists for ${email}.\nUse the Resend button to send them a password reset link.`);
             return;
         }
 
-        const secAuth  = getSecondaryAuth();
-        const cred     = await createUserWithEmailAndPassword(secAuth, email, password);
-        const uid      = cred.user.uid;
+        const secAuth = getSecondaryAuth();
+        const cred    = await createUserWithEmailAndPassword(secAuth, email, password);
+        const uid     = cred.user.uid;
         await signOut(secAuth);
 
         await setDoc(doc(db, `schools/${schoolId}/users/${uid}`), {
@@ -8606,9 +8657,8 @@ window.grantParentAccess = async function(email, name, childIdsStr) {
         }
 
         const schoolNameStr = sessionStorage.getItem('schoolName') || 'your school';
-
-const subject = encodeURIComponent(`Your Parent Portal Access — ${schoolNameStr}`);
-const body = encodeURIComponent(
+        const subject = encodeURIComponent(`Your Parent Portal Access — ${schoolNameStr}`);
+        const body = encodeURIComponent(
 `Hello ${name},
 
 Your parent portal account has been created for ${schoolNameStr}.
@@ -8625,24 +8675,22 @@ If you have any questions, please contact your school administrator.
 
 Best regards,
 ${schoolNameStr}`
-);
+        );
 
-window.open(`mailto:${email}?subject=${subject}&body=${body}`, '_blank');
-
-showToast(`✅ Portal access granted to ${name}. Email client opened.`);
-        
+        window.open(`mailto:${email}?subject=${subject}&body=${body}`, '_blank');
+        showToast(`✅ Portal access granted to ${name}. Email client opened.`);
         await loadParents();
 
     } catch (err) {
         console.error('grantParentAccess error:', err);
         await cleanupSecondaryApp();
         alert(err.code === 'auth/email-already-in-use'
-            ? `An account already exists for ${email}.`
+            ? `An account already exists for ${email}. Use the Resend button to send them a password reset link.`
             : 'Error granting access: ' + err.message);
     }
 };
 
-//=========================== RESEND PARENT ACCESS ===========================//
+// ── Resend Portal Access ──────────────────────────────────────
 window.resendParentAccess = async function(email, name) {
     if (!confirm(
         `Resend portal access email to ${name} (${email})?\n\n` +
@@ -8670,14 +8718,14 @@ ${schoolNameStr}`
         );
 
         window.open(`mailto:${email}?subject=${subject}&body=${body}`, '_blank');
-        showToast(`Password reset sent to ${name}.`);
+        showToast(`Password reset link sent to ${name}.`);
 
     } catch (err) {
         console.error('resendParentAccess error:', err);
         alert('Error sending reset email: ' + err.message);
     }
 };
-        
+
 // ── Revoke Portal Access ──────────────────────────────────────
 window.revokeParentAccess = async function(uid, name) {
     if (!confirm(
@@ -8693,6 +8741,7 @@ window.revokeParentAccess = async function(uid, name) {
     }
 };
 
+    
 // ════════════════════════════════════════════════════════════════
 //  APPLICATIONS
 // ════════════════════════════════════════════════════════════════
