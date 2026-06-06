@@ -766,19 +766,13 @@
     <div class="page-header">
         <h1 class="page-title">Grades</h1>
     </div>
-    <p class="page-subtitle">View your child's grades by subject, term, and year</p>
+    <p class="page-subtitle">View your child's grades across all subjects</p>
 
     <!-- Child Sub-Tabs -->
     <div id="gradebook-child-tabs" class="child-tabs-container"></div>
 
-    <!-- Selectors -->
-    <div style="display: flex; gap: 12px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap;">
-        <div class="form-group" style="max-width: 300px; margin-bottom: 0;">
-            <label>Subject</label>
-            <select id="gradebook-subject-select" class="form-input" onchange="loadParentGradebook()">
-                <option value="">-- Choose a subject --</option>
-            </select>
-        </div>
+    <!-- Term + Year Selectors -->
+    <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: flex-end;">
         <div class="form-group" style="max-width: 200px; margin-bottom: 0;">
             <label>Term</label>
             <select id="gradebook-term-select" class="form-input" onchange="loadParentGradebook()">
@@ -800,15 +794,62 @@
         </div>
     </div>
 
-    <!-- Grade Display -->
+    <!-- Grades Table Container -->
     <div id="gradebook-content">
         <div class="placeholder">
-            <i class="fas fa-table"></i>
-            <p>Select a subject to view grades</p>
+            <i class="fas fa-award"></i>
+            <p>Loading grades...</p>
         </div>
     </div>
 </div>
 
+<!-- ═══════════════════════════════════════════
+     TEACHER COMMENT MODAL
+     ═══════════════════════════════════════════ -->
+<div id="parent-comment-modal" style="
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+">
+    <div style="
+        background: var(--background);
+        border-radius: var(--border-radius);
+        padding: 24px;
+        max-width: 500px;
+        width: 90%;
+        box-shadow: var(--shadow-lg);
+    ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 id="parent-comment-subject" style="color: var(--primary); margin: 0;"></h3>
+            <button onclick="closeParentCommentModal()" style="
+                background: none;
+                border: none;
+                font-size: 1.5rem;
+                cursor: pointer;
+                color: var(--text-muted);
+                padding: 0;
+                line-height: 1;
+            ">&times;</button>
+        </div>
+        <p id="parent-comment-teacher" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;"></p>
+        <div id="parent-comment-body" style="
+            background: var(--background-light);
+            border-radius: var(--border-radius-sm);
+            padding: 16px;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: var(--text-dark);
+        "></div>
+        <div style="text-align: right; margin-top: 16px;">
+            <button class="btn btn-outline btn-sm" onclick="closeParentCommentModal()">Close</button>
+        </div>
+    </div>
+</div>
+        
         <!-- ────────────────────────────────────────
              ASSIGNMENTS PAGE
              ──────────────────────────────────────── -->
@@ -1583,12 +1624,11 @@
 // ═══════════════════════════════════════════════════════════════
         function getDefaultTerm() {
             const now = new Date();
-            const month = now.getMonth(); // 0 = January, 11 = December
-
+            const month = now.getMonth();
             if (month >= 8 && month <= 11) return 'fall-semester';
             if (month >= 0 && month <= 4) return 'spring-semester';
             if (month >= 5 && month <= 7) return 'winter-semester';
-            return 'fall-semester'; // fallback
+            return 'fall-semester';
         }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1599,6 +1639,12 @@
 
             if (!linkedStudents || linkedStudents.length === 0) {
                 tabsContainer.innerHTML = '';
+                document.getElementById('gradebook-content').innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-child"></i>
+                        <p>No children linked to your account</p>
+                    </div>
+                `;
                 return;
             }
 
@@ -1647,8 +1693,8 @@
                 yearDisplay.textContent = parentGradebookYear;
             }
 
-            // Load subjects for selected child
-            loadGradebookSubjects();
+            // Load grades for selected child
+            loadParentGradebook();
         }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1666,80 +1712,8 @@
                 }
             });
 
-            // Reload subjects for newly selected child
-            loadGradebookSubjects();
+            loadParentGradebook();
         };
-
-// ═══════════════════════════════════════════════════════════════
-//  LOAD SUBJECTS FOR SELECTED CHILD
-// ═══════════════════════════════════════════════════════════════
-        async function loadGradebookSubjects() {
-            const subjectSelect = document.getElementById('gradebook-subject-select');
-            const content = document.getElementById('gradebook-content');
-
-            if (!linkedStudents.length || currentGradebookChildIndex >= linkedStudents.length) {
-                subjectSelect.innerHTML = '<option value="">-- Choose a subject --</option>';
-                content.innerHTML = `
-                    <div class="placeholder">
-                        <i class="fas fa-user"></i>
-                        <p>No child selected</p>
-                    </div>
-                `;
-                return;
-            }
-
-            const student = linkedStudents[currentGradebookChildIndex];
-
-            subjectSelect.innerHTML = '<option value="">Loading subjects...</option>';
-            content.innerHTML = `
-                <div class="placeholder">
-                    <i class="fas fa-spinner fa-pulse"></i>
-                    <p>Loading subjects...</p>
-                </div>
-            `;
-
-            try {
-                // Fetch all enrolled subjects for this student
-                const enrolmentsSnap = await getDocs(
-                    query(
-                        collection(db, `schools/${schoolId}/enrolments`),
-                        where('studentId', '==', student.id),
-                        where('status', '==', 'enrolled')
-                    )
-                );
-
-                const enrolledSubjects = enrolmentsSnap.docs.map(doc => doc.data());
-
-                if (enrolledSubjects.length === 0) {
-                    subjectSelect.innerHTML = '<option value="">No subjects found</option>';
-                    content.innerHTML = `
-                        <div class="placeholder">
-                            <i class="fas fa-book"></i>
-                            <p>No enrolled subjects found for ${student.displayName || 'this student'}</p>
-                        </div>
-                    `;
-                    return;
-                }
-
-                // Build subject dropdown
-                subjectSelect.innerHTML = '<option value="">-- Choose a subject --</option>' +
-                    enrolledSubjects
-                        .map(s => `<option value="${s.subjectId || ''}">${s.subjectName || 'Unknown Subject'}</option>`)
-                        .join('');
-
-                // Reset content
-                content.innerHTML = `
-                    <div class="placeholder">
-                        <i class="fas fa-table"></i>
-                        <p>Select a subject to view grades</p>
-                    </div>
-                `;
-
-            } catch (error) {
-                console.error('Error loading gradebook subjects:', error);
-                subjectSelect.innerHTML = '<option value="">Error loading subjects</option>';
-            }
-        }
 
 // ═══════════════════════════════════════════════════════════════
 //  CHANGE GRADEBOOK YEAR
@@ -1751,17 +1725,16 @@
         };
 
 // ═══════════════════════════════════════════════════════════════
-//  LOAD PARENT GRADEBOOK (Single Student View)
+//  LOAD PARENT GRADEBOOK (All Subjects Table)
 // ═══════════════════════════════════════════════════════════════
         window.loadParentGradebook = async function() {
-            const subjectId = document.getElementById('gradebook-subject-select').value;
+            const container = document.getElementById('gradebook-content');
             const term = document.getElementById('gradebook-term-select').value;
             const year = document.getElementById('gradebook-year-display').textContent.trim();
-            const content = document.getElementById('gradebook-content');
 
             // Validate child selection
             if (!linkedStudents.length || currentGradebookChildIndex >= linkedStudents.length) {
-                content.innerHTML = `
+                container.innerHTML = `
                     <div class="placeholder">
                         <i class="fas fa-user"></i>
                         <p>No child selected</p>
@@ -1772,160 +1745,189 @@
 
             const student = linkedStudents[currentGradebookChildIndex];
 
-            // Validate subject selection
-            if (!subjectId) {
-                content.innerHTML = `
-                    <div class="placeholder">
-                        <i class="fas fa-table"></i>
-                        <p>Select a subject to view grades</p>
-                    </div>
-                `;
-                return;
-            }
-
-            content.innerHTML = '<p style="text-align: center; padding: 30px; color: var(--text-muted);">Loading gradebook...</p>';
+            container.innerHTML = `
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                    <i class="fas fa-spinner fa-spin"></i> Loading grades...
+                </p>
+            `;
 
             try {
-                // Fetch the gradebook document
-                const gradebookKey = `${subjectId}_${term}_${year}`;
-                const gradebookRef = doc(db, `schools/${schoolId}/gradebooks/${gradebookKey}`);
-                const gradebookSnap = await getDoc(gradebookRef);
+                // Get all subjects this student is enrolled in
+                const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
+                const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', student.id));
+                const subjectsSnap = await getDocs(subjectsQuery);
 
-                // No gradebook exists for this term/year
-                if (!gradebookSnap.exists()) {
-                    content.innerHTML = `
+                if (subjectsSnap.empty) {
+                    container.innerHTML = `
                         <div class="placeholder">
-                            <i class="fas fa-info-circle"></i>
-                            <p>No gradebook found for ${termLabel(term)} ${year}.<br>
-                            <span style="font-size: 0.85rem;">Grades may not have been entered yet for this term.</span></p>
+                            <i class="fas fa-book"></i>
+                            <p>${student.displayName || 'This student'} is not enrolled in any subjects yet.</p>
                         </div>
                     `;
                     return;
                 }
 
-                const gradebookData = gradebookSnap.data();
-                const entries = gradebookData.entries || {};
-                const studentEntry = entries[student.id];
+                // Build lookup maps
+                const mySubjectNames = new Set();
+                const subjectTeachers = {};
+                subjectsSnap.docs.forEach(d => {
+                    const name = d.data().name;
+                    if (name) {
+                        mySubjectNames.add(name);
+                        subjectTeachers[name] = d.data().teacherName || 'Teacher';
+                    }
+                });
 
-                // Student not found in this gradebook
-                if (!studentEntry) {
-                    content.innerHTML = `
+                // Fetch ALL gradebook records and filter by term + year + this student
+                const gradebooksRef = collection(db, `schools/${schoolId}/gradebooks`);
+                const gradebooksSnap = await getDocs(gradebooksRef);
+
+                let gradeRows = [];
+
+                gradebooksSnap.docs.forEach(d => {
+                    const data = d.data();
+
+                    // Only include records matching selected term + year
+                    if (data.term !== term || String(data.year) !== String(year)) return;
+
+                    const gradebookSubjectName = data.subjectName;
+                    if (!gradebookSubjectName || !mySubjectNames.has(gradebookSubjectName)) return;
+
+                    const entries = data.entries || {};
+                    const myEntry = entries[student.id];
+                    if (!myEntry) return;
+
+                    // Calculate average
+                    const scores = ['assessment1', 'assessment2', 'assessment3', 'midterm', 'final']
+                        .map(key => myEntry[key])
+                        .filter(v => v !== undefined && v !== '' && v !== null);
+
+                    const avg = scores.length > 0
+                        ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+                        : null;
+
+                    gradeRows.push({
+                        subjectName: gradebookSubjectName,
+                        teacherName: subjectTeachers[gradebookSubjectName] || 'Teacher',
+                        assessment1: myEntry.assessment1 ?? '—',
+                        assessment2: myEntry.assessment2 ?? '—',
+                        assessment3: myEntry.assessment3 ?? '—',
+                        midterm: myEntry.midterm ?? '—',
+                        final: myEntry.final ?? '—',
+                        average: avg,
+                        grade: myEntry.grade || '—',
+                        comment: myEntry.comment || ''
+                    });
+                });
+
+                if (gradeRows.length === 0) {
+                    container.innerHTML = `
                         <div class="placeholder">
-                            <i class="fas fa-user-slash"></i>
-                            <p>${student.displayName || 'This student'} is not in this gradebook.<br>
-                            <span style="font-size: 0.85rem;">They may not have been enrolled when the gradebook was created.</span></p>
+                            <i class="fas fa-clipboard-check"></i>
+                            <p>No grades found for <strong>${termLabel(term)} ${year}</strong>.<br>
+                            <span style="font-size: 0.85rem;">Grades may not have been posted yet for this term.</span></p>
                         </div>
                     `;
                     return;
                 }
 
-                // Get subject name
-                let subjectName = gradebookData.subjectName || 'Subject';
-                try {
-                    const subjectRef = doc(db, `schools/${schoolId}/subjects/${subjectId}`);
-                    const subjectSnap = await getDoc(subjectRef);
-                    if (subjectSnap.exists()) {
-                        subjectName = subjectSnap.data().name || subjectName;
-                    }
-                } catch (e) {
-                    // Use name from gradebook data
+                // Sort alphabetically by subject name
+                gradeRows.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+                // Build grade color helper
+                function gradeColor(grade) {
+                    if (['A+', 'A', 'A-'].includes(grade)) return 'var(--success)';
+                    if (['B+', 'B', 'B-'].includes(grade)) return 'var(--accent)';
+                    if (['C+', 'C', 'C-'].includes(grade)) return '#f39c12';
+                    if (['D', 'F'].includes(grade)) return 'var(--danger)';
+                    return 'var(--text-muted)';
                 }
 
-                // Build assessment scores
-                const columns = ['Assessment 1', 'Assessment 2', 'Assessment 3', 'Midterm', 'Final'];
-                const scores = columns.map(col => {
-                    const key = col.toLowerCase().replace(/\s+/g, '');
-                    return studentEntry[key];
-                }).filter(v => v !== undefined && v !== '' && v !== null);
-
-                const avg = scores.length
-                    ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)
-                    : '—';
-
-                const grade = studentEntry.grade || '—';
-
-                // Grade color logic
-                let gradeColor = 'var(--text-muted)';
-                if (grade !== '—') {
-                    if (['A+', 'A', 'A-'].includes(grade)) {
-                        gradeColor = 'var(--success)';
-                    } else if (['B+', 'B', 'B-'].includes(grade)) {
-                        gradeColor = 'var(--accent)';
-                    } else if (['C+', 'C', 'C-'].includes(grade)) {
-                        gradeColor = '#f39c12';
-                    } else if (['D', 'F'].includes(grade)) {
-                        gradeColor = 'var(--danger)';
-                    }
-                }
-
-                // Render grade card
-                content.innerHTML = `
-                    <div class="child-detail-panel">
-                        <!-- Header -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
-                            <div>
-                                <h3 style="color: var(--primary); margin-bottom: 4px;">
-                                    <i class="fas fa-book" style="margin-right: 8px;"></i>
-                                    ${subjectName}
-                                </h3>
-                                <div style="font-size: 0.85rem; color: var(--text-muted);">
-                                    ${student.displayName} • ${termLabel(term)} ${year}
-                                </div>
-                            </div>
-                            <div style="
-                                background: ${grade !== '—' ? gradeColor : 'var(--background-light)'};
-                                color: ${grade !== '—' ? 'white' : 'var(--text-muted)'};
-                                padding: 10px 24px;
-                                border-radius: 50px;
-                                font-weight: 800;
-                                font-size: 1.5rem;
-                            ">
-                                ${grade}
-                            </div>
-                        </div>
-
-                        <!-- Assessment Scores -->
-                        <div class="detail-row">
-                            ${columns.map((col, i) => {
-                                const key = col.toLowerCase().replace(/\s+/g, '');
-                                const value = studentEntry[key] !== undefined && studentEntry[key] !== '' ? studentEntry[key] : '—';
-                                return `
-                                    <div class="detail-block" style="text-align: center;">
-                                        <div class="detail-title">${col}</div>
-                                        <div class="detail-value" style="justify-content: center; font-size: 1.3rem;">
-                                            ${value}
-                                        </div>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
-
-                        <!-- Average Score -->
-                        <div style="
-                            background: var(--accent-light);
-                            border-radius: var(--border-radius-sm);
-                            padding: 16px;
-                            text-align: center;
-                            margin-top: 8px;
-                        ">
-                            <div class="detail-title">Average Score</div>
-                            <div style="font-size: 1.5rem; font-weight: 800; color: var(--primary);">
-                                ${avg}${avg !== '—' ? '%' : ''}
-                            </div>
-                        </div>
+                // Render table
+                container.innerHTML = `
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem; background: var(--background); border-radius: var(--border-radius); overflow: hidden; border: 1px solid var(--border);">
+                            <thead>
+                                <tr style="background: var(--primary); color: white;">
+                                    <th style="padding: 14px; text-align: left;">Subject</th>
+                                    <th style="padding: 14px; text-align: center;">Assessment 1</th>
+                                    <th style="padding: 14px; text-align: center;">Assessment 2</th>
+                                    <th style="padding: 14px; text-align: center;">Assessment 3</th>
+                                    <th style="padding: 14px; text-align: center;">Midterm</th>
+                                    <th style="padding: 14px; text-align: center;">Final</th>
+                                    <th style="padding: 14px; text-align: center;">Average</th>
+                                    <th style="padding: 14px; text-align: center;">Grade</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${gradeRows.map(row => `
+                                    <tr style="border-bottom: 1px solid var(--border-light);">
+                                        <td style="padding: 14px;">
+                                            <strong style="color: var(--text-dark); ${row.comment ? 'cursor: pointer; text-decoration: underline; text-decoration-style: dotted;' : ''}"
+                                                ${row.comment ? `onclick="openParentCommentModal('${row.subjectName.replace(/'/g, "\\'")}', '${row.teacherName.replace(/'/g, "\\'")}', '${row.comment.replace(/'/g, "\\'").replace(/\n/g, '\\n')}')"` : ''}
+                                            >
+                                                ${row.subjectName}
+                                            </strong>
+                                            <br><small style="color: var(--text-muted);">${row.teacherName}</small>
+                                        </td>
+                                        <td style="padding: 14px; text-align: center;">${row.assessment1 !== '—' ? row.assessment1 + '%' : '—'}</td>
+                                        <td style="padding: 14px; text-align: center;">${row.assessment2 !== '—' ? row.assessment2 + '%' : '—'}</td>
+                                        <td style="padding: 14px; text-align: center;">${row.assessment3 !== '—' ? row.assessment3 + '%' : '—'}</td>
+                                        <td style="padding: 14px; text-align: center;">${row.midterm !== '—' ? row.midterm + '%' : '—'}</td>
+                                        <td style="padding: 14px; text-align: center;">${row.final !== '—' ? row.final + '%' : '—'}</td>
+                                        <td style="padding: 14px; text-align: center; font-weight: 700; color: var(--primary);">
+                                            ${row.average !== null ? row.average + '%' : '—'}
+                                        </td>
+                                        <td style="padding: 14px; text-align: center;">
+                                            <span style="background: ${gradeColor(row.grade)}15; color: ${gradeColor(row.grade)}; padding: 6px 14px; border-radius: 50px; font-weight: 700;">
+                                                ${row.grade}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
                     </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; text-align: center;">
+                        Grades for <strong>${termLabel(term)} ${year}</strong> · posted by teachers
+                    </p>
                 `;
 
             } catch (error) {
-                console.error('Error loading gradebook:', error);
-                content.innerHTML = `
+                console.error('Error loading grades:', error);
+                container.innerHTML = `
                     <div class="placeholder">
                         <i class="fas fa-exclamation-triangle"></i>
-                        <p>Error loading gradebook. Please try again.</p>
+                        <p>Error loading grades. Please try again.</p>
                     </div>
                 `;
             }
         };
+
+// ═══════════════════════════════════════════════════════════════
+//  TEACHER COMMENT MODAL
+// ═══════════════════════════════════════════════════════════════
+        window.openParentCommentModal = function(subjectName, teacherName, comment) {
+            document.getElementById('parent-comment-subject').textContent = subjectName;
+            document.getElementById('parent-comment-teacher').textContent = `Comment from ${teacherName}`;
+            document.getElementById('parent-comment-body').textContent = comment || 'No comment has been left for this subject yet.';
+            
+            const modal = document.getElementById('parent-comment-modal');
+            modal.style.display = 'flex';
+        };
+
+        window.closeParentCommentModal = function() {
+            const modal = document.getElementById('parent-comment-modal');
+            modal.style.display = 'none';
+        };
+
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('parent-comment-modal');
+            if (event.target === modal) {
+                closeParentCommentModal();
+            }
+        });
         
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
