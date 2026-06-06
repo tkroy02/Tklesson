@@ -911,10 +911,29 @@
     <!-- Child Sub-Tabs -->
     <div id="assignments-child-tabs" class="child-tabs-container"></div>
 
-    <!-- Subject Filter -->
+    <!-- Term + Year + Subject Filters -->
     <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: flex-end;">
+        <div class="form-group" style="max-width: 200px; margin-bottom: 0;">
+            <label>Term</label>
+            <select id="assignments-term-select" class="form-input" onchange="onAssignmentsTermChange()">
+                <option value="fall-semester">Fall Semester</option>
+                <option value="spring-semester">Spring Semester</option>
+                <option value="winter-semester">Winter Semester</option>
+                <option value="september-term">September Term</option>
+                <option value="january-term">January Term</option>
+                <option value="may-term">May Term</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label>Year</label>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeAssignmentsYear(-1)" style="padding: 6px 10px;">−</button>
+                <span id="assignments-year-display" style="font-weight: 600; min-width: 44px; text-align: center;"></span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeAssignmentsYear(1)" style="padding: 6px 10px;">+</button>
+            </div>
+        </div>
         <div class="form-group" style="max-width: 300px; margin-bottom: 0;">
-            <label>Filter by Subject</label>
+            <label>Subject</label>
             <select id="assignments-subject-filter" class="form-input" onchange="filterParentAssignments()">
                 <option value="all">All Subjects</option>
             </select>
@@ -2160,8 +2179,9 @@
 //  ASSIGNMENTS PAGE STATE
 // ═══════════════════════════════════════════════════════════════
         let currentAssignmentsChildIndex = 0;
-        let allParentAssignments = [];       // all assignments for selected child
-        let parentSubjectFilters = [];      // available subjects for filtering
+        let allParentAssignments = [];
+        let parentSubjectFilters = [];
+        let assignmentsYear = new Date().getFullYear();
 
 // ═══════════════════════════════════════════════════════════════
 //  RENDER ASSIGNMENTS CHILD SUB-TABS
@@ -2215,6 +2235,17 @@
                 })
                 .join('');
 
+            // Set default term and year
+            const termSelect = document.getElementById('assignments-term-select');
+            const yearDisplay = document.getElementById('assignments-year-display');
+
+            if (termSelect) {
+                termSelect.value = getDefaultTerm();
+            }
+            if (yearDisplay) {
+                yearDisplay.textContent = assignmentsYear;
+            }
+
             // Load assignments for selected child
             loadParentAssignments();
         }
@@ -2242,12 +2273,46 @@
         };
 
 // ═══════════════════════════════════════════════════════════════
+//  CHANGE ASSIGNMENTS YEAR
+// ═══════════════════════════════════════════════════════════════
+        window.changeAssignmentsYear = function(delta) {
+            assignmentsYear += delta;
+            document.getElementById('assignments-year-display').textContent = assignmentsYear;
+            onAssignmentsTermChange();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  ON ASSIGNMENTS TERM CHANGE (reload subjects for this term)
+// ═══════════════════════════════════════════════════════════════
+        window.onAssignmentsTermChange = function() {
+            // Reset subject filter
+            const subjectFilter = document.getElementById('assignments-subject-filter');
+            if (subjectFilter) subjectFilter.value = 'all';
+
+            // Reload assignments with new term/year
+            loadParentAssignments();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  CHECK IF ENROLMENT MATCHES SELECTED TERM/YEAR
+// ═══════════════════════════════════════════════════════════════
+        function enrolmentMatchesAssignmentsPeriod(enrolment) {
+            const term = document.getElementById('assignments-term-select').value;
+            const year = document.getElementById('assignments-year-display').textContent.trim();
+            const subjectName = (enrolment.subjectName || '').toLowerCase();
+            const termShort = term.replace('-semester', '').replace('-term', '');
+            return subjectName.includes(termShort) && subjectName.includes(year);
+        }
+
+// ═══════════════════════════════════════════════════════════════
 //  LOAD PARENT ASSIGNMENTS
 // ═══════════════════════════════════════════════════════════════
         async function loadParentAssignments() {
             const container = document.getElementById('assignments-content');
             const subjectFilter = document.getElementById('assignments-subject-filter');
             const countLabel = document.getElementById('assignments-count');
+            const term = document.getElementById('assignments-term-select').value;
+            const year = document.getElementById('assignments-year-display').textContent.trim();
 
             if (!linkedStudents.length || currentAssignmentsChildIndex >= linkedStudents.length) {
                 container.innerHTML = `
@@ -2257,6 +2322,7 @@
                     </div>
                 `;
                 if (countLabel) countLabel.textContent = '';
+                if (subjectFilter) subjectFilter.innerHTML = '<option value="all">All Subjects</option>';
                 return;
             }
 
@@ -2269,56 +2335,69 @@
             `;
 
             try {
-                // Get all subjects this student is enrolled in
-                const subjectsRef = collection(db, `schools/${schoolId}/subjects`);
-                const subjectsQuery = query(subjectsRef, where('studentIds', 'array-contains', student.id));
-                const subjectsSnap = await getDocs(subjectsQuery);
+                // Fetch enrolments for this student
+                const enrolmentsSnap = await getDocs(
+                    query(
+                        collection(db, `schools/${schoolId}/enrolments`),
+                        where('studentId', '==', student.id),
+                        where('status', '==', 'enrolled')
+                    )
+                );
 
-                if (subjectsSnap.empty) {
+                // Filter to current term/year only
+                const currentEnrolments = enrolmentsSnap.docs
+                    .map(doc => doc.data())
+                    .filter(enrolment => enrolmentMatchesAssignmentsPeriod(enrolment));
+
+                if (currentEnrolments.length === 0) {
                     container.innerHTML = `
                         <div class="placeholder">
                             <i class="fas fa-book"></i>
-                            <p>${student.displayName || 'This student'} is not enrolled in any subjects yet.</p>
+                            <p>No enrolled subjects found for <strong>${termLabel(term)} ${year}</strong>.</p>
                         </div>
                     `;
                     if (countLabel) countLabel.textContent = '';
-                    if (subjectFilter) {
-                        subjectFilter.innerHTML = '<option value="all">All Subjects</option>';
-                    }
+                    if (subjectFilter) subjectFilter.innerHTML = '<option value="all">All Subjects</option>';
                     return;
                 }
 
-                // Build subject lookup and populate filter dropdown
-                const mySubjectIds = subjectsSnap.docs.map(doc => doc.id);
+                // Build subject lookup from current enrolments
+                const subjectIds = [...new Set(currentEnrolments.map(e => e.subjectId).filter(Boolean))];
                 const subjectNames = {};
                 parentSubjectFilters = [];
 
-                subjectsSnap.docs.forEach(doc => {
-                    const data = doc.data();
-                    subjectNames[doc.id] = data.name || 'Unknown Subject';
-                    parentSubjectFilters.push({
-                        id: doc.id,
-                        name: data.name || 'Unknown Subject'
-                    });
+                currentEnrolments.forEach(enrolment => {
+                    if (enrolment.subjectId && !subjectNames[enrolment.subjectId]) {
+                        subjectNames[enrolment.subjectId] = enrolment.subjectName || 'Unknown Subject';
+                        parentSubjectFilters.push({
+                            id: enrolment.subjectId,
+                            name: enrolment.subjectName || 'Unknown Subject'
+                        });
+                    }
                 });
 
-                // Sort subjects alphabetically
+                // Sort alphabetically
                 parentSubjectFilters.sort((a, b) => a.name.localeCompare(b.name));
 
                 // Populate subject filter dropdown
                 if (subjectFilter) {
                     const currentValue = subjectFilter.value;
-                    subjectFilter.innerHTML = '<option value="all">All Subjects</option>' +
+                    subjectFilter.innerHTML = '<option value="all">All Subjects (' + parentSubjectFilters.length + ')</option>' +
                         parentSubjectFilters
                             .map(s => `<option value="${s.id}">${s.name}</option>`)
                             .join('');
-                    subjectFilter.value = currentValue || 'all';
+                    // Try to keep previous selection, otherwise default to "all"
+                    if (parentSubjectFilters.some(s => s.id === currentValue)) {
+                        subjectFilter.value = currentValue;
+                    } else {
+                        subjectFilter.value = 'all';
+                    }
                 }
 
-                // Fetch assignments for all enrolled subjects
+                // Fetch assignments for these subject IDs
                 allParentAssignments = [];
 
-                for (const subjectId of mySubjectIds) {
+                for (const subjectId of subjectIds) {
                     const assignmentsRef = collection(db, `schools/${schoolId}/assignments`);
                     const q = query(assignmentsRef, where('subjectId', '==', subjectId));
                     const snap = await getDocs(q);
