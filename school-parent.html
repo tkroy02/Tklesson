@@ -1001,23 +1001,21 @@
     </div>
 </div>
         
-        <!-- ────────────────────────────────────────
-             ANNOUNCEMENTS PAGE
-             ──────────────────────────────────────── -->
-        <div id="announcements" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Announcements</h1>
-            </div>
-            <p class="page-subtitle">School-wide and grade-specific announcements</p>
-            <div class="card">
-                <div id="announcements-content">
-                    <div class="placeholder">
-                        <i class="fas fa-bullhorn"></i>
-                        <p>Loading announcements...</p>
-                    </div>
-                </div>
-            </div>
+       <!-- ═══════════════════════════════════════════
+     ANNOUNCEMENTS PAGE
+     ═══════════════════════════════════════════ -->
+<div id="announcements" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Announcements</h1>
+    </div>
+    <p class="page-subtitle">School-wide and targeted announcements</p>
+    <div id="announcements-content">
+        <div class="placeholder">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Loading announcements...</p>
         </div>
+    </div>
+</div>
 
         <!-- ────────────────────────────────────────
              CALENDAR PAGE
@@ -1231,6 +1229,10 @@
 
                 if (pageId === 'report-cards') {
                     renderReportCardChildTabs();
+                }
+
+                if (pageId === 'announcements') {
+                    loadParentAnnouncements();
                 }
                 
             });
@@ -3018,6 +3020,189 @@ ${commentsHTML}
                 }
             }
         };        
+
+// ═══════════════════════════════════════════════════════════════
+//  LOAD PARENT ANNOUNCEMENTS
+// ═══════════════════════════════════════════════════════════════
+        async function loadParentAnnouncements() {
+            const container = document.getElementById('announcements-content');
+            if (!container) return;
+
+            if (!linkedStudents || linkedStudents.length === 0) {
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-bullhorn"></i>
+                        <p>No announcements to display.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `
+                <p style="text-align: center; padding: 40px; color: var(--text-muted);">
+                    <i class="fas fa-spinner fa-spin" style="display: block; font-size: 2rem; margin-bottom: 10px;"></i>
+                    Loading announcements...
+                </p>
+            `;
+
+            try {
+                // Collect all children's grade levels and subject IDs
+                const childrenGradeLevels = [];
+                const childrenSubjectIds = [];
+                const childrenIds = [];
+
+                for (const student of linkedStudents) {
+                    childrenIds.push(student.id);
+                    if (student.gradeLevel) {
+                        childrenGradeLevels.push(student.gradeLevel);
+                    }
+
+                    // Get subjects for each child
+                    try {
+                        const subjectsSnap = await getDocs(
+                            query(
+                                collection(db, `schools/${schoolId}/subjects`),
+                                where('studentIds', 'array-contains', student.id)
+                            )
+                        );
+                        subjectsSnap.docs.forEach(doc => {
+                            childrenSubjectIds.push(doc.id);
+                        });
+                    } catch (e) { /* skip */ }
+                }
+
+                // Fetch active announcements
+                const snap = await getDocs(
+                    query(
+                        collection(db, `schools/${schoolId}/announcements`),
+                        where('active', '==', true),
+                        orderBy('createdAt', 'desc'),
+                        limit(50)
+                    )
+                );
+
+                // Filter announcements relevant to this parent
+                const announcements = snap.docs
+                    .map(d => ({ id: d.id, ...d.data() }))
+                    .filter(a => isAnnouncementForParent(
+                        a, childrenIds, childrenGradeLevels, childrenSubjectIds
+                    ));
+
+                if (announcements.length === 0) {
+                    container.innerHTML = `
+                        <div class="placeholder">
+                            <i class="fas fa-bullhorn"></i>
+                            <p>No announcements at this time.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Render announcement cards
+                container.innerHTML = announcements.map(a => {
+                    const date = a.createdAt
+                        ? new Date(a.createdAt).toLocaleDateString('en-US', {
+                            month: 'long', day: 'numeric', year: 'numeric'
+                        })
+                        : '';
+
+                    // Determine target badge
+                    let targetBadge = '';
+                    const t = a.target;
+                    if (t) {
+                        switch (t.type) {
+                            case 'all':
+                                targetBadge = '<span style="background: #dbeafe; color: #1e40af; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">School-wide</span>';
+                                break;
+                            case 'by-grade':
+                                targetBadge = `<span style="background: #dcfce7; color: #166534; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Grade ${t.grade}</span>`;
+                                break;
+                            case 'by-subject':
+                                targetBadge = '<span style="background: #fef3c7; color: #92400e; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Subject-specific</span>';
+                                break;
+                            case 'specific':
+                                targetBadge = '<span style="background: #fce7f3; color: #9d174d; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Direct</span>';
+                                break;
+                        }
+                    }
+
+                    return `
+                    <div style="
+                        border: 1px solid var(--border);
+                        border-radius: var(--border-radius);
+                        padding: 20px;
+                        margin-bottom: 14px;
+                        background: var(--background);
+                        border-left: 4px solid var(--primary);
+                        transition: var(--transition);
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+                                    <span style="font-weight: 700; font-size: 1rem; color: var(--text-dark);">
+                                        <i class="fas fa-bullhorn" style="color: var(--primary); margin-right: 8px;"></i>${a.title || 'Untitled'}
+                                    </span>
+                                    ${targetBadge}
+                                </div>
+                                <p style="font-size: 0.9rem; color: var(--text-gray); line-height: 1.6; margin: 0;">
+                                    ${a.body || 'No content.'}
+                                </p>
+                            </div>
+                        </div>
+                        ${date ? `
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px;">
+                            <i class="fas fa-calendar"></i> ${date}
+                        </div>` : ''}
+                    </div>`;
+                }).join('');
+
+            } catch (error) {
+                console.error('Error loading announcements:', error);
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Could not load announcements. Please try again.</p>
+                    </div>
+                `;
+            }
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  CHECK IF ANNOUNCEMENT IS FOR THIS PARENT
+// ═══════════════════════════════════════════════════════════════
+        function isAnnouncementForParent(ann, childrenIds, childrenGradeLevels, childrenSubjectIds) {
+            const t = ann.target;
+
+            // No target = visible to everyone
+            if (!t) return true;
+
+            switch (t.type) {
+                case 'all':
+                    return true;
+
+                case 'all-parents':
+                    return true;
+
+                case 'all-students':
+                    // Parents should see student announcements too
+                    return true;
+
+                case 'by-grade':
+                    // Show if any child is in this grade
+                    return childrenGradeLevels.includes(t.grade);
+
+                case 'by-subject':
+                    // Show if any child is enrolled in this subject
+                    return childrenSubjectIds.includes(t.subjectId);
+
+                case 'specific':
+                    // Show if any child is specifically targeted
+                    return (t.persons || []).some(p => childrenIds.includes(p.id));
+
+                default:
+                    return true;
+            }
+        }
         
         
 // ═══════════════════════════════════════════════════════════════
