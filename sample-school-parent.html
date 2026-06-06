@@ -956,41 +956,66 @@
     </div>
 </div>
 
-        <!-- ────────────────────────────────────────
-             REPORT CARDS PAGE
-             ──────────────────────────────────────── -->
-        <div id="report-cards" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Report Cards</h1>
-            </div>
-            <p class="page-subtitle">Download official report cards for each term</p>
-            <div class="card">
-                <div id="report-cards-content">
-                    <div class="placeholder">
-                        <i class="fas fa-file-alt"></i>
-                        <p>Select a child and term to generate a report card</p>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <!-- ═══════════════════════════════════════════
+     REPORT CARDS PAGE
+     ═══════════════════════════════════════════ -->
+<div id="report-cards" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Report Cards</h1>
+    </div>
+    <p class="page-subtitle">View and download your child's official report card</p>
 
-        <!-- ────────────────────────────────────────
-             ANNOUNCEMENTS PAGE
-             ──────────────────────────────────────── -->
-        <div id="announcements" class="page">
-            <div class="page-header">
-                <h1 class="page-title">Announcements</h1>
-            </div>
-            <p class="page-subtitle">School-wide and grade-specific announcements</p>
-            <div class="card">
-                <div id="announcements-content">
-                    <div class="placeholder">
-                        <i class="fas fa-bullhorn"></i>
-                        <p>Loading announcements...</p>
-                    </div>
-                </div>
+    <!-- Child Sub-Tabs -->
+    <div id="reportcards-child-tabs" class="child-tabs-container"></div>
+
+    <!-- Term + Year Selectors -->
+    <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: flex-end;">
+        <div class="form-group" style="max-width: 200px; margin-bottom: 0;">
+            <label>Term</label>
+            <select id="reportcards-term-select" class="form-input" onchange="loadParentReportCard()">
+                <option value="fall-semester">Fall Semester</option>
+                <option value="spring-semester">Spring Semester</option>
+                <option value="winter-semester">Winter Semester</option>
+                <option value="september-term">September Term</option>
+                <option value="january-term">January Term</option>
+                <option value="may-term">May Term</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label>Year</label>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeReportCardYear(-1)" style="padding: 6px 10px;">−</button>
+                <span id="reportcards-year-display" style="font-weight: 600; min-width: 44px; text-align: center;"></span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="changeReportCardYear(1)" style="padding: 6px 10px;">+</button>
             </div>
         </div>
+        <span id="reportcards-student-name" style="font-size: 0.85rem; color: var(--text-muted); padding-bottom: 12px;"></span>
+    </div>
+
+    <!-- Report Card Content -->
+    <div id="reportcards-content">
+        <div class="placeholder">
+            <i class="fas fa-file-alt"></i>
+            <p>Select a term to generate the report card</p>
+        </div>
+    </div>
+</div>
+        
+       <!-- ═══════════════════════════════════════════
+     ANNOUNCEMENTS PAGE
+     ═══════════════════════════════════════════ -->
+<div id="announcements" class="page">
+    <div class="page-header">
+        <h1 class="page-title">Announcements</h1>
+    </div>
+    <p class="page-subtitle">School-wide and targeted announcements</p>
+    <div id="announcements-content">
+        <div class="placeholder">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Loading announcements...</p>
+        </div>
+    </div>
+</div>
 
         <!-- ────────────────────────────────────────
              CALENDAR PAGE
@@ -1084,7 +1109,8 @@
             getDocs, 
             query, 
             where, 
-            orderBy 
+            orderBy,
+            limit
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -1200,6 +1226,14 @@
 
                 if (pageId === 'assignments') {
                     renderAssignmentsChildTabs();
+                }
+
+                if (pageId === 'report-cards') {
+                    renderReportCardChildTabs();
+                }
+
+                if (pageId === 'announcements') {
+                    loadParentAnnouncements();
                 }
                 
             });
@@ -2510,6 +2544,666 @@
                 </div>
             `;
         };
+        
+
+// ═══════════════════════════════════════════════════════════════
+//  REPORT CARDS PAGE STATE
+// ═══════════════════════════════════════════════════════════════
+        let reportCardYear = new Date().getFullYear();
+        let currentReportCardChildIndex = 0;
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER REPORT CARDS CHILD SUB-TABS
+// ═══════════════════════════════════════════════════════════════
+        function renderReportCardChildTabs() {
+            const tabsContainer = document.getElementById('reportcards-child-tabs');
+            const content = document.getElementById('reportcards-content');
+
+            if (!linkedStudents || linkedStudents.length === 0) {
+                tabsContainer.innerHTML = '';
+                content.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-child"></i>
+                        <p>No children linked to your account</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Check for pre-selected child
+            const preselectedId = sessionStorage.getItem('selectedChildId');
+            if (preselectedId) {
+                const foundIndex = linkedStudents.findIndex(s => s.id === preselectedId);
+                if (foundIndex >= 0) {
+                    currentReportCardChildIndex = foundIndex;
+                }
+                sessionStorage.removeItem('selectedChildId');
+            }
+
+            tabsContainer.innerHTML = linkedStudents
+                .map((student, idx) => {
+                    const initials = (student.displayName || 'S')
+                        .split(' ')
+                        .map(name => name[0])
+                        .join('')
+                        .toUpperCase()
+                        .slice(0, 2);
+
+                    const isActive = idx === currentReportCardChildIndex;
+
+                    return `
+                        <button
+                            class="child-tab ${isActive ? 'active' : ''}"
+                            data-index="${idx}"
+                            onclick="switchReportCardChildTab(${idx})"
+                        >
+                            <i class="fas fa-user-graduate"></i>
+                            ${student.displayName || 'Student'} (${initials})
+                        </button>
+                    `;
+                })
+                .join('');
+
+            // Set default term and year
+            const termSelect = document.getElementById('reportcards-term-select');
+            const yearDisplay = document.getElementById('reportcards-year-display');
+
+            if (termSelect) {
+                termSelect.value = getDefaultTerm();
+            }
+            if (yearDisplay) {
+                yearDisplay.textContent = reportCardYear;
+            }
+
+            // Load report card
+            loadParentReportCard();
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  SWITCH REPORT CARD CHILD TAB
+// ═══════════════════════════════════════════════════════════════
+        window.switchReportCardChildTab = function(index) {
+            currentReportCardChildIndex = index;
+
+            const allTabs = document.querySelectorAll('#reportcards-child-tabs .child-tab');
+            allTabs.forEach((tab, idx) => {
+                if (idx === index) {
+                    tab.classList.add('active');
+                } else {
+                    tab.classList.remove('active');
+                }
+            });
+
+            loadParentReportCard();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  CHANGE REPORT CARD YEAR
+// ═══════════════════════════════════════════════════════════════
+        window.changeReportCardYear = function(delta) {
+            reportCardYear += delta;
+            document.getElementById('reportcards-year-display').textContent = reportCardYear;
+            loadParentReportCard();
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  LOAD PARENT REPORT CARD
+// ═══════════════════════════════════════════════════════════════
+        window.loadParentReportCard = async function() {
+            const container = document.getElementById('reportcards-content');
+            const term = document.getElementById('reportcards-term-select').value;
+            const year = document.getElementById('reportcards-year-display').textContent.trim();
+            const nameLabel = document.getElementById('reportcards-student-name');
+
+            if (!linkedStudents.length || currentReportCardChildIndex >= linkedStudents.length) {
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-user"></i>
+                        <p>No child selected</p>
+                    </div>
+                `;
+                if (nameLabel) nameLabel.textContent = '';
+                return;
+            }
+
+            const student = linkedStudents[currentReportCardChildIndex];
+            if (nameLabel) nameLabel.textContent = `Viewing: ${student.displayName || 'Student'}`;
+
+            container.innerHTML = `
+                <p style="color: var(--text-muted); text-align: center; padding: 30px;">
+                    <i class="fas fa-spinner fa-spin"></i> Generating report card...
+                </p>
+            `;
+
+            try {
+                const studentName = student.displayName || student.email || 'Unknown';
+                const gradeLevel = student.gradeLevel || 'N/A';
+
+                // Get school name
+                let schoolName = 'School';
+                try {
+                    const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
+                    if (schoolSnap.exists()) {
+                        schoolName = schoolSnap.data().name || schoolId;
+                    }
+                } catch (e) { /* use default */ }
+
+                // Fetch all gradebook records for this student/term/year
+                const gradebooksSnap = await getDocs(
+                    collection(db, `schools/${schoolId}/gradebooks`)
+                );
+
+                const rows = [];
+                gradebooksSnap.docs.forEach(d => {
+                    const data = d.data();
+                    if (data.term !== term || String(data.year) !== String(year)) return;
+                    const entry = data.entries?.[student.id];
+                    if (!entry) return;
+
+                    const scores = [
+                        entry.assessment1, entry.assessment2, entry.assessment3,
+                        entry.midterm, entry.final
+                    ].filter(v => v !== undefined && v !== '' && v !== null);
+
+                    const avg = scores.length
+                        ? Math.round(scores.reduce((a, b) => a + Number(b), 0) / scores.length)
+                        : null;
+
+                    rows.push({
+                        subjectName:  data.subjectName || '—',
+                        assessment1:  entry.assessment1 ?? null,
+                        assessment2:  entry.assessment2 ?? null,
+                        assessment3:  entry.assessment3 ?? null,
+                        midterm:      entry.midterm     ?? null,
+                        final:        entry.final       ?? null,
+                        average:      avg,
+                        grade:        entry.grade       || null,
+                        comment:      entry.comment     || ''
+                    });
+                });
+
+                rows.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+                const numericAvgs = rows
+                    .map(r => r.average)
+                    .filter(v => v !== null);
+                const overallAvg = numericAvgs.length
+                    ? Math.round(numericAvgs.reduce((a, b) => a + b, 0) / numericAvgs.length)
+                    : null;
+
+                if (rows.length === 0) {
+                    container.innerHTML = `
+                        <div class="placeholder">
+                            <i class="fas fa-clipboard-check"></i>
+                            <p>No grades found for <strong>${termLabel(term)} ${year}</strong>.<br>
+                            <span style="font-size: 0.85rem;">Grades may not have been posted yet for this term.</span></p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Render beautiful report card
+                renderReportCardPreview(studentName, gradeLevel, schoolName, term, year, rows, overallAvg, student.id);
+
+            } catch (error) {
+                console.error('Error generating report card:', error);
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Error generating report card. Please try again.</p>
+                    </div>
+                `;
+            }
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER REPORT CARD PREVIEW
+// ═══════════════════════════════════════════════════════════════
+        function renderReportCardPreview(studentName, gradeLevel, schoolName, term, year, rows, overallAvg, studentId) {
+            const container = document.getElementById('reportcards-content');
+
+            function gradeColor(grade) {
+                if (!grade) return 'var(--text-muted)';
+                if (grade.startsWith('A')) return 'var(--success)';
+                if (grade.startsWith('B')) return 'var(--accent)';
+                if (grade.startsWith('C')) return '#f39c12';
+                return 'var(--danger)';
+            }
+
+            const subjectRows = rows.map(r => `
+                <tr style="border-bottom: 1px solid var(--border-light);">
+                    <td style="padding: 12px 14px;">
+                        <strong style="color: var(--text-dark);">${r.subjectName}</strong>
+                        ${r.comment ? `<br><small style="color: var(--accent);"><i class="fas fa-comment-dots"></i> ${r.comment.substring(0, 60)}${r.comment.length > 60 ? '...' : ''}</small>` : ''}
+                    </td>
+                    <td style="padding: 12px 8px; text-align: center;">${r.assessment1 !== null ? r.assessment1 + '%' : '—'}</td>
+                    <td style="padding: 12px 8px; text-align: center;">${r.assessment2 !== null ? r.assessment2 + '%' : '—'}</td>
+                    <td style="padding: 12px 8px; text-align: center;">${r.assessment3 !== null ? r.assessment3 + '%' : '—'}</td>
+                    <td style="padding: 12px 8px; text-align: center;">${r.midterm !== null ? r.midterm + '%' : '—'}</td>
+                    <td style="padding: 12px 8px; text-align: center;">${r.final !== null ? r.final + '%' : '—'}</td>
+                    <td style="padding: 12px 8px; text-align: center; font-weight: 700; color: var(--primary);">
+                        ${r.average !== null ? r.average + '%' : '—'}
+                    </td>
+                    <td style="padding: 12px 8px; text-align: center;">
+                        <span style="background: ${gradeColor(r.grade)}15; color: ${gradeColor(r.grade)}; padding: 5px 12px; border-radius: 50px; font-weight: 700;">
+                            ${r.grade || '—'}
+                        </span>
+                    </td>
+                </tr>
+            `).join('');
+
+            // Teacher comments section
+            const commentRows = rows.filter(r => r.comment && r.comment.trim() !== '');
+            const commentsSection = commentRows.length > 0 ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: var(--primary); margin-bottom: 12px; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                        <i class="fas fa-comment-dots"></i> Teacher Comments
+                    </h4>
+                    ${commentRows.map(r => `
+                        <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: var(--border-radius-sm); padding: 12px 16px; margin-bottom: 8px;">
+                            <div style="font-weight: 700; font-size: 0.8rem; color: #92400e; margin-bottom: 4px;">${r.subjectName}</div>
+                            <div style="font-size: 0.85rem; color: #78350f; font-style: italic; line-height: 1.5;">"${r.comment}"</div>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : '';
+
+            container.innerHTML = `
+                <div class="card" style="border: 2px solid var(--primary);">
+                    <!-- Header -->
+                    <div style="text-align: center; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 2px solid var(--primary);">
+                        <h2 style="color: var(--primary); margin-bottom: 4px; font-size: 1.4rem;">${schoolName}</h2>
+                        <p style="color: var(--text-muted); font-size: 0.85rem;">Official Report Card — Confidential</p>
+                        <div style="width: 60px; height: 3px; background: linear-gradient(90deg, var(--gold), #f0d78c, var(--gold)); margin: 12px auto; border-radius: 2px;"></div>
+                    </div>
+
+                    <!-- Student Info -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 20px; background: var(--background-light); border-radius: var(--border-radius-sm); padding: 16px;">
+                        <div>
+                            <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 3px;">Student Name</div>
+                            <div style="font-weight: 700; color: var(--text-dark);">${studentName}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 3px;">Grade Level</div>
+                            <div style="font-weight: 700; color: var(--text-dark);">${gradeLevel}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 3px;">Term</div>
+                            <div style="font-weight: 700; color: var(--text-dark);">${termLabel(term)} ${year}</div>
+                        </div>
+                    </div>
+
+                    <!-- Grades Table -->
+                    <div style="overflow-x: auto; margin-bottom: 8px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                            <thead>
+                                <tr style="background: var(--primary); color: white;">
+                                    <th style="padding: 12px 14px; text-align: left;">Subject</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Assess. 1</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Assess. 2</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Assess. 3</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Midterm</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Final</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Average</th>
+                                    <th style="padding: 12px 8px; text-align: center;">Grade</th>
+                                </tr>
+                            </thead>
+                            <tbody>${subjectRows}</tbody>
+                        </table>
+                    </div>
+
+                    <!-- Overall Average -->
+                    ${overallAvg !== null ? `
+                    <div style="background: var(--accent-light); border-radius: var(--border-radius-sm); padding: 16px; text-align: center; margin-top: 8px;">
+                        <span style="font-size: 0.85rem; font-weight: 700; color: var(--primary);">Overall Average</span>
+                        <span style="font-size: 1.5rem; font-weight: 800; color: var(--primary); margin-left: 12px;">${overallAvg}%</span>
+                    </div>
+                    ` : ''}
+
+                    ${commentsSection}
+
+                    <!-- Download Buttons -->
+                    <div style="display: flex; gap: 12px; justify-content: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+                        <button class="btn btn-primary" onclick="downloadParentReportCard('pdf', '${studentId}')">
+                            <i class="fas fa-file-pdf"></i> Download PDF
+                        </button>
+                        <button class="btn btn-outline" onclick="downloadParentReportCard('csv', '${studentId}')">
+                            <i class="fas fa-file-csv"></i> Download CSV
+                        </button>
+                    </div>
+
+                    <p style="text-align: center; font-size: 0.7rem; color: var(--text-muted); margin-top: 12px;">
+                        Generated on ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })} via Tklesson Parent Portal
+                    </p>
+                </div>
+            `;
+
+            // Store data for download
+            container._reportCardData = {
+                studentName, gradeLevel, schoolName, term, year, rows, overallAvg
+            };
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  DOWNLOAD PARENT REPORT CARD
+// ═══════════════════════════════════════════════════════════════
+        window.downloadParentReportCard = function(format, studentId) {
+            const container = document.getElementById('reportcards-content');
+            const data = container._reportCardData;
+            if (!data) return;
+
+            const { studentName, gradeLevel, schoolName, term, year, rows, overallAvg } = data;
+            const ts = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+
+            if (format === 'csv') {
+                // Generate CSV
+                const lines = [];
+                lines.push(`"REPORT CARD — ${schoolName}"`);
+                lines.push(`"Student: ${studentName}"`);
+                lines.push(`"Grade Level: ${gradeLevel}"`);
+                lines.push(`"Term: ${termLabel(term)} ${year}"`);
+                lines.push(`"Generated: ${ts}"`);
+                lines.push('');
+                lines.push('"=== GRADES ==="');
+                lines.push('"Subject","Assessment 1","Assessment 2","Assessment 3","Midterm","Final","Average","Grade"');
+
+                rows.forEach(r => {
+                    lines.push([
+                        `"${r.subjectName}"`,
+                        r.assessment1 !== null ? `"${r.assessment1}%"` : '"—"',
+                        r.assessment2 !== null ? `"${r.assessment2}%"` : '"—"',
+                        r.assessment3 !== null ? `"${r.assessment3}%"` : '"—"',
+                        r.midterm !== null ? `"${r.midterm}%"` : '"—"',
+                        r.final !== null ? `"${r.final}%"` : '"—"',
+                        r.average !== null ? `"${r.average}%"` : '"—"',
+                        `"${r.grade || '—'}"`
+                    ].join(','));
+                });
+
+                if (overallAvg !== null) {
+                    lines.push('');
+                    lines.push(`"Overall Average","${overallAvg}%"`);
+                }
+
+                // Comments
+                const commentRows = rows.filter(r => r.comment && r.comment.trim() !== '');
+                if (commentRows.length > 0) {
+                    lines.push('');
+                    lines.push('"=== TEACHER COMMENTS ==="');
+                    lines.push('"Subject","Comment"');
+                    commentRows.forEach(r => {
+                        lines.push(`"${r.subjectName}","${r.comment}"`);
+                    });
+                }
+
+                const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${studentName.replace(/\s+/g, '_')}_report_card_${term}_${year}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+            } else {
+                // Generate PDF (HTML print)
+                const gradeColor = (grade) => {
+                    if (!grade) return '#718096';
+                    if (grade.startsWith('A')) return '#166534';
+                    if (grade.startsWith('B')) return '#1e40af';
+                    if (grade.startsWith('C')) return '#854d0e';
+                    return '#991b1b';
+                };
+
+                const subjectRowsHTML = rows.map(r => `
+                    <tr>
+                        <td style="padding:10px 14px;"><strong>${r.subjectName}</strong></td>
+                        <td style="text-align:center;padding:10px 8px;">${r.assessment1 !== null ? r.assessment1 + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;">${r.assessment2 !== null ? r.assessment2 + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;">${r.assessment3 !== null ? r.assessment3 + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;">${r.midterm !== null ? r.midterm + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;">${r.final !== null ? r.final + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;font-weight:700;">${r.average !== null ? r.average + '%' : '—'}</td>
+                        <td style="text-align:center;padding:10px 8px;font-weight:800;color:${gradeColor(r.grade)};">${r.grade || '—'}</td>
+                    </tr>
+                `).join('');
+
+                const commentRows = rows.filter(r => r.comment && r.comment.trim() !== '');
+                const commentsHTML = commentRows.length > 0 ? `
+                    <div style="margin-top:28px;">
+                        <h3 style="font-size:13px;font-weight:700;color:#0a1628;text-transform:uppercase;letter-spacing:1px;border-left:4px solid #d4a843;padding-left:10px;margin-bottom:16px;">Teacher Comments</h3>
+                        ${commentRows.map(r => `
+                            <div style="margin-bottom:14px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                                <div style="font-weight:700;font-size:12px;color:#0a1628;margin-bottom:4px;">${r.subjectName}</div>
+                                <div style="font-size:12px;color:#4a5568;font-style:italic;line-height:1.6;">"${r.comment}"</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : '';
+
+                const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Report Card — ${studentName}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:Georgia,'Times New Roman',serif;color:#0a1628;background:white;padding:40px;font-size:13px;line-height:1.6;}
+.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0a1628;padding-bottom:20px;margin-bottom:6px;}
+.header-left h1{font-size:22px;font-weight:700;}
+.header-left p{font-size:12px;color:#718096;margin-top:3px;}
+.header-right{text-align:right;font-size:11px;color:#718096;}
+.gold-bar{height:4px;background:linear-gradient(90deg,#d4a843,#f0d78c,#d4a843);margin-bottom:24px;border-radius:2px;}
+.student-block{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:24px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;}
+.field-label{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.5px;color:#718096;margin-bottom:3px;}
+.field-value{font-size:0.95rem;font-weight:700;color:#0a1628;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+thead th{background:#0a1628;color:white;padding:10px 14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
+thead th:not(:first-child){text-align:center;}
+tbody td{border-bottom:1px solid #e2e8f0;}
+tbody tr:nth-child(even) td{background:#f8fafc;}
+.overall{margin-top:20px;padding:14px 18px;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;display:flex;justify-content:space-between;align-items:center;}
+.overall .label{font-size:0.85rem;font-weight:700;color:#0a1628;}
+.overall .value{font-size:1.4rem;font-weight:800;color:#0a1628;}
+.footer{margin-top:36px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:10px;color:#a0aec0;text-align:center;}
+@media print{body{padding:20px;}thead th{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style></head><body>
+<div class="header"><div class="header-left"><h1>${schoolName}</h1><p>Student Report Card — Confidential</p></div><div class="header-right"><div>Generated: ${ts}</div><div>${termLabel(term)} ${year}</div></div></div>
+<div class="gold-bar"></div>
+<div class="student-block"><div><div class="field-label">Student Name</div><div class="field-value">${studentName}</div></div><div><div class="field-label">Grade Level</div><div class="field-value">${gradeLevel}</div></div><div><div class="field-label">Term</div><div class="field-value">${termLabel(term)} ${year}</div></div></div>
+<table><thead><tr><th style="min-width:160px;">Subject</th><th>Assess. 1</th><th>Assess. 2</th><th>Assess. 3</th><th>Midterm</th><th>Final</th><th>Average</th><th>Grade</th></tr></thead><tbody>${subjectRowsHTML}</tbody></table>
+${overallAvg !== null ? `<div class="overall"><span class="label">Overall Average</span><span class="value">${overallAvg}%</span></div>` : ''}
+${commentsHTML}
+<div class="footer">This report card is an official academic record of ${schoolName}. Issued via Tklesson For Schools. — ${ts}</div>
+</body></html>`;
+
+                const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const win = window.open(url, '_blank');
+                if (win) {
+                    win.addEventListener('load', () => setTimeout(() => win.print(), 500));
+                }
+            }
+        };        
+
+// ═══════════════════════════════════════════════════════════════
+//  LOAD PARENT ANNOUNCEMENTS
+// ═══════════════════════════════════════════════════════════════
+        async function loadParentAnnouncements() {
+            const container = document.getElementById('announcements-content');
+            if (!container) return;
+
+            if (!linkedStudents || linkedStudents.length === 0) {
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-bullhorn"></i>
+                        <p>No announcements to display.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `
+                <p style="text-align: center; padding: 40px; color: var(--text-muted);">
+                    <i class="fas fa-spinner fa-spin" style="display: block; font-size: 2rem; margin-bottom: 10px;"></i>
+                    Loading announcements...
+                </p>
+            `;
+
+            try {
+                // Collect all children's grade levels and subject IDs
+                const childrenGradeLevels = [];
+                const childrenSubjectIds = [];
+                const childrenIds = [];
+
+                for (const student of linkedStudents) {
+                    childrenIds.push(student.id);
+                    if (student.gradeLevel) {
+                        childrenGradeLevels.push(student.gradeLevel);
+                    }
+
+                    // Get subjects for each child
+                    try {
+                        const subjectsSnap = await getDocs(
+                            query(
+                                collection(db, `schools/${schoolId}/subjects`),
+                                where('studentIds', 'array-contains', student.id)
+                            )
+                        );
+                        subjectsSnap.docs.forEach(doc => {
+                            childrenSubjectIds.push(doc.id);
+                        });
+                    } catch (e) { /* skip */ }
+                }
+
+                // Fetch active announcements
+                const snap = await getDocs(
+                    query(
+                        collection(db, `schools/${schoolId}/announcements`),
+                        where('active', '==', true),
+                        orderBy('createdAt', 'desc'),
+                        limit(50)
+                    )
+                );
+
+                // Filter announcements relevant to this parent
+                const announcements = snap.docs
+                    .map(d => ({ id: d.id, ...d.data() }))
+                    .filter(a => isAnnouncementForParent(
+                        a, childrenIds, childrenGradeLevels, childrenSubjectIds
+                    ));
+
+                if (announcements.length === 0) {
+                    container.innerHTML = `
+                        <div class="placeholder">
+                            <i class="fas fa-bullhorn"></i>
+                            <p>No announcements at this time.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Render announcement cards
+                container.innerHTML = announcements.map(a => {
+                    const date = a.createdAt
+                        ? new Date(a.createdAt).toLocaleDateString('en-US', {
+                            month: 'long', day: 'numeric', year: 'numeric'
+                        })
+                        : '';
+
+                    // Determine target badge
+                    let targetBadge = '';
+                    const t = a.target;
+                    if (t) {
+                        switch (t.type) {
+                            case 'all':
+                                targetBadge = '<span style="background: #dbeafe; color: #1e40af; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">School-wide</span>';
+                                break;
+                            case 'by-grade':
+                                targetBadge = `<span style="background: #dcfce7; color: #166534; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Grade ${t.grade}</span>`;
+                                break;
+                            case 'by-subject':
+                                targetBadge = '<span style="background: #fef3c7; color: #92400e; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Subject-specific</span>';
+                                break;
+                            case 'specific':
+                                targetBadge = '<span style="background: #fce7f3; color: #9d174d; padding: 3px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600;">Direct</span>';
+                                break;
+                        }
+                    }
+
+                    return `
+                    <div style="
+                        border: 1px solid var(--border);
+                        border-radius: var(--border-radius);
+                        padding: 20px;
+                        margin-bottom: 14px;
+                        background: var(--background);
+                        border-left: 4px solid var(--primary);
+                        transition: var(--transition);
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+                                    <span style="font-weight: 700; font-size: 1rem; color: var(--text-dark);">
+                                        <i class="fas fa-bullhorn" style="color: var(--primary); margin-right: 8px;"></i>${a.title || 'Untitled'}
+                                    </span>
+                                    ${targetBadge}
+                                </div>
+                                <p style="font-size: 0.9rem; color: var(--text-gray); line-height: 1.6; margin: 0;">
+                                    ${a.body || 'No content.'}
+                                </p>
+                            </div>
+                        </div>
+                        ${date ? `
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px;">
+                            <i class="fas fa-calendar"></i> ${date}
+                        </div>` : ''}
+                    </div>`;
+                }).join('');
+
+            } catch (error) {
+                console.error('Error loading announcements:', error);
+                container.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Could not load announcements. Please try again.</p>
+                    </div>
+                `;
+            }
+        }
+
+// ═══════════════════════════════════════════════════════════════
+//  CHECK IF ANNOUNCEMENT IS FOR THIS PARENT
+// ═══════════════════════════════════════════════════════════════
+        function isAnnouncementForParent(ann, childrenIds, childrenGradeLevels, childrenSubjectIds) {
+            const t = ann.target;
+
+            // No target = visible to everyone
+            if (!t) return true;
+
+            switch (t.type) {
+                case 'all':
+                    return true;
+
+                case 'all-parents':
+                    return true;
+
+                case 'all-students':
+                    // Parents should see student announcements too
+                    return true;
+
+                case 'by-grade':
+                    // Show if any child is in this grade
+                    return childrenGradeLevels.includes(t.grade);
+
+                case 'by-subject':
+                    // Show if any child is enrolled in this subject
+                    return childrenSubjectIds.includes(t.subjectId);
+
+                case 'specific':
+                    // Show if any child is specifically targeted
+                    return (t.persons || []).some(p => childrenIds.includes(p.id));
+
+                default:
+                    return true;
+            }
+        }
         
         
 // ═══════════════════════════════════════════════════════════════
