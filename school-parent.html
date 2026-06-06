@@ -3987,7 +3987,7 @@ ${commentsHTML}
 // ═══════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════
-//  LOAD PARENT SETTINGS
+//  LOAD SETTINGS
 // ═══════════════════════════════════════════════════════════════
         async function loadParentSettings() {
             const user = auth.currentUser;
@@ -4002,63 +4002,80 @@ ${commentsHTML}
                     if (userSnap.exists() && userSnap.data().displayName) {
                         displayName = userSnap.data().displayName;
                     }
-                } catch (e) { /* skip */ }
+                } catch (e) {
+                    // Silently fall back to email
+                }
             }
 
-            document.getElementById('parent-current-display-name').textContent = displayName || 'Not set';
-            document.getElementById('parent-current-email').textContent = user.email || 'Unknown';
-            document.getElementById('parent-account-created').textContent = user.metadata.creationTime
+            // Populate profile fields
+            document.getElementById('settings-avatar').textContent = getInitials(displayName || 'User');
+            document.getElementById('settings-name').textContent = displayName || 'User';
+            document.getElementById('current-display-name').textContent = displayName || 'Not set';
+            document.getElementById('current-email').textContent = user.email || 'Unknown';
+            document.getElementById('account-created').textContent = user.metadata.creationTime
                 ? new Date(user.metadata.creationTime).toLocaleDateString()
                 : 'Unknown';
 
             // Theme
             const savedTheme = localStorage.getItem('theme') || 'light';
-            document.getElementById('parent-theme-selector').value = savedTheme;
+            const themeSelect = document.getElementById('theme-selector');
+            if (themeSelect) {
+                themeSelect.value = savedTheme;
+            }
 
             // Password last changed
-            const userSettings = JSON.parse(localStorage.getItem('parentUserSettings') || '{}');
+            const userSettings = JSON.parse(localStorage.getItem('userSettings') || '{}');
             if (userSettings.passwordLastChanged) {
-                document.getElementById('parent-password-last-changed').textContent =
+                document.getElementById('password-last-changed').textContent =
                     new Date(userSettings.passwordLastChanged).toLocaleDateString();
             }
 
             // 2FA status
-            await loadParent2FAStatus();
+            await load2FAStatus();
         }
 
 // ═══════════════════════════════════════════════════════════════
 //  EDIT PROFILE
 // ═══════════════════════════════════════════════════════════════
-        window.openParentEditProfile = function() {
+        window.openEditProfile = function() {
             const user = auth.currentUser;
             if (user) {
-                document.getElementById('parent-edit-display-name').value = user.displayName || '';
+                document.getElementById('edit-display-name').value = user.displayName || '';
             }
-            document.getElementById('parent-edit-profile-modal').style.display = 'flex';
+            document.getElementById('edit-profile-modal').classList.add('active');
         };
 
-        window.closeParentEditProfile = function() {
-            document.getElementById('parent-edit-profile-modal').style.display = 'none';
+        window.closeEditProfile = function() {
+            document.getElementById('edit-profile-modal').classList.remove('active');
         };
 
-        window.saveParentProfile = async function() {
-            const displayName = document.getElementById('parent-edit-display-name').value.trim();
-            if (!displayName) return alert('Please enter a display name.');
+        window.saveProfile = async function() {
+            const displayName = document.getElementById('edit-display-name').value.trim();
+            if (!displayName) {
+                return alert('Please enter a display name.');
+            }
 
             const user = auth.currentUser;
             if (!user) return;
 
             try {
+                // Update Firebase Auth profile
                 await updateProfile(user, { displayName });
+
+                // Update Firestore user document
                 await setDoc(doc(db, `schools/${schoolId}/users/${user.uid}`), {
-                    displayName,
+                    displayName: displayName,
                     email: user.email,
                     lastUpdated: new Date().toISOString()
                 }, { merge: true });
 
-                document.getElementById('parent-current-display-name').textContent = displayName;
+                // Update UI
+                document.getElementById('current-display-name').textContent = displayName;
+                document.getElementById('settings-name').textContent = displayName;
+                document.getElementById('settings-avatar').textContent = getInitials(displayName);
                 document.getElementById('parent-name').textContent = displayName;
-                closeParentEditProfile();
+
+                closeEditProfile();
             } catch (error) {
                 console.error('Error saving profile:', error);
                 alert('Error saving profile. Please try again.');
@@ -4068,40 +4085,53 @@ ${commentsHTML}
 // ═══════════════════════════════════════════════════════════════
 //  CHANGE PASSWORD
 // ═══════════════════════════════════════════════════════════════
-        window.openParentChangePassword = function() {
-            document.getElementById('parent-change-password-modal').style.display = 'flex';
+        window.openChangePassword = function() {
+            document.getElementById('change-password-modal').classList.add('active');
         };
 
-        window.closeParentChangePassword = function() {
-            document.getElementById('parent-change-password-modal').style.display = 'none';
-            document.getElementById('parent-current-password').value = '';
-            document.getElementById('parent-new-password').value = '';
-            document.getElementById('parent-confirm-password').value = '';
+        window.closeChangePassword = function() {
+            document.getElementById('change-password-modal').classList.remove('active');
+            document.getElementById('current-password').value = '';
+            document.getElementById('new-password').value = '';
+            document.getElementById('confirm-password').value = '';
         };
 
-        window.changeParentPassword = async function() {
-            const currentPassword = document.getElementById('parent-current-password').value;
-            const newPassword = document.getElementById('parent-new-password').value;
-            const confirmPassword = document.getElementById('parent-confirm-password').value;
+        window.changePassword = async function() {
+            const currentPassword = document.getElementById('current-password').value;
+            const newPassword = document.getElementById('new-password').value;
+            const confirmPassword = document.getElementById('confirm-password').value;
 
-            if (!currentPassword || !newPassword || !confirmPassword) return alert('Please fill all fields.');
-            if (newPassword !== confirmPassword) return alert('Passwords do not match.');
-            if (newPassword.length < 8) return alert('Password must be at least 8 characters.');
+            if (!currentPassword || !newPassword || !confirmPassword) {
+                return alert('Please fill all fields.');
+            }
+            if (newPassword !== confirmPassword) {
+                return alert('Passwords do not match.');
+            }
+            if (newPassword.length < 8) {
+                return alert('Password must be at least 8 characters.');
+            }
 
             const user = auth.currentUser;
             if (!user || !user.email) return;
 
             try {
+                // Re-authenticate
                 const credential = EmailAuthProvider.credential(user.email, currentPassword);
                 await reauthenticateWithCredential(user, credential);
+
+                // Update password
                 await updatePassword(user, newPassword);
 
-                const settings = JSON.parse(localStorage.getItem('parentUserSettings') || '{}');
+                // Save timestamp
+                const settings = JSON.parse(localStorage.getItem('userSettings') || '{}');
                 settings.passwordLastChanged = new Date().toISOString();
-                localStorage.setItem('parentUserSettings', JSON.stringify(settings));
+                localStorage.setItem('userSettings', JSON.stringify(settings));
 
-                document.getElementById('parent-password-last-changed').textContent = new Date().toLocaleDateString();
-                closeParentChangePassword();
+                // Update UI
+                document.getElementById('password-last-changed').textContent =
+                    new Date().toLocaleDateString();
+
+                closeChangePassword();
                 alert('Password updated successfully!');
             } catch (error) {
                 const message = error.code === 'auth/wrong-password'
@@ -4112,73 +4142,80 @@ ${commentsHTML}
         };
 
 // ═══════════════════════════════════════════════════════════════
-//  2FA STATUS
-// ═══════════════════════════════════════════════════════════════
-        async function loadParent2FAStatus() {
-            const btn = document.getElementById('parent-2fa-action-btn');
-            const statusText = document.getElementById('parent-2fa-status-text');
-
-            // Check if 2FA is enabled (simplified — adjust to your actual 2FA logic)
-            const userSettings = JSON.parse(localStorage.getItem('parentUserSettings') || '{}');
-
-            if (userSettings.twoFactorEnabled) {
-                statusText.textContent = '2FA is active on your account';
-                btn.innerHTML = '<i class="fas fa-shield-alt"></i> Disable';
-                btn.className = 'btn btn-outline btn-sm';
-                btn.onclick = function() { /* disable 2FA flow */ };
-            } else {
-                statusText.textContent = 'Add extra security to your account';
-                btn.innerHTML = '<i class="fas fa-shield-alt"></i> Enable';
-                btn.className = 'btn btn-primary btn-sm';
-                btn.onclick = function() { /* enable 2FA flow */ };
-            }
-        }
-
-        window.openParent2FAFlow = function() {
-            // Placeholder — you can integrate your full 2FA setup flow here
-            alert('2FA setup will be available in a future update.');
-        };
-
-// ═══════════════════════════════════════════════════════════════
 //  THEME
 // ═══════════════════════════════════════════════════════════════
-        window.applyParentTheme = function(theme) {
+        function initTheme() {
+            const saved = localStorage.getItem('theme') || 'light';
+            applyTheme(saved);
+        }
+
+        function applyTheme(theme) {
             if (theme === 'dark') {
                 document.documentElement.setAttribute('data-theme', 'dark');
             } else {
                 document.documentElement.removeAttribute('data-theme');
             }
-            localStorage.setItem('theme', theme);
-        };
-
-        // Initialize theme on load
-        (function initParentTheme() {
-            const saved = localStorage.getItem('theme') || 'light';
-            if (saved === 'dark') {
-                document.documentElement.setAttribute('data-theme', 'dark');
+            const themeSelect = document.getElementById('theme-selector');
+            if (themeSelect) {
+                themeSelect.value = theme;
             }
-        })();
+            localStorage.setItem('theme', theme);
+        }
+
+        // Hook up theme selector on DOM ready
+        document.addEventListener('DOMContentLoaded', () => {
+            const themeSelect = document.getElementById('theme-selector');
+            if (themeSelect) {
+                themeSelect.addEventListener('change', function() {
+                    applyTheme(this.value);
+                });
+            }
+            initTheme();
+        });
+
+// ═══════════════════════════════════════════════════════════════
+//  GET INITIALS
+// ═══════════════════════════════════════════════════════════════
+        function getInitials(name) {
+            return name
+                .split(' ')
+                .map(n => n[0])
+                .join('')
+                .toUpperCase()
+                .substring(0, 2);
+        }
 
 // ═══════════════════════════════════════════════════════════════
 //  TWO-FACTOR AUTHENTICATION (TOTP) — PARENT PORTAL
-//  Libraries loaded from CDN — otpauth + qrcode
+//  Libraries: otpauth + qrcode from CDN
+//  Data stored in: schoolparents/{uid}
+// ================================================================
+//  TWO-FACTOR AUTHENTICATION (TOTP) — PARENT PORTAL
+//  Libraries: otpauth + qrcode from CDN
+//  Data stored in: schoolparents/{uid}
 // ═══════════════════════════════════════════════════════════════
 
-        let _parentTfaSecret = null;
-        let _parentTfaBackupCodes = [];
-        let _parentTfaFailCount = 0;
-        const PARENT_TFA_MAX_ATTEMPTS = 5;
+        let _tfaSecret = null;
+        let _tfaBackupCodes = [];
+        let _tfaFailCount = 0;
+        const TFA_MAX_ATTEMPTS = 5;
 
 // ═══════════════════════════════════════════════════════════════
-//  LOAD TFA LIBRARIES
+//  LOAD TFA LIBRARIES FROM CDN
 // ═══════════════════════════════════════════════════════════════
-        function loadParentTFALibraries() {
+        function loadTFALibraries() {
             return new Promise((resolve, reject) => {
-                if (window.OTPAuth && window.QRCode) { resolve(); return; }
+                // Already loaded
+                if (window.OTPAuth && window.QRCode) {
+                    resolve();
+                    return;
+                }
 
+                // Load qrcode first
                 const qrScript = document.createElement('script');
                 qrScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
                 qrScript.onload = () => {
+                    // Then load otpauth
                     const otpScript = document.createElement('script');
                     otpScript.src = 'https://cdn.jsdelivr.net/npm/otpauth@9.3.6/dist/otpauth.umd.min.js';
                     otpScript.onload = resolve;
@@ -4191,14 +4228,14 @@ ${commentsHTML}
         }
 
 // ═══════════════════════════════════════════════════════════════
-//  LOAD 2FA STATUS
+//  LOAD 2FA STATUS FROM SCHOOLPARENTS
 // ═══════════════════════════════════════════════════════════════
-        async function loadParent2FAStatus() {
+        async function load2FAStatus() {
             const user = auth.currentUser;
             if (!user) return;
 
-            const btn = document.getElementById('parent-2fa-action-btn');
-            const statusText = document.getElementById('parent-2fa-status-text');
+            const btn = document.getElementById('2fa-action-btn');
+            const statusText = document.getElementById('2fa-status-text');
 
             try {
                 const snap = await getDoc(doc(db, 'schoolparents', user.uid));
@@ -4224,32 +4261,34 @@ ${commentsHTML}
         }
 
 // ═══════════════════════════════════════════════════════════════
-//  OPEN 2FA FLOW
+//  OPEN 2FA FLOW (ENABLE OR DISABLE)
 // ═══════════════════════════════════════════════════════════════
-        window.openParent2FAFlow = async function() {
+        window.open2FAFlow = async function() {
             const user = auth.currentUser;
             if (!user) return;
 
             try {
                 const snap = await getDoc(doc(db, 'schoolparents', user.uid));
                 const enabled = snap.exists() && snap.data().twoFactorEnabled === true;
+
                 if (enabled) {
-                    openParent2FADisable();
+                    open2FADisable();
                 } else {
-                    openParent2FASetup();
+                    open2FASetup();
                 }
             } catch (err) {
-                console.error(err);
+                console.error('Error loading 2FA status:', err);
                 alert('Error loading 2FA status. Please try again.');
             }
         };
 
 // ═══════════════════════════════════════════════════════════════
-//  SETUP FLOW
+//  SETUP FLOW — STEP 1: GENERATE QR CODE
 // ═══════════════════════════════════════════════════════════════
-        async function openParent2FASetup() {
+        async function open2FASetup() {
+            // Load libraries
             try {
-                await loadParentTFALibraries();
+                await loadTFALibraries();
             } catch {
                 alert('Unable to load security libraries. Please check your connection.');
                 return;
@@ -4257,6 +4296,7 @@ ${commentsHTML}
 
             const user = auth.currentUser;
 
+            // Generate TOTP secret
             const totp = new OTPAuth.TOTP({
                 issuer: 'Tklesson (Parent Portal)',
                 label: user.email,
@@ -4266,14 +4306,16 @@ ${commentsHTML}
                 secret: new OTPAuth.Secret()
             });
 
-            _parentTfaSecret = totp.secret.base32;
-            _parentTfaFailCount = 0;
+            _tfaSecret = totp.secret.base32;
+            _tfaFailCount = 0;
 
-            const formatted = _parentTfaSecret.match(/.{1,4}/g).join(' ');
-            document.getElementById('parent-2fa-manual-key').textContent = formatted;
+            // Display manual key
+            const formatted = _tfaSecret.match(/.{1,4}/g).join(' ');
+            document.getElementById('2fa-manual-key').textContent = formatted;
 
-            const container = document.getElementById('parent-2fa-qr-container');
-            container.innerHTML = '<canvas id="parent-2fa-qr-canvas"></canvas>';
+            // Render QR code
+            const container = document.getElementById('2fa-qr-container');
+            container.innerHTML = '<canvas id="2fa-qr-canvas"></canvas>';
 
             new QRCode(container, {
                 text: totp.toString(),
@@ -4284,56 +4326,74 @@ ${commentsHTML}
                 correctLevel: QRCode.CorrectLevel.M
             });
 
-            parentGoto2FAStep(1);
-            document.getElementById('parent-2fa-setup-modal').style.display = 'flex';
+            // Show modal at step 1
+            goto2FAStep(1);
+            document.getElementById('2fa-setup-modal').style.display = 'flex';
             document.body.style.overflow = 'hidden';
 
-            wireParentOTPInputs('parent-tfa-otp-inputs');
+            // Wire OTP inputs for step 2
+            wireOTPInputs('tfa-otp-inputs');
         }
 
-        window.parentGoto2FAStep = function(step) {
+// ═══════════════════════════════════════════════════════════════
+//  NAVIGATE BETWEEN 2FA SETUP STEPS
+// ═══════════════════════════════════════════════════════════════
+        window.goto2FAStep = function(step) {
+            // Show/hide step panels
             [1, 2, 3].forEach(n => {
-                document.getElementById(`parent-2fa-step-${n}`).style.display = n === step ? 'block' : 'none';
+                document.getElementById(`2fa-step-${n}`).style.display =
+                    n === step ? 'block' : 'none';
             });
-            document.querySelectorAll('.parent-tfa-step').forEach(el => {
+
+            // Update step indicators
+            document.querySelectorAll('.tfa-step').forEach(el => {
                 const n = parseInt(el.dataset.step);
                 el.classList.remove('active', 'done');
                 if (n < step) el.classList.add('done');
                 if (n === step) el.classList.add('active');
             });
-            document.getElementById('parent-2fa-verify-error').style.display = 'none';
-            clearParentOTPInputs('parent-tfa-otp-inputs');
+
+            // Clear errors
+            document.getElementById('2fa-verify-error').style.display = 'none';
+            clearOTPInputs('tfa-otp-inputs');
         };
 
-        window.parentVerify2FASetup = async function() {
-            if (_parentTfaFailCount >= PARENT_TFA_MAX_ATTEMPTS) {
-                document.getElementById('parent-2fa-verify-error').style.display = 'block';
-                document.getElementById('parent-2fa-verify-error').innerHTML =
+// ═══════════════════════════════════════════════════════════════
+//  SETUP FLOW — STEP 2: VERIFY CODE
+// ═══════════════════════════════════════════════════════════════
+        window.verify2FASetup = async function() {
+            // Check max attempts
+            if (_tfaFailCount >= TFA_MAX_ATTEMPTS) {
+                document.getElementById('2fa-verify-error').style.display = 'block';
+                document.getElementById('2fa-verify-error').innerHTML =
                     '<i class="fas fa-ban"></i> Too many attempts. Please restart setup.';
                 return;
             }
 
-            const code = getParentOTPValue('parent-tfa-otp-inputs');
+            // Get OTP code
+            const code = getOTPValue('tfa-otp-inputs');
             if (code.length !== 6) {
-                shakeParentOTPInputs('parent-tfa-otp-inputs');
+                shakeOTPInputs('tfa-otp-inputs');
                 return;
             }
 
-            setParentBtnLoading('parent-2fa-verify-btn', 'parent-2fa-verify-btn-text', 'parent-2fa-verify-spinner', true);
+            setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', true);
 
             try {
+                // Initiate challenge via Cloud Function
                 const initiateTFA = httpsCallable(functions, 'initiateSchoolUserTFA');
                 const initiateResult = await initiateTFA({
                     schoolId: schoolId,
                     role: 'parent',
                     isSetupMode: true,
-                    pendingSecret: _parentTfaSecret
+                    pendingSecret: _tfaSecret
                 });
 
                 if (!initiateResult.data?.challengeToken) {
                     throw new Error('Failed to initiate challenge');
                 }
 
+                // Verify code via Cloud Function
                 const verifyTOTP = httpsCallable(functions, 'verifySchoolUserTFA');
                 const verifyResult = await verifyTOTP({
                     challengeToken: initiateResult.data.challengeToken,
@@ -4341,47 +4401,54 @@ ${commentsHTML}
                 });
 
                 if (!verifyResult.data.valid) {
-                    _parentTfaFailCount++;
-                    shakeParentOTPInputs('parent-tfa-otp-inputs');
-                    document.getElementById('parent-2fa-verify-error').style.display = 'block';
-                    document.getElementById('parent-2fa-verify-error').innerHTML =
-                        `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${PARENT_TFA_MAX_ATTEMPTS - _parentTfaFailCount} attempt(s) left.`;
-                    clearParentOTPInputs('parent-tfa-otp-inputs');
-                    setParentBtnLoading('parent-2fa-verify-btn', 'parent-2fa-verify-btn-text', 'parent-2fa-verify-spinner', false);
+                    _tfaFailCount++;
+                    shakeOTPInputs('tfa-otp-inputs');
+                    document.getElementById('2fa-verify-error').style.display = 'block';
+                    document.getElementById('2fa-verify-error').innerHTML =
+                        `<i class="fas fa-exclamation-circle"></i> Incorrect code. ${TFA_MAX_ATTEMPTS - _tfaFailCount} attempt(s) left.`;
+                    clearOTPInputs('tfa-otp-inputs');
+                    setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', false);
                     return;
                 }
 
-                _parentTfaBackupCodes = generateParentBackupCodes(8);
-                const hashedCodes = _parentTfaBackupCodes.map(c => btoa(c));
+                // Code valid — generate and hash backup codes
+                _tfaBackupCodes = generateBackupCodes(8);
+                const hashedCodes = _tfaBackupCodes.map(c => btoa(c));
 
+                // Save to schoolparents
                 const user = auth.currentUser;
                 await setDoc(doc(db, 'schoolparents', user.uid), {
                     twoFactorEnabled: true,
-                    twoFactorSecret: _parentTfaSecret,
+                    twoFactorSecret: _tfaSecret,
                     twoFactorBackupCodes: hashedCodes,
                     twoFactorEnabledAt: new Date().toISOString()
                 }, { merge: true });
 
-                const grid = document.getElementById('parent-2fa-backup-codes-grid');
-                grid.innerHTML = _parentTfaBackupCodes.map(c =>
+                // Display backup codes
+                const grid = document.getElementById('2fa-backup-codes-grid');
+                grid.innerHTML = _tfaBackupCodes.map(c =>
                     `<div style="background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; font-family: monospace; font-size: 0.85rem; text-align: center;">${c}</div>`
                 ).join('');
 
-                parentGoto2FAStep(3);
-                await loadParent2FAStatus();
+                // Go to step 3
+                goto2FAStep(3);
+                await load2FAStatus();
 
             } catch (err) {
                 console.error('2FA save error:', err);
-                document.getElementById('parent-2fa-verify-error').style.display = 'block';
-                document.getElementById('parent-2fa-verify-error').innerHTML =
+                document.getElementById('2fa-verify-error').style.display = 'block';
+                document.getElementById('2fa-verify-error').innerHTML =
                     '<i class="fas fa-exclamation-circle"></i> Failed to save. Please try again.';
             }
 
-            setParentBtnLoading('parent-2fa-verify-btn', 'parent-2fa-verify-btn-text', 'parent-2fa-verify-spinner', false);
+            setBtnLoading('2fa-verify-btn', '2fa-verify-btn-text', '2fa-verify-spinner', false);
         };
 
-        window.parentCopyBackupCodes = function() {
-            navigator.clipboard.writeText(_parentTfaBackupCodes.join('\n')).then(() => {
+// ═══════════════════════════════════════════════════════════════
+//  COPY BACKUP CODES TO CLIPBOARD
+// ═══════════════════════════════════════════════════════════════
+        window.copyBackupCodes = function() {
+            navigator.clipboard.writeText(_tfaBackupCodes.join('\n')).then(() => {
                 const btn = event.target.closest('button');
                 const orig = btn.innerHTML;
                 btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
@@ -4389,35 +4456,57 @@ ${commentsHTML}
             });
         };
 
-        window.closeParent2FASetup = function() {
-            document.getElementById('parent-2fa-setup-modal').style.display = 'none';
+// ═══════════════════════════════════════════════════════════════
+//  CLOSE 2FA SETUP MODAL
+// ═══════════════════════════════════════════════════════════════
+        window.close2FASetup = function() {
+            document.getElementById('2fa-setup-modal').style.display = 'none';
             document.body.style.overflow = '';
-            _parentTfaSecret = null;
-            _parentTfaBackupCodes = [];
+            _tfaSecret = null;
+            _tfaBackupCodes = [];
         };
 
 // ═══════════════════════════════════════════════════════════════
-//  DISABLE FLOW
+//  DISABLE FLOW — OPEN MODAL
 // ═══════════════════════════════════════════════════════════════
-        function openParent2FADisable() {
-            document.getElementById('parent-2fa-disable-password').value = '';
-            document.getElementById('parent-2fa-disable-error').style.display = 'none';
-            clearParentOTPInputs('parent-tfa-disable-otp-inputs');
-            wireParentOTPInputs('parent-tfa-disable-otp-inputs');
-            document.getElementById('parent-2fa-disable-modal').style.display = 'flex';
+        function open2FADisable() {
+            document.getElementById('2fa-disable-password').value = '';
+            document.getElementById('2fa-disable-error').style.display = 'none';
+            clearOTPInputs('tfa-disable-otp-inputs');
+            wireOTPInputs('tfa-disable-otp-inputs');
+
+            document.getElementById('2fa-disable-modal').style.display = 'flex';
             document.body.style.overflow = 'hidden';
         }
 
-        window.closeParent2FADisable = function() {
-            document.getElementById('parent-2fa-disable-modal').style.display = 'none';
+// ═══════════════════════════════════════════════════════════════
+//  CLOSE 2FA DISABLE MODAL
+// ═══════════════════════════════════════════════════════════════
+        window.close2FADisable = function() {
+            document.getElementById('2fa-disable-modal').style.display = 'none';
             document.body.style.overflow = '';
         };
 
-        window.parentConfirm2FADisable = async function() {
-            const password = document.getElementById('parent-2fa-disable-password').value;
-            const code = getParentOTPValue('parent-tfa-disable-otp-inputs');
-            const errorEl = document.getElementById('parent-2fa-disable-error');
-            const errorText = document.getElementById('parent-2fa-disable-error-text');
+// ═══════════════════════════════════════════════════════════════
+//  TOGGLE PASSWORD VISIBILITY IN DISABLE MODAL
+// ═══════════════════════════════════════════════════════════════
+        window.toggle2FADisablePassword = function() {
+            const input = document.getElementById('2fa-disable-password');
+            const icon = document.getElementById('2fa-disable-eye');
+            const isPassword = input.type === 'password';
+            input.type = isPassword ? 'text' : 'password';
+            icon.classList.toggle('fa-eye', !isPassword);
+            icon.classList.toggle('fa-eye-slash', isPassword);
+        };
+
+// ═══════════════════════════════════════════════════════════════
+//  DISABLE FLOW — CONFIRM AND REMOVE 2FA
+// ═══════════════════════════════════════════════════════════════
+        window.confirm2FADisable = async function() {
+            const password = document.getElementById('2fa-disable-password').value;
+            const code = getOTPValue('tfa-disable-otp-inputs');
+            const errorEl = document.getElementById('2fa-disable-error');
+            const errorText = document.getElementById('2fa-disable-error-text');
 
             errorEl.style.display = 'none';
 
@@ -4426,19 +4515,22 @@ ${commentsHTML}
                 errorEl.style.display = 'block';
                 return;
             }
+
             if (code.length !== 6) {
-                shakeParentOTPInputs('parent-tfa-disable-otp-inputs');
+                shakeOTPInputs('tfa-disable-otp-inputs');
                 return;
             }
 
-            setParentBtnLoading('parent-2fa-disable-confirm-btn', 'parent-2fa-disable-btn-text', 'parent-2fa-disable-spinner', true);
+            setBtnLoading('2fa-disable-confirm-btn', '2fa-disable-btn-text', '2fa-disable-spinner', true);
 
             try {
                 const user = auth.currentUser;
 
+                // Re-authenticate with password
                 const credential = EmailAuthProvider.credential(user.email, password);
                 await reauthenticateWithCredential(user, credential);
 
+                // Initiate challenge
                 const initiateTFA = httpsCallable(functions, 'initiateSchoolUserTFA');
                 const initiateResult = await initiateTFA({
                     schoolId: schoolId,
@@ -4449,6 +4541,7 @@ ${commentsHTML}
                     throw new Error('Failed to initiate challenge');
                 }
 
+                // Verify TOTP code
                 const verifyTOTP = httpsCallable(functions, 'verifySchoolUserTFA');
                 const verifyResult = await verifyTOTP({
                     challengeToken: initiateResult.data.challengeToken,
@@ -4456,14 +4549,15 @@ ${commentsHTML}
                 });
 
                 if (!verifyResult.data.valid) {
-                    shakeParentOTPInputs('parent-tfa-disable-otp-inputs');
+                    shakeOTPInputs('tfa-disable-otp-inputs');
                     errorText.textContent = 'Incorrect authenticator code. Please try again.';
                     errorEl.style.display = 'block';
-                    clearParentOTPInputs('parent-tfa-disable-otp-inputs');
-                    setParentBtnLoading('parent-2fa-disable-confirm-btn', 'parent-2fa-disable-btn-text', 'parent-2fa-disable-spinner', false);
+                    clearOTPInputs('tfa-disable-otp-inputs');
+                    setBtnLoading('2fa-disable-confirm-btn', '2fa-disable-btn-text', '2fa-disable-spinner', false);
                     return;
                 }
 
+                // Remove 2FA from schoolparents
                 await setDoc(doc(db, 'schoolparents', user.uid), {
                     twoFactorEnabled: false,
                     twoFactorSecret: null,
@@ -4471,8 +4565,8 @@ ${commentsHTML}
                     twoFactorDisabledAt: new Date().toISOString()
                 }, { merge: true });
 
-                closeParent2FADisable();
-                await loadParent2FAStatus();
+                close2FADisable();
+                await load2FAStatus();
 
             } catch (err) {
                 console.error('Disable 2FA error:', err);
@@ -4481,76 +4575,101 @@ ${commentsHTML}
                     : 'Something went wrong. Please try again.';
                 errorText.textContent = msg;
                 errorEl.style.display = 'block';
-                setParentBtnLoading('parent-2fa-disable-confirm-btn', 'parent-2fa-disable-btn-text', 'parent-2fa-disable-spinner', false);
+                setBtnLoading('2fa-disable-confirm-btn', '2fa-disable-btn-text', '2fa-disable-spinner', false);
             }
         };
 
 // ═══════════════════════════════════════════════════════════════
-//  SHARED HELPERS
+//  OTP INPUT HELPERS
 // ═══════════════════════════════════════════════════════════════
-        function wireParentOTPInputs(containerId) {
-            const inputs = document.querySelectorAll(`#${containerId} .parent-otp-digit`);
+
+        function wireOTPInputs(containerId) {
+            const inputs = document.querySelectorAll(`#${containerId} .otp-digit`);
+
+            // Remove old listeners by cloning
             inputs.forEach((input, i) => {
                 const fresh = input.cloneNode(true);
                 input.parentNode.replaceChild(fresh, input);
             });
 
-            const freshInputs = document.querySelectorAll(`#${containerId} .parent-otp-digit`);
+            const freshInputs = document.querySelectorAll(`#${containerId} .otp-digit`);
+
             freshInputs.forEach((input, i) => {
                 input.value = '';
                 input.classList.remove('error');
 
+                // Auto-advance on input
                 input.addEventListener('input', e => {
                     const val = e.target.value.replace(/\D/g, '');
                     e.target.value = val.slice(-1);
-                    if (val && i < freshInputs.length - 1) freshInputs[i + 1].focus();
+                    if (val && i < freshInputs.length - 1) {
+                        freshInputs[i + 1].focus();
+                    }
                 });
 
+                // Backspace goes to previous
                 input.addEventListener('keydown', e => {
-                    if (e.key === 'Backspace' && !input.value && i > 0) freshInputs[i - 1].focus();
+                    if (e.key === 'Backspace' && !input.value && i > 0) {
+                        freshInputs[i - 1].focus();
+                    }
                 });
 
+                // Paste support
                 input.addEventListener('paste', e => {
                     e.preventDefault();
                     const pasted = (e.clipboardData || window.clipboardData)
-                        .getData('text').replace(/\D/g, '').slice(0, 6);
+                        .getData('text')
+                        .replace(/\D/g, '')
+                        .slice(0, 6);
                     pasted.split('').forEach((char, idx) => {
-                        if (freshInputs[idx]) freshInputs[idx].value = char;
+                        if (freshInputs[idx]) {
+                            freshInputs[idx].value = char;
+                        }
                     });
                     const nextEmpty = [...freshInputs].findIndex(inp => !inp.value);
-                    if (nextEmpty !== -1) freshInputs[nextEmpty].focus();
-                    else freshInputs[5].focus();
+                    if (nextEmpty !== -1) {
+                        freshInputs[nextEmpty].focus();
+                    } else {
+                        freshInputs[5].focus();
+                    }
                 });
 
-                if (i === 0) setTimeout(() => input.focus(), 100);
+                // Auto-focus first input
+                if (i === 0) {
+                    setTimeout(() => input.focus(), 100);
+                }
             });
         }
 
-        function getParentOTPValue(containerId) {
-            return [...document.querySelectorAll(`#${containerId} .parent-otp-digit`)]
-                .map(i => i.value).join('');
+        function getOTPValue(containerId) {
+            return [...document.querySelectorAll(`#${containerId} .otp-digit`)]
+                .map(i => i.value)
+                .join('');
         }
 
-        function clearParentOTPInputs(containerId) {
-            document.querySelectorAll(`#${containerId} .parent-otp-digit`)
-                .forEach(i => { i.value = ''; i.classList.remove('error'); });
+        function clearOTPInputs(containerId) {
+            document.querySelectorAll(`#${containerId} .otp-digit`)
+                .forEach(i => {
+                    i.value = '';
+                    i.classList.remove('error');
+                });
         }
 
-        function shakeParentOTPInputs(containerId) {
-            const inputs = document.querySelectorAll(`#${containerId} .parent-otp-digit`);
+        function shakeOTPInputs(containerId) {
+            const inputs = document.querySelectorAll(`#${containerId} .otp-digit`);
             inputs.forEach(i => {
                 i.classList.add('error');
                 setTimeout(() => i.classList.remove('error'), 600);
             });
         }
 
-        function setParentBtnLoading(btnId, textId, spinnerId, loading) {
+        function setBtnLoading(btnId, textId, spinnerId, loading) {
             document.getElementById(btnId).disabled = loading;
             document.getElementById(textId).style.display = loading ? 'none' : 'inline';
             document.getElementById(spinnerId).style.display = loading ? 'inline' : 'none';
         }
 
-        function generateParentBackupCodes(count) {
+        function generateBackupCodes(count) {
             const codes = [];
             for (let i = 0; i < count; i++) {
                 const part1 = Math.random().toString(36).substring(2, 6).toUpperCase();
