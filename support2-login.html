@@ -487,11 +487,22 @@ const auth      = getAuth(app);
 const db        = getFirestore(app);
 const functions = getFunctions(app);
 
+// ── State ────────────────────────────────────────────────────────
+let pendingUser    = null;
+let challengeToken = null;
+let awaitingTFA    = false;
+
 // ── Already logged in? ───────────────────────────────────────────
 onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        if (agentSnap.exists()) window.location.href = 'premium-support.html';
+    if (user && !awaitingTFA) {
+        const tokenResult = await user.getIdTokenResult(true);
+        if (tokenResult.claims.tfa_verified === true) {
+            const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
+            if (agentSnap.exists()) window.location.href = 'premium-support.html';
+        } else {
+            // Signed in but TFA not completed — sign out and stay on login
+            await signOut(auth);
+        }
     }
 });
 
@@ -524,17 +535,14 @@ function showScreen(id) {
 async function logSession(user, event) {
     try {
         await setDoc(doc(collection(db, 'support_agent_sessions')), {
-            agentId:   user.uid,
+            agentId:    user.uid,
             agentEmail: user.email,
             event,
-            timestamp: new Date().toISOString(),
-            userAgent: navigator.userAgent
+            timestamp:  new Date().toISOString(),
+            userAgent:  navigator.userAgent
         });
     } catch (e) { console.error('Session log error:', e); }
 }
-
-let pendingUser    = null;
-let challengeToken = null;
 
 // ── Sign In ──────────────────────────────────────────────────────
 document.getElementById('signin-form').addEventListener('submit', async function (e) {
@@ -549,42 +557,33 @@ document.getElementById('signin-form').addEventListener('submit', async function
     document.getElementById('signin-spinner').style.display  = 'inline';
 
     try {
-    const { user } = await signInWithEmailAndPassword(auth, email, password);
+        const { user } = await signInWithEmailAndPassword(auth, email, password);
 
-    const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-    if (!agentSnap.exists()) {
-        await signOut(auth);
-        showMessage('message-signin', 'Access denied. Support agents only.', 'error');
-        return;
-    }
+        const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
+        if (!agentSnap.exists()) {
+            await signOut(auth);
+            showMessage('message-signin', 'Access denied. Support agents only.', 'error');
+            return;
+        }
 
-    const agentData = agentSnap.data();
-    console.log('Agent data:', JSON.stringify(agentData));
-    console.log('twoFactorEnabled:', agentData.twoFactorEnabled, '| type:', typeof agentData.twoFactorEnabled);
+        const agentData = agentSnap.data();
 
-    if (agentData.twoFactorEnabled === true) {
-        pendingUser = user;
+        if (agentData.twoFactorEnabled === true) {
+            awaitingTFA = true;
+            pendingUser = user;
 
-        console.log('Calling initiateSupportTFA...');
-        try {
             const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
-            const result = await initiateSupportTFA({ isSetupMode: false });
-            console.log('initiateSupportTFA result:', result);
-            challengeToken = result.data.challengeToken;
+            const result             = await initiateSupportTFA({ isSetupMode: false });
+            challengeToken           = result.data.challengeToken;
             showScreen('screen-totp');
             clearOtpInputs();
             startTimer();
             document.querySelector('#totp-inputs input').focus();
-        } catch (tfaErr) {
-            console.error('initiateSupportTFA error:', tfaErr.code, tfaErr.message, tfaErr);
-            showMessage('message-signin', 'TFA init failed: ' + tfaErr.message, 'error');
-        }
 
-    } else {
-        console.warn('2FA branch NOT taken — redirecting directly');
-        await logSession(user, 'login');
-        window.location.href = 'premium-support.html';
-    }
+        } else {
+            await signOut(auth);
+            showMessage('message-signin', 'Your account requires 2FA. Contact your administrator.', 'error');
+        }
 
     } catch (err) {
         let msg = 'Sign in failed. Please try again.';
@@ -682,7 +681,10 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
 
         if (result.data.valid) {
             clearInterval(timerInterval);
+            // Force token refresh to pick up the tfa_verified claim set by the backend
+            await pendingUser.getIdToken(true);
             await logSession(pendingUser, 'login');
+            awaitingTFA = false;
             window.location.href = 'premium-support.html';
         } else {
             showMessage('message-totp', 'Incorrect code. Please try again.', 'error');
@@ -693,11 +695,15 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
     } catch (err) {
         if (err.code === 'resource-exhausted') {
             showMessage('message-totp', 'Too many attempts. Please sign in again.', 'error');
-            await signOut(auth); pendingUser = null;
+            awaitingTFA = false;
+            await signOut(auth);
+            pendingUser = null;
             setTimeout(() => showScreen('screen-signin'), 1500);
         } else if (err.code === 'failed-precondition') {
             showMessage('message-totp', 'Challenge expired. Please sign in again.', 'error');
-            await signOut(auth); pendingUser = null;
+            awaitingTFA = false;
+            await signOut(auth);
+            pendingUser = null;
             setTimeout(() => showScreen('screen-signin'), 1500);
         } else {
             showMessage('message-totp', 'Verification failed. Please try again.', 'error');
@@ -713,6 +719,7 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
 document.getElementById('back-to-signin').addEventListener('click', async (e) => {
     e.preventDefault();
     clearInterval(timerInterval);
+    awaitingTFA    = false;
     await signOut(auth);
     pendingUser    = null;
     challengeToken = null;
