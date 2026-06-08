@@ -474,9 +474,9 @@ import { getFirestore, doc, getDoc, collection, setDoc } from "https://www.gstat
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
 const config = await fetch('https://us-central1-tk-scheduler.cloudfunctions.net/getClientConfig').then(r => r.json());
-const app = initializeApp(config);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const app       = initializeApp(config);
+const auth      = getAuth(app);
+const db        = getFirestore(app);
 const functions = getFunctions(app);
 
 // ── State ────────────────────────────────────────────────────────
@@ -485,22 +485,18 @@ let challengeToken = null;
 let awaitingTFA    = false;
 
 // ── Already logged in? ───────────────────────────────────────────
+// Always sign out any existing session on the login page.
+// tfa_verified is a persistent custom claim — trusting it here lets a stale
+// session bypass 2FA on page refresh. Force a clean login every time.
 onAuthStateChanged(auth, async (user) => {
     if (user && !awaitingTFA) {
-        const tokenResult = await user.getIdTokenResult(true);
-        if (tokenResult.claims.tfa_verified === true) {
-            const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-            if (agentSnap.exists()) window.location.href = 'tutoring-support.html';
-        } else {
-            // Signed in but TFA not completed — sign out and stay on login
-            await signOut(auth);
-        }
+        await signOut(auth);
     }
 });
 
 // ── Toggle password ──────────────────────────────────────────────
 document.getElementById('togglePassword').addEventListener('click', function() {
-    const inp = document.getElementById('password');
+    const inp  = document.getElementById('password');
     const icon = this.querySelector('i');
     if (inp.type === 'password') { inp.type = 'text'; icon.classList.replace('fa-eye', 'fa-eye-slash'); }
     else { inp.type = 'password'; icon.classList.replace('fa-eye-slash', 'fa-eye'); }
@@ -509,8 +505,8 @@ document.getElementById('togglePassword').addEventListener('click', function() {
 // ── Helpers ──────────────────────────────────────────────────────
 function showMessage(msgId, text, type) {
     const el = document.getElementById(msgId);
-    el.textContent = text;
-    el.className = `message ${type}`;
+    el.textContent   = text;
+    el.className     = `message ${type}`;
     el.style.display = 'block';
 }
 
@@ -561,7 +557,7 @@ document.getElementById('signin-form').addEventListener('submit', async function
         const agentData = agentSnap.data();
 
         if (agentData.twoFactorEnabled === true) {
-            pendingUser    = user;
+            pendingUser = user;
             // awaitingTFA already true — leave it set
 
             const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
@@ -609,7 +605,7 @@ document.getElementById('forgotPassword').addEventListener('click', async functi
 function setupOtpInputs() {
     const inputs = document.querySelectorAll('#totp-inputs input');
     inputs.forEach((inp, i) => {
-        inp.addEventListener('input', e => {
+        inp.addEventListener('input', () => {
             inp.value = inp.value.replace(/\D/g, '').slice(0, 1);
             inp.classList.toggle('filled', inp.value !== '');
             if (inp.value && i < inputs.length - 1) inputs[i + 1].focus();
@@ -665,8 +661,9 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
 
         if (result.data.valid) {
             clearInterval(timerInterval);
-            // Force token refresh to pick up the tfa_verified claim set by the backend
-            await pendingUser.getIdToken(true);
+            // Do NOT call getIdToken(true) here — the dashboard does getIdTokenResult(true)
+            // on load, which is the authoritative fresh-fetch. Calling it here too risks a
+            // race where the page unloads before the token write commits to storage.
             await logSession(pendingUser, 'login');
             awaitingTFA = false;
             window.location.href = 'tutoring-support.html';
