@@ -1304,7 +1304,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import {
     getFirestore, collection, doc, getDoc, getDocs,
-    setDoc, where, query, orderBy, limit
+    setDoc, where, query, orderBy, limit, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { 
     serverTimestamp 
@@ -1342,6 +1342,7 @@ onAuthStateChanged(auth, async (user) => {
     console.log('✅ Support agent authenticated:', user.email);
     await logAuditAction('login', '', `${user.email} logged in`);
     await initSupportChat(user);
+    await cleanupAuditLog(); // ← add this
 });
 
 // ── Navigation ───────────────────────────────────────────
@@ -1968,6 +1969,44 @@ async function logAuditAction(action, target, details) {
     } catch (e) { console.error('Audit log error:', e); }
 }
 
+async function cleanupAuditLog() {
+    try {
+        // Check if cleanup already ran this month
+        const settingsSnap = await getDoc(doc(db, 'support_system_settings', 'audit_cleanup'));
+        const lastCleanup = settingsSnap.exists() ? settingsSnap.data().lastCleanup : null;
+        const now = new Date();
+        const thisMonth = `${now.getFullYear()}-${now.getMonth()}`;
+        
+        if (lastCleanup === thisMonth) return; // Already cleaned this month
+        
+        // Count total entries
+        const totalSnap = await getDocs(collection(db, 'support_audit_log'));
+        if (totalSnap.size <= 5000) {
+            // Update cleanup date even if no deletion needed
+            await setDoc(doc(db, 'support_system_settings', 'audit_cleanup'), { lastCleanup: thisMonth });
+            return;
+        }
+        
+        // Get oldest entries to delete
+        const deleteCount = totalSnap.size - 5000;
+        const oldSnap = await getDocs(
+            query(collection(db, 'support_audit_log'), orderBy('timestamp', 'asc'), limit(deleteCount))
+        );
+        
+        // Batch delete
+        const batch = writeBatch(db);
+        oldSnap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        
+        // Save cleanup date
+        await setDoc(doc(db, 'support_system_settings', 'audit_cleanup'), { lastCleanup: thisMonth });
+        
+        console.log(`Audit cleanup: deleted ${oldSnap.size} entries`);
+    } catch (e) {
+        console.error('Audit cleanup error:', e);
+    }
+}
+    
 async function loadAuditLog() {
     const container = document.getElementById('audit-log-content');
     container.innerHTML = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
@@ -3296,7 +3335,8 @@ window.handleTFAToggle       = handleTFAToggle;
 window.verifyTFASetup        = verifyTFASetup;
 window.verifyTFADisable      = verifyTFADisable;
 window.cancelTFAPanel        = cancelTFAPanel;
-
+window.cleanupAuditLog = cleanupAuditLog;
+    
     
 </script>
 
