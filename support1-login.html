@@ -535,6 +535,10 @@ async function logSession(user, event) {
 document.getElementById('signin-form').addEventListener('submit', async function(e) {
     e.preventDefault();
 
+    // Set BEFORE signInWithEmailAndPassword so onAuthStateChanged
+    // does not sign the user back out during the 2FA handoff
+    awaitingTFA = true;
+
     const email    = document.getElementById('email').value;
     const password = document.getElementById('password').value;
     const btn      = document.getElementById('signin-btn');
@@ -548,6 +552,7 @@ document.getElementById('signin-form').addEventListener('submit', async function
         const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
 
         if (!agentSnap.exists()) {
+            awaitingTFA = false;
             await signOut(auth);
             showMessage('message-signin', 'Access denied. Support agents only.', 'error');
             return;
@@ -556,8 +561,9 @@ document.getElementById('signin-form').addEventListener('submit', async function
         const agentData = agentSnap.data();
 
         if (agentData.twoFactorEnabled === true) {
-            awaitingTFA    = true;
             pendingUser    = user;
+            // awaitingTFA already true — leave it set
+
             const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
             const result             = await initiateSupportTFA({ isSetupMode: false });
             challengeToken           = result.data.challengeToken;
@@ -566,11 +572,13 @@ document.getElementById('signin-form').addEventListener('submit', async function
             startTimer();
             document.querySelector('#totp-inputs input').focus();
         } else {
+            awaitingTFA = false;
             await signOut(auth);
             showMessage('message-signin', 'Your account requires 2FA. Contact your administrator.', 'error');
         }
 
     } catch (err) {
+        awaitingTFA = false;
         let msg = 'Sign in failed. Please try again.';
         if      (err.code === 'auth/user-not-found')     msg = 'No account found with this email.';
         else if (err.code === 'auth/wrong-password')     msg = 'Incorrect password.';
