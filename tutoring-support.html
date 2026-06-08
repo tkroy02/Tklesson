@@ -1325,35 +1325,38 @@ const functions = getFunctions(app);
 // ── Auth state ───────────────────────────────────────────
 onAuthStateChanged(auth, async (user) => {
     if (!user) {
-        window.location.href = 'support1-login.html';
+        window.location.href = 'support2-login.html';
         return;
     }
 
-    // Read from cache — do NOT force-refresh here.
-    // The login page calls getIdToken(true) before navigating, so the
-    // cached token already has tfa_verified. Forcing a second refresh
-    // races against Firebase's claim propagation and loses.
+    // Require fresh TFA verification for every session
     const tokenResult = await user.getIdTokenResult();
     if (!tokenResult.claims.tfa_verified) {
         await signOut(auth);
-        window.location.href = 'support1-login.html';
+        window.location.href = 'support2-login.html';
         return;
     }
 
-    // Check if lead and show Credit Management tab
     try {
         const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        if (agentSnap.exists() && agentSnap.data().role === 'lead') {
-            document.getElementById('nav-credit-management').style.display = 'flex';
+        if (agentSnap.exists()) {
+            const data = agentSnap.data();
+            document.getElementById('agent-name-display').textContent = data.name || user.email;
+            if (data.role === 'lead') {
+                document.getElementById('nav-credit-management').style.display = 'flex';
+            }
+        } else {
+            document.getElementById('agent-name-display').textContent = user.email;
         }
     } catch (e) {
-        console.error('Role check error:', e);
+        console.error('Agent role check error:', e);
+        document.getElementById('agent-name-display').textContent = user.email;
     }
 
-    console.log('✅ Support agent authenticated:', user.email);
     await logAuditAction('login', '', `${user.email} logged in`);
-    await initSupportChat(user);
-    await cleanupAuditLog();
+    
+    // Silent monthly audit log cleanup
+    cleanupAuditLog();
 });
 
 // ── Navigation ───────────────────────────────────────────
