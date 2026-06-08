@@ -40,7 +40,6 @@
             color: var(--text);
         }
 
-        /* Left Panel — Branding */
         .brand-panel {
             flex: 1;
             background: linear-gradient(160deg, var(--navy) 0%, #0d2b56 40%, #0f3066 100%);
@@ -98,9 +97,7 @@
             margin-bottom: 6px;
         }
 
-        .brand-content h2 span {
-            color: var(--gold);
-        }
+        .brand-content h2 span { color: var(--gold); }
 
         .brand-content .tagline {
             color: rgba(255,255,255,0.6);
@@ -135,11 +132,10 @@
             flex-shrink: 0;
         }
 
-        .fi-support { background: rgba(212,168,67,0.2); color: var(--gold); }
-        .fi-security { background: rgba(39,174,96,0.2); color: #4ade80; }
-        .fi-speed { background: rgba(59,130,246,0.2); color: #60a5fa; }
+        .fi-support  { background: rgba(212,168,67,0.2); color: var(--gold); }
+        .fi-security { background: rgba(39,174,96,0.2);  color: #4ade80; }
+        .fi-speed    { background: rgba(59,130,246,0.2); color: #60a5fa; }
 
-        /* Right Panel — Login Form */
         .login-panel {
             width: 520px;
             display: flex;
@@ -179,9 +175,7 @@
             margin-bottom: 28px;
         }
 
-        .form-group {
-            margin-bottom: 18px;
-        }
+        .form-group { margin-bottom: 18px; }
 
         .form-group label {
             display: block;
@@ -193,9 +187,7 @@
             letter-spacing: 0.5px;
         }
 
-        .input-wrapper {
-            position: relative;
-        }
+        .input-wrapper { position: relative; }
 
         .input-wrapper .input-icon {
             position: absolute;
@@ -292,15 +284,9 @@
             font-size: 0.82rem;
         }
 
-        .links a {
-            color: var(--gold);
-            text-decoration: none;
-            font-weight: 600;
-        }
-
+        .links a { color: var(--gold); text-decoration: none; font-weight: 600; }
         .links a:hover { text-decoration: underline; }
 
-        /* TOTP Screen */
         .screen { display: none; }
         .screen.active { display: block; }
 
@@ -493,17 +479,26 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
 
-// Already logged in?
-let authHandled = false;
-    
-    onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        if (agentSnap.exists()) window.location.href = 'tutoring-support.html';
+// ── State ────────────────────────────────────────────────────────
+let pendingUser    = null;
+let challengeToken = null;
+let awaitingTFA    = false;
+
+// ── Already logged in? ───────────────────────────────────────────
+onAuthStateChanged(auth, async (user) => {
+    if (user && !awaitingTFA) {
+        const tokenResult = await user.getIdTokenResult(true);
+        if (tokenResult.claims.tfa_verified === true) {
+            const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
+            if (agentSnap.exists()) window.location.href = 'tutoring-support.html';
+        } else {
+            // Signed in but TFA not completed — sign out and stay on login
+            await signOut(auth);
+        }
     }
 });
 
-// Toggle password
+// ── Toggle password ──────────────────────────────────────────────
 document.getElementById('togglePassword').addEventListener('click', function() {
     const inp = document.getElementById('password');
     const icon = this.querySelector('i');
@@ -511,6 +506,7 @@ document.getElementById('togglePassword').addEventListener('click', function() {
     else { inp.type = 'password'; icon.classList.replace('fa-eye-slash', 'fa-eye'); }
 });
 
+// ── Helpers ──────────────────────────────────────────────────────
 function showMessage(msgId, text, type) {
     const el = document.getElementById(msgId);
     el.textContent = text;
@@ -523,74 +519,72 @@ function showScreen(id) {
     document.getElementById(id).classList.add('active');
 }
 
-let pendingUser = null;
-let challengeToken = null;
-
-// Helper: log session
 async function logSession(user, event) {
     try {
         await setDoc(doc(collection(db, 'support_agent_sessions')), {
-            agentId: user.uid,
+            agentId:    user.uid,
             agentEmail: user.email,
-            event: event,
-            timestamp: new Date().toISOString(),
-            userAgent: navigator.userAgent
+            event,
+            timestamp:  new Date().toISOString(),
+            userAgent:  navigator.userAgent
         });
     } catch (e) { console.error('Session log error:', e); }
 }
 
-// Sign In
+// ── Sign In ──────────────────────────────────────────────────────
 document.getElementById('signin-form').addEventListener('submit', async function(e) {
     e.preventDefault();
-    authHandled = true;  // ← add this line first
-    
-    const email = document.getElementById('email').value;
+
+    const email    = document.getElementById('email').value;
     const password = document.getElementById('password').value;
-    const btn = document.getElementById('signin-btn');
-    
+    const btn      = document.getElementById('signin-btn');
+
     btn.disabled = true;
     document.getElementById('signin-btn-text').style.display = 'none';
-    document.getElementById('signin-spinner').style.display = 'inline';
-    
+    document.getElementById('signin-spinner').style.display  = 'inline';
+
     try {
         const { user } = await signInWithEmailAndPassword(auth, email, password);
         const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        
+
         if (!agentSnap.exists()) {
             await signOut(auth);
             showMessage('message-signin', 'Access denied. Support agents only.', 'error');
             return;
         }
-        
+
         const agentData = agentSnap.data();
-if (agentData.twoFactorEnabled === true) {
-    pendingUser = user;
-    const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
-    const result = await initiateSupportTFA({ isSetupMode: false });
-    challengeToken = result.data.challengeToken;
-    showScreen('screen-totp');
-    clearOtpInputs();
-    startTimer();
-    document.querySelector('#totp-inputs input').focus();
-} else {
-    await logSession(user, 'login');
-    window.location.href = 'tutoring-support.html';
-}
+
+        if (agentData.twoFactorEnabled === true) {
+            awaitingTFA    = true;
+            pendingUser    = user;
+            const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
+            const result             = await initiateSupportTFA({ isSetupMode: false });
+            challengeToken           = result.data.challengeToken;
+            showScreen('screen-totp');
+            clearOtpInputs();
+            startTimer();
+            document.querySelector('#totp-inputs input').focus();
+        } else {
+            await signOut(auth);
+            showMessage('message-signin', 'Your account requires 2FA. Contact your administrator.', 'error');
+        }
+
     } catch (err) {
         let msg = 'Sign in failed. Please try again.';
-        if (err.code === 'auth/user-not-found') msg = 'No account found with this email.';
-        else if (err.code === 'auth/wrong-password') msg = 'Incorrect password.';
+        if      (err.code === 'auth/user-not-found')     msg = 'No account found with this email.';
+        else if (err.code === 'auth/wrong-password')     msg = 'Incorrect password.';
         else if (err.code === 'auth/invalid-credential') msg = 'Invalid email or password.';
-        else if (err.code === 'auth/too-many-requests') msg = 'Too many attempts. Try again later.';
+        else if (err.code === 'auth/too-many-requests')  msg = 'Too many attempts. Try again later.';
         showMessage('message-signin', msg, 'error');
     } finally {
         btn.disabled = false;
         document.getElementById('signin-btn-text').style.display = 'inline';
-        document.getElementById('signin-spinner').style.display = 'none';
+        document.getElementById('signin-spinner').style.display  = 'none';
     }
 });
 
-// Forgot Password
+// ── Forgot Password ──────────────────────────────────────────────
 document.getElementById('forgotPassword').addEventListener('click', async function(e) {
     e.preventDefault();
     const email = document.getElementById('email').value;
@@ -603,7 +597,7 @@ document.getElementById('forgotPassword').addEventListener('click', async functi
     }
 });
 
-// OTP Inputs
+// ── OTP Inputs ───────────────────────────────────────────────────
 function setupOtpInputs() {
     const inputs = document.querySelectorAll('#totp-inputs input');
     inputs.forEach((inp, i) => {
@@ -640,30 +634,33 @@ function startTimer() {
     const bar = document.getElementById('timer-bar');
     function tick() {
         const secs = Math.floor(Date.now() / 1000);
-        const rem = 30 - (secs % 30);
+        const rem  = 30 - (secs % 30);
         bar.style.width = `${(rem / 30) * 100}%`;
     }
     tick();
     timerInterval = setInterval(tick, 1000);
 }
 
-// Verify TOTP
+// ── Verify TOTP ──────────────────────────────────────────────────
 document.getElementById('verify-totp-btn').addEventListener('click', async () => {
     const token = getOtpValue();
     if (token.length < 6) { showMessage('message-totp', 'Enter the complete 6-digit code.', 'error'); return; }
-    
+
     const btn = document.getElementById('verify-totp-btn');
     btn.disabled = true;
     document.getElementById('verify-btn-text').style.display = 'none';
-    document.getElementById('verify-spinner').style.display = 'inline';
-    
+    document.getElementById('verify-spinner').style.display  = 'inline';
+
     try {
         const verifySupportTFA = httpsCallable(functions, 'verifySupportTFA');
-        const result = await verifySupportTFA({ challengeToken, token });
-        
+        const result           = await verifySupportTFA({ challengeToken, token });
+
         if (result.data.valid) {
             clearInterval(timerInterval);
+            // Force token refresh to pick up the tfa_verified claim set by the backend
+            await pendingUser.getIdToken(true);
             await logSession(pendingUser, 'login');
+            awaitingTFA = false;
             window.location.href = 'tutoring-support.html';
         } else {
             showMessage('message-totp', 'Incorrect code. Please try again.', 'error');
@@ -673,11 +670,15 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
     } catch (err) {
         if (err.code === 'resource-exhausted') {
             showMessage('message-totp', 'Too many attempts. Please sign in again.', 'error');
-            await signOut(auth); pendingUser = null;
+            awaitingTFA = false;
+            await signOut(auth);
+            pendingUser = null;
             setTimeout(() => showScreen('screen-signin'), 1500);
         } else if (err.code === 'failed-precondition') {
             showMessage('message-totp', 'Challenge expired. Please sign in again.', 'error');
-            await signOut(auth); pendingUser = null;
+            awaitingTFA = false;
+            await signOut(auth);
+            pendingUser = null;
             setTimeout(() => showScreen('screen-signin'), 1500);
         } else {
             showMessage('message-totp', 'Verification failed. Please try again.', 'error');
@@ -685,15 +686,17 @@ document.getElementById('verify-totp-btn').addEventListener('click', async () =>
     } finally {
         btn.disabled = false;
         document.getElementById('verify-btn-text').style.display = 'inline';
-        document.getElementById('verify-spinner').style.display = 'none';
+        document.getElementById('verify-spinner').style.display  = 'none';
     }
 });
 
+// ── Back to sign in ──────────────────────────────────────────────
 document.getElementById('back-to-signin').addEventListener('click', async (e) => {
     e.preventDefault();
     clearInterval(timerInterval);
+    awaitingTFA    = false;
     await signOut(auth);
-    pendingUser = null;
+    pendingUser    = null;
     challengeToken = null;
     showScreen('screen-signin');
 });
