@@ -2172,6 +2172,17 @@ async function resolveContactInfo(chat) {
 
     let contactId   = null;
     let contactType = 'student';
+    let contactName = null;
+    let contactEmail = null;
+
+     // 🔥 NEW: Check for direct user fields FIRST (this is your anonymous/student data)
+    if (chat.userName) {
+        contactName = chat.userName;
+        contactEmail = chat.userEmail || null;
+        contactType = 'student';
+        // No contactId for anonymous users - that's fine
+        return { name: contactName, email: contactEmail, contactId, contactType };
+    }
 
     if (chat.participantTypes) {
         const entry = Object.entries(chat.participantTypes).find(
@@ -2196,10 +2207,12 @@ async function resolveContactInfo(chat) {
     const storedName    = contactId ? chat.participantNames?.[contactId] : null;
     const isPlaceholder = !storedName || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
 
-    if (!isPlaceholder) return { name: storedName, contactId, contactType };
+    if (!isPlaceholder && storedName) {
+        return { name: storedName, email: contactEmail, contactId, contactType };
+    }
 
     if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
-        return { name: chat.studentName, contactId, contactType: 'student' };
+        return { name: chat.studentName, email: contactEmail, contactId, contactType: 'student' };
     }
 
     if (contactId) {
@@ -2211,14 +2224,22 @@ async function resolveContactInfo(chat) {
                 const name = contactType === 'tutor'
                     ? (data.personal?.fullName || data.fullName || data.name || null)
                     : (data.fullName || data.name || null);
-                if (name) return { name, contactId, contactType };
+                const email = contactType === 'tutor'
+                    ? (data.personal?.email || data.email)
+                    : data.email;
+                if (name) return { name, email: email || contactEmail, contactId, contactType };
             }
         } catch (err) {
             console.error('Name fetch error:', err);
         }
     }
 
-    return { name: contactType === 'tutor' ? 'Tutor' : 'Student', contactId, contactType };
+    return {
+        name: contactType === 'tutor' ? 'Tutor' : 'Student',
+        email: contactEmail,
+        contactId,
+        contactType
+    };
 }
 
 // ── Enrich all chats with resolved names ─────────────────
@@ -2233,6 +2254,7 @@ async function enrichChats(chats) {
         return {
             ...chat,
             _resolvedName:  resolved.name,
+            _resolvedEmail: resolved.email,  // This will now have the email!
             _contactId:     resolved.contactId,
             _contactType:   resolved.contactType,
             _hasUnread:     hasUnread,
