@@ -9428,8 +9428,9 @@ window.rejectApplication = async function(appId) {
     }
 };
 
+// Add this INSIDE your existing <script type="module"> tag
 // ════════════════════════════════════════════════════════════════════
-// CHAT SYSTEM - School Admin to Tklesson Support (COMPATIBLE VERSION)
+// CHAT SYSTEM - School Admin to Tklesson Support
 // ════════════════════════════════════════════════════════════════════
 
 let currentChatModal = null;
@@ -9437,19 +9438,14 @@ let messagesUnsubscribe = null;
 let typingTimeout = null;
 let isTyping = false;
 let currentSchoolId = null;
-let currentSchoolAdminData = null;
+let currentSchoolName = null;
 
-// Tklesson Support Team ID (must match agent dashboard expectations)
-const TKLESSON_SUPPORT_ID = 'admin'; // CHANGED: Use 'admin' to match agent system
-const TKLESSON_SUPPORT_NAME = 'Support Team';
-
-// Generate consistent chat ID (must match agent dashboard logic)
-function getChatId(userId1, userId2) {
-    return [userId1, userId2].sort().join('_');
-}
+// Tklesson Support Team ID (central recipient)
+const TKLESSON_SUPPORT_ID = 'tklesson_support';
+const TKLESSON_SUPPORT_NAME = 'Tklesson Support Team';
 
 // Open chat modal when "Contact Tklesson" is clicked
-window.openChatWithSupport = async function() {
+window.openChatWithSupport = function() {
     const user = auth.currentUser;
     if (!user) {
         alert('Please log in to contact support.');
@@ -9457,29 +9453,7 @@ window.openChatWithSupport = async function() {
     }
     
     currentSchoolId = user.uid;
-    
-    // Fetch school admin data
-    try {
-        const adminSnap = await getDoc(doc(db, 'schooladmins', currentSchoolId));
-        if (adminSnap.exists()) {
-            currentSchoolAdminData = adminSnap.data();
-        } else {
-            currentSchoolAdminData = {
-                displayName: user.displayName || user.email || 'School Admin',
-                email: user.email,
-                schoolId: null,
-                schoolName: null
-            };
-        }
-    } catch (err) {
-        console.error('Error fetching school admin data:', err);
-        currentSchoolAdminData = {
-            displayName: user.displayName || user.email || 'School Admin',
-            email: user.email,
-            schoolId: null,
-            schoolName: null
-        };
-    }
+    currentSchoolName = user.displayName || user.email || 'School Admin';
     
     // Create modal
     const modalHtml = `
@@ -9543,11 +9517,13 @@ async function loadChatMessages() {
     const messagesArea = document.getElementById('chat-messages-area');
     if (!messagesArea) return;
     
+    // Clear existing listener
     if (messagesUnsubscribe) {
         messagesUnsubscribe();
         messagesUnsubscribe = null;
     }
     
+    // Query messages between school and Tklesson support
     const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
     const messagesRef = collection(db, 'chats', chatId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'asc'));
@@ -9560,10 +9536,12 @@ async function loadChatMessages() {
         
         renderMessages(messages);
         
+        // Mark as read when new messages arrive while modal is open
         if (currentChatModal) {
             markMessagesAsRead();
         }
         
+        // Scroll to bottom
         const area = document.getElementById('chat-messages-area');
         if (area) {
             area.scrollTop = area.scrollHeight;
@@ -9571,7 +9549,7 @@ async function loadChatMessages() {
     });
 }
 
-// Render messages
+// Render messages in the chat area
 function renderMessages(messages) {
     const messagesArea = document.getElementById('chat-messages-area');
     if (!messagesArea) return;
@@ -9588,7 +9566,6 @@ function renderMessages(messages) {
     
     let html = '';
     for (const msg of messages) {
-        // FIXED: Check for 'admin' instead of TKLESSON_SUPPORT_ID
         const isSent = msg.senderId === currentSchoolId;
         let time = '';
         
@@ -9626,53 +9603,30 @@ window.sendChatMessage = async function() {
     
     try {
         const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-        const chatRef = doc(db, 'chats', chatId);
-        
-        // Check if chat document exists
-        const chatSnap = await getDoc(chatRef);
-        
-        // Message structure - compatible with agent dashboard
         const message = {
             text: text,
-            senderId: currentSchoolId,  // School admin is the sender
-            senderName: currentSchoolAdminData.displayName || 'School Admin',
-            timestamp: serverTimestamp(),
-            read: false,
-            type: 'text'
+            senderId: currentSchoolId,
+            senderName: currentSchoolName,
+            senderType: 'school_admin',
+            recipientId: TKLESSON_SUPPORT_ID,
+            recipientName: TKLESSON_SUPPORT_NAME,
+            timestamp: new Date().toISOString(),
+            read: false
         };
         
-        await addDoc(collection(db, 'chats', chatId, 'messages'), message);
+        await setDoc(doc(collection(db, 'chats', chatId, 'messages')), message);
         
-        // FIXED: Use fields that agent dashboard expects
-        const chatData = {
-            // Agent dashboard looks for these fields
-            clientEmail: currentSchoolAdminData.email,
-            clientName: currentSchoolAdminData.displayName || 'School Admin',
-            chatType: 'support_student',
-            isAdminChat: true,
-            
-            // Chat metadata
-            lastMessage: text.substring(0, 200),
-            lastMessageAt: serverTimestamp(),
-            lastMessageBy: 'user',  // Important: 'user' not 'admin'
-            status: 'active',
-            
-            // Unread tracking for agent dashboard
-            unreadCounts: { admin: 1 },
-            
-            // Timestamps
-            lastUpdated: serverTimestamp()
-        };
-        
-        // Only add these on initial creation
-        if (!chatSnap.exists()) {
-            chatData.createdAt = serverTimestamp();
-            chatData.senderId = currentSchoolId;
-            chatData.userEmail = currentSchoolAdminData.email;
-            chatData.userName = currentSchoolAdminData.displayName || 'School Admin';
-        }
-        
-        await setDoc(chatRef, chatData, { merge: true });
+        // Update last message in chat document
+        await setDoc(doc(db, 'chats', chatId), {
+            lastMessage: text,
+            lastMessageTime: new Date().toISOString(),
+            lastSenderId: currentSchoolId,
+            lastSenderName: currentSchoolName,
+            schoolId: currentSchoolId,
+            schoolName: currentSchoolName,
+            supportRead: false,
+            schoolRead: true
+        }, { merge: true });
         
         // Clear input
         input.value = '';
@@ -9695,34 +9649,24 @@ async function markMessagesAsRead() {
     if (!currentSchoolId) return;
     
     const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-    const chatRef = doc(db, 'chats', chatId);
     
-    try {
-        // Update chat document to mark user has read
-        await setDoc(chatRef, {
-            userRead: true,
-            userLastReadAt: serverTimestamp(),
-            'unreadCounts.user': 0
-        }, { merge: true });
-        
-        // Mark all unread messages from support (admin) as read
-        const messagesRef = collection(db, 'chats', chatId, 'messages');
-        const q = query(
-            messagesRef, 
-            where('read', '==', false), 
-            where('senderId', '==', 'admin')  // FIXED: Look for 'admin' not TKLESSON_SUPPORT_ID
-        );
-        const snapshot = await getDocs(q);
-        
-        if (!snapshot.empty) {
-            const batch = writeBatch(db);
-            snapshot.forEach(doc => {
-                batch.update(doc.ref, { read: true });
-            });
-            await batch.commit();
-        }
-    } catch (err) {
-        console.error('Mark read error:', err);
+    // Update chat document to mark school has read
+    await setDoc(doc(db, 'chats', chatId), {
+        schoolRead: true,
+        schoolLastReadAt: new Date().toISOString()
+    }, { merge: true });
+    
+    // Mark all unread messages from support as read
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(messagesRef, where('read', '==', false), where('senderId', '==', TKLESSON_SUPPORT_ID));
+    const snapshot = await getDocs(q);
+    
+    if (!snapshot.empty) {
+        const batch = writeBatch(db);
+        snapshot.forEach(doc => {
+            batch.update(doc.ref, { read: true });
+        });
+        await batch.commit();
     }
 }
 
@@ -9731,15 +9675,14 @@ window.handleTyping = function() {
     if (!currentSchoolId) return;
     
     const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-    const typingRef = doc(db, 'chats', chatId);
+    const typingRef = doc(db, 'chats', chatId, 'typing', 'status');
     
     if (!isTyping) {
         isTyping = true;
-        updateDoc(typingRef, {
-            'typing.user': true,
-            'typing.userName': currentSchoolAdminData.displayName || 'School Admin',
-            'typing.timestamp': serverTimestamp()
-        }).catch(() => {});
+        setDoc(typingRef, {
+            schoolIsTyping: true,
+            timestamp: new Date().toISOString()
+        });
     }
     
     clearTimeout(typingTimeout);
@@ -9752,16 +9695,17 @@ function stopTyping() {
     if (!currentSchoolId) return;
     
     const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-    const typingRef = doc(db, 'chats', chatId);
+    const typingRef = doc(db, 'chats', chatId, 'typing', 'status');
     
-    updateDoc(typingRef, {
-        'typing.user': false
-    }).catch(() => {});
+    setDoc(typingRef, {
+        schoolIsTyping: false,
+        timestamp: new Date().toISOString()
+    });
     
     isTyping = false;
 }
 
-// Handle enter key
+// Handle enter key to send
 window.handleChatKeyPress = function(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -9784,6 +9728,11 @@ window.closeChatModal = function() {
     }
 };
 
+// Generate consistent chat ID (sorted IDs so same conversation always has same ID)
+function getChatId(userId1, userId2) {
+    return [userId1, userId2].sort().join('_');
+}
+
 // Helper to escape HTML
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -9800,30 +9749,26 @@ function subscribeToUnreadCount() {
     const chatRef = doc(db, 'chats', chatId);
     
     onSnapshot(chatRef, (docSnap) => {
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            const hasUnread = data.unreadCounts?.admin > 0;
-            
-            const contactBtn = document.querySelector('[onclick*="openChatWithSupport"], .btn-gold, .btn-outline');
-            if (contactBtn && hasUnread) {
+        if (docSnap.exists() && docSnap.data().supportRead === false) {
+            const contactBtn = document.querySelector('[onclick*="openChatWithSupport"]');
+            if (contactBtn) {
                 const existingBadge = contactBtn.querySelector('.unread-badge');
                 if (existingBadge) existingBadge.remove();
                 
                 const badge = document.createElement('span');
                 badge.className = 'unread-badge';
                 badge.textContent = '●';
-                badge.style.color = '#ef4444';
-                badge.style.marginLeft = '8px';
                 contactBtn.appendChild(badge);
-            } else if (contactBtn) {
-                const badge = contactBtn?.querySelector('.unread-badge');
-                if (badge) badge.remove();
             }
+        } else {
+            const contactBtn = document.querySelector('[onclick*="openChatWithSupport"]');
+            const badge = contactBtn?.querySelector('.unread-badge');
+            if (badge) badge.remove();
         }
     });
 }
 
-// Initialize
+// Initialize after auth
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => {
@@ -9839,6 +9784,8 @@ if (document.readyState === 'loading') {
         }
     }, 1000);
 }
+
+// Make sure you have writeBatch imported - add this to your imports:
 
     // Make sure this is at the bottom of your script, after the chat code
 window.openChatWithSupport = openChatWithSupport;
