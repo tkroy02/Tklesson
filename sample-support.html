@@ -1570,7 +1570,9 @@ let currentChat = {
     projectKey:   null,
     unsubscribes: [],
     agentsOnline: false,
-    isResumed:    false   // true when reconnecting to an existing Firestore session
+    isResumed:    false,   // true when reconnecting to an existing Firestore session
+    userName:     null,    // persisted so sendChatMessage works after form is hidden
+    userEmail:    null
 };
 
 const cachedApps = {};
@@ -1733,12 +1735,15 @@ async function openChat(category) {
 
 // ─────────────────────────────────────────────────────────
 // CLOSE CHAT PANEL
+// NOTE: we deliberately do NOT tear down Firestore listeners
+// here. The panel closing is a UI action only — the session
+// stays alive so new agent messages still arrive and the
+// user can reopen and see them.
 // ─────────────────────────────────────────────────────────
 function closeChat() {
     document.getElementById('chatOverlay').classList.remove('active');
     document.getElementById('chatPanel').classList.remove('active');
-    currentChat.unsubscribes.forEach(fn => fn());
-    currentChat.unsubscribes = [];
+    // Do NOT call unsubscribes here — listeners must persist across open/close
 }
 
 window.openChat  = openChat;
@@ -1762,6 +1767,8 @@ async function resumeExistingChat() {
         currentChat.projectKey = saved.projectKey;
         currentChat.category  = saved.category;
         currentChat.isResumed = true;
+        currentChat.userName  = saved.userName;
+        currentChat.userEmail = saved.userEmail;
 
         // Fetch the chat document to check its current status
         const chatDoc = await getDoc(doc(db, 'chats', saved.sessionId));
@@ -1861,6 +1868,8 @@ async function startChat() {
 
         const sessionId       = 'support_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
         currentChat.sessionId = sessionId;
+        currentChat.userName  = name;
+        currentChat.userEmail = email;
         const sessionRef      = doc(currentChat.db, 'chats', sessionId);
 
         await setDoc(sessionRef, {
@@ -2002,8 +2011,8 @@ async function sendChatMessage() {
             collection(currentChat.db, 'chats', currentChat.sessionId, 'messages'),
             {
                 text,
-                senderId:   document.getElementById('chatUserEmail')?.value || 'user',
-                senderName: document.getElementById('chatUserName')?.value  || 'User',
+                senderId:   currentChat.userEmail || 'user',
+                senderName: currentChat.userName  || 'User',
                 timestamp:  serverTimestamp(),
                 read:       false,
                 type:       'text'
@@ -2076,17 +2085,16 @@ window.startNewChat    = startNewChat;
 
 // ─────────────────────────────────────────────────────────
 // AUTO-RESUME on page load
-// If there's a saved active session, we don't automatically
-// open the panel — but we do show a subtle "Resume chat"
-// indicator so the user can pick up where they left off.
-// You can optionally auto-open the panel by uncommenting the
-// line below.
+// If there's a saved active session, automatically open the
+// chat panel straight to the resume banner so the user can
+// pick up where they left off without having to find and
+// click a "Chat with us" button first.
 // ─────────────────────────────────────────────────────────
 (function checkForSavedSession() {
     const saved = loadSession();
     if (!saved) return;
-    // Optional: auto-open the panel on load for an active session
-    // openChat(saved.category);
+    // Open panel using the saved category so projectKey resolves correctly
+    openChat(saved.category);
 })();
 </script>
 
