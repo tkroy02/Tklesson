@@ -2172,17 +2172,6 @@ async function resolveContactInfo(chat) {
 
     let contactId   = null;
     let contactType = 'student';
-    let contactName = null;
-    let contactEmail = null;
-
-     // 🔥 NEW: Check for direct user fields FIRST (this is your anonymous/student data)
-    if (chat.userName) {
-        contactName = chat.userName;
-        contactEmail = chat.userEmail || null;
-        contactType = 'student';
-        // No contactId for anonymous users - that's fine
-        return { name: contactName, email: contactEmail, contactId, contactType };
-    }
 
     if (chat.participantTypes) {
         const entry = Object.entries(chat.participantTypes).find(
@@ -2207,12 +2196,10 @@ async function resolveContactInfo(chat) {
     const storedName    = contactId ? chat.participantNames?.[contactId] : null;
     const isPlaceholder = !storedName || PLACEHOLDERS.includes(storedName.trim().toLowerCase());
 
-    if (!isPlaceholder && storedName) {
-        return { name: storedName, email: contactEmail, contactId, contactType };
-    }
+    if (!isPlaceholder) return { name: storedName, contactId, contactType };
 
     if (chat.studentName && !PLACEHOLDERS.includes(chat.studentName.trim().toLowerCase())) {
-        return { name: chat.studentName, email: contactEmail, contactId, contactType: 'student' };
+        return { name: chat.studentName, contactId, contactType: 'student' };
     }
 
     if (contactId) {
@@ -2224,22 +2211,14 @@ async function resolveContactInfo(chat) {
                 const name = contactType === 'tutor'
                     ? (data.personal?.fullName || data.fullName || data.name || null)
                     : (data.fullName || data.name || null);
-                const email = contactType === 'tutor'
-                    ? (data.personal?.email || data.email)
-                    : data.email;
-                if (name) return { name, email: email || contactEmail, contactId, contactType };
+                if (name) return { name, contactId, contactType };
             }
         } catch (err) {
             console.error('Name fetch error:', err);
         }
     }
 
-    return {
-        name: contactType === 'tutor' ? 'Tutor' : 'Student',
-        email: contactEmail,
-        contactId,
-        contactType
-    };
+    return { name: contactType === 'tutor' ? 'Tutor' : 'Student', contactId, contactType };
 }
 
 // ── Enrich all chats with resolved names ─────────────────
@@ -2254,7 +2233,6 @@ async function enrichChats(chats) {
         return {
             ...chat,
             _resolvedName:  resolved.name,
-            _resolvedEmail: resolved.email,  // This will now have the email!
             _contactId:     resolved.contactId,
             _contactType:   resolved.contactType,
             _hasUnread:     hasUnread,
@@ -2392,22 +2370,18 @@ function renderChatContactList() {
         const el = document.createElement('div');
         el.className = `chat-contact-item${isUnclaimed && !isClosed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
         el.innerHTML = `
-    <div class="chat-contact-avatar ${contactType}">${initials}</div>
-    <div class="chat-contact-info">
-        <div class="chat-contact-name">${escapeHtml(displayName)}</div>
-        <div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>
-        <!-- NEW: Display email for anonymous users -->
-        ${chat.userEmail ? `<div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 2px;">
-            <i class="fas fa-envelope"></i> ${escapeHtml(chat.userEmail)}
-        </div>` : ''}
-        <div style="font-size: 0.68rem; color: ${assignedColor}; margin-top: 2px;">
-            <i class="fas fa-${assignedIcon}" style="font-size: 0.55rem;"></i> ${assignedText}
-        </div>
-    </div>
-    <div class="chat-contact-meta">
-        <span class="chat-time">${lastTime}</span>
-        ${unread > 0 && !isClosed ? `<div class="chat-unread-badge">${unread}</div>` : ''}
-    </div>`;
+            <div class="chat-contact-avatar ${contactType}">${initials}</div>
+            <div class="chat-contact-info">
+                <div class="chat-contact-name">${escapeHtml(displayName)}</div>
+                <div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>
+                <div style="font-size: 0.68rem; color: ${assignedColor}; margin-top: 2px;">
+                    <i class="fas fa-${assignedIcon}" style="font-size: 0.55rem;"></i> ${assignedText}
+                </div>
+            </div>
+            <div class="chat-contact-meta">
+                <span class="chat-time">${lastTime}</span>
+                ${unread > 0 && !isClosed ? `<div class="chat-unread-badge">${unread}</div>` : ''}
+            </div>`;
 
         el.addEventListener('click', () => openSupportChat(chat));
         container.appendChild(el);
@@ -2430,18 +2404,11 @@ function showCustomerChats(customerGroup) {
                         style="background: none; border: none; color: white; font-size: 1.2rem; cursor: pointer;">&times;</button>
                 </div>
                 <div style="padding: 16px; background: #f8fafc; border-bottom: 1px solid var(--border);">
-    <p style="margin: 0; font-size: 0.85rem;">
-        <strong>Name:</strong> ${escapeHtml(customerGroup.customerName)}
-    </p>
-    ${customerGroup.customerEmail ? `
-    <p style="margin: 8px 0 0; font-size: 0.85rem;">
-        <strong>Email:</strong> ${escapeHtml(customerGroup.customerEmail)}
-    </p>
-    ` : ''}
-    <p style="margin: 8px 0 0; font-size: 0.78rem; color: var(--text-muted);">
-        <i class="fas fa-comments"></i> ${customerGroup.chats.length} conversation${customerGroup.chats.length > 1 ? 's' : ''}
-    </p>
-</div>
+                    <p style="margin: 0; font-size: 0.85rem;"><strong>Email:</strong> ${escapeHtml(customerGroup.customerEmail)}</p>
+                    <p style="margin: 5px 0 0; font-size: 0.78rem; color: var(--text-muted);">
+                        <i class="fas fa-comments"></i> ${customerGroup.chats.length} conversation${customerGroup.chats.length > 1 ? 's' : ''}
+                    </p>
+                </div>
                 <div style="flex: 1; overflow-y: auto; padding: 16px;">
                     ${customerGroup.chats.map(chat => {
                         const time     = chat.lastMessageAt?.toDate?.() || new Date(chat.lastMessageAt);
@@ -2529,17 +2496,15 @@ async function openSupportChat(chat) {
     document.getElementById('active-chat-avatar').style.background = contactType === 'tutor' ? '#065f46' : '#1e40af';
     document.getElementById('active-chat-name').textContent        = escapeHtml(contactName);
     document.getElementById('active-chat-meta').innerHTML = `
-    ${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
-        isClosed
-            ? '<span style="color: var(--text-muted);">Closed</span>'
-            : chat.assignedTo
-                ? (chat.assignedTo === supportChat.agentUid
-                    ? '<span style="color: var(--success);">Claimed by you</span>'
-                    : `<span style="color: var(--danger);">Claimed by ${escapeHtml(chat.assignedName || 'another agent')}</span>`)
-                : '<span style="color: var(--gold);">Unclaimed</span>'
-    }
-    ${chat.userEmail ? `<br><span style="font-size: 0.7rem;"><i class="fas fa-envelope"></i> ${escapeHtml(chat.userEmail)}</span>` : ''}
-`;
+        ${contactType.charAt(0).toUpperCase() + contactType.slice(1)} · ${
+            isClosed
+                ? '<span style="color: var(--text-muted);">Closed</span>'
+                : chat.assignedTo
+                    ? (chat.assignedTo === supportChat.agentUid
+                        ? '<span style="color: var(--success);">Claimed by you</span>'
+                        : `<span style="color: var(--danger);">Claimed by ${escapeHtml(chat.assignedName || 'another agent')}</span>`)
+                    : '<span style="color: var(--gold);">Unclaimed</span>'
+        }`;
 
     const claimBtn     = document.getElementById('claim-btn');
     const unclaimBtn   = document.getElementById('unclaim-btn');
