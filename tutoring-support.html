@@ -368,6 +368,16 @@
     text-align: right;
 }
 
+.field-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--navy);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: block;
+    margin-bottom: 6px;
+}
+        
         /* ═══════════════ USER LOOKUP ═══════════════ */
         .lookup-container { max-width: 900px; }
 
@@ -1106,7 +1116,7 @@
             </div>
         </div>
 
-       <!-- SETTINGS -->
+        <!-- SETTINGS -->
         <div class="page" id="settings">
             <h2>Settings</h2>
             <p class="subtitle">Manage your agent profile and security preferences</p>
@@ -1191,8 +1201,7 @@
         </div>
 
     </div><!-- /content-panel -->
-  
-
+    
     <!-- ═══════════════ LIVE CHAT ═══════════════ -->
     <!-- ═══════════════ LIVE CHAT PANEL ═══════════════ -->
 <div class="chat-panel" id="chat-panel">
@@ -1314,41 +1323,65 @@ const db        = getFirestore(app);
 const functions = getFunctions(app);
 
 // ── Auth state ───────────────────────────────────────────
+let isRedirecting = false;  // Add this flag at the top level, near other state variables
+
 onAuthStateChanged(auth, async (user) => {
     if (!user) {
-        window.location.href = 'support1-login.html';
+        if (!isRedirecting) {
+            isRedirecting = true;
+            window.location.href = 'support1-login.html';
+        }
+        return;
+    }
+    
+    // Reset redirect flag when we have a user
+    isRedirecting = false;
+    
+    // Require fresh TFA verification for every session
+    const tokenResult = await user.getIdTokenResult();
+    if (!tokenResult.claims.tfa_verified) {
+        if (!isRedirecting) {
+            isRedirecting = true;
+            await signOut(auth);
+            window.location.href = 'support1-login.html';
+        }
         return;
     }
 
-    // Check if lead and show Credit Management tab
     try {
         const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        if (agentSnap.exists() && agentSnap.data().role === 'lead') {
-            document.getElementById('nav-credit-management').style.display = 'flex';
+        if (agentSnap.exists()) {
+            const data = agentSnap.data();
+            document.getElementById('agent-name-display').textContent = data.name || user.email;
+            if (data.role === 'lead') {
+                document.getElementById('nav-credit-management').style.display = 'flex';
+            }
+        } else {
+            document.getElementById('agent-name-display').textContent = user.email;
         }
     } catch (e) {
-        console.error('Role check error:', e);
+        console.error('Agent role check error:', e);
+        document.getElementById('agent-name-display').textContent = user.email;
     }
 
-    console.log('✅ Support agent authenticated:', user.email);
     await logAuditAction('login', '', `${user.email} logged in`);
-    await initSupportChat(user);
+    
+    // Silent monthly audit log cleanup
+    cleanupAuditLog();
 });
 
 // ── Navigation ───────────────────────────────────────────
 document.querySelectorAll('.nav-item[data-page]').forEach(btn => {
     btn.addEventListener('click', function() {
         const pageId = this.getAttribute('data-page');
-
         document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
         this.classList.add('active');
-
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.getElementById(pageId).classList.add('active');
-
-        if (pageId === 'ticketing')  loadTickets();
-        if (pageId === 'audit-log')  loadAuditLog();
-        if (pageId === 'credit-management') loadCreditManagement();
+        if (pageId === 'ticketing')          loadTickets();
+        if (pageId === 'audit-log')          loadAuditLog();
+        if (pageId === 'credit-management')  loadCreditManagement();
+        if (pageId === 'settings')           loadSettings();
     });
 });
 
@@ -1603,6 +1636,14 @@ const KB_FILES = {
     'booking':        'booking.json',
     'job-filling':    'jobfilling.json'
 };
+
+function filterKBArticles() {
+    const query = document.getElementById('kb-search-input').value.toLowerCase().trim();
+    document.querySelectorAll('#kb-card-grid .kb-topic-card').forEach(card => {
+        const text = card.innerText.toLowerCase();
+        card.style.display = (!query || text.includes(query)) ? '' : 'none';
+    });
+}
 
 async function openKBArticle(articleKey) {
     const grid   = document.getElementById('kb-card-grid');
@@ -2034,7 +2075,7 @@ async function loadAuditLog() {
         container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading audit log</p></div>';
     }
 }
-    
+
 // ════════════════════════════════════════════════════════
 // SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
