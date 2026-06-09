@@ -1453,6 +1453,28 @@ function closeChat() {
 window.openChat  = openChat;
 window.closeChat = closeChat;
 
+// ── Find existing open chat by email ──────────────────────
+async function findExistingChat(db, email) {
+    try {
+        const { query, collection, where, orderBy, limit, getDocs } =
+            await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+        const snap = await getDocs(
+            query(
+                collection(db, 'chats'),
+                where('userEmail', '==', email),
+                where('status',    '!=', 'closed'),
+                orderBy('status'),               // required when using != filter
+                orderBy('lastMessageAt', 'desc'),
+                limit(1)
+            )
+        );
+        if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
+    } catch (err) {
+        console.error('Existing chat lookup error:', err);
+    }
+    return null;
+}
+    
 // ── Start chat ────────────────────────────────────────────
 // Creates a document directly in the 'chats' collection using
 // the same shape the dashboard already reads, with a
@@ -1472,8 +1494,8 @@ async function startChat() {
     errorEl.style.display = 'none';
 
     const btn = document.querySelector('.chat-start-btn');
-    btn.disabled   = true;
-    btn.innerHTML  = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
+    btn.disabled  = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
 
     try {
         if (!currentChat.db) {
@@ -1481,8 +1503,49 @@ async function startChat() {
             currentChat.db = db;
         }
 
-        // Use a support_ prefixed ID so the dashboard filter recognises it
-        const sessionId  = 'support_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+        // ── Resume existing open chat for this email if one exists ──
+        const existing = await findExistingChat(currentChat.db, email);
+        if (existing) {
+            currentChat.sessionId = existing.id;
+            currentChat.agentsOnline = await checkAgentPresence(currentChat.db);
+
+            sessionStorage.setItem('tkl_support_session', JSON.stringify({
+                sessionId:  existing.id,
+                projectKey: currentChat.projectKey,
+                category:   currentChat.category,
+                name,
+                email
+            }));
+
+            // Add the new message into the existing chat thread
+            await addDoc(collection(currentChat.db, 'chats', existing.id, 'messages'), {
+                text:       message,
+                senderId:   email,
+                senderName: name,
+                timestamp:  serverTimestamp(),
+                read:       false,
+                type:       'text'
+            });
+            await updateDoc(doc(currentChat.db, 'chats', existing.id), {
+                lastMessage:          message,
+                lastMessageAt:        serverTimestamp(),
+                lastMessageBy:        'user',
+                status:               'active',
+                'unreadCounts.admin': 1
+            });
+
+            document.getElementById('chatPreForm').style.display  = 'none';
+            document.getElementById('chatMessages').style.display = 'flex';
+            document.getElementById('chatInputBar').style.display = 'flex';
+            document.getElementById('chatAgentStatus').innerHTML  =
+                '🟢 <strong>Continuing your existing conversation</strong>';
+
+            await resumeExistingChat({ sessionId: existing.id, projectKey: currentChat.projectKey, name, email });
+            return;
+        }
+
+        // ── No existing chat — create a new one ───────────────────
+        const sessionId = 'support_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
         currentChat.sessionId = sessionId;
         const sessionRef = doc(currentChat.db, 'chats', sessionId);
 
