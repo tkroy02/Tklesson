@@ -1395,6 +1395,10 @@ async function logout() {
             await logAuditAction('logout', '', `${auth.currentUser.email} logged out`);
         }
     } catch (e) { console.error('Logout log error:', e); }
+    
+    if (supportChat.presenceInterval) clearInterval(supportChat.presenceInterval);
+    await setAgentPresence(false);
+    
     await signOut(auth);
     window.location.href = 'support1-login.html';
 }
@@ -2091,6 +2095,7 @@ const supportChat = {
     messagesUnsub:   null,
     chatsUnsub:      null,
     typingTimeout:   null,
+    presenceInterval: null,   // ← add
     allChats:        []
 };
 
@@ -2109,11 +2114,30 @@ async function initSupportChat(user) {
         document.getElementById('agent-name-display').textContent = supportChat.agentName;
 
         listenToChats();
+        setAgentPresence(true);
+        supportChat.presenceInterval = setInterval(() => setAgentPresence(true), 60000);
     } catch (err) {
         console.error('Support chat init error:', err);
     }
 }
 
+
+// ── Agent presence ────────────────────────────────────────
+async function setAgentPresence(online) {
+    if (!supportChat.agentUid) return;
+    try {
+        const { doc: docRef, setDoc, serverTimestamp } =
+            await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+        await setDoc(docRef(db, 'support_presence', supportChat.agentUid), {
+            online,
+            lastSeen: serverTimestamp(),
+            name: supportChat.agentName || ''
+        }, { merge: true });
+    } catch (err) {
+        console.error('Presence update error:', err);
+    }
+}
+    
 // ── Resolve contact info from any document structure ─────
 async function resolveContactInfo(chat) {
     const PLACEHOLDERS = ['tutor', 'student', 'admin support', 'admin', 'unknown'];
@@ -3361,7 +3385,12 @@ window.verifyTFASetup        = verifyTFASetup;
 window.verifyTFADisable      = verifyTFADisable;
 window.cancelTFAPanel        = cancelTFAPanel;
 window.cleanupAuditLog = cleanupAuditLog;
-    
+
+// ── Cleanup on tab close ──────────────────────────────────
+window.addEventListener('beforeunload', () => {
+    if (supportChat.presenceInterval) clearInterval(supportChat.presenceInterval);
+    setAgentPresence(false);
+});
     
 </script>
 
