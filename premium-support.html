@@ -2751,8 +2751,9 @@ async function loadCreditActionLog(userId) {
 // Lead role only.
 // ════════════════════════════════════════════════════════════════════
 
-let schoolCreditList          = [];   // all schools loaded from Firestore
-let selectedSchoolCreditId    = null; // currently selected school doc id
+let schoolCreditList             = [];   // all schools loaded from Firestore
+let selectedSchoolCreditId       = null; // currently selected school doc id
+let selectedSchoolCurrentExpiry  = null; // ISO string of the school's current subscriptionExpiry (may be null)
 
 // ─── Entry point ────────────────────────────────────────────────────
 async function loadSchoolCreditManagement() {
@@ -2820,7 +2821,8 @@ async function onSchoolCreditSelect() {
     const schoolId = document.getElementById('school-credit-select').value;
 
     if (!schoolId) {
-        selectedSchoolCreditId = null;
+        selectedSchoolCreditId      = null;
+        selectedSchoolCurrentExpiry = null;
         document.getElementById('school-credit-info-section').style.display   = 'none';
         document.getElementById('school-credit-action-section').style.display = 'none';
         document.getElementById('school-credit-log-section').innerHTML        = '';
@@ -2833,6 +2835,9 @@ async function onSchoolCreditSelect() {
         const snap = await getDoc(doc(db, 'schools', schoolId));
         if (!snap.exists()) return;
         const data = snap.data();
+
+        // Capture current expiry so computeSchoolExpiry() can extend from it
+        selectedSchoolCurrentExpiry = data.subscriptionExpiry || null;
 
         const subActive  = data.subscription === true;
         const subColor   = subActive ? 'var(--success)' : 'var(--danger)';
@@ -2924,21 +2929,29 @@ function onSchoolCreditDurationChange() {
 }
 
 // ─── Compute expiry ISO string from duration selection ───────────────
+// Base date is the later of today and the school's current subscriptionExpiry,
+// so any remaining access time is always preserved.
 function computeSchoolExpiry() {
     const dur = document.getElementById('school-credit-duration').value;
-    const now = new Date();
+
+    if (dur === 'custom') {
+        const raw = document.getElementById('school-credit-expiry-date').value;
+        return raw ? new Date(raw).toISOString() : null;
+    }
+
+    // Use whichever is later: today, or the school's current expiry
+    const today      = new Date();
+    const currentExp = selectedSchoolCurrentExpiry ? new Date(selectedSchoolCurrentExpiry) : null;
+    const base       = (currentExp && currentExp > today) ? new Date(currentExp) : new Date(today);
 
     if (dur === 'monthly') {
-        now.setMonth(now.getMonth() + 1);
-        return now.toISOString();
+        base.setMonth(base.getMonth() + 1);
+    } else {
+        // yearly
+        base.setFullYear(base.getFullYear() + 1);
     }
-    if (dur === 'yearly') {
-        now.setFullYear(now.getFullYear() + 1);
-        return now.toISOString();
-    }
-    // custom
-    const raw = document.getElementById('school-credit-expiry-date').value;
-    return raw ? new Date(raw).toISOString() : null;
+
+    return base.toISOString();
 }
 
 // ─── Submit ──────────────────────────────────────────────────────────
