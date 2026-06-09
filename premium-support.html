@@ -726,6 +726,9 @@
         <button class="nav-item" id="nav-credit-management" style="display: none;" data-page="credit-management">
             <i class="fas fa-coins"></i> Credit Management
         </button>
+        <button class="nav-item" id="nav-credit-management" style="display: none;" data-page="school-credit-management">
+            <i class="fas fa-coins"></i> School Credit Management
+        </button>
 
         <div class="nav-section">Support Tools</div>
         <button class="nav-item" data-page="knowledge-base">
@@ -968,6 +971,90 @@
             </div>
         </div>
 
+<!-- SCHOOL CREDIT MANAGEMENT (Lead Only) -->
+<div class="page" id="school-credit-management">
+    <h2>School Credit Management</h2>
+    <p class="subtitle">Grant or revoke school subscription access (Lead only)</p>
+
+    <div style="max-width: 100%;">
+        <!-- School Selector -->
+        <div class="search-section">
+            <div class="search-wrapper">
+                <i class="fas fa-search search-icon"></i>
+                <input type="text" id="school-credit-search" class="search-input"
+                    placeholder="Search school by name or city..." style="padding-left: 42px;">
+            </div>
+            <select id="school-credit-select" class="filter-select"
+                style="width: 100%; margin-top: 12px; padding: 10px;" onchange="onSchoolCreditSelect()">
+                <option value="">Select a school...</option>
+            </select>
+        </div>
+
+        <!-- School Subscription Info -->
+        <div class="search-section" id="school-credit-info-section" style="display: none;">
+            <h4 style="color: var(--navy); margin-bottom: 14px;">Current Subscription Info</h4>
+            <div id="school-credit-info"></div>
+        </div>
+
+        <!-- Grant / Revoke Form -->
+        <div class="search-section" id="school-credit-action-section" style="display: none;">
+            <h4 style="color: var(--navy); margin-bottom: 14px;">Adjust Access</h4>
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                    <!-- Action type -->
+                    <div>
+                        <label style="font-size: 0.78rem; font-weight: 600; color: var(--navy); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Action</label>
+                        <select id="school-credit-action-type" class="filter-select"
+                            style="width: 100%; padding: 10px;" onchange="onSchoolCreditActionTypeChange()">
+                            <option value="grant">Grant Premium Access</option>
+                            <option value="revoke">Revoke Premium Access</option>
+                        </select>
+                    </div>
+                    <!-- Duration (grant only) -->
+                    <div id="school-credit-duration-wrapper">
+                        <label style="font-size: 0.78rem; font-weight: 600; color: var(--navy); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Duration</label>
+                        <select id="school-credit-duration" class="filter-select"
+                            style="width: 100%; padding: 10px;" onchange="onSchoolCreditDurationChange()">
+                            <option value="monthly">1 Month (Monthly)</option>
+                            <option value="yearly" selected>1 Year (Yearly)</option>
+                            <option value="custom">Custom date…</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Custom expiry date (shown only when "custom" is selected) -->
+                <div id="school-credit-expiry-wrapper" style="display: none;">
+                    <label style="font-size: 0.78rem; font-weight: 600; color: var(--navy); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Access Until</label>
+                    <input type="date" id="school-credit-expiry-date" class="search-input"
+                        style="padding-left: 14px; width: 100%;">
+                </div>
+
+                <!-- Reason -->
+                <div>
+                    <label style="font-size: 0.78rem; font-weight: 600; color: var(--navy); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">
+                        Reason <span style="color: var(--danger);">*</span>
+                    </label>
+                    <textarea id="school-credit-reason" rows="3" class="search-input"
+                        placeholder="Required — explain why access is being adjusted..."
+                        style="padding: 14px; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
+                </div>
+
+                <!-- Inline error -->
+                <div id="school-credit-error-msg"
+                    style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px 16px; font-size: 0.85rem; color: var(--danger); display: none;"></div>
+
+                <button class="btn btn-primary" id="school-credit-submit-btn"
+                    onclick="submitSchoolCreditAction()" style="width: auto;">
+                    <i class="fas fa-check-circle"></i> Grant Premium Access
+                </button>
+            </div>
+        </div>
+
+        <!-- Access History Log -->
+        <div id="school-credit-log-section" style="margin-top: 20px;"></div>
+    </div>
+</div>
+        
        <!-- KNOWLEDGE BASE -->
 <div class="page" id="knowledge-base">
     <h2>Knowledge Base</h2>
@@ -2655,6 +2742,391 @@ async function loadCreditActionLog(userId) {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════
+// SCHOOL CREDIT MANAGEMENT — Grant / Revoke School Subscriptions
+// Writes to: schools (subscription fields) + subscriptions (record)
+//            + schoolCreditTransactions (audit log)
+// Lead role only.
+// ════════════════════════════════════════════════════════════════════
+
+let schoolCreditList          = [];   // all schools loaded from Firestore
+let selectedSchoolCreditId    = null; // currently selected school doc id
+
+// ─── Entry point ────────────────────────────────────────────────────
+async function loadSchoolCreditManagement() {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Role guard — leads only
+    try {
+        const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
+        if (!agentSnap.exists() || agentSnap.data().role !== 'lead') {
+            document.getElementById('school-credit-management').innerHTML =
+                '<div class="results-placeholder"><i class="fas fa-lock"></i><p>Access denied — Team Lead only</p></div>';
+            return;
+        }
+    } catch (e) {
+        console.error('Role check error:', e);
+        return;
+    }
+
+    // Reset UI state
+    selectedSchoolCreditId = null;
+    document.getElementById('school-credit-info-section').style.display   = 'none';
+    document.getElementById('school-credit-action-section').style.display = 'none';
+    document.getElementById('school-credit-log-section').innerHTML        = '';
+    document.getElementById('school-credit-select').value                 = '';
+    document.getElementById('school-credit-search').value                 = '';
+
+    // Load all schools
+    try {
+        const snap = await getDocs(collection(db, 'schools'));
+        schoolCreditList = [];
+        snap.forEach(d => schoolCreditList.push({ id: d.id, ...d.data() }));
+        filterSchoolCreditList();
+    } catch (e) {
+        console.error('Error loading schools:', e);
+    }
+
+    // Wire up live search
+    const searchInput = document.getElementById('school-credit-search');
+    if (searchInput) {
+        searchInput.removeEventListener('input', filterSchoolCreditList);
+        searchInput.addEventListener('input', filterSchoolCreditList);
+    }
+}
+
+// ─── Search / filter ────────────────────────────────────────────────
+function filterSchoolCreditList() {
+    const q      = (document.getElementById('school-credit-search')?.value || '').toLowerCase().trim();
+    const select = document.getElementById('school-credit-select');
+
+    const filtered = q
+        ? schoolCreditList.filter(s =>
+            (s.name || '').toLowerCase().includes(q) ||
+            (s.city || '').toLowerCase().includes(q))
+        : schoolCreditList;
+
+    select.innerHTML = '<option value="">Select a school...</option>' +
+        filtered.map(s =>
+            `<option value="${s.id}">${s.name || 'Unnamed School'} — ${s.city || 'Unknown city'}</option>`
+        ).join('');
+}
+
+// ─── School selected ────────────────────────────────────────────────
+async function onSchoolCreditSelect() {
+    const schoolId = document.getElementById('school-credit-select').value;
+
+    if (!schoolId) {
+        selectedSchoolCreditId = null;
+        document.getElementById('school-credit-info-section').style.display   = 'none';
+        document.getElementById('school-credit-action-section').style.display = 'none';
+        document.getElementById('school-credit-log-section').innerHTML        = '';
+        return;
+    }
+
+    selectedSchoolCreditId = schoolId;
+
+    try {
+        const snap = await getDoc(doc(db, 'schools', schoolId));
+        if (!snap.exists()) return;
+        const data = snap.data();
+
+        const subActive  = data.subscription === true;
+        const subColor   = subActive ? 'var(--success)' : 'var(--danger)';
+        const expiryDate = data.subscriptionExpiry
+            ? new Date(data.subscriptionExpiry).toLocaleDateString()
+            : 'N/A';
+
+        document.getElementById('school-credit-info').innerHTML = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; padding: 14px; background: #f8fafc; border-radius: 10px;">
+                <div>
+                    <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">School</span>
+                    <p style="font-size: 0.88rem; font-weight: 600; color: var(--navy); margin: 4px 0 0;">${data.name || 'N/A'}</p>
+                </div>
+                <div>
+                    <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Plan</span>
+                    <p style="font-size: 0.88rem; font-weight: 600; color: var(--navy); margin: 4px 0 0; text-transform: capitalize;">${data.subscriptionPlan || 'N/A'}</p>
+                </div>
+                <div>
+                    <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Status</span>
+                    <p style="font-size: 0.88rem; font-weight: 600; color: ${subColor}; margin: 4px 0 0;">
+                        ${subActive ? 'Active' : 'Inactive'}
+                    </p>
+                </div>
+                <div>
+                    <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Expiry</span>
+                    <p style="font-size: 0.88rem; color: var(--text-muted); margin: 4px 0 0;">${expiryDate}</p>
+                </div>
+                <div>
+                    <span style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">City</span>
+                    <p style="font-size: 0.88rem; color: var(--text-muted); margin: 4px 0 0;">${data.city || 'N/A'}, ${data.country || ''}</p>
+                </div>
+            </div>`;
+
+        document.getElementById('school-credit-info-section').style.display   = 'block';
+        document.getElementById('school-credit-action-section').style.display = 'block';
+
+        // Reset form to defaults
+        document.getElementById('school-credit-action-type').value = 'grant';
+        document.getElementById('school-credit-duration').value    = 'yearly';
+        document.getElementById('school-credit-expiry-wrapper').style.display  = 'none';
+        document.getElementById('school-credit-duration-wrapper').style.display = 'block';
+        document.getElementById('school-credit-reason').value = '';
+        document.getElementById('school-credit-error-msg').style.display = 'none';
+        onSchoolCreditActionTypeChange(); // sync button label/colour
+
+        await loadSchoolCreditLog(schoolId);
+
+    } catch (e) {
+        console.error('Error loading school for credit management:', e);
+    }
+}
+
+// ─── Action-type dropdown changed ───────────────────────────────────
+function onSchoolCreditActionTypeChange() {
+    const action          = document.getElementById('school-credit-action-type').value;
+    const btn             = document.getElementById('school-credit-submit-btn');
+    const durationWrapper = document.getElementById('school-credit-duration-wrapper');
+    const expiryWrapper   = document.getElementById('school-credit-expiry-wrapper');
+
+    if (action === 'revoke') {
+        btn.innerHTML            = '<i class="fas fa-times-circle"></i> Revoke Premium Access';
+        btn.style.background     = 'var(--danger)';
+        durationWrapper.style.display = 'none';
+        expiryWrapper.style.display   = 'none';
+    } else {
+        btn.innerHTML            = '<i class="fas fa-check-circle"></i> Grant Premium Access';
+        btn.style.background     = 'var(--navy)';
+        durationWrapper.style.display = 'block';
+        // Show custom date picker only if "custom" was already chosen
+        const dur = document.getElementById('school-credit-duration').value;
+        expiryWrapper.style.display = (dur === 'custom') ? 'block' : 'none';
+    }
+}
+
+// ─── Duration dropdown changed ───────────────────────────────────────
+function onSchoolCreditDurationChange() {
+    const dur           = document.getElementById('school-credit-duration').value;
+    const expiryWrapper = document.getElementById('school-credit-expiry-wrapper');
+
+    if (dur === 'custom') {
+        expiryWrapper.style.display = 'block';
+        // Pre-fill to 1 month from today as a sensible default
+        const d = new Date();
+        d.setMonth(d.getMonth() + 1);
+        document.getElementById('school-credit-expiry-date').value = d.toISOString().split('T')[0];
+    } else {
+        expiryWrapper.style.display = 'none';
+    }
+}
+
+// ─── Compute expiry ISO string from duration selection ───────────────
+function computeSchoolExpiry() {
+    const dur = document.getElementById('school-credit-duration').value;
+    const now = new Date();
+
+    if (dur === 'monthly') {
+        now.setMonth(now.getMonth() + 1);
+        return now.toISOString();
+    }
+    if (dur === 'yearly') {
+        now.setFullYear(now.getFullYear() + 1);
+        return now.toISOString();
+    }
+    // custom
+    const raw = document.getElementById('school-credit-expiry-date').value;
+    return raw ? new Date(raw).toISOString() : null;
+}
+
+// ─── Submit ──────────────────────────────────────────────────────────
+async function submitSchoolCreditAction() {
+    const schoolId = selectedSchoolCreditId;
+    const action   = document.getElementById('school-credit-action-type').value;
+    const reason   = document.getElementById('school-credit-reason').value.trim();
+    const dur      = document.getElementById('school-credit-duration').value;
+
+    // Clear previous error
+    document.getElementById('school-credit-error-msg').style.display = 'none';
+
+    // Validation
+    if (!schoolId) { showSchoolCreditError('Please select a school.'); return; }
+    if (!reason)   { showSchoolCreditError('Please provide a reason for this adjustment.'); return; }
+
+    let expiryISO = null;
+    if (action === 'grant') {
+        expiryISO = computeSchoolExpiry();
+        if (!expiryISO) { showSchoolCreditError('Please set a valid access expiry date.'); return; }
+    }
+
+    // Confirmation
+    const expiryLabel = expiryISO ? new Date(expiryISO).toLocaleDateString() : '';
+    const confirmMsg  = action === 'grant'
+        ? `Grant premium access to this school until ${expiryLabel}?\n\nReason: ${reason}`
+        : `Revoke premium access from this school?\n\nReason: ${reason}`;
+    if (!confirm(confirmMsg)) return;
+
+    // Loading state
+    const btn          = document.getElementById('school-credit-submit-btn');
+    btn.disabled       = true;
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML      = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+
+    try {
+        const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
+        if (!schoolSnap.exists()) throw new Error('School not found.');
+        const schoolData = schoolSnap.data();
+
+        const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+
+        const now = new Date().toISOString();
+
+        if (action === 'grant') {
+            const planName     = (dur === 'monthly') ? 'premium_monthly' : 'premium_yearly';
+            const durationMonths = (dur === 'monthly') ? 1 : (dur === 'yearly') ? 12 : null;
+
+            // 1. Update the schools document
+            await updateDoc(doc(db, 'schools', schoolId), {
+                subscription:             true,
+                subscriptionPlan:         planName,
+                subscriptionExpiry:       expiryISO,
+                subscriptionStart:        now,
+                subscriptionPrice:        0,
+                lastUpdated:              now
+            });
+
+            // 2. Write a record to the subscriptions collection (mirrors existing schema)
+            await setDoc(doc(collection(db, 'subscriptions')), {
+                userId:           schoolId,              // school doc id as the "user"
+                userName:         schoolData.name || 'Unknown School',
+                userEmail:        schoolData.email || '',
+                agentId:          auth.currentUser.uid,
+                agentEmail:       auth.currentUser.email,
+                plan:             planName,
+                type:             'admin_grant',
+                source:           'admin_dashboard',
+                price:            0,
+                duration:         durationMonths,
+                reason:           reason,
+                grantedAt:        now,
+                grantedBy:        auth.currentUser.uid,
+                extendedExisting: schoolData.subscription === true,
+                scope:            'school'
+            });
+
+        } else {
+            // Revoke: set subscription=false, leave plan fields as-is
+            await updateDoc(doc(db, 'schools', schoolId), {
+                subscription:  false,
+                revokeReason:  reason,
+                revokedBy:     auth.currentUser.uid,
+                revokedByName: auth.currentUser.email,
+                revokedAt:     now,
+                lastUpdated:   now
+            });
+        }
+
+        // 3. Write to schoolCreditTransactions audit log
+        await setDoc(doc(collection(db, 'schoolCreditTransactions')), {
+            schoolId:    schoolId,
+            schoolName:  schoolData.name  || 'Unknown School',
+            schoolEmail: schoolData.email || '',
+            agentId:     auth.currentUser.uid,
+            agentEmail:  auth.currentUser.email,
+            type:        action === 'grant' ? 'access_granted' : 'access_revoked',
+            plan:        action === 'grant' ? ((dur === 'monthly') ? 'premium_monthly' : 'premium_yearly') : null,
+            reason,
+            expiryDate:  action === 'grant' ? expiryISO : null,
+            timestamp:   now
+        });
+
+        // 4. Generic audit log (shared across the dashboard)
+        await logAuditAction(
+            action === 'grant' ? 'school_access_granted' : 'school_access_revoked',
+            schoolData.name || schoolId,
+            `${action === 'grant' ? 'Granted' : 'Revoked'} premium access for school "${schoolData.name || schoolId}". Reason: ${reason}`
+        );
+
+        // Reset reason field and refresh display
+        document.getElementById('school-credit-reason').value = '';
+        await onSchoolCreditSelect();
+
+    } catch (e) {
+        console.error('School credit action error:', e);
+        showSchoolCreditError('Error: ' + e.message);
+    } finally {
+        btn.disabled  = false;
+        btn.innerHTML = originalHTML;
+        onSchoolCreditActionTypeChange(); // restore button colour
+    }
+}
+
+// ─── Inline error helper ─────────────────────────────────────────────
+function showSchoolCreditError(msg) {
+    const el         = document.getElementById('school-credit-error-msg');
+    el.textContent   = msg;
+    el.style.display = 'block';
+}
+
+// ─── Access history log ──────────────────────────────────────────────
+async function loadSchoolCreditLog(schoolId) {
+    const container = document.getElementById('school-credit-log-section');
+    container.innerHTML = '';
+
+    try {
+        const q    = query(
+            collection(db, 'schoolCreditTransactions'),
+            where('schoolId', '==', schoolId),
+            orderBy('timestamp', 'desc'),
+            limit(20)
+        );
+        const snap = await getDocs(q);
+
+        if (snap.empty) {
+            container.innerHTML = '<div class="results-placeholder" style="margin-top: 0;"><i class="fas fa-history"></i><p>No access changes for this school</p></div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <h4 style="color: var(--navy); margin-bottom: 12px;">Access History</h4>
+            ${snap.docs.map(d => {
+                const t       = d.data();
+                const time    = new Date(t.timestamp).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                });
+                const isGrant = t.type === 'access_granted';
+                const color   = isGrant ? 'var(--success)' : 'var(--danger)';
+                const icon    = isGrant ? 'fa-check-circle' : 'fa-times-circle';
+                const bg      = isGrant ? '#f0fdf4' : '#fef2f2';
+                const planLabel = t.plan
+                    ? `<span style="font-size: 0.78rem; font-weight: 400; color: var(--text-muted); margin-left: 6px; text-transform: capitalize;">${t.plan.replace('_', ' ')}</span>`
+                    : '';
+                const expiryLabel = t.expiryDate
+                    ? `<span style="font-size: 0.78rem; font-weight: 400; color: var(--text-muted); margin-left: 6px;">until ${new Date(t.expiryDate).toLocaleDateString()}</span>`
+                    : '';
+
+                return `
+                    <div style="background: ${bg}; border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                            <span style="color: ${color}; font-weight: 600;">
+                                <i class="fas ${icon}"></i>
+                                ${isGrant ? 'Access Granted' : 'Access Revoked'}
+                                ${planLabel}${expiryLabel}
+                            </span>
+                            <span style="font-size: 0.72rem; color: var(--text-muted);">${time}</span>
+                        </div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">
+                            ${t.reason} — by ${t.agentEmail}
+                        </div>
+                    </div>`;
+            }).join('')}`;
+
+    } catch (e) {
+        console.error('School credit log error:', e);
+        container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading access history</p></div>';
+    }
+}
+    
 // ════════════════════════════════════════════════════════════════════
 // SETTINGS — Agent Profile + Security (Password / 2FA)
 // ════════════════════════════════════════════════════════════════════
