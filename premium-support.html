@@ -3436,31 +3436,32 @@ const supportChat = {
     currentTypingUser:  null,
     lastReadTimestamps: new Map()
 };
-
-// ── Load read timestamps from localStorage ──────────────────────────
+ 
+// ── Persist read timestamps ──────────────────────────────────────────
 function loadReadTimestamps() {
     try {
         const saved = localStorage.getItem('agent_chat_read_timestamps');
         if (saved) {
-            const parsed = JSON.parse(saved);
-            supportChat.lastReadTimestamps = new Map(Object.entries(parsed));
+            supportChat.lastReadTimestamps = new Map(Object.entries(JSON.parse(saved)));
         }
     } catch (e) { console.warn('Could not load read timestamps', e); }
 }
-
+ 
 function saveReadTimestamps() {
     try {
-        const obj = Object.fromEntries(supportChat.lastReadTimestamps);
-        localStorage.setItem('agent_chat_read_timestamps', JSON.stringify(obj));
+        localStorage.setItem(
+            'agent_chat_read_timestamps',
+            JSON.stringify(Object.fromEntries(supportChat.lastReadTimestamps))
+        );
     } catch (e) { console.warn('Could not save read timestamps', e); }
 }
-
+ 
 function updateReadTimestamp(chatId) {
     supportChat.lastReadTimestamps.set(chatId, Date.now());
     saveReadTimestamps();
 }
-
-// ── Agent presence ────────────────────────────────────────────────
+ 
+// ── Agent presence ────────────────────────────────────────────────────
 async function setAgentPresence(online) {
     if (!supportChat.agentUid) return;
     try {
@@ -3469,449 +3470,499 @@ async function setAgentPresence(online) {
             lastSeen: serverTimestamp(),
             name: supportChat.agentName || ''
         }, { merge: true });
-        
+ 
         const dot = document.getElementById('agent-online-dot');
         if (dot) dot.style.background = online ? 'var(--success)' : 'var(--text-muted)';
     } catch (err) {
         console.error('Presence update error:', err);
     }
 }
-
-// ── Resolve contact info from chat data ────────────────────────────
+ 
+// ── Resolve contact info ─────────────────────────────────────────────
+// Handles both school admin chats (Doc 1) and public/B2C chats (Doc 3).
 async function resolveContactInfo(chat) {
-    let contactId = null;
-    let contactType = 'b2c';
-    let name = 'User';
-    let email = null;
-    
-    // Check for clientEmail from school admin chat
+    // ── School admin chat (schooladmin-chat.js) ──────────────────────
+    // Set by Doc 1: userName, userEmail, senderType: 'school_admin'
+    if (chat.userEmail || chat.userName) {
+        return {
+            name:        chat.userName  || chat.userEmail.split('@')[0],
+            email:       chat.userEmail || null,
+            contactId:   null,
+            // Preserve school_admin type so the dashboard shows the right label/colour
+            contactType: chat.senderType === 'school_admin' ? 'school_admin' : 'b2c'
+        };
+    }
+ 
+    // ── Legacy clientEmail field (older school admin format) ─────────
     if (chat.clientEmail) {
-        email = chat.clientEmail;
-        name = chat.clientName || email.split('@')[0];
-        contactType = 'school_admin';
-        return { name, email, contactId: null, contactType };
+        return {
+            name:        chat.clientName || chat.clientEmail.split('@')[0],
+            email:       chat.clientEmail,
+            contactId:   null,
+            contactType: 'school_admin'
+        };
     }
-    
-    // Check for userEmail from B2C chat
-    if (chat.userEmail) {
-        email = chat.userEmail;
-        name = chat.userName || email.split('@')[0];
-        contactType = 'b2c';
-        return { name, email, contactId: null, contactType };
+ 
+    // ── Authenticated user lookup (tutoring / internal chats) ────────
+    let contactId   = null;
+    let contactType = 'b2c';
+ 
+    if (chat.participantTypes) {
+        const entry = Object.entries(chat.participantTypes).find(
+            ([k, v]) => k !== 'admin' && (v === 'student' || v === 'tutor')
+        );
+        if (entry) { contactId = entry[0]; contactType = entry[1]; }
     }
-    
-    // Try to fetch from users collection
-    if (chat.senderId && chat.senderId !== 'admin') {
+ 
+    if (!contactId && chat.studentId) { contactId = chat.studentId; contactType = 'student'; }
+ 
+    if (!contactId && chat.participants) {
+        contactId   = chat.participants.find(id => id !== 'admin') || null;
+        contactType = (chat.chatType?.includes('tutor') || chat.id?.includes('tutor'))
+            ? 'tutor' : 'b2c';
+    }
+ 
+    const PLACEHOLDERS = ['tutor', 'student', 'admin support', 'admin', 'unknown'];
+    const storedName   = contactId ? chat.participantNames?.[contactId] : null;
+ 
+    if (storedName && !PLACEHOLDERS.includes(storedName.trim().toLowerCase())) {
+        return { name: storedName, email: null, contactId, contactType };
+    }
+ 
+    if (contactId) {
         try {
-            const userSnap = await getDoc(doc(db, 'users', chat.senderId));
-            if (userSnap.exists()) {
-                const data = userSnap.data();
-                name = data.displayName || data.email || 'User';
-                email = data.email;
-                contactType = 'b2c';
+            const col  = contactType === 'tutor' ? 'tutors' : 'students';
+            const snap = await getDoc(doc(db, col, contactId));
+            if (snap.exists()) {
+                const data = snap.data();
+                const name = contactType === 'tutor'
+                    ? (data.personal?.fullName || data.fullName || data.name || null)
+                    : (data.fullName || data.name || null);
+                if (name) return { name, email: null, contactId, contactType };
             }
         } catch (err) { console.error('Name fetch error:', err); }
     }
-    
-    return { name, email, contactId, contactType };
+ 
+    return { name: contactType === 'tutor' ? 'Tutor' : 'User', email: null, contactId, contactType };
 }
-
-// ── Enrich chats with resolved names ───────────────────────────────
+ 
+// ── Enrich chats ──────────────────────────────────────────────────────
 async function enrichChats(chats) {
-    const enriched = await Promise.all(chats.map(async chat => {
-        const resolved = await resolveContactInfo(chat);
-        const lastRead = supportChat.lastReadTimestamps.get(chat.id) || 0;
+    return Promise.all(chats.map(async chat => {
+        const resolved    = await resolveContactInfo(chat);
+        const lastRead    = supportChat.lastReadTimestamps.get(chat.id) || 0;
         const lastMsgTime = chat.lastMessageAt?.toDate?.()?.getTime() ||
                             (chat.lastMessageAt ? new Date(chat.lastMessageAt).getTime() : 0);
-        const hasUnread = lastMsgTime > lastRead && chat.lastMessageBy !== 'admin';
-        
+        const hasUnread   = lastMsgTime > lastRead && chat.lastMessageBy !== 'admin';
+ 
         return {
             ...chat,
-            _resolvedName: resolved.name,
-            _resolvedEmail: resolved.email,
-            _contactType: resolved.contactType,
-            _hasUnread: hasUnread,
-            _unreadCount: hasUnread ? 1 : 0
+            _resolvedName:  resolved.name,
+            _resolvedEmail: resolved.email || chat.userEmail || null,
+            _contactId:     resolved.contactId,
+            _contactType:   resolved.contactType,
+            _hasUnread:     hasUnread,
+            _unreadCount:   hasUnread ? 1 : 0
         };
     }));
-    
-    return enriched;
 }
-
-// ── Real-time chat list listener ────────────────────────────────────
+ 
+// ── Real-time chat list ───────────────────────────────────────────────
 function listenToChats() {
     if (supportChat.chatsUnsub) supportChat.chatsUnsub();
-    
+ 
     const chatsQuery = query(
         collection(db, 'chats'),
         orderBy('lastMessageAt', 'desc')
     );
-    
+ 
     supportChat.chatsUnsub = onSnapshot(chatsQuery, async (snap) => {
         const raw = [];
-        
+ 
         snap.forEach(d => {
             const data = d.data();
-            const id = d.id;
-            // Only show support chats (from Contact Tklesson or public page)
-            const isSupportChat = data.chatType === 'support_student' || 
-                                  data.isAdminChat === true ||
-                                  data.clientEmail ||
-                                  data.userEmail;
-            
+            const id   = d.id;
+ 
+            // Accept chats from Doc 1 (school admin) and Doc 3 (public widget)
+            const isSupportChat =
+                data.chatType    === 'support_student' ||
+                data.isAdminChat === true               ||
+                data.clientEmail                        ||
+                data.userEmail;
+ 
             if (isSupportChat && data.lastMessage?.trim()) {
                 raw.push({ id, ...data });
             }
         });
-        
+ 
         supportChat.allChats = await enrichChats(raw);
         renderChatContactList();
         updateChatTabBadges();
     });
 }
-
-// ── Tab switching ───────────────────────────────────────────────────
-window.switchChatTab = function(tab) {
+ 
+// ── Tab switching ─────────────────────────────────────────────────────
+window.switchChatTab = function (tab) {
     supportChat.currentTab = tab;
     document.querySelectorAll('.chat-tab').forEach(t => {
         t.classList.toggle('active', t.getAttribute('data-tab') === tab);
     });
     renderChatContactList();
 };
-
-// ── Render contact list ─────────────────────────────────────────────
+ 
+// ── Render contact list ───────────────────────────────────────────────
 function renderChatContactList() {
     const container = document.getElementById('chat-contact-list');
-    const tab = supportChat.currentTab;
-    const uid = supportChat.agentUid;
-    
+    const tab       = supportChat.currentTab;
+    const uid       = supportChat.agentUid;
+ 
     let chats = supportChat.allChats.filter(c => c.status !== 'closed');
-    
+ 
     if (tab === 'unclaimed') {
         chats = chats.filter(c => !c.assignedTo);
     } else if (tab === 'mine') {
         chats = chats.filter(c => c.assignedTo === uid);
     }
-    
-    if (chats.length === 0) {
+ 
+    if (!chats.length) {
         container.innerHTML = `
             <div class="chat-empty" style="padding: 30px 20px;">
                 <i class="fas fa-inbox" style="font-size: 1.8rem; opacity: 0.2; margin-bottom: 8px;"></i>
                 <p style="font-size: 0.82rem;">${
                     tab === 'unclaimed' ? 'No unclaimed chats' :
-                    tab === 'mine' ? 'No chats claimed yet' : 'No chats yet'
+                    tab === 'mine'      ? 'No chats claimed yet' : 'No chats yet'
                 }</p>
             </div>`;
         return;
     }
-    
+ 
     container.innerHTML = '';
     chats.forEach(chat => {
-        const isUnclaimed = !chat.assignedTo;
-        const displayName = chat._resolvedName || 'User';
-        const contactType = chat._contactType || 'b2c';
-        const unread = chat._unreadCount || 0;
-        const lastMsg = chat.lastMessage || 'No messages yet';
-        const lastTime = chat.lastMessageAt
-            ? formatChatTime(chat.lastMessageAt.toDate ? chat.lastMessageAt.toDate() : new Date(chat.lastMessageAt))
-            : '';
-        const initials = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        
-        const assignedText = isUnclaimed ? 'Unclaimed' : (chat.assignedTo === uid ? 'Claimed by you' : `Claimed by ${chat.assignedName || 'agent'}`);
+        const isUnclaimed   = !chat.assignedTo;
+        const displayName   = chat._resolvedName  || 'User';
+        const displayEmail  = chat._resolvedEmail || null;
+        const contactType   = chat._contactType   || 'b2c';
+        const unread        = chat._unreadCount   || 0;
+        const lastMsg       = chat.lastMessage    || 'No messages yet';
+ 
+        // Handle both Firestore Timestamp and ISO string
+        const lastMsgDate   = chat.lastMessageAt?.toDate
+            ? chat.lastMessageAt.toDate()
+            : chat.lastMessageAt ? new Date(chat.lastMessageAt) : null;
+        const lastTime      = lastMsgDate ? formatChatTime(lastMsgDate) : '';
+ 
+        const initials      = displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const assignedText  = isUnclaimed
+            ? 'Unclaimed'
+            : chat.assignedTo === uid ? 'Claimed by you' : `Claimed by ${chat.assignedName || 'agent'}`;
         const assignedColor = isUnclaimed ? 'var(--gold)' : (chat.assignedTo === uid ? 'var(--success)' : 'var(--text-muted)');
-        
+        const assignedIcon  = isUnclaimed ? 'circle' : (chat.assignedTo === uid ? 'user-check' : 'lock');
+ 
         const el = document.createElement('div');
         el.className = `chat-contact-item${isUnclaimed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
         el.innerHTML = `
             <div class="chat-contact-avatar ${contactType}">${initials}</div>
             <div class="chat-contact-info">
                 <div class="chat-contact-name">${escapeHtml(displayName)}</div>
-                ${chat._resolvedEmail ? `<div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 2px;">
-                    <i class="fas fa-envelope"></i> ${escapeHtml(chat._resolvedEmail)}
+                ${displayEmail ? `<div style="font-size:0.68rem;color:var(--text-muted);margin-top:2px;">
+                    <i class="fas fa-envelope"></i> ${escapeHtml(displayEmail)}
                 </div>` : ''}
                 <div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>
-                <div style="font-size: 0.68rem; color: ${assignedColor}; margin-top: 2px;">
-                    <i class="fas fa-${isUnclaimed ? 'circle' : (chat.assignedTo === uid ? 'user-check' : 'lock')}" style="font-size: 0.55rem;"></i> ${assignedText}
+                <div style="font-size:0.68rem;color:${assignedColor};margin-top:2px;">
+                    <i class="fas fa-${assignedIcon}" style="font-size:0.55rem;"></i> ${assignedText}
                 </div>
             </div>
             <div class="chat-contact-meta">
                 <span class="chat-time">${lastTime}</span>
                 ${unread > 0 ? `<div class="chat-unread-badge">${unread}</div>` : ''}
             </div>`;
-        
+ 
         el.addEventListener('click', () => openSupportChat(chat));
         container.appendChild(el);
     });
 }
-
-// ── Update tab badges ───────────────────────────────────────────────
+ 
+// ── Tab badges ────────────────────────────────────────────────────────
 function updateChatTabBadges() {
-    const uid = supportChat.agentUid;
-    const unclaimed = supportChat.allChats.filter(c => !c.assignedTo && c.status !== 'closed');
-    const mine = supportChat.allChats.filter(c => c.assignedTo === uid && c.status !== 'closed');
-    const unreadMine = mine.reduce((sum, c) => sum + (c._unreadCount || 0), 0);
-    
+    const uid        = supportChat.agentUid;
+    const unclaimed  = supportChat.allChats.filter(c => !c.assignedTo && c.status !== 'closed');
+    const mine       = supportChat.allChats.filter(c => c.assignedTo === uid && c.status !== 'closed');
+    const unreadMine = mine.reduce((s, c) => s + (c._unreadCount || 0), 0);
+ 
     const unclaimedBadge = document.getElementById('unclaimed-badge');
-    const mineBadge = document.getElementById('mine-badge');
-    
+    const mineBadge      = document.getElementById('mine-badge');
+ 
     if (unclaimedBadge) {
-        unclaimedBadge.textContent = unclaimed.length;
+        unclaimedBadge.textContent   = unclaimed.length;
         unclaimedBadge.style.display = unclaimed.length > 0 ? 'flex' : 'none';
     }
     if (mineBadge) {
-        mineBadge.textContent = unreadMine;
+        mineBadge.textContent   = unreadMine;
         mineBadge.style.display = unreadMine > 0 ? 'flex' : 'none';
     }
 }
-
-// ── Open a chat ──────────────────────────────────────────────────────
+ 
+// ── Open a chat ───────────────────────────────────────────────────────
 async function openSupportChat(chat) {
-    if (supportChat.messagesUnsub) {
-        supportChat.messagesUnsub();
-        supportChat.messagesUnsub = null;
-    }
-    
-    supportChat.currentChatId = chat.id;
+    if (supportChat.messagesUnsub) { supportChat.messagesUnsub(); supportChat.messagesUnsub = null; }
+ 
+    supportChat.currentChatId  = chat.id;
     supportChat.currentContact = chat;
     supportChat.renderedMessageIds.clear();
-    
+ 
     renderChatContactList();
-    
+ 
     document.getElementById('chat-empty-state').style.display = 'none';
     document.getElementById('chat-active-area').style.display = 'flex';
-    
+ 
     const contactName = chat._resolvedName || 'User';
-    const contactType = chat._contactType || 'b2c';
-    const initials = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-    
-    document.getElementById('active-chat-avatar').textContent = initials;
-    document.getElementById('active-chat-avatar').style.background = contactType === 'school_admin' ? '#1e40af' : '#065f46';
+    const contactType = chat._contactType  || 'b2c';
+    const initials    = contactName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+ 
+    document.getElementById('active-chat-avatar').textContent      = initials;
+    document.getElementById('active-chat-avatar').style.background =
+        contactType === 'school_admin' ? '#1e40af' : '#065f46';
+ 
     document.getElementById('active-chat-name').textContent = escapeHtml(contactName);
-    document.getElementById('active-chat-meta').innerHTML = `${contactType === 'school_admin' ? 'School Admin' : 'B2C User'} · ${
-        !chat.assignedTo ? '<span style="color: var(--gold);">Unclaimed</span>' :
-        chat.assignedTo === supportChat.agentUid ? '<span style="color: var(--success);">Claimed by you</span>' :
-        `<span style="color: var(--danger);">Claimed by ${escapeHtml(chat.assignedName || 'another agent')}</span>`
-    }`;
-    
-    const claimBtn = document.getElementById('claim-btn');
-    const unclaimBtn = document.getElementById('unclaim-btn');
+    document.getElementById('active-chat-meta').innerHTML   = `
+        ${contactType === 'school_admin' ? 'School Admin' : 'B2C User'} · ${
+            !chat.assignedTo
+                ? '<span style="color:var(--gold);">Unclaimed</span>'
+                : chat.assignedTo === supportChat.agentUid
+                    ? '<span style="color:var(--success);">Claimed by you</span>'
+                    : `<span style="color:var(--danger);">Claimed by ${escapeHtml(chat.assignedName || 'another agent')}</span>`
+        }`;
+ 
+    const claimBtn     = document.getElementById('claim-btn');
+    const unclaimBtn   = document.getElementById('unclaim-btn');
     const closeChatBtn = document.getElementById('close-chat-btn');
-    
+ 
     if (!chat.assignedTo) {
-        claimBtn.style.display = 'inline-flex';
+        claimBtn.style.display   = 'inline-flex';
         unclaimBtn.style.display = closeChatBtn.style.display = 'none';
     } else if (chat.assignedTo === supportChat.agentUid) {
-        unclaimBtn.style.display = 'inline-flex';
+        unclaimBtn.style.display   = 'inline-flex';
         closeChatBtn.style.display = 'inline-flex';
-        claimBtn.style.display = 'none';
+        claimBtn.style.display     = 'none';
     } else {
         claimBtn.style.display = unclaimBtn.style.display = closeChatBtn.style.display = 'none';
     }
-    
+ 
     const banner = document.getElementById('claimed-by-banner');
     if (chat.assignedTo && chat.assignedTo !== supportChat.agentUid) {
-        banner.style.display = 'block';
+        banner.style.display    = 'block';
         banner.style.background = '#fff7ed';
-        banner.style.color = '#c2410c';
-        banner.innerHTML = `<i class="fas fa-lock"></i> This chat is claimed by ${escapeHtml(chat.assignedName || 'another agent')}`;
+        banner.style.color      = '#c2410c';
+        banner.innerHTML        = `<i class="fas fa-lock"></i> This chat is claimed by ${escapeHtml(chat.assignedName || 'another agent')}`;
     } else {
         banner.style.display = 'none';
     }
-    
+ 
     updateReadTimestamp(chat.id);
     await markSupportChatRead(chat.id);
     loadSupportMessages(chat.id);
     subscribeToTypingIndicator(chat.id);
 }
-
-// ── Subscribe to typing indicator ────────────────────────────────────
+ 
+// ── Typing indicator listener ─────────────────────────────────────────
+// Reads typing.user on the main chat document — set by Doc 1 via updateDoc.
 function subscribeToTypingIndicator(chatId) {
     if (supportChat.typingUnsub) supportChat.typingUnsub();
-    
+ 
     supportChat.typingUnsub = onSnapshot(doc(db, 'chats', chatId), (snap) => {
         if (!snap.exists()) return;
-        const data = snap.data();
+        const data         = snap.data();
         const typingUserId = data.typing?.user;
-        const typingName = data.typing?.userName || 'Customer';
-        const typingDiv = document.getElementById('support-typing');
-        const nameSpan = document.getElementById('support-typing-name');
-        
+        const typingName   = data.typing?.userName || 'Customer';
+        const typingDiv    = document.getElementById('support-typing');
+        const nameSpan     = document.getElementById('support-typing-name');
+ 
         if (typingUserId && typingUserId !== 'admin' && data.typing?.admin !== true) {
             if (supportChat.currentTypingUser !== typingUserId) {
                 supportChat.currentTypingUser = typingUserId;
-                typingDiv.style.display = 'block';
-                nameSpan.textContent = typingName;
+                if (typingDiv)  typingDiv.style.display = 'block';
+                if (nameSpan)   nameSpan.textContent    = typingName;
                 setTimeout(() => {
                     if (supportChat.currentTypingUser === typingUserId) {
-                        typingDiv.style.display = 'none';
+                        if (typingDiv) typingDiv.style.display = 'none';
                         supportChat.currentTypingUser = null;
                     }
                 }, 3000);
             }
         } else if (supportChat.currentTypingUser) {
-            typingDiv.style.display = 'none';
+            if (typingDiv) typingDiv.style.display = 'none';
             supportChat.currentTypingUser = null;
         }
     });
 }
-
-// ── Load messages with real-time listener ────────────────────────────
+ 
+// ── Load messages (real-time, deduplicated) ───────────────────────────
 function loadSupportMessages(chatId) {
     if (supportChat.messagesUnsub) supportChat.messagesUnsub();
-    
+ 
     const container = document.getElementById('support-messages');
-    container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading...</div>';
-    
-    const messagesQuery = query(
+    container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">Loading…</div>';
+ 
+    const q = query(
         collection(db, 'chats', chatId, 'messages'),
         orderBy('timestamp', 'asc')
     );
-    
-    supportChat.messagesUnsub = onSnapshot(messagesQuery, (snap) => {
+ 
+    supportChat.messagesUnsub = onSnapshot(q, (snap) => {
         if (snap.empty && container.innerHTML.includes('Loading')) {
-            container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">No messages yet. Send a message to start the conversation.</div>';
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">No messages yet. Send a message to start.</div>';
             return;
         }
-        
+ 
         snap.docChanges().forEach(change => {
             if (change.type !== 'added') return;
-            
+ 
             const msgId = change.doc.id;
             if (supportChat.renderedMessageIds.has(msgId)) return;
             supportChat.renderedMessageIds.add(msgId);
-            
-            const msg = change.doc.data();
+ 
+            const msg    = change.doc.data();
+            // Treat as sent (by agent) if senderId is 'admin' or matches the current agent UID
             const isSent = msg.senderId === 'admin' || msg.senderId === supportChat.agentUid;
-            const time = msg.timestamp?.toDate ? formatChatTime(msg.timestamp.toDate()) : '';
-            
+ 
+            // Handle both Firestore Timestamp and ISO string
+            const d    = msg.timestamp?.toDate
+                ? msg.timestamp.toDate()
+                : msg.timestamp ? new Date(msg.timestamp) : null;
+            const time = d ? formatChatTime(d) : '';
+ 
             if (container.innerHTML.includes('Loading')) container.innerHTML = '';
-            
-            const el = document.createElement('div');
-            el.className = isSent ? 'support-msg-sent' : 'support-msg-received';
-            const readReceipt = isSent && msg.read ? '<i class="fas fa-check-double" style="margin-left: 6px; font-size: 0.6rem; opacity: 0.7;"></i>' : '';
-            
+ 
+            const el         = document.createElement('div');
+            el.className     = isSent ? 'support-msg-sent' : 'support-msg-received';
+            const readReceipt = isSent && msg.read
+                ? '<i class="fas fa-check-double" style="margin-left:6px;font-size:0.6rem;opacity:0.7;"></i>'
+                : '';
+ 
             el.innerHTML = `
                 <div>${escapeHtml(msg.text)}</div>
                 <div class="support-msg-time">
                     ${!isSent ? (msg.senderName || 'Customer') + ' · ' : ''}${time}${readReceipt}
                 </div>`;
-            
+ 
             container.appendChild(el);
             container.scrollTop = container.scrollHeight;
-            
+ 
             if (!isSent && supportChat.currentChatId === chatId) {
                 markMessageAsRead(chatId, msgId);
             }
         });
     });
 }
-
-// ── Mark individual message as read ──────────────────────────────────
+ 
+// ── Mark individual message as read ───────────────────────────────────
 async function markMessageAsRead(chatId, messageId) {
     try {
         await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), {
-            read: true,
+            read:   true,
             readAt: serverTimestamp(),
             readBy: supportChat.agentUid
         });
-    } catch (err) {
-        console.error('Mark message read error:', err);
-    }
+    } catch (err) { console.error('Mark message read error:', err); }
 }
-
-// ── Mark entire chat as read ─────────────────────────────────────────
+ 
+// ── Mark entire chat as read ──────────────────────────────────────────
 async function markSupportChatRead(chatId) {
     try {
         await updateDoc(doc(db, 'chats', chatId), { 'unreadCounts.admin': 0 });
-        
-        const messagesQuery = query(
+ 
+        // Mark all unread non-agent messages as read
+        const snap  = await getDocs(query(
             collection(db, 'chats', chatId, 'messages'),
-            where('read', '==', false),
+            where('read',     '==', false),
             where('senderId', '!=', 'admin')
-        );
-        const snap = await getDocs(messagesQuery);
+        ));
         const batch = writeBatch(db);
         snap.forEach(d => {
             batch.update(d.ref, { read: true, readAt: serverTimestamp(), readBy: supportChat.agentUid });
         });
         await batch.commit();
-    } catch (err) {
-        console.error('Mark chat read error:', err);
-    }
+    } catch (err) { console.error('Mark chat read error:', err); }
 }
-
+ 
 // ── Send message ──────────────────────────────────────────────────────
-window.sendSupportMessage = async function() {
+window.sendSupportMessage = async function () {
     const input = document.getElementById('support-chat-input');
-    const text = input?.value.trim();
+    const text  = input?.value.trim();
     if (!text || !supportChat.currentChatId) return;
-    
-    input.value = '';
+ 
+    input.value        = '';
     input.style.height = 'auto';
-    
+ 
     const chatRef = doc(db, 'chats', supportChat.currentChatId);
     await updateDoc(chatRef, { 'typing.admin': false }).catch(() => {});
-    
+ 
     try {
         await addDoc(collection(db, 'chats', supportChat.currentChatId, 'messages'), {
-            text: text,
-            senderId: 'admin',
+            text:       text,
+            senderId:   'admin',              // Doc 1 identifies agent messages by senderId === 'admin'
             senderName: supportChat.agentName,
-            timestamp: serverTimestamp(),
-            read: false,
-            type: 'text'
+            timestamp:  serverTimestamp(),
+            read:       false,
+            type:       'text'
         });
-        
+ 
         await updateDoc(chatRef, {
-            lastMessage: text.substring(0, 200),
+            lastMessage:   text.substring(0, 200),
             lastMessageAt: serverTimestamp(),
             lastMessageBy: 'admin',
-            lastUpdated: serverTimestamp(),
-            status: 'active'
+            lastUpdated:   serverTimestamp(),
+            status:        'active',
+            // Notify school admin that a reply has arrived.
+            // Doc 1's subscribeToUnreadCount shows a badge when schoolRead === false.
+            // For B2C chats this field is ignored, so it's safe to set universally.
+            schoolRead:    false
         });
-        
+ 
         updateReadTimestamp(supportChat.currentChatId);
-        
-        await logAuditAction('chat_message_sent', supportChat.currentContact?._resolvedName || 'user', `Message sent in chat ${supportChat.currentChatId}`);
+ 
+        await logAuditAction(
+            'chat_message_sent',
+            supportChat.currentContact?._resolvedName || 'user',
+            `Message sent in chat ${supportChat.currentChatId}`
+        );
     } catch (err) {
         console.error('Send message error:', err);
         alert('Failed to send message. Please try again.');
     }
 };
-
+ 
 // ── Claim chat ────────────────────────────────────────────────────────
-window.claimChat = async function() {
+window.claimChat = async function () {
     if (!supportChat.currentChatId) return;
-    const btn = document.getElementById('claim-btn');
-    btn.disabled = true;
+    const btn     = document.getElementById('claim-btn');
+    btn.disabled  = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-    
+ 
     try {
         await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
-            assignedTo: supportChat.agentUid,
+            assignedTo:   supportChat.agentUid,
             assignedName: supportChat.agentName,
-            claimedAt: serverTimestamp()
+            claimedAt:    serverTimestamp()
         });
         await logAuditAction('chat_claimed', supportChat.currentContact?._resolvedName || '', `Chat ${supportChat.currentChatId} claimed by ${supportChat.agentName}`);
     } catch (err) {
         console.error('Claim error:', err);
         alert('Failed to claim chat.');
     } finally {
-        btn.disabled = false;
+        btn.disabled  = false;
         btn.innerHTML = '<i class="fas fa-hand-paper"></i> Claim';
     }
 };
-
-// ── Unclaim chat ──────────────────────────────────────────────────────
-window.unclaimChat = async function() {
+ 
+// ── Unclaim chat ───────────────────────────────────────────────────────
+window.unclaimChat = async function () {
     if (!supportChat.currentChatId) return;
     if (!confirm('Release this chat back to the queue?')) return;
-    
+ 
     try {
         await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
-            assignedTo: null,
-            assignedName: null,
-            claimedAt: null
+            assignedTo: null, assignedName: null, claimedAt: null
         });
         await logAuditAction('chat_released', supportChat.currentContact?._resolvedName || '', `Chat ${supportChat.currentChatId} released by ${supportChat.agentName}`);
     } catch (err) {
@@ -3919,21 +3970,21 @@ window.unclaimChat = async function() {
         alert('Failed to release chat.');
     }
 };
-
-// ── Close current chat ────────────────────────────────────────────────
-window.closeCurrentChat = async function() {
+ 
+// ── Close conversation ─────────────────────────────────────────────────
+window.closeCurrentChat = async function () {
     if (!supportChat.currentChatId) return;
     if (!confirm('Close this conversation? The customer will not be able to send new messages.')) return;
-    
+ 
     try {
         await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
-            status: 'closed',
-            closedAt: serverTimestamp(),
-            closedBy: supportChat.agentUid,
+            status:       'closed',
+            closedAt:     serverTimestamp(),
+            closedBy:     supportChat.agentUid,
             closedByName: supportChat.agentName,
-            assignedTo: null,
+            assignedTo:   null,
             assignedName: null,
-            claimedAt: null
+            claimedAt:    null
         });
         await logAuditAction('chat_closed', supportChat.currentContact?._resolvedName || '', `Chat ${supportChat.currentChatId} closed by ${supportChat.agentName}`);
         closeActiveChat();
@@ -3942,79 +3993,72 @@ window.closeCurrentChat = async function() {
         alert('Failed to close chat.');
     }
 };
-
-// ── Close active chat (UI only) ──────────────────────────────────────
-window.closeActiveChat = function() {
+ 
+// ── Close active chat UI ──────────────────────────────────────────────
+window.closeActiveChat = function () {
     if (supportChat.messagesUnsub) { supportChat.messagesUnsub(); supportChat.messagesUnsub = null; }
-    if (supportChat.typingUnsub) { supportChat.typingUnsub(); supportChat.typingUnsub = null; }
-    
-    supportChat.currentChatId = null;
+    if (supportChat.typingUnsub)   { supportChat.typingUnsub();   supportChat.typingUnsub   = null; }
+ 
+    supportChat.currentChatId  = null;
     supportChat.currentContact = null;
     supportChat.renderedMessageIds.clear();
-    
+ 
     document.getElementById('chat-active-area').style.display = 'none';
     document.getElementById('chat-empty-state').style.display = 'flex';
     renderChatContactList();
 };
-
+ 
 // ── Agent typing indicator ────────────────────────────────────────────
 let agentTypingTimeout = null;
-
-window.handleSupportTyping = function() {
+ 
+window.handleSupportTyping = function () {
     if (!supportChat.currentChatId) return;
-    
     const chatRef = doc(db, 'chats', supportChat.currentChatId);
     if (agentTypingTimeout) clearTimeout(agentTypingTimeout);
-    
+ 
     updateDoc(chatRef, { 'typing.admin': true, 'typing.adminName': supportChat.agentName }).catch(() => {});
-    
+ 
     agentTypingTimeout = setTimeout(() => {
         updateDoc(chatRef, { 'typing.admin': false }).catch(() => {});
     }, 3000);
 };
-
+ 
 // ── Enter key handler ─────────────────────────────────────────────────
-window.handleSupportChatKey = function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        window.sendSupportMessage();
-    }
+window.handleSupportChatKey = function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendSupportMessage(); }
 };
-
-// ── Helper functions ─────────────────────────────────────────────────
+ 
+// ── Helpers ───────────────────────────────────────────────────────────
 function formatChatTime(date) {
     if (!date) return '';
-    const now = new Date();
-    const diffMs = now - date;
+    const diffMs  = Date.now() - date;
     const diffMin = Math.floor(diffMs / 60000);
-    const diffHr = Math.floor(diffMs / 3600000);
-    if (diffMin < 1) return 'Just now';
+    const diffHr  = Math.floor(diffMs / 3600000);
+    if (diffMin < 1)  return 'Just now';
     if (diffMin < 60) return `${diffMin}m ago`;
-    if (diffHr < 24) return `${diffHr}h ago`;
+    if (diffHr < 24)  return `${diffHr}h ago`;
     return date.toLocaleDateString();
 }
-
+ 
 function escapeHtml(text) {
     if (!text) return '';
     const d = document.createElement('div');
     d.appendChild(document.createTextNode(text));
     return d.innerHTML;
 }
-
-// ── Initialize chat system ───────────────────────────────────────────
+ 
+// ── Init ──────────────────────────────────────────────────────────────
 async function initSupportChat(user) {
     try {
         const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
-        if (!agentSnap.exists()) {
-            console.warn('No support_agents doc for this user');
-            return;
-        }
+        if (!agentSnap.exists()) { console.warn('No support_agents doc for this user'); return; }
+ 
         const agentData = agentSnap.data();
-        supportChat.agentUid = user.uid;
+        supportChat.agentUid  = user.uid;
         supportChat.agentName = agentData.name || user.email;
-        
+ 
         document.getElementById('agent-name-display').textContent = supportChat.agentName;
-        
+ 
         loadReadTimestamps();
         listenToChats();
         setAgentPresence(true);
@@ -4023,13 +4067,14 @@ async function initSupportChat(user) {
         console.error('Support chat init error:', err);
     }
 }
-
-// ── Cleanup on page unload ───────────────────────────────────────────
+ 
+// ── Cleanup on unload ─────────────────────────────────────────────────
 window.addEventListener('beforeunload', () => {
     if (supportChat.presenceInterval) clearInterval(supportChat.presenceInterval);
-    if (agentTypingTimeout) clearTimeout(agentTypingTimeout);
+    if (agentTypingTimeout)           clearTimeout(agentTypingTimeout);
     setAgentPresence(false);
 });
+
 
 // ── Initialize after auth ────────────────────────────────────────────
 // Add this inside onAuthStateChanged after setting agent name
