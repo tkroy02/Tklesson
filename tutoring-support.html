@@ -1934,6 +1934,44 @@ async function logAuditAction(action, target, details) {
     } catch (e) { console.error('Audit log error:', e); }
 }
 
+async function cleanupAuditLog() {
+    try {
+        // Check if cleanup already ran this month
+        const settingsSnap = await getDoc(doc(db, 'support_system_settings', 'audit_cleanup'));
+        const lastCleanup = settingsSnap.exists() ? settingsSnap.data().lastCleanup : null;
+        const now = new Date();
+        const thisMonth = `${now.getFullYear()}-${now.getMonth()}`;
+        
+        if (lastCleanup === thisMonth) return; // Already cleaned this month
+        
+        // Count total entries
+        const totalSnap = await getDocs(collection(db, 'support_audit_log'));
+        if (totalSnap.size <= 5000) {
+            // Update cleanup date even if no deletion needed
+            await setDoc(doc(db, 'support_system_settings', 'audit_cleanup'), { lastCleanup: thisMonth });
+            return;
+        }
+        
+        // Get oldest entries to delete
+        const deleteCount = totalSnap.size - 5000;
+        const oldSnap = await getDocs(
+            query(collection(db, 'support_audit_log'), orderBy('timestamp', 'asc'), limit(deleteCount))
+        );
+        
+        // Batch delete
+        const batch = writeBatch(db);
+        oldSnap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        
+        // Save cleanup date
+        await setDoc(doc(db, 'support_system_settings', 'audit_cleanup'), { lastCleanup: thisMonth });
+        
+        console.log(`Audit cleanup: deleted ${oldSnap.size} entries`);
+    } catch (e) {
+        console.error('Audit cleanup error:', e);
+    }
+}
+    
 async function loadAuditLog() {
     const container = document.getElementById('audit-log-content');
     container.innerHTML = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
@@ -1980,7 +2018,7 @@ async function loadAuditLog() {
         container.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading audit log</p></div>';
     }
 }
-
+    
 // ════════════════════════════════════════════════════════
 // SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
