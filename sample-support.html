@@ -1356,8 +1356,6 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 // ── Config URLs ───────────────────────────────────────────
-// Routes tutoring categories to the tutoring Firebase project,
-// everything else to the primary project — matching dashboard behaviour.
 const CONFIG_URLS = {
     primary:  'https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig',
     tutoring: 'https://us-central1-tk-scheduler.cloudfunctions.net/getClientConfig'
@@ -1394,10 +1392,10 @@ async function getFirebaseForProject(projectKey) {
 // ── Check agent presence ──────────────────────────────────
 async function checkAgentPresence(db) {
     try {
-        const snap = await getDocs(
+        const snap    = await getDocs(
             query(collection(db, 'support_presence'), where('online', '==', true))
         );
-        const cutoff = Date.now() - 3 * 60 * 1000;          // 3-min TTL
+        const cutoff  = Date.now() - 3 * 60 * 1000;
         return snap.docs.some(d => {
             const ts = d.data().lastSeen;
             if (!ts) return false;
@@ -1410,8 +1408,113 @@ async function checkAgentPresence(db) {
     }
 }
 
+// ── Find existing open chat by email (no composite index needed) ──
+async function findExistingChat(db, email) {
+    try {
+        const snap = await getDocs(
+            query(collection(db, 'chats'), where('userEmail', '==', email))
+        );
+        if (snap.empty) return null;
+        // Filter and sort client-side — avoids any composite index requirement
+        const open = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(c => c.status !== 'closed' && c.id.startsWith('support_'))
+            .sort((a, b) => {
+                const aTime = a.lastMessageAt?.toDate?.() || new Date(a.lastMessageAt || 0);
+                const bTime = b.lastMessageAt?.toDate?.() || new Date(b.lastMessageAt || 0);
+                return bTime - aTime;
+            });
+        return open[0] || null;
+    } catch (err) {
+        console.error('Existing chat lookup error:', err);
+        return null;
+    }
+}
+
+// ── Resume an existing chat session ──────────────────────
+async function resumeExistingChat(saved) {
+    document.getElementById('chatPreForm').style.display  = 'none';
+    document.getElementById('chatMessages').style.display = 'flex';
+    document.getElementById('chatInputBar').style.display = 'flex';
+    document.getElementById('chatOffline').style.display  = 'none';
+    document.getElementById('chatSystemMsg').innerHTML    = '';
+
+    const renderedIds = new Set();
+    const messagesQ   = query(
+        collection(currentChat.db, 'chats', saved.sessionId, 'messages'),
+        orderBy('timestamp', 'asc')
+    );
+
+    // Render full history first
+    const snap = await getDocs(messagesQ);
+    snap.forEach(d => {
+        renderedIds.add(d.id);
+        const data    = d.data();
+        const isAgent = data.senderId === 'admin' || data.senderId?.startsWith('support');
+        addChatMessage(data.text, isAgent ? 'agent' : 'user');
+    });
+
+    document.getElementById('chatAgentStatus').innerHTML = '🟢 <strong>Chat resumed</strong>';
+
+    // Listen for new messages only — renderedIds guards against re-rendering history
+    const unsubMessages = onSnapshot(messagesQ, (snap) => {
+        snap.docChanges().forEach(change => {
+            if (change.type === 'added' && !renderedIds.has(change.doc.id)) {
+                renderedIds.add(change.doc.id);
+                const data    = change.doc.data();
+                const isAgent = data.senderId === 'admin' || data.senderId?.startsWith('support');
+                addChatMessage(data.text, isAgent ? 'agent' : 'user');
+                if (isAgent) {
+                    document.getElementById('chatAgentStatus').innerHTML =
+                        '🟢 <strong>Agent connected</strong>';
+                }
+            }
+        });
+    });
+    currentChat.unsubscribes.push(unsubMessages);
+
+    // Watch for agent closing the conversation
+    const { onSnapshot: snap2, doc: docRef2 } =
+        await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+    const unsubStatus = snap2(docRef2(currentChat.db, 'chats', saved.sessionId), (d) => {
+        if (d.exists() && d.data().status === 'closed') {
+            sessionStorage.removeItem('tkl_support_session');
+            document.getElementById('chatAgentStatus').innerHTML =
+                '⚫ <strong>Conversation closed</strong>';
+            document.getElementById('chatInputBar').style.display = 'none';
+        }
+    });
+    currentChat.unsubscribes.push(unsubStatus);
+}
+
 // ── Open chat panel ───────────────────────────────────────
 async function openChat(category) {
+    // Resume existing session if one is saved in sessionStorage
+    const savedRaw = sessionStorage.getItem('tkl_support_session');
+    if (savedRaw) {
+        try {
+            const saved            = JSON.parse(savedRaw);
+            currentChat.category   = saved.category;
+            currentChat.projectKey = saved.projectKey;
+            currentChat.sessionId  = saved.sessionId;
+
+            document.getElementById('chatOverlay').classList.add('active');
+            document.getElementById('chatPanel').classList.add('active');
+            document.getElementById('chatAgentStatus').innerHTML =
+                '<i class="fas fa-spinner fa-spin"></i> Resuming chat...';
+
+            const { db }   = await getFirebaseForProject(currentChat.projectKey);
+            currentChat.db = db;
+
+            await resumeExistingChat(saved);
+            return;   // skip pre-form entirely
+        } catch (e) {
+            // Stale or corrupt session — clear it and fall through to pre-form
+            sessionStorage.removeItem('tkl_support_session');
+        }
+    }
+
+    // Fresh open — show pre-form
     currentChat.category   = category;
     currentChat.projectKey = getProjectForCategory(category);
 
@@ -1430,8 +1533,8 @@ async function openChat(category) {
         '<i class="fas fa-spinner fa-spin"></i> Checking agent availability...';
 
     try {
-        const { db }          = await getFirebaseForProject(currentChat.projectKey);
-        currentChat.db        = db;
+        const { db }             = await getFirebaseForProject(currentChat.projectKey);
+        currentChat.db           = db;
         currentChat.agentsOnline = await checkAgentPresence(db);
 
         document.getElementById('chatAgentStatus').innerHTML = currentChat.agentsOnline
@@ -1453,35 +1556,7 @@ function closeChat() {
 window.openChat  = openChat;
 window.closeChat = closeChat;
 
-// ── Find existing open chat by email ──────────────────────
-async function findExistingChat(db, email) {
-    try {
-        const { query, collection, where, orderBy, limit, getDocs } =
-            await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-        const snap = await getDocs(
-            query(
-                collection(db, 'chats'),
-                where('userEmail', '==', email),
-                where('status',    '!=', 'closed'),
-                orderBy('status'),               // required when using != filter
-                orderBy('lastMessageAt', 'desc'),
-                limit(1)
-            )
-        );
-        if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
-    } catch (err) {
-        console.error('Existing chat lookup error:', err);
-    }
-    return null;
-}
-    
 // ── Start chat ────────────────────────────────────────────
-// Creates a document directly in the 'chats' collection using
-// the same shape the dashboard already reads, with a
-// 'support_' prefixed ID so the dashboard's isSupportChat
-// filter picks it up. Messages go into the 'messages'
-// subcollection so the dashboard's loadSupportMessages works
-// without any modifications.
 async function startChat() {
     const name    = document.getElementById('chatUserName').value.trim();
     const email   = document.getElementById('chatUserEmail').value.trim();
@@ -1503,12 +1578,15 @@ async function startChat() {
             currentChat.db = db;
         }
 
-        // ── Resume existing open chat for this email if one exists ──
+        // Check Firestore for an existing open chat from this email
         const existing = await findExistingChat(currentChat.db, email);
+
         if (existing) {
-            currentChat.sessionId = existing.id;
+            // ── Resume existing thread ────────────────────────────
+            currentChat.sessionId    = existing.id;
             currentChat.agentsOnline = await checkAgentPresence(currentChat.db);
 
+            // Persist so same-tab re-opens skip the pre-form
             sessionStorage.setItem('tkl_support_session', JSON.stringify({
                 sessionId:  existing.id,
                 projectKey: currentChat.projectKey,
@@ -1517,7 +1595,7 @@ async function startChat() {
                 email
             }));
 
-            // Add the new message into the existing chat thread
+            // Append the new message into the existing thread
             await addDoc(collection(currentChat.db, 'chats', existing.id, 'messages'), {
                 text:       message,
                 senderId:   email,
@@ -1534,100 +1612,122 @@ async function startChat() {
                 'unreadCounts.admin': 1
             });
 
-            document.getElementById('chatPreForm').style.display  = 'none';
-            document.getElementById('chatMessages').style.display = 'flex';
-            document.getElementById('chatInputBar').style.display = 'flex';
-            document.getElementById('chatAgentStatus').innerHTML  =
+            document.getElementById('chatAgentStatus').innerHTML =
                 '🟢 <strong>Continuing your existing conversation</strong>';
 
-            await resumeExistingChat({ sessionId: existing.id, projectKey: currentChat.projectKey, name, email });
-            return;
-        }
-
-        // ── No existing chat — create a new one ───────────────────
-        const sessionId = 'support_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
-        currentChat.sessionId = sessionId;
-        const sessionRef = doc(currentChat.db, 'chats', sessionId);
-
-        // Write the chat document in the shape the dashboard expects
-        await setDoc(sessionRef, {
-            chatType:       'support_student',
-            isAdminChat:    true,
-            userName:       name,
-            userEmail:      email,
-            studentName:    name,
-            category:       currentChat.category,
-            status:         currentChat.agentsOnline ? 'active' : 'offline_message',
-            lastMessage:    message,
-            lastMessageAt:  serverTimestamp(),
-            lastMessageBy:  'user',
-            assignedTo:     null,
-            assignedName:   null,
-            unreadCounts:   { admin: 1 },
-            createdAt:      serverTimestamp()
-        });
-
-        // Write the first message into the messages subcollection
-        await addDoc(collection(currentChat.db, 'chats', sessionId, 'messages'), {
-            text:      message,
-            senderId:  email,
-            senderName: name,
-            timestamp: serverTimestamp(),
-            read:      false,
-            type:      'text'
-        });
-
-        // Show chat UI
-        document.getElementById('chatPreForm').style.display  = 'none';
-        document.getElementById('chatMessages').style.display = 'flex';
-
-        if (currentChat.agentsOnline) {
-            document.getElementById('chatInputBar').style.display = 'flex';
-            document.getElementById('chatAgentStatus').innerHTML  =
-                '🟢 <strong>Waiting for an agent...</strong>';
-            document.getElementById('chatSystemMsg').innerHTML = `
-                <p>👋 Hi ${name.split(' ')[0]}! An agent will be with you shortly.</p>
-                <p style="font-size:0.75rem; opacity:0.6;">${currentChat.category.replace(/-/g, ' ')}</p>`;
-
-            // Render the opening message immediately
-            addChatMessage(message, 'user');
-
-            // Listen for agent replies in the messages subcollection
-            const repliesQuery = query(
-                collection(currentChat.db, 'chats', sessionId, 'messages'),
-                orderBy('timestamp', 'asc')
-            );
-            const unsubMessages = onSnapshot(repliesQuery, (snap) => {
-                snap.docChanges().forEach(change => {
-                    if (change.type === 'added') {
-                        const data   = change.doc.data();
-                        // Only render incoming agent messages here;
-                        // the user's own messages are added via addChatMessage directly
-                        if (data.senderId === 'admin' || data.senderId?.startsWith('support')) {
-                            addChatMessage(data.text, 'agent');
-                            document.getElementById('chatAgentStatus').innerHTML =
-                                '🟢 <strong>Agent connected</strong>';
-                        }
-                    }
-                });
+            await resumeExistingChat({
+                sessionId:  existing.id,
+                projectKey: currentChat.projectKey,
+                name,
+                email
             });
-            currentChat.unsubscribes.push(unsubMessages);
 
         } else {
-            // Offline — show confirmation, no input bar
-            document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Message saved</strong>';
-            document.getElementById('chatSystemMsg').innerHTML   = `
-                <p>📨 Thanks, ${name.split(' ')[0]}! Your message has been saved.</p>
-                <p style="font-size:0.85rem; color: var(--text-muted);">
-                    We'll get back to you at <strong>${email}</strong> as soon as possible.
-                </p>
-                <p style="font-size:0.78rem; opacity:0.6;">Reference: ${sessionId.substring(0, 16)}</p>`;
+            // ── Create a new chat ─────────────────────────────────
+            const sessionId      = 'support_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+            currentChat.sessionId = sessionId;
+
+            sessionStorage.setItem('tkl_support_session', JSON.stringify({
+                sessionId,
+                projectKey: currentChat.projectKey,
+                category:   currentChat.category,
+                name,
+                email
+            }));
+
+            const sessionRef = doc(currentChat.db, 'chats', sessionId);
+            await setDoc(sessionRef, {
+                chatType:       'support_student',
+                isAdminChat:    true,
+                userName:       name,
+                userEmail:      email,
+                studentName:    name,
+                category:       currentChat.category,
+                status:         currentChat.agentsOnline ? 'active' : 'offline_message',
+                lastMessage:    message,
+                lastMessageAt:  serverTimestamp(),
+                lastMessageBy:  'user',
+                assignedTo:     null,
+                assignedName:   null,
+                unreadCounts:   { admin: 1 },
+                createdAt:      serverTimestamp()
+            });
+
+            await addDoc(collection(currentChat.db, 'chats', sessionId, 'messages'), {
+                text:       message,
+                senderId:   email,
+                senderName: name,
+                timestamp:  serverTimestamp(),
+                read:       false,
+                type:       'text'
+            });
+
+            document.getElementById('chatPreForm').style.display  = 'none';
+            document.getElementById('chatMessages').style.display = 'flex';
+
+            if (currentChat.agentsOnline) {
+                document.getElementById('chatInputBar').style.display = 'flex';
+                document.getElementById('chatAgentStatus').innerHTML  =
+                    '🟢 <strong>Waiting for an agent...</strong>';
+                document.getElementById('chatSystemMsg').innerHTML = `
+                    <p>👋 Hi ${name.split(' ')[0]}! An agent will be with you shortly.</p>
+                    <p style="font-size:0.75rem; opacity:0.6;">${currentChat.category.replace(/-/g, ' ')}</p>`;
+
+                addChatMessage(message, 'user');
+
+                const renderedIds   = new Set();
+                const repliesQuery  = query(
+                    collection(currentChat.db, 'chats', sessionId, 'messages'),
+                    orderBy('timestamp', 'asc')
+                );
+
+                // Seed rendered set with the message we just wrote
+                const initSnap = await getDocs(repliesQuery);
+                initSnap.forEach(d => renderedIds.add(d.id));
+
+                const unsubMessages = onSnapshot(repliesQuery, (snap) => {
+                    snap.docChanges().forEach(change => {
+                        if (change.type === 'added' && !renderedIds.has(change.doc.id)) {
+                            renderedIds.add(change.doc.id);
+                            const data    = change.doc.data();
+                            const isAgent = data.senderId === 'admin' || data.senderId?.startsWith('support');
+                            if (isAgent) {
+                                addChatMessage(data.text, 'agent');
+                                document.getElementById('chatAgentStatus').innerHTML =
+                                    '🟢 <strong>Agent connected</strong>';
+                            }
+                        }
+                    });
+                });
+                currentChat.unsubscribes.push(unsubMessages);
+
+                // Watch for agent closing the conversation
+                const unsubStatus = onSnapshot(doc(currentChat.db, 'chats', sessionId), (d) => {
+                    if (d.exists() && d.data().status === 'closed') {
+                        sessionStorage.removeItem('tkl_support_session');
+                        document.getElementById('chatAgentStatus').innerHTML =
+                            '⚫ <strong>Conversation closed</strong>';
+                        document.getElementById('chatInputBar').style.display = 'none';
+                    }
+                });
+                currentChat.unsubscribes.push(unsubStatus);
+
+            } else {
+                // Offline — confirmation only, no input bar
+                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Message saved</strong>';
+                document.getElementById('chatSystemMsg').innerHTML   = `
+                    <p>📨 Thanks, ${name.split(' ')[0]}! Your message has been saved.</p>
+                    <p style="font-size:0.85rem; color: var(--text-muted);">
+                        We'll get back to you at <strong>${email}</strong> as soon as possible.
+                    </p>
+                    <p style="font-size:0.78rem; opacity:0.6;">Reference: ${sessionId.substring(0, 16)}</p>`;
+            }
         }
 
     } catch (err) {
         console.error('Chat start error:', err);
-        errorEl.textContent    = 'Connection error. Please try again.';
-        errorEl.style.display  = 'block';
+        errorEl.textContent   = 'Connection error. Please try again.';
+        errorEl.style.display = 'block';
     } finally {
         btn.disabled  = false;
         btn.innerHTML = '<i class="fas fa-paper-plane"></i> Start Chat';
@@ -1644,43 +1744,46 @@ async function sendChatMessage() {
     addChatMessage(text, 'user');
 
     try {
-        // Add to messages subcollection — same path the dashboard reads
         await addDoc(
             collection(currentChat.db, 'chats', currentChat.sessionId, 'messages'),
             {
-                text:      text,
-                senderId:  document.getElementById('chatUserEmail')?.value || 'user',
+                text,
+                senderId:   document.getElementById('chatUserEmail')?.value || 'user',
                 senderName: document.getElementById('chatUserName')?.value  || 'User',
-                timestamp: serverTimestamp(),
-                read:      false,
-                type:      'text'
+                timestamp:  serverTimestamp(),
+                read:       false,
+                type:       'text'
             }
         );
+    } catch (err) {
+        console.error('Add message error:', err);
+        return;   // don't attempt updateDoc if the write itself failed
+    }
 
-        // Update the chat doc so the dashboard's contact list refreshes
+    try {
         await updateDoc(doc(currentChat.db, 'chats', currentChat.sessionId), {
-            lastMessage:   text,
-            lastMessageAt: serverTimestamp(),
-            lastMessageBy: 'user',
+            lastMessage:          text,
+            lastMessageAt:        serverTimestamp(),
+            lastMessageBy:        'user',
             'unreadCounts.admin': 1
         });
-
     } catch (err) {
-        console.error('Send message error:', err);
+        // Non-fatal — message is already written; dashboard will still see it
+        console.warn('Chat doc update failed (non-fatal):', err);
     }
 }
 
 // ── Add message bubble to UI ──────────────────────────────
 function addChatMessage(text, sender) {
-    const container = document.getElementById('chatMessages');
-    const div       = document.createElement('div');
-    div.className   = `chat-msg chat-msg-${sender}`;
-    div.textContent = text;
+    const container     = document.getElementById('chatMessages');
+    const div           = document.createElement('div');
+    div.className       = `chat-msg chat-msg-${sender}`;
+    div.textContent     = text;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
 
-window.startChat    = startChat;
+window.startChat       = startChat;
 window.sendChatMessage = sendChatMessage;
 </script>
 
