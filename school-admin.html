@@ -9444,16 +9444,24 @@ let isChatTyping        = false;
 let currentSchoolId     = null;
 let currentSchoolName   = null;
 let currentSchoolEmail  = null;
+let resolvedSchoolId    = null;
 
 const TKLESSON_SUPPORT_ID = 'tklesson_support';
 
 // ── Open chat modal ────────────────────────────────────────────────────
-window.openChatWithSupport = function () {
+window.openChatWithSupport = async function () {
     const user = auth.currentUser;
     if (!user) { alert('Please log in to contact support.'); return; }
 
+    const schoolSnap = await getDocs(query(
+        collection(db, 'schools'),
+        where('createdBy', '==', user.uid)
+    ));
+    const schoolDoc      = schoolSnap.empty ? null : schoolSnap.docs[0];
+    resolvedSchoolId     = schoolDoc?.id || null;
+
     currentSchoolId    = user.uid;
-    currentSchoolName  = user.displayName || user.email || 'School Admin';
+    currentSchoolName  = schoolDoc?.data().name || user.displayName || user.email || 'School Admin';
     currentSchoolEmail = user.email || '';
 
     const modalHtml = `
@@ -9541,10 +9549,8 @@ function renderChatMessages(messages) {
     }
 
     area.innerHTML = messages.map(msg => {
-        // School admin sent = their UID; agent sent = 'admin'
         const isSent = msg.senderId === currentSchoolId;
 
-        // Handle both Firestore Timestamp and ISO string (legacy)
         const d    = msg.timestamp?.toDate
             ? msg.timestamp.toDate()
             : msg.timestamp ? new Date(msg.timestamp) : null;
@@ -9574,38 +9580,31 @@ window.sendChatMessage = async function () {
         const chatId  = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
         const chatRef = doc(db, 'chats', chatId);
 
-        // ── Message document ───────────────────────────────────────────
-        // senderId = school admin's UID (not 'admin')
-        // The support dashboard treats any senderId !== 'admin' as incoming.
         await addDoc(collection(db, 'chats', chatId, 'messages'), {
             text:       text,
             senderId:   currentSchoolId,
             senderName: currentSchoolName,
             senderType: 'school_admin',
-            timestamp:  serverTimestamp(),  // Firestore Timestamp — not ISO string
+            timestamp:  serverTimestamp(),
             read:       false,
             type:       'text'
         });
 
-        // ── Parent chat document ───────────────────────────────────────
-        // Fields mirror the public chat widget (Doc 3) so the support
-        // dashboard (Doc 2) picks it up via its isSupportChat filter and
-        // resolveContactInfo path.
         await setDoc(chatRef, {
-            chatType:             'support_student',   // triggers isSupportChat
-            isAdminChat:          true,                // secondary trigger
-            senderType:           'school_admin',      // lets agent dashboard show 'School Admin' label
-            userName:             currentSchoolName,   // resolveContactInfo uses this
-            userEmail:            currentSchoolEmail,  // resolveContactInfo uses this
-            schoolId:             currentSchoolId,
+            chatType:             'support_student',
+            isAdminChat:          true,
+            senderType:           'school_admin',
+            userName:             currentSchoolName,
+            userEmail:            currentSchoolEmail,
+            schoolId:             resolvedSchoolId,
             schoolName:           currentSchoolName,
             lastMessage:          text.substring(0, 200),
-            lastMessageAt:        serverTimestamp(),   // dashboard orderBy('lastMessageAt')
-            lastMessageBy:        'user',              // agent unread: lastMessageBy !== 'admin'
+            lastMessageAt:        serverTimestamp(),
+            lastMessageBy:        'user',
             lastUpdated:          serverTimestamp(),
-            schoolRead:           true,                // school admin has seen their own message
+            schoolRead:           true,
             status:               'active',
-            'unreadCounts.admin': increment(1)         // agent unread badge count
+            'unreadCounts.admin': increment(1)
         }, { merge: true });
 
         input.value        = '';
@@ -9626,14 +9625,11 @@ async function markSchoolMessagesAsRead() {
     if (!currentSchoolId) return;
     const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
 
-    // Tell the dashboard that school admin has seen new replies
     await setDoc(doc(db, 'chats', chatId), {
         schoolRead:       true,
         schoolLastReadAt: serverTimestamp()
     }, { merge: true }).catch(() => {});
 
-    // Batch-mark all unread messages from the agent as read
-    // Agent messages always have senderId === 'admin'
     const snap = await getDocs(query(
         collection(db, 'chats', chatId, 'messages'),
         where('read',     '==', false),
@@ -9648,8 +9644,6 @@ async function markSchoolMessagesAsRead() {
 }
 
 // ── Typing indicator ─────────────────────────────────────────────────────
-// Writes to the MAIN chat document (not a subcollection) so the agent
-// dashboard's subscribeToTypingIndicator picks it up via onSnapshot.
 window.handleTyping = function () {
     if (!currentSchoolId) return;
     const chatRef = doc(db, 'chats', getChatId(currentSchoolId, TKLESSON_SUPPORT_ID));
@@ -9702,8 +9696,6 @@ function escapeHtml(text) {
 }
 
 // ── Unread badge on "Contact Tklesson" button ─────────────────────────────
-// Shows a dot when the agent has replied and the school admin hasn't opened
-// the modal yet (schoolRead === false set by the agent dashboard on send).
 function subscribeToUnreadCount() {
     const user = auth.currentUser;
     if (!user) return;
@@ -9738,7 +9730,7 @@ function subscribeToUnreadCount() {
         setTimeout(init, 1000);
     }
 })();
-
+        
 // Make sure you have writeBatch imported - add this to your imports:
 
     // Make sure this is at the bottom of your script, after the chat code
