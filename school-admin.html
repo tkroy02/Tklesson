@@ -3036,7 +3036,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, fetchSignInMethodsForEmail, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, writeBatch, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
 // Show page function
@@ -9428,378 +9428,364 @@ window.rejectApplication = async function(appId) {
     }
 };
 
- // ════════════════════════════════════════════════════════════════════
-    // CHAT SYSTEM - School Admin to Tklesson Support
-    // ════════════════════════════════════════════════════════════════════
+// Add this INSIDE your existing <script type="module"> tag
+// ════════════════════════════════════════════════════════════════════
+// CHAT SYSTEM - School Admin to Tklesson Support
+// ════════════════════════════════════════════════════════════════════
+
+let currentChatModal = null;
+let messagesUnsubscribe = null;
+let typingTimeout = null;
+let isTyping = false;
+let currentSchoolId = null;
+let currentSchoolName = null;
+
+// Tklesson Support Team ID (central recipient)
+const TKLESSON_SUPPORT_ID = 'tklesson_support';
+const TKLESSON_SUPPORT_NAME = 'Tklesson Support Team';
+
+// Open chat modal when "Contact Tklesson" is clicked
+window.openChatWithSupport = function() {
+    const user = auth.currentUser;
+    if (!user) {
+        alert('Please log in to contact support.');
+        return;
+    }
     
-    let currentChatModal = null;
-    let messagesUnsubscribe = null;
-    let typingTimeout = null;
-    let isTyping = false;
-    let currentSchoolId = null;
-    let currentSchoolName = null;
+    currentSchoolId = user.uid;
+    currentSchoolName = user.displayName || user.email || 'School Admin';
     
-    // Tklesson Support Team ID (central recipient)
-    const TKLESSON_SUPPORT_ID = 'tklesson_support';
-    const TKLESSON_SUPPORT_NAME = 'Tklesson Support Team';
+    // Create modal
+    const modalHtml = `
+        <div class="chat-modal-overlay" id="chat-modal-overlay">
+            <div class="chat-modal">
+                <div class="chat-modal-header">
+                    <div>
+                        <h3><i class="fas fa-headset"></i> Tklesson Support</h3>
+                        <div class="chat-status">
+                            <span class="online-dot"></span>
+                            <span>Support team usually replies within minutes</span>
+                        </div>
+                    </div>
+                    <button class="close-chat" onclick="window.closeChatModal()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="chat-messages-area" id="chat-messages-area">
+                    <div class="chat-empty">
+                        <i class="fas fa-comment-dots"></i>
+                        <p>No messages yet.<br>Send a message to start the conversation.</p>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <textarea 
+                        id="chat-input" 
+                        class="chat-input" 
+                        placeholder="Type your message..." 
+                        rows="1"
+                        onkeydown="window.handleChatKeyPress(event)"
+                        oninput="window.handleTyping()"
+                    ></textarea>
+                    <button class="send-btn" id="send-chat-btn" onclick="window.sendChatMessage()">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
     
-    // Open chat modal when "Contact Tklesson" is clicked
-    function openChatWithSupport() {
-        // Get current school info from your auth/session
-        const user = firebase.auth().currentUser;
-        if (!user) {
-            alert('Please log in to contact support.');
-            return;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    currentChatModal = document.getElementById('chat-modal-overlay');
+    
+    // Focus input
+    setTimeout(() => {
+        const input = document.getElementById('chat-input');
+        if (input) input.focus();
+    }, 100);
+    
+    // Load messages
+    loadChatMessages();
+    
+    // Mark messages as read when modal opens
+    markMessagesAsRead();
+};
+
+// Load messages from Firestore
+async function loadChatMessages() {
+    if (!currentSchoolId) return;
+    
+    const messagesArea = document.getElementById('chat-messages-area');
+    if (!messagesArea) return;
+    
+    // Clear existing listener
+    if (messagesUnsubscribe) {
+        messagesUnsubscribe();
+        messagesUnsubscribe = null;
+    }
+    
+    // Query messages between school and Tklesson support
+    const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(messagesRef, orderBy('timestamp', 'asc'));
+    
+    messagesUnsubscribe = onSnapshot(q, (snapshot) => {
+        const messages = [];
+        snapshot.forEach(doc => {
+            messages.push({ id: doc.id, ...doc.data() });
+        });
+        
+        renderMessages(messages);
+        
+        // Mark as read when new messages arrive while modal is open
+        if (currentChatModal) {
+            markMessagesAsRead();
         }
         
-        currentSchoolId = user.uid;
-        currentSchoolName = user.displayName || user.email || 'School Admin';
+        // Scroll to bottom
+        const area = document.getElementById('chat-messages-area');
+        if (area) {
+            area.scrollTop = area.scrollHeight;
+        }
+    });
+}
+
+// Render messages in the chat area
+function renderMessages(messages) {
+    const messagesArea = document.getElementById('chat-messages-area');
+    if (!messagesArea) return;
+    
+    if (messages.length === 0) {
+        messagesArea.innerHTML = `
+            <div class="chat-empty">
+                <i class="fas fa-comment-dots"></i>
+                <p>No messages yet.<br>Send a message to start the conversation.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '';
+    for (const msg of messages) {
+        const isSent = msg.senderId === currentSchoolId;
+        let time = '';
         
-        // Create modal
-        const modalHtml = `
-            <div class="chat-modal-overlay" id="chat-modal-overlay">
-                <div class="chat-modal">
-                    <div class="chat-modal-header">
-                        <div>
-                            <h3><i class="fas fa-headset"></i> Tklesson Support</h3>
-                            <div class="chat-status">
-                                <span class="online-dot"></span>
-                                <span>Support team usually replies within minutes</span>
-                            </div>
-                        </div>
-                        <button class="close-chat" onclick="closeChatModal()">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                    <div class="chat-messages-area" id="chat-messages-area">
-                        <div class="chat-empty">
-                            <i class="fas fa-comment-dots"></i>
-                            <p>No messages yet.<br>Send a message to start the conversation.</p>
-                        </div>
-                    </div>
-                    <div class="chat-input-area">
-                        <textarea 
-                            id="chat-input" 
-                            class="chat-input" 
-                            placeholder="Type your message..." 
-                            rows="1"
-                            onkeydown="handleChatKeyPress(event)"
-                            oninput="handleTyping()"
-                        ></textarea>
-                        <button class="send-btn" id="send-chat-btn" onclick="sendChatMessage()">
-                            <i class="fas fa-paper-plane"></i>
-                        </button>
-                    </div>
+        if (msg.timestamp) {
+            if (msg.timestamp.toDate) {
+                time = msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } else if (typeof msg.timestamp === 'string') {
+                time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+        }
+        
+        html += `
+            <div class="message-bubble ${isSent ? 'message-sent' : 'message-received'}">
+                <div>${escapeHtml(msg.text)}</div>
+                <div class="message-meta">
+                    <span>${time}</span>
+                    ${msg.read ? '<span><i class="fas fa-check-double"></i> Read</span>' : ''}
                 </div>
             </div>
         `;
-        
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-        currentChatModal = document.getElementById('chat-modal-overlay');
-        
-        // Focus input
-        setTimeout(() => {
-            const input = document.getElementById('chat-input');
-            if (input) input.focus();
-        }, 100);
-        
-        // Load messages
-        loadChatMessages();
-        
-        // Mark messages as read when modal opens
-        markMessagesAsRead();
     }
     
-    // Load messages from Firestore
-    async function loadChatMessages() {
-        if (!currentSchoolId) return;
-        
-        const messagesArea = document.getElementById('chat-messages-area');
-        if (!messagesArea) return;
-        
-        // Clear existing listener
-        if (messagesUnsubscribe) {
-            messagesUnsubscribe();
-            messagesUnsubscribe = null;
-        }
-        
-        // Query messages between school and Tklesson support
+    messagesArea.innerHTML = html;
+}
+
+// Send a chat message
+window.sendChatMessage = async function() {
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    
+    if (!text) return;
+    
+    const sendBtn = document.getElementById('send-chat-btn');
+    if (sendBtn) sendBtn.disabled = true;
+    
+    try {
         const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-        const messagesRef = firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .collection('messages')
-            .orderBy('timestamp', 'asc');
+        const message = {
+            text: text,
+            senderId: currentSchoolId,
+            senderName: currentSchoolName,
+            senderType: 'school_admin',
+            recipientId: TKLESSON_SUPPORT_ID,
+            recipientName: TKLESSON_SUPPORT_NAME,
+            timestamp: new Date().toISOString(),
+            read: false
+        };
         
-        messagesUnsubscribe = messagesRef.onSnapshot((snapshot) => {
-            const messages = [];
-            snapshot.forEach(doc => {
-                messages.push({ id: doc.id, ...doc.data() });
-            });
-            
-            renderMessages(messages);
-            
-            // Mark as read when new messages arrive while modal is open
-            if (currentChatModal) {
-                markMessagesAsRead();
-            }
-            
-            // Scroll to bottom
-            const area = document.getElementById('chat-messages-area');
-            if (area) {
-                area.scrollTop = area.scrollHeight;
-            }
-        });
+        await setDoc(doc(collection(db, 'chats', chatId, 'messages')), message);
+        
+        // Update last message in chat document
+        await setDoc(doc(db, 'chats', chatId), {
+            lastMessage: text,
+            lastMessageTime: new Date().toISOString(),
+            lastSenderId: currentSchoolId,
+            lastSenderName: currentSchoolName,
+            schoolId: currentSchoolId,
+            schoolName: currentSchoolName,
+            supportRead: false,
+            schoolRead: true
+        }, { merge: true });
+        
+        // Clear input
+        input.value = '';
+        input.style.height = 'auto';
+        
+        // Stop typing indicator
+        stopTyping();
+        
+    } catch (error) {
+        console.error('Send message error:', error);
+        alert('Failed to send message. Please try again.');
+    } finally {
+        if (sendBtn) sendBtn.disabled = false;
+        input.focus();
     }
+};
+
+// Mark messages as read
+async function markMessagesAsRead() {
+    if (!currentSchoolId) return;
     
-    // Render messages in the chat area
-    function renderMessages(messages) {
-        const messagesArea = document.getElementById('chat-messages-area');
-        if (!messagesArea) return;
-        
-        if (messages.length === 0) {
-            messagesArea.innerHTML = `
-                <div class="chat-empty">
-                    <i class="fas fa-comment-dots"></i>
-                    <p>No messages yet.<br>Send a message to start the conversation.</p>
-                </div>
-            `;
-            return;
-        }
-        
-        let html = '';
-        for (const msg of messages) {
-            const isSent = msg.senderId === currentSchoolId;
-            const time = msg.timestamp?.toDate 
-                ? msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            
-            html += `
-                <div class="message-bubble ${isSent ? 'message-sent' : 'message-received'}">
-                    <div>${escapeHtml(msg.text)}</div>
-                    <div class="message-meta">
-                        <span>${time}</span>
-                        ${msg.read ? '<span><i class="fas fa-check-double"></i> Read</span>' : ''}
-                    </div>
-                </div>
-            `;
-        }
-        
-        // Show typing indicator if someone is typing (not the current user)
-        // This would require a separate typing listener
-        
-        messagesArea.innerHTML = html;
-    }
+    const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
     
-    // Send a chat message
-    async function sendChatMessage() {
-        const input = document.getElementById('chat-input');
-        const text = input.value.trim();
-        
-        if (!text) return;
-        
-        const sendBtn = document.getElementById('send-chat-btn');
-        sendBtn.disabled = true;
-        
-        try {
-            const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-            const message = {
-                text: text,
-                senderId: currentSchoolId,
-                senderName: currentSchoolName,
-                senderType: 'school_admin',
-                recipientId: TKLESSON_SUPPORT_ID,
-                recipientName: TKLESSON_SUPPORT_NAME,
-                timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-                read: false
-            };
-            
-            await firebase.firestore()
-                .collection('chats')
-                .doc(chatId)
-                .collection('messages')
-                .add(message);
-            
-            // Update last message in chat document
-            await firebase.firestore()
-                .collection('chats')
-                .doc(chatId)
-                .set({
-                    lastMessage: text,
-                    lastMessageTime: firebase.firestore.FieldValue.serverTimestamp(),
-                    lastSenderId: currentSchoolId,
-                    lastSenderName: currentSchoolName,
-                    schoolId: currentSchoolId,
-                    schoolName: currentSchoolName,
-                    supportRead: false,
-                    schoolRead: true
-                }, { merge: true });
-            
-            // Clear input and reset height
-            input.value = '';
-            input.style.height = 'auto';
-            
-            // Stop typing indicator
-            stopTyping();
-            
-        } catch (error) {
-            console.error('Send message error:', error);
-            alert('Failed to send message. Please try again.');
-        } finally {
-            sendBtn.disabled = false;
-            input.focus();
-        }
-    }
+    // Update chat document to mark school has read
+    await setDoc(doc(db, 'chats', chatId), {
+        schoolRead: true,
+        schoolLastReadAt: new Date().toISOString()
+    }, { merge: true });
     
-    // Mark messages as read
-    async function markMessagesAsRead() {
-        if (!currentSchoolId) return;
-        
-        const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-        
-        // Update chat document to mark school has read
-        await firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .set({
-                schoolRead: true,
-                schoolLastReadAt: firebase.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
-        
-        // Mark all unread messages from support as read
-        const messagesRef = firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .collection('messages')
-            .where('read', '==', false)
-            .where('senderId', '==', TKLESSON_SUPPORT_ID);
-        
-        const snapshot = await messagesRef.get();
-        const batch = firebase.firestore().batch();
+    // Mark all unread messages from support as read
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(messagesRef, where('read', '==', false), where('senderId', '==', TKLESSON_SUPPORT_ID));
+    const snapshot = await getDocs(q);
+    
+    if (!snapshot.empty) {
+        const batch = writeBatch(db);
         snapshot.forEach(doc => {
             batch.update(doc.ref, { read: true });
         });
         await batch.commit();
     }
+}
+
+// Handle typing indicator
+window.handleTyping = function() {
+    if (!currentSchoolId) return;
     
-    // Handle typing indicator
-    function handleTyping() {
-        if (!currentSchoolId) return;
-        
-        const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-        const typingRef = firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .collection('typing')
-            .doc('status');
-        
-        if (!isTyping) {
-            isTyping = true;
-            typingRef.set({
-                schoolIsTyping: true,
-                timestamp: firebase.firestore.FieldValue.serverTimestamp()
-            });
-        }
-        
-        clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => {
-            stopTyping();
-        }, 1500);
-    }
+    const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
+    const typingRef = doc(db, 'chats', chatId, 'typing', 'status');
     
-    function stopTyping() {
-        if (!currentSchoolId) return;
-        
-        const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
-        const typingRef = firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .collection('typing')
-            .doc('status');
-        
-        typingRef.set({
-            schoolIsTyping: false,
-            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    if (!isTyping) {
+        isTyping = true;
+        setDoc(typingRef, {
+            schoolIsTyping: true,
+            timestamp: new Date().toISOString()
         });
-        
-        isTyping = false;
     }
     
-    // Handle enter key to send
-    function handleChatKeyPress(event) {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            sendChatMessage();
-        }
-    }
-    
-    // Close chat modal
-    function closeChatModal() {
-        if (messagesUnsubscribe) {
-            messagesUnsubscribe();
-            messagesUnsubscribe = null;
-        }
-        
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
         stopTyping();
-        
-        if (currentChatModal) {
-            currentChatModal.remove();
-            currentChatModal = null;
+    }, 1500);
+};
+
+function stopTyping() {
+    if (!currentSchoolId) return;
+    
+    const chatId = getChatId(currentSchoolId, TKLESSON_SUPPORT_ID);
+    const typingRef = doc(db, 'chats', chatId, 'typing', 'status');
+    
+    setDoc(typingRef, {
+        schoolIsTyping: false,
+        timestamp: new Date().toISOString()
+    });
+    
+    isTyping = false;
+}
+
+// Handle enter key to send
+window.handleChatKeyPress = function(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        window.sendChatMessage();
+    }
+};
+
+// Close chat modal
+window.closeChatModal = function() {
+    if (messagesUnsubscribe) {
+        messagesUnsubscribe();
+        messagesUnsubscribe = null;
+    }
+    
+    stopTyping();
+    
+    if (currentChatModal) {
+        currentChatModal.remove();
+        currentChatModal = null;
+    }
+};
+
+// Generate consistent chat ID (sorted IDs so same conversation always has same ID)
+function getChatId(userId1, userId2) {
+    return [userId1, userId2].sort().join('_');
+}
+
+// Helper to escape HTML
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Subscribe to unread count
+function subscribeToUnreadCount() {
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    const chatId = getChatId(user.uid, TKLESSON_SUPPORT_ID);
+    const chatRef = doc(db, 'chats', chatId);
+    
+    onSnapshot(chatRef, (docSnap) => {
+        if (docSnap.exists() && docSnap.data().supportRead === false) {
+            const contactBtn = document.querySelector('[onclick*="openChatWithSupport"]');
+            if (contactBtn) {
+                const existingBadge = contactBtn.querySelector('.unread-badge');
+                if (existingBadge) existingBadge.remove();
+                
+                const badge = document.createElement('span');
+                badge.className = 'unread-badge';
+                badge.textContent = '●';
+                contactBtn.appendChild(badge);
+            }
+        } else {
+            const contactBtn = document.querySelector('[onclick*="openChatWithSupport"]');
+            const badge = contactBtn?.querySelector('.unread-badge');
+            if (badge) badge.remove();
         }
-    }
-    
-    // Generate consistent chat ID (sorted IDs so same conversation always has same ID)
-    function getChatId(userId1, userId2) {
-        return [userId1, userId2].sort().join('_');
-    }
-    
-    // Helper to escape HTML
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-    
-    // Update unread count badge on Contact Tklesson button
-    function subscribeToUnreadCount() {
-        const user = firebase.auth().currentUser;
-        if (!user) return;
-        
-        const chatId = getChatId(user.uid, TKLESSON_SUPPORT_ID);
-        
-        firebase.firestore()
-            .collection('chats')
-            .doc(chatId)
-            .onSnapshot((doc) => {
-                if (doc.exists && doc.data().supportRead === false) {
-                    // Update badge on the Contact Tklesson button
-                    const contactBtn = document.querySelector('button[onclick*="openChatWithSupport"]');
-                    if (contactBtn) {
-                        const existingBadge = contactBtn.querySelector('.unread-badge');
-                        if (existingBadge) existingBadge.remove();
-                        
-                        const badge = document.createElement('span');
-                        badge.className = 'unread-badge';
-                        badge.textContent = '●';
-                        contactBtn.appendChild(badge);
-                    }
-                } else {
-                    const contactBtn = document.querySelector('button[onclick*="openChatWithSupport"]');
-                    const badge = contactBtn?.querySelector('.unread-badge');
-                    if (badge) badge.remove();
-                }
-            });
-    }
-    
-    // Call this when the dashboard loads
+    });
+}
+
+// Initialize after auth
+if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        // Wait for auth to be ready
         setTimeout(() => {
-            if (firebase.auth().currentUser) {
+            if (auth.currentUser) {
                 subscribeToUnreadCount();
             }
         }, 1000);
     });
+} else {
+    setTimeout(() => {
+        if (auth.currentUser) {
+            subscribeToUnreadCount();
+        }
+    }, 1000);
+}
+
+// Make sure you have writeBatch imported - add this to your imports:
 
     // Make sure this is at the bottom of your script, after the chat code
 window.openChatWithSupport = openChatWithSupport;
