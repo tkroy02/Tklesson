@@ -1502,22 +1502,8 @@ import {
 
 // ─────────────────────────────────────────────────────────
 // SESSION PERSISTENCE
-// We store the active chat session in localStorage under the
-// key 'tklesson_support_session'. The stored object looks like:
-// {
-//   sessionId:  'support_...',
-//   projectKey: 'primary' | 'tutoring',
-//   userName:   'Jane Smith',
-//   userEmail:  'jane@example.com',
-//   category:   'billing',
-//   status:     'active' | 'offline_message' | 'ended',
-//   startedAt:  ISO timestamp string
-// }
-// A session is considered expired after SESSION_TTL_HOURS hours
-// of inactivity (based on startedAt, not last message).
-// ─────────────────────────────────────────────────────────
 const SESSION_KEY      = 'tklesson_support_session';
-const SESSION_TTL_HOURS = 72; // 3 days
+const SESSION_TTL_HOURS = 72;
 
 function saveSession(data) {
     try {
@@ -1532,7 +1518,6 @@ function loadSession() {
         const raw = localStorage.getItem(SESSION_KEY);
         if (!raw) return null;
         const session = JSON.parse(raw);
-        // Treat ended sessions or those older than TTL as expired
         if (session.status === 'ended') return null;
         const age = (Date.now() - new Date(session.startedAt).getTime()) / 36e5;
         if (age > SESSION_TTL_HOURS) {
@@ -1551,7 +1536,6 @@ function clearSession() {
 
 // ─────────────────────────────────────────────────────────
 // FIREBASE CONFIG
-// ─────────────────────────────────────────────────────────
 const CONFIG_URLS = {
     primary:  'https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig',
     tutoring: 'https://us-central1-tk-scheduler.cloudfunctions.net/getClientConfig'
@@ -1570,9 +1554,10 @@ let currentChat = {
     projectKey:   null,
     unsubscribes: [],
     agentsOnline: false,
-    isResumed:    false,   // true when reconnecting to an existing Firestore session
-    userName:     null,    // persisted so sendChatMessage works after form is hidden
-    userEmail:    null
+    isResumed:    false,
+    userName:     null,
+    userEmail:    null,
+    isChatActive: false      // NEW: track if chat UI is active
 };
 
 const cachedApps = {};
@@ -1605,7 +1590,6 @@ async function checkAgentPresence(db) {
 
 // ─────────────────────────────────────────────────────────
 // UI HELPERS
-// ─────────────────────────────────────────────────────────
 function formatTime(ts) {
     if (!ts) return '';
     const d = ts.toDate ? ts.toDate() : new Date(ts);
@@ -1622,10 +1606,17 @@ function formatDateLabel(ts) {
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function addMessageBubble(text, sender, timestamp) {
+// NEW: Clear message container properly
+function clearMessagesContainer() {
+    const container = document.getElementById('chatMessages');
+    container.innerHTML = '';
+}
+
+function addMessageBubble(text, sender, timestamp, msgId = null) {
     const container = document.getElementById('chatMessages');
     const div       = document.createElement('div');
     div.className   = `chat-msg chat-msg-${sender}`;
+    if (msgId) div.setAttribute('data-msg-id', msgId);
 
     const body      = document.createElement('div');
     body.textContent = text;
@@ -1640,6 +1631,7 @@ function addMessageBubble(text, sender, timestamp) {
 
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+    return div;
 }
 
 function addSystemMessage(html) {
@@ -1668,25 +1660,48 @@ function showChatUI(includeInput) {
     if (includeInput) {
         document.getElementById('chatEndBtn').classList.add('visible');
     }
+    currentChat.isChatActive = true;
 }
 
 function showEndedUI() {
     document.getElementById('chatInputBar').style.display  = 'none';
     document.getElementById('chatEndedBar').classList.add('visible');
     document.getElementById('chatEndBtn').classList.remove('visible');
+    currentChat.isChatActive = false;
+}
+
+// ─────────────────────────────────────────────────────────
+// CLEANUP FUNCTION - crucial for preventing duplicate listeners
+function cleanupChat() {
+    if (currentChat.unsubscribes && currentChat.unsubscribes.length) {
+        currentChat.unsubscribes.forEach(fn => {
+            if (typeof fn === 'function') fn();
+        });
+        currentChat.unsubscribes = [];
+    }
+    // Reset rendered messages tracking for next session
+    if (window._renderedMessageIds) {
+        window._renderedMessageIds.clear();
+    } else {
+        window._renderedMessageIds = new Set();
+    }
+    currentChat.sessionId = null;
+    currentChat.isChatActive = false;
 }
 
 // ─────────────────────────────────────────────────────────
 // OPEN CHAT PANEL
-// ─────────────────────────────────────────────────────────
 async function openChat(category) {
+    // Clean up any existing listeners first
+    cleanupChat();
+    
     currentChat.category   = category;
     currentChat.projectKey = getProjectForCategory(category);
 
     document.getElementById('chatOverlay').classList.add('active');
     document.getElementById('chatPanel').classList.add('active');
 
-    // Reset panel to pre-form state first
+    // Reset panel to pre-form state
     document.getElementById('chatPreForm').style.display    = 'block';
     document.getElementById('chatMessages').style.display   = 'none';
     document.getElementById('chatInputBar').style.display   = 'none';
@@ -1696,27 +1711,31 @@ async function openChat(category) {
     document.getElementById('chatFormError').style.display  = 'none';
     document.getElementById('chatResumeBanner').classList.remove('visible');
     document.getElementById('chatFormIntro').style.display  = 'block';
+    clearMessagesContainer();
 
     document.getElementById('chatAgentStatus').innerHTML =
         '<i class="fas fa-spinner fa-spin"></i> Checking agent availability...';
 
-    // Check for an existing session first
+    // Check for an existing session
     const saved = loadSession();
-    if (saved) {
+    if (saved && saved.status !== 'ended') {
         const banner  = document.getElementById('chatResumeBanner');
         const meta    = document.getElementById('chatResumeMeta');
         const started = new Date(saved.startedAt);
         meta.textContent =
             `Started by ${saved.userName} · ${started.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
         banner.classList.add('visible');
-        // Pre-fill the form (hidden behind the banner)
         document.getElementById('chatUserName').value    = saved.userName;
         document.getElementById('chatUserEmail').value   = saved.userEmail;
         document.getElementById('chatFormIntro').style.display = 'none';
+        
+        // Store the saved session info for auto-resume
+        currentChat._pendingResume = saved;
     } else {
         document.getElementById('chatUserName').value    = '';
         document.getElementById('chatUserEmail').value   = '';
         document.getElementById('chatUserMessage').value = '';
+        currentChat._pendingResume = null;
     }
 
     // Check agent presence in background
@@ -1733,32 +1752,26 @@ async function openChat(category) {
     }
 }
 
-// ─────────────────────────────────────────────────────────
-// CLOSE CHAT PANEL
-// NOTE: we deliberately do NOT tear down Firestore listeners
-// here. The panel closing is a UI action only — the session
-// stays alive so new agent messages still arrive and the
-// user can reopen and see them.
-// ─────────────────────────────────────────────────────────
 function closeChat() {
     document.getElementById('chatOverlay').classList.remove('active');
     document.getElementById('chatPanel').classList.remove('active');
-    // Do NOT call unsubscribes here — listeners must persist across open/close
+    // Don't clean up listeners - keep them active in background
 }
 
 window.openChat  = openChat;
 window.closeChat = closeChat;
 
 // ─────────────────────────────────────────────────────────
-// RESUME — reconnect to an existing Firestore session
-// ─────────────────────────────────────────────────────────
+// RESUME - reconnect to an existing Firestore session
 async function resumeExistingChat() {
-    const saved = loadSession();
+    const saved = currentChat._pendingResume || loadSession();
     if (!saved) return;
 
     const btn = document.querySelector('.chat-resume-btn-primary');
-    btn.disabled  = true;
-    btn.textContent = 'Loading...';
+    if (btn) {
+        btn.disabled  = true;
+        btn.textContent = 'Loading...';
+    }
 
     try {
         const { db }        = await getFirebaseForProject(saved.projectKey);
@@ -1780,11 +1793,15 @@ async function resumeExistingChat() {
             isEnded ? '⚫ <strong>Chat ended</strong>'
                     : '🟢 <strong>Reconnected</strong> — loading your conversation...';
 
-        // Load all historical messages
+        // Clear and reload all historical messages
+        clearMessagesContainer();
+        
         const messagesRef = collection(db, 'chats', saved.sessionId, 'messages');
         const historySnap = await getDocs(query(messagesRef, orderBy('timestamp', 'asc')));
 
         let lastDateLabel = '';
+        let messageCounter = 0;
+        
         historySnap.forEach(msgDoc => {
             const data  = msgDoc.data();
             const label = formatDateLabel(data.timestamp);
@@ -1794,11 +1811,13 @@ async function resumeExistingChat() {
             }
             const sender = (data.senderId === 'admin' || data.senderId?.startsWith('support'))
                 ? 'agent' : 'user';
-            addMessageBubble(data.text, sender, data.timestamp);
+            addMessageBubble(data.text, sender, data.timestamp, msgDoc.id);
+            window._renderedMessageIds.add(msgDoc.id);
+            messageCounter++;
         });
 
-        if (historySnap.empty) {
-            addSystemMessage('<p>No messages found. The chat may have expired.</p>');
+        if (messageCounter === 0) {
+            addSystemMessage('<p>No messages found. The chat may be empty.</p>');
         }
 
         if (isEnded) {
@@ -1813,25 +1832,27 @@ async function resumeExistingChat() {
                 ? '⚫ <strong>Message saved</strong> — we\'ll reply by email'
                 : '🟢 <strong>Chat active</strong>';
 
-        // Listen for new messages going forward
+        // Set up listeners for new messages
         subscribeToMessages(db, saved.sessionId, saved.userEmail);
-
-        // Watch for the agent ending the chat from the dashboard
         subscribeToStatusChanges(db, saved.sessionId);
+
+        // Update the session in localStorage to reflect it's active
+        saveSession({ ...saved, status: 'active' });
 
     } catch (err) {
         console.error('Resume error:', err);
-        btn.disabled  = false;
-        btn.textContent = 'Continue conversation';
+        if (btn) {
+            btn.disabled  = false;
+            btn.textContent = 'Continue conversation';
+        }
+        addSystemMessage('<p style="color: #dc2626;">Failed to reconnect. Please try starting a new chat.</p>');
     }
 }
 
 window.resumeExistingChat = resumeExistingChat;
 
 // ─────────────────────────────────────────────────────────
-// DISMISS RESUME — let the user start fresh without deleting
-// the old session from Firestore (just clears localStorage)
-// ─────────────────────────────────────────────────────────
+// DISMISS RESUME
 function dismissResume() {
     clearSession();
     document.getElementById('chatResumeBanner').classList.remove('visible');
@@ -1839,12 +1860,12 @@ function dismissResume() {
     document.getElementById('chatUserName').value           = '';
     document.getElementById('chatUserEmail').value          = '';
     document.getElementById('chatUserMessage').value        = '';
+    currentChat._pendingResume = null;
 }
 window.dismissResume = dismissResume;
 
 // ─────────────────────────────────────────────────────────
-// START CHAT — create a new Firestore session
-// ─────────────────────────────────────────────────────────
+// START CHAT
 async function startChat() {
     const name    = document.getElementById('chatUserName').value.trim();
     const email   = document.getElementById('chatUserEmail').value.trim();
@@ -1889,7 +1910,7 @@ async function startChat() {
             createdAt:      serverTimestamp()
         });
 
-        await addDoc(collection(currentChat.db, 'chats', sessionId, 'messages'), {
+        const msgRef = await addDoc(collection(currentChat.db, 'chats', sessionId, 'messages'), {
             text:      message,
             senderId:  email,
             senderName: name,
@@ -1898,7 +1919,10 @@ async function startChat() {
             type:      'text'
         });
 
-        // Persist session to localStorage immediately after creation
+        // Initialize rendered messages tracking
+        if (!window._renderedMessageIds) window._renderedMessageIds = new Set();
+        window._renderedMessageIds.add(msgRef.id);
+
         saveSession({
             sessionId,
             projectKey:  currentChat.projectKey,
@@ -1909,6 +1933,8 @@ async function startChat() {
             startedAt:   new Date().toISOString()
         });
 
+        clearMessagesContainer();
+        
         if (currentChat.agentsOnline) {
             showChatUI(true);
             document.getElementById('chatAgentStatus').innerHTML =
@@ -1945,31 +1971,45 @@ async function startChat() {
 
 // ─────────────────────────────────────────────────────────
 // REAL-TIME LISTENERS
-// ─────────────────────────────────────────────────────────
-
-// Track already-rendered message IDs to avoid duplicates on resume
-const renderedMessageIds = new Set();
-
 function subscribeToMessages(db, sessionId, userEmail) {
-    const repliesQuery = query(
+    const messagesQuery = query(
         collection(db, 'chats', sessionId, 'messages'),
         orderBy('timestamp', 'asc')
     );
-    const unsub = onSnapshot(repliesQuery, (snap) => {
+    
+    const unsub = onSnapshot(messagesQuery, (snap) => {
         snap.docChanges().forEach(change => {
             if (change.type === 'added') {
                 const msgId = change.doc.id;
-                if (renderedMessageIds.has(msgId)) return; // already shown on resume
-                renderedMessageIds.add(msgId);
+                // Skip if we've already rendered this message
+                if (window._renderedMessageIds && window._renderedMessageIds.has(msgId)) return;
+                
+                if (!window._renderedMessageIds) window._renderedMessageIds = new Set();
+                window._renderedMessageIds.add(msgId);
 
                 const data   = change.doc.data();
                 const isAgent = data.senderId === 'admin' || data.senderId?.startsWith('support');
+                
+                // Add a date divider if this is the first message of a new day
+                // (simplified - just add current divider if needed)
+                const msgDate = formatDateLabel(data.timestamp);
+                const lastDivider = document.querySelector('.chat-date-divider:last-child');
+                if (!lastDivider || lastDivider.textContent !== msgDate) {
+                    addDateDivider(msgDate);
+                }
+                
                 if (isAgent) {
-                    addMessageBubble(data.text, 'agent', data.timestamp);
+                    addMessageBubble(data.text, 'agent', data.timestamp, msgId);
                     document.getElementById('chatAgentStatus').innerHTML =
                         '🟢 <strong>Agent connected</strong>';
+                    
+                    // Mark message as read
+                    if (currentChat.sessionId && currentChat.db) {
+                        updateDoc(doc(currentChat.db, 'chats', currentChat.sessionId), {
+                            'unreadCounts.user': 0
+                        }).catch(e => console.warn('Could not mark read', e));
+                    }
                 }
-                // User's own new messages are added via sendChatMessage directly
             }
         });
     });
@@ -1979,15 +2019,19 @@ function subscribeToMessages(db, sessionId, userEmail) {
 function subscribeToStatusChanges(db, sessionId) {
     const unsub = onSnapshot(doc(db, 'chats', sessionId), (snap) => {
         if (!snap.exists()) return;
-        const status = snap.data().status;
+        const data = snap.data();
+        const status = data.status;
         if (status === 'ended' || status === 'closed') {
-            // Mark session as ended in localStorage
             const saved = loadSession();
             if (saved) saveSession({ ...saved, status: 'ended' });
             clearSession();
-            showEndedUI();
-            document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by agent</strong>';
-            addSystemMessage('<p style="color:#dc2626">This conversation has been closed by the support team.</p>');
+            if (currentChat.isChatActive) {
+                showEndedUI();
+                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by agent</strong>';
+                addSystemMessage('<p style="color:#dc2626">This conversation has been closed by the support team.</p>');
+            }
+            // Clean up listeners since chat is ended
+            cleanupChat();
         }
     });
     currentChat.unsubscribes.push(unsub);
@@ -1995,17 +2039,17 @@ function subscribeToStatusChanges(db, sessionId) {
 
 // ─────────────────────────────────────────────────────────
 // SEND MESSAGE
-// ─────────────────────────────────────────────────────────
 async function sendChatMessage() {
     const input = document.getElementById('chatMessageInput');
     const text  = input.value.trim();
     if (!text || !currentChat.db || !currentChat.sessionId) return;
 
     input.value = '';
-    const msgId = 'local_' + Date.now();
-    renderedMessageIds.add(msgId); // prevent duplicate render via listener
+    
+    // Add message locally immediately
     addMessageBubble(text, 'user', null);
-
+    
+    // Don't add to renderedMessageIds yet - we'll add the real Firestore ID
     try {
         const docRef = await addDoc(
             collection(currentChat.db, 'chats', currentChat.sessionId, 'messages'),
@@ -2018,8 +2062,9 @@ async function sendChatMessage() {
                 type:       'text'
             }
         );
-        // Register the real Firestore ID so the snapshot doesn't re-render it
-        renderedMessageIds.add(docRef.id);
+        
+        if (!window._renderedMessageIds) window._renderedMessageIds = new Set();
+        window._renderedMessageIds.add(docRef.id);
 
         await updateDoc(doc(currentChat.db, 'chats', currentChat.sessionId), {
             lastMessage:            text,
@@ -2029,12 +2074,12 @@ async function sendChatMessage() {
         });
     } catch (err) {
         console.error('Send message error:', err);
+        addSystemMessage('<p style="color:#dc2626">Failed to send message. Please try again.</p>');
     }
 }
 
 // ─────────────────────────────────────────────────────────
-// END CHAT (user-initiated)
-// ─────────────────────────────────────────────────────────
+// END CHAT
 async function endCurrentChat() {
     if (!currentChat.db || !currentChat.sessionId) return;
     if (!confirm('End this support conversation?')) return;
@@ -2047,24 +2092,24 @@ async function endCurrentChat() {
         showEndedUI();
         document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended</strong>';
         addSystemMessage('<p>You ended this conversation.</p>');
-        currentChat.unsubscribes.forEach(fn => fn());
-        currentChat.unsubscribes = [];
+        cleanupChat();
     } catch (err) {
         console.error('End chat error:', err);
     }
 }
 
 // ─────────────────────────────────────────────────────────
-// START NEW CHAT (after an ended session)
-// ─────────────────────────────────────────────────────────
+// START NEW CHAT
 function startNewChat() {
     clearSession();
-    currentChat.unsubscribes.forEach(fn => fn());
-    currentChat.unsubscribes = [];
+    cleanupChat();
     currentChat.sessionId    = null;
-    renderedMessageIds.clear();
-    // Reset to the pre-form with empty fields
-    document.getElementById('chatMessages').innerHTML = '';
+    currentChat.isResumed    = false;
+    currentChat.isChatActive = false;
+    currentChat._pendingResume = null;
+    
+    // Reset UI
+    clearMessagesContainer();
     document.getElementById('chatMessages').style.display  = 'none';
     document.getElementById('chatInputBar').style.display  = 'none';
     document.getElementById('chatEndedBar').classList.remove('visible');
@@ -2085,16 +2130,22 @@ window.startNewChat    = startNewChat;
 
 // ─────────────────────────────────────────────────────────
 // AUTO-RESUME on page load
-// If there's a saved active session, automatically open the
-// chat panel straight to the resume banner so the user can
-// pick up where they left off without having to find and
-// click a "Chat with us" button first.
-// ─────────────────────────────────────────────────────────
-(function checkForSavedSession() {
+(async function checkForSavedSession() {
     const saved = loadSession();
     if (!saved) return;
-    // Open panel using the saved category so projectKey resolves correctly
-    openChat(saved.category);
+    
+    // Show the chat panel with the resume banner
+    await openChat(saved.category);
+    
+    // Optional: Auto-resume after a short delay (1 second)
+    // This makes it seamless - user sees the chat reconnect automatically
+    setTimeout(() => {
+        // Check if the resume banner is still visible and user hasn't dismissed it
+        const banner = document.getElementById('chatResumeBanner');
+        if (banner && banner.classList.contains('visible')) {
+            resumeExistingChat();
+        }
+    }, 1000);
 })();
 </script>
 
