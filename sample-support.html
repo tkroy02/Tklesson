@@ -1719,11 +1719,10 @@ async function startChat() {
     const message = document.getElementById('chatUserMessage').value.trim();
     const errorEl = document.getElementById('chatFormError');
 
-    if (!name)    { errorEl.textContent = 'Please enter your name.';          errorEl.style.display = 'block'; return; }
+    if (!name)    { errorEl.textContent = 'Please enter your name.'; errorEl.style.display = 'block'; return; }
     if (!email)   { errorEl.textContent = 'Please enter your email address.'; errorEl.style.display = 'block'; return; }
-    if (!message) { errorEl.textContent = 'Please describe your issue.';      errorEl.style.display = 'block'; return; }
+    if (!message) { errorEl.textContent = 'Please describe your issue.'; errorEl.style.display = 'block'; return; }
     
-    // Basic email validation
     if (!/^\S+@\S+\.\S+$/.test(email)) {
         errorEl.textContent = 'Please enter a valid email address.';
         errorEl.style.display = 'block';
@@ -1742,42 +1741,81 @@ async function startChat() {
             activeSession.db = db;
         }
 
-        const sessionId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+        // 🔥 FIX: Check for existing OPEN chat for this email
+        const existingChatsQuery = query(
+            collection(activeSession.db, 'chats'),
+            where('userEmail', '==', email),
+            where('status', 'in', ['active', 'offline_message']),
+            orderBy('lastMessageAt', 'desc'),
+            limit(1)
+        );
+        
+        const existingSnap = await getDocs(existingChatsQuery);
+        let sessionId;
+        let isExisting = false;
+        
+        if (!existingSnap.empty) {
+            // Reuse existing chat!
+            const existingDoc = existingSnap.docs[0];
+            sessionId = existingDoc.id;
+            isExisting = true;
+            
+            // Add the new message to existing chat
+            await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
+                text:      message.substring(0, 1000),
+                senderId:  email,
+                senderName: name,
+                timestamp: serverTimestamp(),
+                read:      false,
+                type:      'text'
+            });
+            
+            // Update chat metadata
+            await updateDoc(doc(activeSession.db, 'chats', sessionId), {
+                lastMessage: message.substring(0, 200),
+                lastMessageAt: serverTimestamp(),
+                lastMessageBy: 'user',
+                'unreadCounts.admin': (existingDoc.data().unreadCounts?.admin || 0) + 1,
+                status: 'active'  // Reopen if closed
+            });
+            
+        } else {
+            // Create NEW chat only if no existing one
+            sessionId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+            
+            await setDoc(doc(activeSession.db, 'chats', sessionId), {
+                chatType:       'support_student',
+                isAdminChat:    true,
+                userName:       name,
+                userEmail:      email,
+                category:       activeSession.category,
+                status:         activeSession.agentsOnline ? 'active' : 'offline_message',
+                lastMessage:    message.substring(0, 200),
+                lastMessageAt:  serverTimestamp(),
+                lastMessageBy:  'user',
+                assignedTo:     null,
+                assignedName:   null,
+                unreadCounts:   { admin: 1 },
+                createdAt:      serverTimestamp(),
+                sessionToken:   activeSession.sessionToken,
+                userAgent:      navigator.userAgent.substring(0, 200)
+            });
+
+            await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
+                text:      message.substring(0, 1000),
+                senderId:  email,
+                senderName: name,
+                timestamp: serverTimestamp(),
+                read:      false,
+                type:      'text'
+            });
+        }
+        
         activeSession.sessionId = sessionId;
         activeSession.userName  = name;
         activeSession.userEmail = email;
         activeSession.isActive  = true;
         
-        const sessionRef = doc(activeSession.db, 'chats', sessionId);
-
-        // Store only necessary info - no sensitive data
-        await setDoc(sessionRef, {
-            chatType:       'support_student',
-            isAdminChat:    true,
-            userName:       name,
-            userEmail:      email,
-            category:       activeSession.category,
-            status:         activeSession.agentsOnline ? 'active' : 'offline_message',
-            lastMessage:    message.substring(0, 200),
-            lastMessageAt:  serverTimestamp(),
-            lastMessageBy:  'user',
-            assignedTo:     null,
-            assignedName:   null,
-            unreadCounts:   { admin: 1 },
-            createdAt:      serverTimestamp(),
-            sessionToken:   activeSession.sessionToken,  // For additional verification
-            userAgent:      navigator.userAgent.substring(0, 200)  // Track for security
-        });
-
-        const msgRef = await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
-            text:      message.substring(0, 1000),
-            senderId:  email,
-            senderName: name,
-            timestamp: serverTimestamp(),
-            read:      false,
-            type:      'text'
-        });
-
         clearChatUI();
         
         if (activeSession.agentsOnline) {
@@ -1785,18 +1823,25 @@ async function startChat() {
             document.getElementById('chatAgentStatus').innerHTML =
                 '🟢 <strong>Connected</strong> — waiting for agent...';
             
-            addSystemMessage(`<p>👋 Hi ${name.split(' ')[0]}! Your secure session has been created.</p>
-                              <p style="font-size:0.8rem; opacity:0.7;">Session ID: ${sessionId.substring(0, 12)}</p>`);
+            if (isExisting) {
+                addSystemMessage(`<p>🔄 Welcome back, ${name.split(' ')[0]}! Resuming your previous conversation.</p>
+                                  <p style="font-size:0.8rem; opacity:0.7;">Reference: ${sessionId.substring(0, 12)}</p>`);
+            } else {
+                addSystemMessage(`<p>👋 Hi ${name.split(' ')[0]}! Your secure session has been created.</p>
+                                  <p style="font-size:0.8rem; opacity:0.7;">Session ID: ${sessionId.substring(0, 12)}</p>`);
+            }
             addMessageBubble(message, 'user', null);
             
-            // Listen for agent replies
+            // Load existing message history for this chat
+            await loadExistingMessages(sessionId);
+            
             subscribeToMessages();
             subscribeToStatusChanges();
         } else {
             showOfflineUI();
             document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Message saved</strong>';
             addSystemMessage(`
-                <p>📨 Thanks, ${name.split(' ')[0]}! Your message has been securely saved.</p>
+                <p>📨 Thanks, ${name.split(' ')[0]}! Your message has been securely ${isExisting ? 'added to your existing' : 'saved'}.</p>
                 <p style="font-size:0.85rem; color: var(--text-muted);">
                     We'll reply to <strong>${email}</strong> as soon as possible.
                 </p>
@@ -1811,6 +1856,39 @@ async function startChat() {
     } finally {
         btn.disabled  = false;
         btn.innerHTML = '<i class="fas fa-paper-plane"></i> Start Chat';
+    }
+}
+
+// NEW: Load existing messages when reusing a chat
+async function loadExistingMessages(chatId) {
+    if (!activeSession.db || !chatId) return;
+    
+    try {
+        const messagesRef = collection(activeSession.db, 'chats', chatId, 'messages');
+        const q = query(messagesRef, orderBy('timestamp', 'asc'));
+        const snap = await getDocs(q);
+        
+        let lastDateLabel = '';
+        snap.forEach(doc => {
+            const data = doc.data();
+            const label = formatDateLabel(data.timestamp);
+            if (label && label !== lastDateLabel) {
+                addDateDivider(label);
+                lastDateLabel = label;
+            }
+            // Only show messages from this session (not previous agent messages that might be confusing)
+            // But for transparency, show last 5 messages for context
+            const sender = (data.senderId === 'admin' || data.senderId?.startsWith('support'))
+                ? 'agent' : 'user';
+            addMessageBubble(data.text, sender, data.timestamp);
+            if (window._renderedMessageIds) window._renderedMessageIds.add(doc.id);
+        });
+        
+        const container = document.getElementById('chatMessages');
+        container.scrollTop = container.scrollHeight;
+        
+    } catch (err) {
+        console.error('Load existing messages error:', err);
     }
 }
 
