@@ -1689,91 +1689,43 @@ function destroySession() {
 // ENHANCED STATUS LISTENER - Handles agent closing chat
 // ─────────────────────────────────────────────────────────
 function subscribeToStatusChanges() {
-    if (!activeSession.sessionId || !activeSession.db) {
-        console.log('Cannot subscribe to status: missing sessionId or db');
-        return;
-    }
+    if (!activeSession.sessionId || !activeSession.db) return;
     
-    console.log('Setting up status listener for chat:', activeSession.sessionId);
-    
-    const chatDocRef = doc(activeSession.db, 'chats', activeSession.sessionId);
-    
-    const unsub = onSnapshot(chatDocRef, (snap) => {
-        if (!snap.exists()) {
-            console.log('Chat document no longer exists');
-            return;
-        }
-        
+    const unsub = onSnapshot(doc(activeSession.db, 'chats', activeSession.sessionId), (snap) => {
+        if (!snap.exists()) return;
         const data = snap.data();
         const status = data.status;
-        console.log('Status changed:', status, 'Current active state:', activeSession.isActive);
         
         // Check if chat was ended/closed by agent or support
         if ((status === 'ended' || status === 'closed') && activeSession.isActive) {
             // Check who closed it - if not the current user, it was an agent
             const closedByUser = data.endedBy === activeSession.userEmail || 
                                  data.closedBy === activeSession.userEmail ||
-                                 data.endedBy === 'user' ||
-                                 data.closedBy === 'user';
-            
-            console.log('Chat closed, closedByUser:', closedByUser, 'data:', { endedBy: data.endedBy, closedBy: data.closedBy });
+                                 data.endedBy === 'user';
             
             if (!closedByUser) {
                 console.log('Chat closed by agent, updating client UI');
+                showEndedUI(true);
+                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by support</strong>';
                 
-                // Force UI update on main thread
-                setTimeout(() => {
-                    // Show ended UI
-                    showEndedUI(true);
-                    document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by support</strong>';
-                    
-                    // Clear any existing messages and add closure notice
-                    const container = document.getElementById('chatMessages');
-                    if (container) {
-                        // Remove any existing system messages to avoid duplicates
-                        const existingSysMsgs = container.querySelectorAll('.chat-system-msg');
-                        existingSysMsgs.forEach(msg => {
-                            if (msg.innerHTML.includes('closed by our support team')) {
-                                msg.remove();
-                            }
-                        });
-                        
-                        addSystemMessage(`
-                            <div style="background:#fee2e2; border-left: 3px solid #dc2626; padding: 12px; margin: 8px 0; border-radius: 6px;">
-                                <strong style="color:#991b1b;">📢 Conversation Closed</strong>
-                                <p style="margin: 8px 0 0 0; font-size:0.85rem;">This chat has been closed by our support team.</p>
-                                <button onclick="startNewChat()" style="margin-top: 10px; background:#dc2626; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">
-                                    <i class="fas fa-plus"></i> Start New Chat
-                                </button>
-                            </div>
-                        `);
-                    }
-                    
-                    // Disable input
-                    const input = document.getElementById('chatMessageInput');
-                    if (input) {
-                        input.disabled = true;
-                        input.placeholder = 'Chat closed - start a new chat to continue';
-                        input.style.backgroundColor = '#f3f4f6';
-                    }
-                    
-                    // Disable send button
-                    const sendBtn = document.querySelector('#chatInputBar button');
-                    if (sendBtn) {
-                        sendBtn.disabled = true;
-                        sendBtn.style.opacity = '0.5';
-                        sendBtn.style.cursor = 'not-allowed';
-                    }
-                    
-                    // Also disable the end chat button since chat is already closed
-                    const endBtn = document.getElementById('chatEndBtn');
-                    if (endBtn) {
-                        endBtn.disabled = true;
-                        endBtn.style.opacity = '0.5';
-                    }
-                    
-                    activeSession.isActive = false;
-                }, 100);
+                addSystemMessage(`
+                    <div style="background:#fee2e2; border-left: 3px solid #dc2626; padding: 12px; margin: 8px 0; border-radius: 6px;">
+                        <strong style="color:#991b1b;">📢 Conversation Closed</strong>
+                        <p style="margin: 8px 0 0 0; font-size:0.85rem;">This chat has been closed by our support team.</p>
+                        <button onclick="startNewChat()" style="margin-top: 10px; background:#dc2626; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">
+                            <i class="fas fa-plus"></i> Start New Chat
+                        </button>
+                    </div>
+                `);
+                
+                // Disable input
+                const input = document.getElementById('chatMessageInput');
+                if (input) {
+                    input.disabled = true;
+                    input.placeholder = 'Chat closed - start a new chat to continue';
+                }
+                
+                activeSession.isActive = false;
             }
         }
         
@@ -1786,14 +1738,10 @@ function subscribeToStatusChanges() {
             `);
             activeSession.isActive = false;
         }
-    }, (error) => {
-        console.error('Status listener error:', error);
     });
-    
     activeSession.unsubscribes.push(unsub);
-    console.log('Status listener attached successfully');
 }
-    
+
 // ─────────────────────────────────────────────────────────
 // OPEN CHAT PANEL
 // ─────────────────────────────────────────────────────────
@@ -1885,59 +1833,25 @@ async function startChat() {
             sessionId = existingDoc.id;
             isExisting = true;
             
-            // Check if the existing chat is already closed/ended
-            const existingStatus = existingDoc.data().status;
-            if (existingStatus === 'closed' || existingStatus === 'ended') {
-                // Force create new chat instead of reusing closed one
-                isExisting = false;
-                sessionId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
-                
-                await setDoc(doc(activeSession.db, 'chats', sessionId), {
-                    chatType:       'support_student',
-                    isAdminChat:    true,
-                    userName:       name,
-                    userEmail:      email,
-                    category:       activeSession.category,
-                    status:         activeSession.agentsOnline ? 'active' : 'offline_message',
-                    lastMessage:    message.substring(0, 200),
-                    lastMessageAt:  serverTimestamp(),
-                    lastMessageBy:  'user',
-                    assignedTo:     null,
-                    assignedName:   null,
-                    unreadCounts:   { admin: 1 },
-                    createdAt:      serverTimestamp(),
-                    sessionToken:   activeSession.sessionToken,
-                    userAgent:      navigator.userAgent.substring(0, 200)
-                });
-
-                await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
-                    text:      message.substring(0, 1000),
-                    senderId:  email,
-                    senderName: name,
-                    timestamp: serverTimestamp(),
-                    read:      false,
-                    type:      'text'
-                });
-            } else {
-                // Add the new message to existing active chat
-                await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
-                    text:      message.substring(0, 1000),
-                    senderId:  email,
-                    senderName: name,
-                    timestamp: serverTimestamp(),
-                    read:      false,
-                    type:      'text'
-                });
-                
-                // Update chat metadata
-                await updateDoc(doc(activeSession.db, 'chats', sessionId), {
-                    lastMessage: message.substring(0, 200),
-                    lastMessageAt: serverTimestamp(),
-                    lastMessageBy: 'user',
-                    'unreadCounts.admin': (existingDoc.data().unreadCounts?.admin || 0) + 1,
-                    status: 'active'  // Reopen if closed
-                });
-            }
+            // Add the new message to existing chat
+            await addDoc(collection(activeSession.db, 'chats', sessionId, 'messages'), {
+                text:      message.substring(0, 1000),
+                senderId:  email,
+                senderName: name,
+                timestamp: serverTimestamp(),
+                read:      false,
+                type:      'text'
+            });
+            
+            // Update chat metadata
+            await updateDoc(doc(activeSession.db, 'chats', sessionId), {
+                lastMessage: message.substring(0, 200),
+                lastMessageAt: serverTimestamp(),
+                lastMessageBy: 'user',
+                'unreadCounts.admin': (existingDoc.data().unreadCounts?.admin || 0) + 1,
+                status: 'active'  // Reopen if closed
+            });
+            
         } else {
             // Create NEW chat only if no existing one
             sessionId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
@@ -1977,10 +1891,6 @@ async function startChat() {
         
         clearChatUI();
         
-        // IMPORTANT: Set up status listener BEFORE showing UI
-        // This ensures we don't miss any status changes
-        subscribeToStatusChanges();
-        
         if (activeSession.agentsOnline) {
             showChatUI(true);
             document.getElementById('chatAgentStatus').innerHTML =
@@ -1999,6 +1909,7 @@ async function startChat() {
             await loadExistingMessages(sessionId);
             
             subscribeToMessages();
+            subscribeToStatusChanges(); // Add status listener
         } else {
             showOfflineUI();
             document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Message saved</strong>';
@@ -2021,35 +1932,6 @@ async function startChat() {
     }
 }
 
-function showEndedUI(closedByAgent = false) {
-    console.log('showEndedUI called, closedByAgent:', closedByAgent);
-    
-    const inputBar = document.getElementById('chatInputBar');
-    const endedBar = document.getElementById('chatEndedBar');
-    const endBtn = document.getElementById('chatEndBtn');
-    
-    if (inputBar) inputBar.style.display = 'none';
-    if (endedBar) endedBar.classList.add('visible');
-    if (endBtn) endBtn.classList.remove('visible');
-    
-    // Update message based on who closed it
-    const endedMessageSpan = document.querySelector('#chatEndedBar span');
-    if (endedMessageSpan) {
-        endedMessageSpan.textContent = closedByAgent 
-            ? 'This conversation has been closed by support.' 
-            : 'This conversation has ended.';
-    }
-    
-    // Also update the ended bar button to ensure it works
-    const newChatBtn = document.querySelector('#chatEndedBar .chat-new-btn');
-    if (newChatBtn) {
-        newChatBtn.onclick = function() {
-            console.log('New chat button clicked');
-            startNewChat();
-        };
-    }
-}
-    
 // Load existing messages when reusing a chat
 async function loadExistingMessages(chatId) {
     if (!activeSession.db || !chatId) return;
