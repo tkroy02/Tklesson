@@ -1381,7 +1381,11 @@
 
     <!-- Ended notice bar -->
     <div class="chat-ended-bar" id="chatEndedBar">
-        This conversation has ended. <a onclick="startNewChat()">Start a new secure chat</a>
+        <i class="fas fa-check-circle"></i> 
+        <span id="endedMessage">This conversation has ended.</span>
+        <button class="chat-new-btn" onclick="startNewChat()">
+            <i class="fas fa-plus"></i> Start New Chat
+        </button>
     </div>
 
     <!-- Offline Notice -->
@@ -1392,7 +1396,6 @@
     </div>
 </div>
 
-<!-- ═══════════════ PAGE SCRIPTS ═══════════════ -->
 <script>
 // ── Header ────────────────────────────────────────────────
 fetch("header.html")
@@ -1610,13 +1613,27 @@ function showChatUI(includeInput) {
     document.getElementById('chatEndedBar').classList.remove('visible');
     if (includeInput) {
         document.getElementById('chatEndBtn').classList.add('visible');
+        // Enable input if session is active
+        const input = document.getElementById('chatMessageInput');
+        if (input) {
+            input.disabled = false;
+            input.placeholder = 'Type your message...';
+        }
     }
 }
 
-function showEndedUI() {
+function showEndedUI(closedByAgent = false) {
     document.getElementById('chatInputBar').style.display  = 'none';
     document.getElementById('chatEndedBar').classList.add('visible');
     document.getElementById('chatEndBtn').classList.remove('visible');
+    
+    // Update message based on who closed it
+    const endedMessageSpan = document.querySelector('#chatEndedBar span');
+    if (endedMessageSpan) {
+        endedMessageSpan.textContent = closedByAgent 
+            ? 'This conversation has been closed by support.' 
+            : 'This conversation has ended.';
+    }
 }
 
 function showOfflineUI() {
@@ -1636,7 +1653,6 @@ function resetToPreForm() {
     document.getElementById('chatEndedBar').classList.remove('visible');
     document.getElementById('chatEndBtn').classList.remove('visible');
     document.getElementById('chatFormError').style.display  = 'none';
-    document.getElementById('chatResumeBanner').classList.remove('visible');
     document.getElementById('chatFormIntro').style.display  = 'block';
     
     // Clear form fields
@@ -1667,6 +1683,63 @@ function destroySession() {
         isActive:     false,
         sessionToken: null
     };
+}
+
+// ─────────────────────────────────────────────────────────
+// ENHANCED STATUS LISTENER - Handles agent closing chat
+// ─────────────────────────────────────────────────────────
+function subscribeToStatusChanges() {
+    if (!activeSession.sessionId || !activeSession.db) return;
+    
+    const unsub = onSnapshot(doc(activeSession.db, 'chats', activeSession.sessionId), (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        const status = data.status;
+        
+        // Check if chat was ended/closed by agent or support
+        if ((status === 'ended' || status === 'closed') && activeSession.isActive) {
+            // Check who closed it - if not the current user, it was an agent
+            const closedByUser = data.endedBy === activeSession.userEmail || 
+                                 data.closedBy === activeSession.userEmail ||
+                                 data.endedBy === 'user';
+            
+            if (!closedByUser) {
+                console.log('Chat closed by agent, updating client UI');
+                showEndedUI(true);
+                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by support</strong>';
+                
+                addSystemMessage(`
+                    <div style="background:#fee2e2; border-left: 3px solid #dc2626; padding: 12px; margin: 8px 0; border-radius: 6px;">
+                        <strong style="color:#991b1b;">📢 Conversation Closed</strong>
+                        <p style="margin: 8px 0 0 0; font-size:0.85rem;">This chat has been closed by our support team.</p>
+                        <button onclick="startNewChat()" style="margin-top: 10px; background:#dc2626; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">
+                            <i class="fas fa-plus"></i> Start New Chat
+                        </button>
+                    </div>
+                `);
+                
+                // Disable input
+                const input = document.getElementById('chatMessageInput');
+                if (input) {
+                    input.disabled = true;
+                    input.placeholder = 'Chat closed - start a new chat to continue';
+                }
+                
+                activeSession.isActive = false;
+            }
+        }
+        
+        // Also handle case where chat becomes inactive/offline
+        if (status === 'offline_message' && activeSession.isActive) {
+            showOfflineUI();
+            addSystemMessage(`
+                <p>📨 Support has marked this conversation as offline.</p>
+                <p style="font-size:0.85rem;">We'll respond to your email when we're back online.</p>
+            `);
+            activeSession.isActive = false;
+        }
+    });
+    activeSession.unsubscribes.push(unsub);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1741,7 +1814,7 @@ async function startChat() {
             activeSession.db = db;
         }
 
-        // 🔥 FIX: Check for existing OPEN chat for this email
+        // Check for existing OPEN chat for this email
         const existingChatsQuery = query(
             collection(activeSession.db, 'chats'),
             where('userEmail', '==', email),
@@ -1836,7 +1909,7 @@ async function startChat() {
             await loadExistingMessages(sessionId);
             
             subscribeToMessages();
-            subscribeToStatusChanges();
+            subscribeToStatusChanges(); // Add status listener
         } else {
             showOfflineUI();
             document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Message saved</strong>';
@@ -1859,7 +1932,7 @@ async function startChat() {
     }
 }
 
-// NEW: Load existing messages when reusing a chat
+// Load existing messages when reusing a chat
 async function loadExistingMessages(chatId) {
     if (!activeSession.db || !chatId) return;
     
@@ -1917,7 +1990,7 @@ function subscribeToMessages() {
                 // Only show agent messages to client (not their own, which they already sent)
                 const isAgent = data.senderId === 'admin' || data.senderId?.startsWith('support');
                 
-                if (isAgent) {
+                if (isAgent && activeSession.isActive) {
                     addMessageBubble(data.text, 'agent', data.timestamp);
                     document.getElementById('chatAgentStatus').innerHTML =
                         '🟢 <strong>Agent is typing...</strong>';
@@ -1935,34 +2008,24 @@ function subscribeToMessages() {
     activeSession.unsubscribes.push(unsub);
 }
 
-function subscribeToStatusChanges() {
-    if (!activeSession.sessionId || !activeSession.db) return;
-    
-    const unsub = onSnapshot(doc(activeSession.db, 'chats', activeSession.sessionId), (snap) => {
-        if (!snap.exists()) return;
-        const data = snap.data();
-        const status = data.status;
-        
-        if (status === 'ended' || status === 'closed') {
-            if (activeSession.isActive) {
-                showEndedUI();
-                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended</strong>';
-                addSystemMessage('<p style="color:#dc2626">This conversation has been closed by support.</p>');
-                activeSession.isActive = false;
-            }
-        }
-    });
-    activeSession.unsubscribes.push(unsub);
-}
-
 // ─────────────────────────────────────────────────────────
-// SEND MESSAGE
+// SEND MESSAGE - With check for active session
 // ─────────────────────────────────────────────────────────
 async function sendChatMessage() {
     const input = document.getElementById('chatMessageInput');
     const text  = input.value.trim();
     
-    if (!text || !activeSession.sessionId || !activeSession.db || !activeSession.isActive) return;
+    // Check if session is active and chat is not closed
+    if (!text || !activeSession.sessionId || !activeSession.db || !activeSession.isActive) {
+        if (!activeSession.isActive) {
+            addSystemMessage(`
+                <div style="background:#fef3c7; border-left: 3px solid #f59e0b; padding: 8px; margin: 8px 0; border-radius: 6px;">
+                    ⚠️ This chat is closed. Please start a new chat session.
+                </div>
+            `);
+        }
+        return;
+    }
 
     input.value = '';
     
@@ -2023,7 +2086,7 @@ async function endCurrentChat() {
             endedAt: serverTimestamp()
         });
         
-        showEndedUI();
+        showEndedUI(false);
         document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended</strong>';
         addSystemMessage('<p>You ended this conversation. Start a new chat for future support.</p>');
         
