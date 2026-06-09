@@ -1764,15 +1764,13 @@ async function copyVerbiage(key) {
 // TICKETING
 // ════════════════════════════════════════════════════════
 let allTickets = [];
-let lastVisibleTicket  = null;
-const TICKETS_PER_PAGE = 20;
 
 function openNewTicket() {
     document.getElementById('new-ticket-form').style.display = 'block';
-    document.getElementById('ticket-category').value = '';
+    document.getElementById('ticket-category').value    = '';
     document.getElementById('ticket-client-email').value = '';
-    document.getElementById('ticket-subject').value  = '';
-    document.getElementById('ticket-action').value   = '';
+    document.getElementById('ticket-subject').value     = '';
+    document.getElementById('ticket-action').value      = '';
 }
 
 function closeNewTicket() {
@@ -1815,7 +1813,7 @@ async function submitTicket() {
 
         await logAuditAction('ticket_created', subject, `Ticket ${ticketId} created — ${category} for ${clientEmail}`);
         closeNewTicket();
-        loadTickets();
+        await loadTickets();
     } catch (error) {
         console.error('Ticket submission error:', error);
         alert('Error creating ticket. Please try again.');
@@ -1835,7 +1833,7 @@ async function resolveTicket(ticketDocId) {
         }, { merge: true });
 
         await logAuditAction('ticket_resolved', ticket.subject, `Ticket ${ticket.ticketId} resolved`);
-        loadTickets();
+        await loadTickets();
     } catch (error) {
         console.error('Resolve error:', error);
         alert('Error resolving ticket.');
@@ -1855,111 +1853,87 @@ async function reopenTicket(ticketDocId) {
         }, { merge: true });
 
         await logAuditAction('ticket_reopened', ticket.subject, `Ticket ${ticket.ticketId} reopened`);
-        loadTickets();
+        await loadTickets();
     } catch (error) {
         console.error('Reopen error:', error);
         alert('Error reopening ticket.');
     }
 }
 
-async function loadTickets(loadMore = false) {
+async function loadTickets() {
     const unresolvedContainer = document.getElementById('unresolved-tickets');
     const resolvedContainer   = document.getElementById('resolved-tickets');
 
+    unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
+    resolvedContainer.innerHTML   = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
+
     try {
-        if (!loadMore) {
-            const snap = await getDocs(
-                query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(200))
-            );
-            allTickets = [];
-            snap.forEach(d => allTickets.push({ id: d.id, ...d.data() }));
-            filterTickets();
-        } else {
-            let resolvedQuery = query(
-                collection(db, 'support_tickets'),
-                orderBy('createdAt', 'desc'),
-                limit(TICKETS_PER_PAGE)
-            );
+        const snap = await getDocs(
+            query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(500))
+        );
 
-            if (lastVisibleTicket) {
-                const { startAfter } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
-                resolvedQuery = query(
-                    collection(db, 'support_tickets'),
-                    orderBy('createdAt', 'desc'),
-                    startAfter(lastVisibleTicket),
-                    limit(TICKETS_PER_PAGE)
-                );
-            }
+        allTickets = [];
+        snap.forEach(d => allTickets.push({ id: d.id, ...d.data() }));
 
-            const snap = await getDocs(resolvedQuery);
-            lastVisibleTicket = snap.docs[snap.docs.length - 1];
-
-            const resolved = [];
-            snap.forEach(d => {
-                const data = d.data();
-                if (data.status === 'resolved') resolved.push({ id: d.id, ...data });
-            });
-
-            const html = resolved.map(t => renderTicketCard(t, 'resolved')).join('');
-            document.getElementById('load-more-btn')?.remove();
-            resolvedContainer.insertAdjacentHTML('beforeend', html);
-
-            if (snap.docs.length === TICKETS_PER_PAGE) {
-                resolvedContainer.insertAdjacentHTML('beforeend', `
-                    <button id="load-more-btn" onclick="loadTickets(true)"
-                        style="width: 100%; padding: 12px; margin-top: 10px; background: #f8fafc;
-                        border: 1.5px solid var(--border); border-radius: var(--radius);
-                        font-size: 0.85rem; font-weight: 600; color: var(--text-muted);
-                        cursor: pointer; font-family: inherit;">
-                        <i class="fas fa-chevron-down"></i> Load More
-                    </button>`);
-            }
+        const totalCount = allTickets.length;
+        if (totalCount === 500) {
+            console.warn('Ticket list capped at 500 — consider archiving old resolved tickets.');
         }
 
+        filterTickets();
     } catch (error) {
         console.error('Load tickets error:', error);
-        document.getElementById('unresolved-tickets').innerHTML = 
-            '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
+        unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
+        resolvedContainer.innerHTML   = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
     }
 }
 
 function filterTickets() {
-    const searchQuery = document.getElementById('ticket-search')?.value?.toLowerCase()?.trim() || '';
+    const searchQuery    = document.getElementById('ticket-search')?.value?.toLowerCase()?.trim() || '';
     const categoryFilter = document.getElementById('ticket-filter-category')?.value || 'all';
-    const statusFilter = document.getElementById('ticket-filter-status')?.value || 'all';
-    
+    const statusFilter   = document.getElementById('ticket-filter-status')?.value || 'all';
+
     let filtered = [...allTickets];
-    
+
     if (searchQuery) {
-        filtered = filtered.filter(t => 
-            (t.subject || '').toLowerCase().includes(searchQuery) ||
-            (t.ticketId || '').toLowerCase().includes(searchQuery) ||
+        filtered = filtered.filter(t =>
+            (t.subject     || '').toLowerCase().includes(searchQuery) ||
+            (t.ticketId    || '').toLowerCase().includes(searchQuery) ||
             (t.clientEmail || '').toLowerCase().includes(searchQuery) ||
-            (t.agentEmail || '').toLowerCase().includes(searchQuery) ||
+            (t.agentEmail  || '').toLowerCase().includes(searchQuery) ||
             (t.agentAction || '').toLowerCase().includes(searchQuery)
         );
     }
-    
+
     if (categoryFilter !== 'all') {
         filtered = filtered.filter(t => t.category === categoryFilter);
     }
-    
+
     if (statusFilter === 'open') {
         filtered = filtered.filter(t => t.status !== 'resolved');
     } else if (statusFilter === 'resolved') {
         filtered = filtered.filter(t => t.status === 'resolved');
     }
-    
+
     const unresolved = filtered.filter(t => t.status !== 'resolved');
-    const resolved = filtered.filter(t => t.status === 'resolved');
-    
-    document.getElementById('unresolved-tickets').innerHTML = unresolved.length === 0
+    const resolved   = filtered.filter(t => t.status === 'resolved');
+
+    const unresolvedContainer = document.getElementById('unresolved-tickets');
+    const resolvedContainer   = document.getElementById('resolved-tickets');
+
+    unresolvedContainer.innerHTML = unresolved.length === 0
         ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No matching unresolved tickets</p></div>'
         : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
-    
-    document.getElementById('resolved-tickets').innerHTML = resolved.length === 0
+
+    resolvedContainer.innerHTML = resolved.length === 0
         ? '<div class="results-placeholder"><i class="fas fa-check-double"></i><p>No matching resolved tickets</p></div>'
         : resolved.map(t => renderTicketCard(t, 'resolved')).join('');
+
+    // Show counts in section headings
+    document.querySelector('#ticketing .unresolved-count')?.textContent !== undefined &&
+        (document.querySelector('#ticketing .unresolved-count').textContent = `(${unresolved.length})`);
+    document.querySelector('#ticketing .resolved-count')?.textContent !== undefined &&
+        (document.querySelector('#ticketing .resolved-count').textContent = `(${resolved.length})`);
 }
 
 function renderTicketCard(ticket, type) {
@@ -1981,7 +1955,7 @@ function renderTicketCard(ticket, type) {
                     <span><i class="fas fa-envelope"></i> ${ticket.clientEmail || 'N/A'}</span>
                     <span><i class="fas fa-user"></i> ${ticket.agentEmail}</span>
                     <span><i class="fas fa-clock"></i> ${time}</span>
-                    ${type === 'resolved' ? `<span style="color: var(--danger);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
+                    ${type === 'resolved' ? `<span style="color: var(--success);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
                 </div>
                 <div class="ticket-action">${ticket.agentAction}</div>
             </div>
@@ -1993,6 +1967,9 @@ function renderTicketCard(ticket, type) {
             </div>
         </div>`;
 }
+// ════════════════════════════════════════════════════════
+// END TICKETING
+// ════════════════════════════════════════════════════════
     
 // ════════════════════════════════════════════════════════
 // AUDIT LOG
