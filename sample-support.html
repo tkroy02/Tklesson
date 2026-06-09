@@ -1694,30 +1694,40 @@ function subscribeToStatusChanges() {
     const unsub = onSnapshot(doc(activeSession.db, 'chats', activeSession.sessionId), (snap) => {
         if (!snap.exists()) return;
         const data = snap.data();
+        const status = data.status;
         
-        if ((data.status === 'closed' || data.status === 'ended') && data.endedBy !== 'user') {
-            activeSession.isActive = false;
+        // Check if chat was ended/closed by agent or support
+        if ((status === 'ended' || status === 'closed') && activeSession.isActive) {
+            // Check who closed it - if not the current user, it was an agent
+            const closedByUser = data.endedBy === activeSession.userEmail || 
+                                 data.closedBy === activeSession.userEmail ||
+                                 data.endedBy === 'user';
             
-            showEndedUI(true);
-            document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat closed by support</strong>';
-            
-            const input = document.getElementById('chatMessageInput');
-            if (input) {
-                input.disabled = true;
-                input.placeholder = 'Chat closed — start a new chat to continue';
+            if (!closedByUser) {
+                console.log('Chat closed by agent, updating client UI');
+                showEndedUI(true);
+                document.getElementById('chatAgentStatus').innerHTML = '⚫ <strong>Chat ended by support</strong>';
+                
+                addSystemMessage(`
+                    <div style="background:#fee2e2; border-left: 3px solid #dc2626; padding: 12px; margin: 8px 0; border-radius: 6px;">
+                        <strong style="color:#991b1b;">📢 Conversation Closed</strong>
+                        <p style="margin: 8px 0 0 0; font-size:0.85rem;">This chat has been closed by our support team.</p>
+                        <button onclick="startNewChat()" style="margin-top: 10px; background:#dc2626; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">
+                            <i class="fas fa-plus"></i> Start New Chat
+                        </button>
+                    </div>
+                `);
+                
+                // Disable input
+                const input = document.getElementById('chatMessageInput');
+                if (input) {
+                    input.disabled = true;
+                    input.placeholder = 'Chat closed - start a new chat to continue';
+                }
+                
+                activeSession.isActive = false;
             }
-            
-            addSystemMessage(`
-                <div style="background:#fee2e2;border-left:3px solid #dc2626;padding:12px;margin:8px 0;border-radius:6px;">
-                    <strong style="color:#991b1b;">Conversation closed</strong>
-                    <p style="margin:8px 0 0;font-size:0.85rem;color:#7f1d1d;">This chat was closed by the support team.</p>
-                </div>
-            `);
         }
-    });
-    
-    activeSession.unsubscribes.push(unsub);
-}
         
         // Also handle case where chat becomes inactive/offline
         if (status === 'offline_message' && activeSession.isActive) {
