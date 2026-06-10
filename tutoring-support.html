@@ -2606,15 +2606,48 @@ const supportChat = {
     currentTab:         'unclaimed',
     messagesUnsub:      null,
     chatsUnsub:         null,
+    chatsUnsub2:        null,           // ← NEW: listener for support_chats collection
     typingUnsub:        null,
     typingTimeout:      null,
     presenceInterval:   null,
     allChats:           [],
+    _rawChats:          [],             // ← NEW: raw docs from 'chats' collection
+    _rawSupportChats:   [],             // ← NEW: raw docs from 'support_chats' collection
     renderedMessageIds: new Set(),
     currentTypingUser:  null,
     lastReadTimestamps: new Map(),
     customerChatMap:    new Map()
 };
+
+// ── Collection router ─────────────────────────────────────
+/**
+ * Returns the correct Firestore collection name for a given chat ID.
+ *
+ * Priority order:
+ *   1. Active currentContact (fastest — no search needed)
+ *   2. Already-enriched allChats list (covers any chat loaded this session,
+ *      including legacy 'support_*' docs that still live in 'chats')
+ *   3. Prefix-based fallback for the new split-collection architecture
+ *
+ * This three-tier lookup means old 'support_' prefixed documents that were
+ * written to the 'chats' collection before the migration will still be
+ * resolved correctly via tier 2, while all new public chats land in tier 3.
+ */
+function getChatCollection(chatId) {
+    if (!chatId) return 'chats';
+
+    // Tier 1: active chat — cheapest lookup
+    if (supportChat.currentContact?.id === chatId && supportChat.currentContact?._collection) {
+        return supportChat.currentContact._collection;
+    }
+
+    // Tier 2: search the enriched list (preserves legacy docs in 'chats')
+    const found = supportChat.allChats.find(c => c.id === chatId);
+    if (found?._collection) return found._collection;
+
+    // Tier 3: new-architecture prefix rule
+    return chatId.startsWith('support_') ? 'support_chats' : 'chats';
+}
 
 // ── Init ─────────────────────────────────────────────────
 async function initSupportChat(user) {
@@ -2639,7 +2672,7 @@ async function initSupportChat(user) {
     }
 }
 
-// ── Persist read timestamps ──────────────────────────────
+// ── Persist read timestamps ───────────────────────────────
 function loadReadTimestamps() {
     try {
         const saved = localStorage.getItem('agent_chat_read_timestamps');
@@ -2683,13 +2716,13 @@ async function resolveContactInfo(chat) {
     let contactId   = null;
     let contactType = 'student';
 
-     // 🔥 ADD THIS FIRST - Handle muggles (anonymous users)
+    // Handle muggles (anonymous / public users)
     if (chat.userEmail || chat.userName) {
-        return { 
-            name: chat.userName || chat.studentName || 'Anonymous', 
-            email: chat.userEmail || null,
-            contactId: null, 
-            contactType: 'student' 
+        return {
+            name:        chat.userName || chat.studentName || 'Anonymous',
+            email:       chat.userEmail || null,
+            contactId:   null,
+            contactType: 'student'
         };
     }
 
@@ -2741,19 +2774,19 @@ async function resolveContactInfo(chat) {
     return { name: contactType === 'tutor' ? 'Tutor' : 'Student', contactId, contactType };
 }
 
-// ── Enrich all chats with resolved names ─────────────────
+// ── Enrich all chats with resolved names ──────────────────
 async function enrichChats(chats) {
     const enriched = await Promise.all(chats.map(async chat => {
-        const resolved   = await resolveContactInfo(chat);
-        const lastRead   = supportChat.lastReadTimestamps.get(chat.id) || 0;
+        const resolved    = await resolveContactInfo(chat);
+        const lastRead    = supportChat.lastReadTimestamps.get(chat.id) || 0;
         const lastMsgTime = chat.lastMessageAt?.toDate?.()?.getTime() ||
                             (chat.lastMessageAt ? new Date(chat.lastMessageAt).getTime() : 0);
-        const hasUnread  = lastMsgTime > lastRead && chat.lastMessageBy !== 'admin';
+        const hasUnread   = lastMsgTime > lastRead && chat.lastMessageBy !== 'admin';
 
         return {
-            ...chat,
+            ...chat,                                        // ← _collection is preserved from raw push
             _resolvedName:  resolved.name,
-            _resolvedEmail: resolved.email || chat.userEmail,  // ← Add this
+            _resolvedEmail: resolved.email || chat.userEmail,
             _contactId:     resolved.contactId,
             _contactType:   resolved.contactType,
             _hasUnread:     hasUnread,
@@ -2777,21 +2810,34 @@ async function enrichChats(chats) {
 
 // ── Real-time chat list listener ──────────────────────────
 function listenToChats() {
-    if (supportChat.chatsUnsub) supportChat.chatsUnsub();
+    if (supportChat.chatsUnsub)  supportChat.chatsUnsub();
+    if (supportChat.chatsUnsub2) supportChat.chatsUnsub2();
 
+    /**
+     * Merges _rawChats and _rawSupportChats, enriches, and re-renders.
+     * Called by both snapshot handlers so either collection update
+     * triggers a full re-render of the combined list.
+     */
+    async function mergeAndRender() {
+        const combined = [...supportChat._rawChats, ...supportChat._rawSupportChats];
+        supportChat.allChats = await enrichChats(combined);
+        renderChatContactList();
+        updateChatTabBadges();
+    }
+
+    // ── Listener 1: authenticated 'chats' collection ─────
     const chatsQuery = query(
         collection(db, 'chats'),
         orderBy('lastMessageAt', 'desc')
     );
 
     supportChat.chatsUnsub = onSnapshot(chatsQuery, async (snap) => {
-        const raw = [];
-
+        // Auto-reopen closed chats when a new customer message arrives
         snap.docChanges().forEach(change => {
             if (change.type === 'modified') {
-                const data         = change.doc.data();
-                const lastMsgTime  = data.lastMessageAt?.toDate?.() || new Date(data.lastMessageAt);
-                const isRecent     = (new Date() - lastMsgTime) < 15000;
+                const data        = change.doc.data();
+                const lastMsgTime = data.lastMessageAt?.toDate?.() || new Date(data.lastMessageAt);
+                const isRecent    = (new Date() - lastMsgTime) < 15000;
                 const shouldReopen = data.lastMessageBy !== 'admin'
                     && data.status === 'closed'
                     && data.lastMessage
@@ -2802,11 +2848,12 @@ function listenToChats() {
                         status:     'active',
                         reopenedAt: serverTimestamp(),
                         reopenedBy: 'customer'
-                    }).catch(err => console.warn('Auto-reopen failed:', err));
+                    }).catch(err => console.warn('Auto-reopen (chats) failed:', err));
                 }
             }
         });
 
+        const raw = [];
         snap.forEach(d => {
             const data = d.data();
             const id   = d.id;
@@ -2819,13 +2866,55 @@ function listenToChats() {
                 id.startsWith('admin_student_');
 
             if (isSupportChat && data.lastMessage?.trim()) {
-                raw.push({ id, ...data });
+                // Tag with source collection so getChatCollection() resolves correctly
+                raw.push({ id, ...data, _collection: 'chats' });
             }
         });
 
-        supportChat.allChats = await enrichChats(raw);
-        renderChatContactList();
-        updateChatTabBadges();
+        supportChat._rawChats = raw;
+        await mergeAndRender();
+    });
+
+    // ── Listener 2: public 'support_chats' collection ────
+    const supportChatsQuery = query(
+        collection(db, 'support_chats'),
+        orderBy('lastMessageAt', 'desc')
+    );
+
+    supportChat.chatsUnsub2 = onSnapshot(supportChatsQuery, async (snap) => {
+        // Auto-reopen closed chats when a new customer message arrives
+        snap.docChanges().forEach(change => {
+            if (change.type === 'modified') {
+                const data        = change.doc.data();
+                const lastMsgTime = data.lastMessageAt?.toDate?.() || new Date(data.lastMessageAt);
+                const isRecent    = (new Date() - lastMsgTime) < 15000;
+                const shouldReopen = data.lastMessageBy !== 'admin'
+                    && data.status === 'closed'
+                    && data.lastMessage
+                    && isRecent;
+
+                if (shouldReopen) {
+                    updateDoc(doc(db, 'support_chats', change.doc.id), {
+                        status:     'active',
+                        reopenedAt: serverTimestamp(),
+                        reopenedBy: 'customer'
+                    }).catch(err => console.warn('Auto-reopen (support_chats) failed:', err));
+                }
+            }
+        });
+
+        const raw = [];
+        snap.forEach(d => {
+            const data = d.data();
+            // Include all docs with a lastMessage — no type filter needed
+            // since the entire support_chats collection is for support
+            if (data.lastMessage?.trim()) {
+                raw.push({ id: d.id, ...data, _collection: 'support_chats' });
+            }
+        });
+
+        supportChat._rawSupportChats = raw;
+        await mergeAndRender();
     });
 }
 
@@ -2890,8 +2979,8 @@ function renderChatContactList() {
         const assignedIcon  = isClosed ? 'check-circle' : isUnclaimed ? 'circle' : 'user-check';
 
         const el = document.createElement('div');
-el.className = `chat-contact-item${isUnclaimed && !isClosed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
-el.innerHTML = `
+        el.className = `chat-contact-item${isUnclaimed && !isClosed ? ' unclaimed' : ''}${supportChat.currentChatId === chat.id ? ' active' : ''}`;
+        el.innerHTML = `
     <div class="chat-contact-avatar ${contactType}">${initials}</div>
     <div class="chat-contact-info">
         <div class="chat-contact-name">${escapeHtml(displayName)}</div>
@@ -2913,7 +3002,7 @@ el.innerHTML = `
     });
 }
 
-// ── Show all chats for a customer (modal) ────────────────
+// ── Show all chats for a customer (modal) ─────────────────
 function showCustomerChats(customerGroup) {
     const modalHtml = `
         <div id="customer-chats-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -2971,13 +3060,13 @@ function showCustomerChats(customerGroup) {
     document.body.insertAdjacentHTML('beforeend', modalHtml);
 }
 
-// ── Open a specific chat by ID ────────────────────────────
+// ── Open a specific chat by ID ─────────────────────────────
 function openSpecificChat(chatId) {
     const chat = supportChat.allChats.find(c => c.id === chatId);
     if (chat) openSupportChat(chat);
 }
 
-// ── Update tab badges ─────────────────────────────────────
+// ── Update tab badges ──────────────────────────────────────
 function updateChatTabBadges() {
     const unclaimed  = supportChat.allChats.filter(c => !c.archived && !c.assignedTo && c.status !== 'closed');
     const mine       = supportChat.allChats.filter(c => !c.archived && c.assignedTo === supportChat.agentUid && c.status !== 'closed');
@@ -2996,7 +3085,7 @@ function updateChatTabBadges() {
     }
 }
 
-// ── Open a chat ───────────────────────────────────────────
+// ── Open a chat ────────────────────────────────────────────
 async function openSupportChat(chat) {
     if (supportChat.messagesUnsub) {
         supportChat.messagesUnsub();
@@ -3069,13 +3158,15 @@ async function openSupportChat(chat) {
     subscribeToTypingIndicator(chat.id);
 }
 
-// ── Subscribe to typing indicator ────────────────────────
+// ── Subscribe to typing indicator ─────────────────────────
 function subscribeToTypingIndicator(chatId) {
     if (supportChat.typingUnsub) supportChat.typingUnsub();
 
-    supportChat.typingUnsub = onSnapshot(doc(db, 'chats', chatId), (snap) => {
+    const collName = getChatCollection(chatId);                         // ← UPDATED
+
+    supportChat.typingUnsub = onSnapshot(doc(db, collName, chatId), (snap) => {
         if (!snap.exists()) return;
-        const data        = snap.data();
+        const data         = snap.data();
         const typingUserId = data.typing?.student || data.typing?.user;
         const typingName   = data.typing?.userName || 'Customer';
         const typingDiv    = document.getElementById('support-typing');
@@ -3100,15 +3191,17 @@ function subscribeToTypingIndicator(chatId) {
     });
 }
 
-// ── Load messages (real-time with deduplication) ─────────
+// ── Load messages (real-time with deduplication) ──────────
 function loadSupportMessages(chatId) {
     if (supportChat.messagesUnsub) supportChat.messagesUnsub();
 
     const container = document.getElementById('support-messages');
     container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading...</div>';
 
+    const collName = getChatCollection(chatId);                         // ← UPDATED
+
     const messagesQuery = query(
-        collection(db, 'chats', chatId, 'messages'),
+        collection(db, collName, chatId, 'messages'),                   // ← UPDATED
         orderBy('timestamp', 'asc')
     );
 
@@ -3153,10 +3246,11 @@ function loadSupportMessages(chatId) {
     });
 }
 
-// ── Mark individual message as read ──────────────────────
+// ── Mark individual message as read ───────────────────────
 async function markMessageAsRead(chatId, messageId) {
+    const collName = getChatCollection(chatId);                         // ← UPDATED
     try {
-        await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), {
+        await updateDoc(doc(db, collName, chatId, 'messages', messageId), {  // ← UPDATED
             read:   true,
             readAt: serverTimestamp(),
             readBy: supportChat.agentUid
@@ -3166,7 +3260,7 @@ async function markMessageAsRead(chatId, messageId) {
     }
 }
 
-// ── Send message ──────────────────────────────────────────
+// ── Send message ───────────────────────────────────────────
 async function sendSupportMessage() {
     const input = document.getElementById('support-chat-input');
     const text  = input?.value.trim();
@@ -3175,13 +3269,15 @@ async function sendSupportMessage() {
     input.value        = '';
     input.style.height = 'auto';
 
-    const chatRef = doc(db, 'chats', supportChat.currentChatId);
+    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
+    const chatRef  = doc(db, collName, supportChat.currentChatId);      // ← UPDATED
+
     await updateDoc(chatRef, { 'typing.admin': false }).catch(() => {});
 
     try {
         const contact = supportChat.currentContact;
 
-        await addDoc(collection(db, 'chats', supportChat.currentChatId, 'messages'), {
+        await addDoc(collection(db, collName, supportChat.currentChatId, 'messages'), {  // ← UPDATED
             text:       text,
             senderId:   'admin',
             senderName: supportChat.agentName,
@@ -3217,13 +3313,14 @@ async function sendSupportMessage() {
     }
 }
 
-// ── Mark chat as read ─────────────────────────────────────
+// ── Mark chat as read ──────────────────────────────────────
 async function markSupportChatRead(chatId) {
+    const collName = getChatCollection(chatId);                         // ← UPDATED
     try {
-        await updateDoc(doc(db, 'chats', chatId), { 'unreadCounts.admin': 0 });
+        await updateDoc(doc(db, collName, chatId), { 'unreadCounts.admin': 0 });  // ← UPDATED
 
         const messagesQuery = query(
-            collection(db, 'chats', chatId, 'messages'),
+            collection(db, collName, chatId, 'messages'),               // ← UPDATED
             where('read', '==', false),
             where('senderId', '!=', 'admin')
         );
@@ -3238,15 +3335,17 @@ async function markSupportChatRead(chatId) {
     }
 }
 
-// ── Claim chat ────────────────────────────────────────────
+// ── Claim chat ─────────────────────────────────────────────
 async function claimChat() {
     if (!supportChat.currentChatId) return;
     const btn     = document.getElementById('claim-btn');
     btn.disabled  = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
 
+    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
+
     try {
-        await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
+        await updateDoc(doc(db, collName, supportChat.currentChatId), {  // ← UPDATED
             assignedTo:   supportChat.agentUid,
             assignedName: supportChat.agentName,
             claimedAt:    serverTimestamp()
@@ -3265,13 +3364,15 @@ async function claimChat() {
     }
 }
 
-// ── Unclaim chat ──────────────────────────────────────────
+// ── Unclaim chat ───────────────────────────────────────────
 async function unclaimChat() {
     if (!supportChat.currentChatId) return;
     if (!confirm('Release this chat back to the queue?')) return;
 
+    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
+
     try {
-        await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
+        await updateDoc(doc(db, collName, supportChat.currentChatId), {  // ← UPDATED
             assignedTo:   null,
             assignedName: null,
             claimedAt:    null
@@ -3287,13 +3388,15 @@ async function unclaimChat() {
     }
 }
 
-// ── Close conversation ────────────────────────────────────
+// ── Close conversation ─────────────────────────────────────
 async function closeCurrentChat() {
     if (!supportChat.currentChatId) return;
     if (!confirm('Close this conversation? The customer will not be able to send new messages.')) return;
 
+    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
+
     try {
-        await updateDoc(doc(db, 'chats', supportChat.currentChatId), {
+        await updateDoc(doc(db, collName, supportChat.currentChatId), {  // ← UPDATED
             status:       'closed',
             closedAt:     serverTimestamp(),
             closedBy:     supportChat.agentUid,
@@ -3314,7 +3417,7 @@ async function closeCurrentChat() {
     }
 }
 
-// ── Close active chat (UI only) ───────────────────────────
+// ── Close active chat (UI only) ────────────────────────────
 function closeActiveChat() {
     if (supportChat.messagesUnsub) { supportChat.messagesUnsub(); supportChat.messagesUnsub = null; }
     if (supportChat.typingUnsub)   { supportChat.typingUnsub();   supportChat.typingUnsub   = null; }
@@ -3328,13 +3431,15 @@ function closeActiveChat() {
     renderChatContactList();
 }
 
-// ── Agent typing indicator ────────────────────────────────
+// ── Agent typing indicator ─────────────────────────────────
 let agentTypingTimeout = null;
 
 function handleSupportTyping() {
     if (!supportChat.currentChatId) return;
 
-    const chatRef = doc(db, 'chats', supportChat.currentChatId);
+    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
+    const chatRef  = doc(db, collName, supportChat.currentChatId);      // ← UPDATED
+
     if (agentTypingTimeout) clearTimeout(agentTypingTimeout);
 
     updateDoc(chatRef, {
@@ -3347,7 +3452,7 @@ function handleSupportTyping() {
     }, 3000);
 }
 
-// ── Enter key handler ─────────────────────────────────────
+// ── Enter key handler ──────────────────────────────────────
 function handleSupportChatKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -3355,7 +3460,7 @@ function handleSupportChatKey(e) {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────
 function formatChatTime(date) {
     if (!date) return '';
     const now     = new Date();
@@ -3375,10 +3480,12 @@ function escapeHtml(text) {
     return d.innerHTML;
 }
 
-// ── Cleanup on page unload ────────────────────────────────
+// ── Cleanup on page unload ─────────────────────────────────
 window.addEventListener('beforeunload', () => {
     if (supportChat.presenceInterval) clearInterval(supportChat.presenceInterval);
     if (agentTypingTimeout)           clearTimeout(agentTypingTimeout);
+    if (supportChat.chatsUnsub)       supportChat.chatsUnsub();
+    if (supportChat.chatsUnsub2)      supportChat.chatsUnsub2();         // ← NEW: clean up second listener
     setAgentPresence(false);
 });
 
