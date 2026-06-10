@@ -427,6 +427,10 @@
             background: var(--danger-light);
         }
 
+        .live-chat-item:hover { box-shadow: var(--shadow); border-color: var(--gold) !important; }
+.live-chat-item.priority-high { border-left: 4px solid var(--danger) !important; background: #fef2f2; }
+.live-chat-item.priority-medium { border-left: 4px solid var(--warning) !important; }
+
         /* ── CARDS ── */
         .card {
             background: white;
@@ -1210,6 +1214,10 @@
         <button class="perf-tab-btn" data-perf-tab="ticket-analytics" onclick="switchPerfTab('ticket-analytics')">
             <i class="fas fa-ticket-alt"></i> Ticket Analytics
         </button>
+        <button class="perf-tab-btn" data-perf-tab="live-chats" onclick="switchPerfTab('live-chats')">
+    <i class="fas fa-comment-dots"></i> Live Chats
+    <span id="live-chats-badge" class="tab-badge" style="margin-left:6px; background:#e8a80c; color:white;">0</span>
+        </button>
         <button class="perf-tab-btn" data-perf-tab="timeline" onclick="switchPerfTab('timeline')">
             <i class="fas fa-history"></i> Activity Timeline
         </button>
@@ -1312,6 +1320,35 @@
                 </div>
             </div>
             <div id="timeline-container" style="max-height: 550px; overflow-y: auto;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== TAB 5: LIVE CHAT OVERSIGHT ===== -->
+<div id="perf-tab-live-chats" class="perf-tab-content" style="display:none;">
+    <div class="stats-grid" id="live-chat-stats" style="margin-bottom:20px;">
+        <div class="stat-card"><div class="stat-value" id="total-active-chats">0</div><div class="stat-label">Active Chats</div></div>
+        <div class="stat-card"><div class="stat-value" id="unclaimed-chats">0</div><div class="stat-label">Unclaimed</div></div>
+        <div class="stat-card"><div class="stat-value" id="claimed-chats">0</div><div class="stat-label">Claimed</div></div>
+        <div class="stat-card"><div class="stat-value" id="avg-wait-time">0m</div><div class="stat-label">Avg Wait Time</div></div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3><i class="fas fa-comments"></i> Active Support Chats</h3>
+            <div style="display:flex; gap:8px;">
+                <select id="live-chat-filter" class="form-select" style="width:auto;" onchange="filterLiveChats()">
+                    <option value="all">All Chats</option>
+                    <option value="unclaimed">Unclaimed Only</option>
+                    <option value="claimed">Claimed Only</option>
+                </select>
+                <button class="btn btn-sm btn-outline" onclick="loadLiveChats()">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+        </div>
+        <div id="live-chats-container" style="max-height: 550px; overflow-y: auto;">
+            <p style="text-align:center; padding:40px;"><i class="fas fa-spinner fa-pulse"></i> Loading chats...</p>
         </div>
     </div>
 </div>
@@ -4880,6 +4917,204 @@ window.navigateTo = function(pageName, el) {
     originalNavPerf(pageName, el);
     if (pageName === 'agent-performance') loadAgentPerformancePage();
 };
+
+// ═══════════════ LIVE CHAT OVERSIGHT ═══════════════
+let liveChatsUnsubscribe = null;
+let currentLiveChatFilter = 'all';
+
+async function loadLiveChats() {
+    const container = document.getElementById('live-chats-container');
+    container.innerHTML = '<p style="text-align:center; padding:40px;"><i class="fas fa-spinner fa-pulse"></i> Loading chats...</p>';
+    
+    try {
+        // Fetch all chats (not closed)
+        const chatsSnap = await getDocs(query(
+            collection(db, 'chats'),
+            where('status', '!=', 'closed'),
+            orderBy('lastMessageAt', 'desc')
+        ));
+        
+        let chats = chatsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        // Apply filter
+        if (currentLiveChatFilter === 'unclaimed') {
+            chats = chats.filter(c => !c.assignedTo);
+        } else if (currentLiveChatFilter === 'claimed') {
+            chats = chats.filter(c => c.assignedTo);
+        }
+        
+        // Get agent names for claimed chats
+        const agentsSnap = await getDocs(collection(db, 'support_agents'));
+        const agents = {};
+        agentsSnap.forEach(doc => {
+            agents[doc.id] = doc.data().name || doc.data().email?.split('@')[0] || 'Agent';
+        });
+        
+        // Calculate stats
+        const totalActive = chatsSnap.docs.length;
+        const unclaimed = chats.filter(c => !c.assignedTo).length;
+        const claimed = chats.filter(c => c.assignedTo).length;
+        
+        // Calculate average wait time (time since last customer message for unclaimed chats)
+        let totalWaitMinutes = 0;
+        let waitCount = 0;
+        for (const chat of chats) {
+            if (!chat.assignedTo && chat.lastMessageAt) {
+                const lastMsgTime = chat.lastMessageAt?.toDate ? chat.lastMessageAt.toDate() : new Date(chat.lastMessageAt);
+                const waitMinutes = Math.floor((Date.now() - lastMsgTime) / 60000);
+                totalWaitMinutes += Math.min(waitMinutes, 120); // Cap at 2 hours
+                waitCount++;
+            }
+        }
+        const avgWaitMinutes = waitCount > 0 ? Math.round(totalWaitMinutes / waitCount) : 0;
+        
+        // Update stats
+        document.getElementById('total-active-chats').textContent = totalActive;
+        document.getElementById('unclaimed-chats').textContent = unclaimed;
+        document.getElementById('claimed-chats').textContent = claimed;
+        document.getElementById('avg-wait-time').textContent = avgWaitMinutes + 'm';
+        document.getElementById('live-chats-badge').textContent = unclaimed;
+        
+        // Render chat list
+        if (chats.length === 0) {
+            container.innerHTML = '<p style="text-align:center; padding:40px;">No active chats</p>';
+            return;
+        }
+        
+        container.innerHTML = chats.map(chat => {
+            const lastMsgTime = chat.lastMessageAt?.toDate ? chat.lastMessageAt.toDate() : (chat.lastMessageAt ? new Date(chat.lastMessageAt) : null);
+            const timeAgoStr = lastMsgTime ? formatChatTimeAgo(lastMsgTime) : 'Unknown';
+            const isUnclaimed = !chat.assignedTo;
+            const agentName = chat.assignedTo ? (agents[chat.assignedTo] || chat.assignedName || 'Unknown') : 'Unclaimed';
+            const lastMsg = chat.lastMessage || 'No messages yet';
+            
+            // Determine priority based on wait time
+            let priorityClass = '';
+            let priorityBadge = '';
+            if (isUnclaimed && lastMsgTime) {
+                const waitMinutes = (Date.now() - lastMsgTime) / 60000;
+                if (waitMinutes > 30) {
+                    priorityClass = 'priority-high';
+                    priorityBadge = '<span class="badge badge-danger" style="margin-left:8px;"><i class="fas fa-exclamation-triangle"></i> Urgent</span>';
+                } else if (waitMinutes > 10) {
+                    priorityClass = 'priority-medium';
+                    priorityBadge = '<span class="badge badge-warning" style="margin-left:8px;">Waiting</span>';
+                }
+            }
+            
+            return `
+                <div class="live-chat-item ${priorityClass}" data-chat-id="${chat.id}" style="border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:12px; transition:all 0.2s;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap;">
+                        <div style="flex:1;">
+                            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <span class="badge ${isUnclaimed ? 'badge-warning' : 'badge-success'}">
+                                    <i class="fas ${isUnclaimed ? 'fa-hand-paper' : 'fa-user-check'}"></i>
+                                    ${isUnclaimed ? 'Unclaimed' : 'Claimed'}
+                                </span>
+                                ${priorityBadge}
+                                <span style="font-size:0.75rem; color:var(--text-muted);">
+                                    <i class="fas fa-user"></i> ${escapeHtml(agentName)}
+                                </span>
+                                <span style="font-size:0.75rem; color:var(--text-muted);">
+                                    <i class="fas fa-clock"></i> Last: ${timeAgoStr}
+                                </span>
+                            </div>
+                            <div style="margin-top:10px;">
+                                <div style="font-weight:500; font-size:0.85rem;">${escapeHtml(chat.userName || chat.userEmail || 'Customer')}</div>
+                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">${escapeHtml(lastMsg.substring(0, 80))}${lastMsg.length > 80 ? '...' : ''}</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:8px; margin-top:10px;">
+                            ${isUnclaimed ? `
+                                <button class="btn btn-primary btn-sm" onclick="claimChatFromOversight('${chat.id}', '${escapeHtml(agentName)}')">
+                                    <i class="fas fa-hand-paper"></i> Claim
+                                </button>
+                            ` : ''}
+                            <button class="btn btn-outline btn-sm" onclick="openChatInNewTab('${chat.id}')">
+                                <i class="fas fa-external-link-alt"></i> View
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+    } catch (err) {
+        console.error('Error loading live chats:', err);
+        container.innerHTML = '<p style="text-align:center; padding:40px; color:var(--danger);">Error loading chats</p>';
+    }
+}
+
+function formatChatTimeAgo(date) {
+    const diffMs = Date.now() - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} min ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours} hr ago`;
+    return `${Math.floor(diffHours / 24)} days ago`;
+}
+
+function filterLiveChats() {
+    currentLiveChatFilter = document.getElementById('live-chat-filter')?.value || 'all';
+    loadLiveChats();
+}
+
+async function claimChatFromOversight(chatId, agentName) {
+    if (!confirm(`Claim this chat for ${agentName || 'yourself'}?`)) return;
+    
+    try {
+        const user = auth.currentUser;
+        // Get agent name from support_agents
+        const agentSnap = await getDoc(doc(db, 'support_agents', user.uid));
+        const agentData = agentSnap.exists() ? agentSnap.data() : null;
+        const displayName = agentData?.name || user.email?.split('@')[0] || 'Agent';
+        
+        await updateDoc(doc(db, 'chats', chatId), {
+            assignedTo: user.uid,
+            assignedName: displayName,
+            claimedAt: new Date().toISOString()
+        });
+        
+        alert(`Chat claimed successfully!`);
+        loadLiveChats(); // Refresh the view
+        
+        // Also refresh the main chat list if needed
+        if (typeof loadAgentPerformancePage === 'function') {
+            // Don't reload everything, just refresh live chats
+        }
+    } catch (err) {
+        console.error('Error claiming chat:', err);
+        alert('Failed to claim chat: ' + err.message);
+    }
+}
+
+function openChatInNewTab(chatId) {
+    // Open the support dashboard directly to this chat
+    // Adjust URL to match your support dashboard
+    window.open(`support-dashboard.html?chat=${chatId}`, '_blank');
+}
+
+// Update switchPerfTab to load live chats when selected
+const originalSwitchPerfTab = window.switchPerfTab;
+window.switchPerfTab = function(tab, refreshData = false) {
+    originalSwitchPerfTab(tab, refreshData);
+    if (tab === 'live-chats') {
+        loadLiveChats();
+        // Set up auto-refresh every 10 seconds
+        if (liveChatsUnsubscribe) clearInterval(liveChatsUnsubscribe);
+        liveChatsUnsubscribe = setInterval(() => {
+            if (document.getElementById('perf-tab-live-chats').style.display !== 'none') {
+                loadLiveChats();
+            }
+        }, 10000);
+    } else {
+        if (liveChatsUnsubscribe) {
+            clearInterval(liveChatsUnsubscribe);
+            liveChatsUnsubscribe = null;
+        }
+    }
+};
     
     
     // ═══════════════ EXPORT ALL GLOBAL FUNCTIONS ═══════════════
@@ -4930,6 +5165,10 @@ window.navigateTo = function(pageName, el) {
     window.switchPerfTab = switchPerfTab;
     window.filterAgentDetails = filterAgentDetails;
     window.loadTimelineView = loadTimelineView;
+    window.loadLiveChats = loadLiveChats;
+    window.filterLiveChats = filterLiveChats;
+    window.claimChatFromOversight = claimChatFromOversight;
+    window.openChatInNewTab = openChatInNewTab;
 
     
 </script>
