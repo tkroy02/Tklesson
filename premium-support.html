@@ -791,7 +791,7 @@
             </div>
         </div>
 
-<!-- TICKETING -->
+       <!-- TICKETING -->
 <div class="page" id="ticketing">
     <h2>Ticketing</h2>
     <p class="subtitle">Log and track support tickets</p>
@@ -807,7 +807,7 @@
                 <div>
                     <label style="font-size: 0.78rem; font-weight: 600; color: var(--navy); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">School Name</label>
                     <input type="text" id="ticket-school-name" class="search-input"
-                        placeholder="Enter school name (auto-populates from User Lookup)"
+                        placeholder="Enter school name"
                         style="padding-left: 14px; width: 100%; display: block;">
                 </div>
                 <div>
@@ -887,8 +887,8 @@
                     oninput="filterTickets()">
             </div>
             <input type="text" id="ticket-school-filter" class="search-input" 
-                placeholder="Filter by school name..." 
-                style="min-width: 180px; padding-left: 14px;"
+                placeholder="Filter by school..." 
+                style="min-width: 160px; padding-left: 14px;"
                 oninput="filterTickets()">
             <select id="ticket-filter-category" class="filter-select" onchange="filterTickets()">
                 <option value="all">All Categories</option>
@@ -907,7 +907,7 @@
         </div>
     </div>
 </div>
-        
+
         <!-- USER MANAGEMENT -->
         <div class="page" id="user-management">
             <h2>User Management</h2>
@@ -2186,272 +2186,192 @@ async function copyVerbiage(key) {
 // ════════════════════════════════════════════════════════════════════
 let allTickets = [];
 
-async function loadTicketsPage() {
-    document.getElementById('ticket-table-body').innerHTML = `
-        <tr><td colspan="8" style="text-align:center; padding:50px;">
-            <i class="fas fa-spinner fa-pulse"></i> Loading tickets...
-        </td></tr>`;
-    
-    await loadAllTickets();
-    renderTicketStats();
-    renderTicketTable();
+function openNewTicket() {
+    document.getElementById('new-ticket-form').style.display = 'block';
+    document.getElementById('ticket-category').value     = '';
+    document.getElementById('ticket-client-email').value = '';
+    document.getElementById('ticket-subject').value      = '';
+    document.getElementById('ticket-action').value       = '';
 }
 
-async function loadAllTickets() {
+function closeNewTicket() {
+    document.getElementById('new-ticket-form').style.display = 'none';
+}
+
+function generateTicketId() {
+    const date   = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+    return `TKT-${date}-${random}`;
+}
+
+async function submitTicket() {
+    const schoolName   = document.getElementById('ticket-school-name').value.trim();
+    const category    = document.getElementById('ticket-category').value;
+    const clientEmail = document.getElementById('ticket-client-email').value.trim();
+    const subject     = document.getElementById('ticket-subject').value.trim();
+    const agentAction = document.getElementById('ticket-action').value.trim();
+
+    if (!schoolName)   { alert('Please enter the school name.'); return; }
+    if (!category)    { alert('Please select a category.'); return; }
+    if (!clientEmail) { alert('Please enter client email.'); return; }
+    if (!subject)     { alert('Please enter a subject.'); return; }
+    if (!agentAction) { alert('Please describe the action taken.'); return; }
+
+    const user     = auth.currentUser;
+    const ticketId = generateTicketId();
+
     try {
-        const ticketsSnap = await getDocs(query(
-            collection(db, 'support_tickets'),
-            orderBy('createdAt', 'desc'),
-            limit(500)
-        ));
-        
-        allTickets = [];
-        ticketsSnap.forEach(doc => {
-            allTickets.push({ id: doc.id, ...doc.data() });
+        await setDoc(doc(collection(db, 'support_tickets')), {
+            ticketId,
+            schoolName,
+            category,
+            clientEmail,
+            subject,
+            agentAction,
+            status:     'open',
+            agentId:    user.uid,
+            agentEmail: user.email,
+            createdAt:  new Date().toISOString(),
+            resolvedAt: null
         });
-        
+
+        await logAuditAction('ticket_created', subject, `Ticket ${ticketId} created — ${category} for ${schoolName} (${clientEmail})`);
+        closeNewTicket();
+        loadTickets();
     } catch (err) {
-        console.error('Error loading tickets:', err);
-        allTickets = [];
+        console.error('Ticket submission error:', err);
+        alert('Error creating ticket. Please try again.');
     }
 }
 
-function renderTicketStats() {
-    const total = allTickets.length;
-    const unresolved = allTickets.filter(t => t.status !== 'resolved').length;
-    const resolved = allTickets.filter(t => t.status === 'resolved').length;
-    
-    document.getElementById('ticket-stats').innerHTML = `
-        <div class="stat-card"><div class="stat-value">${total}</div><div class="stat-label">Total Tickets</div></div>
-        <div class="stat-card"><div class="stat-value" style="color:var(--warning);">${unresolved}</div><div class="stat-label">Unresolved</div></div>
-        <div class="stat-card"><div class="stat-value" style="color:var(--success);">${resolved}</div><div class="stat-label">Resolved</div></div>
-        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Avg Response</div></div>
-    `;
+async function resolveTicket(ticketDocId) {
+    if (!confirm('Mark this ticket as resolved?')) return;
+    try {
+        const snap   = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const ticket = snap.data();
+        await setDoc(doc(db, 'support_tickets', ticketDocId), {
+            status: 'resolved', resolvedAt: new Date().toISOString()
+        }, { merge: true });
+        await logAuditAction('ticket_resolved', ticket.subject, `Ticket ${ticket.ticketId} resolved`);
+        loadTickets();
+    } catch (err) {
+        console.error('Resolve error:', err);
+        alert('Error resolving ticket.');
+    }
+}
+
+async function reopenTicket(ticketDocId) {
+    if (!confirm('Reopen this ticket?')) return;
+    try {
+        const snap   = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const ticket = snap.data();
+        await setDoc(doc(db, 'support_tickets', ticketDocId), {
+            status: 'open', resolvedAt: null
+        }, { merge: true });
+        await logAuditAction('ticket_reopened', ticket.subject, `Ticket ${ticket.ticketId} reopened`);
+        loadTickets();
+    } catch (err) {
+        console.error('Reopen error:', err);
+        alert('Error reopening ticket.');
+    }
+}
+
+async function loadTickets() {
+    const unresolvedContainer = document.getElementById('unresolved-tickets');
+    const resolvedContainer   = document.getElementById('resolved-tickets');
+
+    unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
+    resolvedContainer.innerHTML   = '<div class="results-placeholder"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div>';
+
+    try {
+        const snap = await getDocs(
+            query(collection(db, 'support_tickets'), orderBy('createdAt', 'desc'), limit(500))
+        );
+        allTickets = [];
+        snap.forEach(d => allTickets.push({ id: d.id, ...d.data() }));
+        if (allTickets.length === 500) {
+            console.warn('Ticket list capped at 500 — consider archiving old resolved tickets.');
+        }
+        filterTickets();
+    } catch (err) {
+        console.error('Load tickets error:', err);
+        unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
+        resolvedContainer.innerHTML   = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
+    }
 }
 
 function filterTickets() {
-    const schoolNameFilter = (document.getElementById('ticket-school-name-filter')?.value || '').toLowerCase();
-    const categoryFilter = document.getElementById('ticket-category-filter')?.value || 'all';
-    const statusFilter = document.getElementById('ticket-status-filter')?.value || 'all';
-    const searchTerm = (document.getElementById('ticket-search-input')?.value || '').toLowerCase();
-    
+    const q       = (document.getElementById('ticket-search')?.value || '').toLowerCase().trim();
+    const schoolF = (document.getElementById('ticket-school-filter')?.value || '').toLowerCase().trim();
+    const catF    = document.getElementById('ticket-filter-category')?.value || 'all';
+    const statusF = document.getElementById('ticket-filter-status')?.value || 'all';
+
     let filtered = [...allTickets];
-    
-    // Filter by school name (partial match)
-    if (schoolNameFilter) {
-        filtered = filtered.filter(t => 
-            (t.schoolName || '').toLowerCase().includes(schoolNameFilter)
+    if (q) {
+        filtered = filtered.filter(t =>
+            (t.subject     || '').toLowerCase().includes(q) ||
+            (t.ticketId    || '').toLowerCase().includes(q) ||
+            (t.clientEmail || '').toLowerCase().includes(q) ||
+            (t.agentEmail  || '').toLowerCase().includes(q) ||
+            (t.agentAction || '').toLowerCase().includes(q)
         );
     }
-    
-    if (categoryFilter !== 'all') {
-        filtered = filtered.filter(t => t.category === categoryFilter);
+    if (schoolF) {
+        filtered = filtered.filter(t => (t.schoolName || '').toLowerCase().includes(schoolF));
     }
-    if (statusFilter !== 'all') {
-        filtered = filtered.filter(t => t.status === statusFilter);
-    }
-    if (searchTerm) {
-        filtered = filtered.filter(t => 
-            (t.subject || '').toLowerCase().includes(searchTerm) ||
-            (t.ticketId || '').toLowerCase().includes(searchTerm) ||
-            (t.clientEmail || '').toLowerCase().includes(searchTerm) ||
-            (t.schoolName || '').toLowerCase().includes(searchTerm) ||
-            (t.agentEmail || '').toLowerCase().includes(searchTerm)
-        );
-    }
-    
-    renderTicketTable(filtered);
-}
+    if (catF !== 'all')         filtered = filtered.filter(t => t.category === catF);
+    if (statusF === 'open')     filtered = filtered.filter(t => t.status !== 'resolved');
+    if (statusF === 'resolved') filtered = filtered.filter(t => t.status === 'resolved');
 
-function renderTicketTable(tickets = null) {
-    const displayTickets = tickets || allTickets;
-    const tbody = document.getElementById('ticket-table-body');
-    
-    if (displayTickets.length === 0) {
-        tbody.innerHTML = `
-            <tr><td colspan="9" style="text-align:center; padding:50px; color:var(--text-muted);">
-                <i class="fas fa-inbox" style="font-size:2rem; margin-bottom:10px; opacity:0.3; display:block;"></i>
-                No tickets found
-            </td></tr>`;
-        return;
-    }
-    
-    tbody.innerHTML = displayTickets.map(ticket => {
-        const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString() : 'Unknown';
-        const isResolved = ticket.status === 'resolved';
-        const categoryColors = {
-            account: 'badge-info',
-            billing: 'badge-warning',
-            technical: 'badge-neutral',
-            '2fa': 'badge-danger',
-            rewards: 'badge-success',
-            other: 'badge-neutral'
-        };
-        const categoryColor = categoryColors[ticket.category] || 'badge-neutral';
-        const schoolName = ticket.schoolName || '—';
-        
-        return `
-            <tr style="cursor: pointer;" onclick="openTicketDetail('${ticket.id}')">
-                <td><code style="font-size:0.75rem;">${ticket.ticketId || ticket.id.substring(0, 8)}</code></td>
-                <td><strong>${escapeHtml(schoolName)}</strong></td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(ticket.subject || 'No subject')}</td>
-                <td><span class="badge ${categoryColor}">${ticket.category || 'other'}</span></td>
-                <td style="font-size:0.8rem;">${escapeHtml(ticket.agentEmail?.split('@')[0] || 'Unknown')}</td>
-                <td style="font-size:0.8rem;">${created}</td>
-                <td>
-                    <span class="badge ${isResolved ? 'badge-success' : 'badge-warning'}">
-                        ${isResolved ? 'Resolved' : 'Open'}
-                    </span>
-                </td>
-                <td>
-                    <button class="btn btn-xs ${isResolved ? 'btn-outline' : 'btn-primary'}" 
-                            onclick="event.stopPropagation(); updateTicketStatus('${ticket.id}', '${isResolved ? 'reopen' : 'resolve'}')">
-                        <i class="fas ${isResolved ? 'fa-redo' : 'fa-check'}"></i>
-                        ${isResolved ? 'Reopen' : 'Resolve'}
-                    </button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-}
+    const unresolved = filtered.filter(t => t.status !== 'resolved');
+    const resolved   = filtered.filter(t => t.status === 'resolved');
 
-async function openTicketDetail(ticketId) {
-    const ticket = allTickets.find(t => t.id === ticketId);
-    if (!ticket) return;
+    document.getElementById('unresolved-tickets').innerHTML = unresolved.length === 0
+        ? '<div class="results-placeholder"><i class="fas fa-check-circle"></i><p>No matching unresolved tickets</p></div>'
+        : unresolved.map(t => renderTicketCard(t, 'unresolved')).join('');
+
+    document.getElementById('resolved-tickets').innerHTML = resolved.length === 0
+        ? '<div class="results-placeholder"><i class="fas fa-check-double"></i><p>No matching resolved tickets</p></div>'
+        : resolved.map(t => renderTicketCard(t, 'resolved')).join('');
+}
     
-    const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleString() : 'Unknown';
-    const resolved = ticket.resolvedAt ? new Date(ticket.resolvedAt).toLocaleString() : 'Not resolved';
-    const categoryColors = {
-        account: 'badge-info',
-        billing: 'badge-warning',
-        technical: 'badge-neutral',
-        '2fa': 'badge-danger',
-        rewards: 'badge-success',
-        other: 'badge-neutral'
+function renderTicketCard(ticket, type) {
+    const time = new Date(ticket.createdAt).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const resolvedTime = ticket.resolvedAt
+        ? new Date(ticket.resolvedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '';
+
+    const catBadgeMap = {
+        account: 'badge-account', billing: 'badge-billing', technical: 'badge-technical',
+        '2fa': 'badge-2fa', suggestion: 'badge-suggestion', education: 'badge-education', other: 'badge-other'
     };
-    
-    const modal = document.getElementById('ticket-detail-modal');
-    const content = document.getElementById('ticket-detail-content');
-    
-    content.innerHTML = `
-        <div class="modal-header">
-            <h3><i class="fas fa-ticket-alt"></i> Ticket ${ticket.ticketId || ticket.id.substring(0, 8)}</h3>
-            <button class="modal-close" onclick="closeTicketDetail()">&times;</button>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
-                <span class="badge ${categoryColors[ticket.category] || 'badge-neutral'}">${ticket.category || 'Other'}</span>
-                <span class="badge ${ticket.status === 'resolved' ? 'badge-success' : 'badge-warning'}">
-                    ${ticket.status === 'resolved' ? 'Resolved' : 'Open'}
-                </span>
-            </div>
-            
-            <h4 style="color: var(--primary); margin-bottom: 8px;">${escapeHtml(ticket.subject || 'No subject')}</h4>
-            
-            <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin: 16px 0;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                    <div>
-                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">School Name</div>
-                        <div style="font-weight: 600;">${escapeHtml(ticket.schoolName || '—')}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Client Email</div>
-                        <div>${escapeHtml(ticket.clientEmail || 'N/A')}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Agent</div>
-                        <div>${escapeHtml(ticket.agentEmail || 'Unknown')}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Created</div>
-                        <div>${created}</div>
-                    </div>
-                    ${ticket.status === 'resolved' ? `
-                    <div>
-                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Resolved</div>
-                        <div>${resolved}</div>
-                    </div>
-                    ` : ''}
+    const catBadge = catBadgeMap[ticket.category] || 'badge-other';
+
+    return `
+        <div class="ticket-card">
+            <div class="ticket-dot ${type}"></div>
+            <div class="ticket-body">
+                <div class="ticket-subject">${ticket.subject}</div>
+                <div class="ticket-meta">
+                    <span class="ticket-id">${ticket.ticketId}</span>
+                    <span class="ticket-badge ${catBadge}">${ticket.category}</span>
+                    <span><i class="fas fa-envelope"></i> ${ticket.clientEmail || 'N/A'}</span>
+                    <span><i class="fas fa-user"></i> ${ticket.agentEmail}</span>
+                    <span><i class="fas fa-clock"></i> ${time}</span>
+                    ${type === 'resolved' ? `<span style="color: var(--danger);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
                 </div>
+                <div class="ticket-action">${ticket.agentAction}</div>
             </div>
-            
-            <div style="margin: 16px 0;">
-                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;">Agent Action / Response</div>
-                <div style="background: #f1f5f9; border-radius: 12px; padding: 14px; border-left: 3px solid var(--gold);">
-                    ${escapeHtml(ticket.agentAction || 'No action recorded')}
-                </div>
+            <div class="ticket-actions">
+                ${type === 'unresolved'
+                    ? `<button class="btn-resolve" onclick="resolveTicket('${ticket.id}')"><i class="fas fa-check"></i> Resolve</button>`
+                    : `<button class="btn-reopen" onclick="reopenTicket('${ticket.id}')"><i class="fas fa-redo"></i> Reopen</button>`
+                }
             </div>
-        </div>
-        
-        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
-            <button class="btn btn-outline btn-sm" onclick="closeTicketDetail()">Close</button>
-            <button class="btn ${ticket.status === 'resolved' ? 'btn-outline' : 'btn-primary'} btn-sm" 
-                    onclick="updateTicketStatus('${ticket.id}', '${ticket.status === 'resolved' ? 'reopen' : 'resolve'}'); closeTicketDetail();">
-                <i class="fas ${ticket.status === 'resolved' ? 'fa-redo' : 'fa-check'}"></i>
-                ${ticket.status === 'resolved' ? 'Reopen Ticket' : 'Resolve Ticket'}
-            </button>
-        </div>
-    `;
-    
-    modal.style.display = 'flex';
+        </div>`;
 }
-
-async function updateTicketStatus(ticketId, action) {
-    const ticket = allTickets.find(t => t.id === ticketId);
-    if (!ticket) return;
-    
-    const confirmMsg = action === 'resolve' 
-        ? 'Mark this ticket as resolved?' 
-        : 'Reopen this ticket?';
-    
-    if (!confirm(confirmMsg)) return;
-    
-    try {
-        const updateData = action === 'resolve' 
-            ? { status: 'resolved', resolvedAt: new Date().toISOString() }
-            : { status: 'open', resolvedAt: null };
-        
-        await updateDoc(doc(db, 'support_tickets', ticketId), updateData);
-        
-        if (action === 'resolve') {
-            ticket.status = 'resolved';
-            ticket.resolvedAt = new Date().toISOString();
-        } else {
-            ticket.status = 'open';
-            ticket.resolvedAt = null;
-        }
-        
-        renderTicketStats();
-        filterTickets();
-        alert(`Ticket ${action === 'resolve' ? 'resolved' : 'reopened'} successfully!`);
-        
-    } catch (err) {
-        console.error('Error updating ticket:', err);
-        alert('Error updating ticket: ' + err.message);
-    }
-}
-
-function closeTicketDetail() {
-    document.getElementById('ticket-detail-modal').style.display = 'none';
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.appendChild(document.createTextNode(text));
-    return div.innerHTML;
-}
-
-// Override navigateTo
-const originalNavigateTo = window.navigateTo;
-window.navigateTo = function(pageName, el) {
-    originalNavigateTo(pageName, el);
-    if (pageName === 'tickets') {
-        loadTicketsPage();
-    }
-};
-
 // ════════════════════════════════════════════════════════════════════
 // END TICKETING
 // ════════════════════════════════════════════════════════════════════
@@ -4233,10 +4153,6 @@ window.onSchoolCreditSelect = onSchoolCreditSelect;
 window.onSchoolCreditActionTypeChange = onSchoolCreditActionTypeChange;
 window.onSchoolCreditDurationChange = onSchoolCreditDurationChange;
 window.submitSchoolCreditAction = submitSchoolCreditAction;
-window.filterTickets = filterTickets;
-window.openTicketDetail = openTicketDetail;
-window.closeTicketDetail = closeTicketDetail;
-window.updateTicketStatus = updateTicketStatus;
     
 </script>
 
