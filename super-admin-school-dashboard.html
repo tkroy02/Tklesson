@@ -4502,7 +4502,7 @@ async function removeSchoolAdmin(adminId, adminName, adminEmail) {
 }
     
 
-// ═══════════════ AGENT PERFORMANCE (ALIGNED WITH SUPPORT DASHBOARD) ═══════════════
+// ═══════════════ AGENT PERFORMANCE METRICS ═══════════════
 let agentMetricsCache = null;
 let currentPerfTab = 'overview';
 let perfCharts = {};
@@ -4510,12 +4510,10 @@ let perfCharts = {};
 async function loadAgentPerformancePage() {
     const period = document.getElementById('agent-performance-period')?.value || '30';
     
-    // Calculate date filter
-    let startDate = null;
-    if (period !== 'all') {
-        startDate = new Date();
-        startDate.setDate(startDate.getDate() - parseInt(period));
-    }
+    // Show loading states
+    document.getElementById('agent-leaderboard-body').innerHTML = `<tr><td colspan="8" style="text-align:center; padding:50px;"><i class="fas fa-spinner fa-pulse"></i> Loading...</td></tr>`;
+    document.getElementById('agent-activity-feed').innerHTML = '<p style="text-align:center; padding:40px;"><i class="fas fa-spinner fa-pulse"></i> Loading activity...</p>';
+    document.getElementById('agent-details-container').innerHTML = '<p style="text-align:center; padding:40px;"><i class="fas fa-spinner fa-pulse"></i> Loading agent details...</p>';
     
     try {
         // Fetch support agents
@@ -4525,53 +4523,55 @@ async function loadAgentPerformancePage() {
             agents.push({ id: doc.id, ...doc.data() });
         });
         
-        // Fetch tickets from support_tickets
-        let ticketsQuery = collection(db, 'support_tickets');
-        const ticketsSnap = await getDocs(ticketsQuery);
+        // Fetch all tickets
+        const ticketsSnap = await getDocs(collection(db, 'support_tickets'));
         let tickets = ticketsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         
-        // Filter by date if needed
-        if (startDate) {
-            tickets = tickets.filter(t => t.createdAt && new Date(t.createdAt) >= startDate);
+        // Filter by period if needed
+        if (period !== 'all') {
+            const daysAgo = new Date();
+            daysAgo.setDate(daysAgo.getDate() - parseInt(period));
+            tickets = tickets.filter(t => t.createdAt && new Date(t.createdAt) >= daysAgo);
         }
         
         // Fetch audit logs
-        const auditSnap = await getDocs(query(collection(db, 'support_audit_log'), orderBy('timestamp', 'desc'), limit(500)));
+        const auditSnap = await getDocs(query(collection(db, 'support_audit_log'), orderBy('timestamp', 'desc'), limit(200)));
         const auditLogs = auditSnap.docs.map(d => d.data());
         
         // Fetch chats
         const chatsSnap = await getDocs(collection(db, 'chats'));
-        let chats = chatsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const chats = chatsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         
-        // Calculate metrics per agent
+        // Calculate metrics for each agent
         const agentMetrics = agents.map(agent => {
             const agentEmail = agent.email;
             const agentId = agent.id;
             
-            // Tickets where agentEmail matches
+            // Tickets
             const agentTickets = tickets.filter(t => t.agentEmail === agentEmail);
             const resolvedTickets = agentTickets.filter(t => t.status === 'resolved');
             const openTickets = agentTickets.filter(t => t.status !== 'resolved');
             
-            // Average resolution time in days
-            let avgResolutionDays = 0;
+            // Average resolution time in HOURS (this worked before)
+            let avgResolutionHours = 0;
             const resolvedWithDates = resolvedTickets.filter(t => t.createdAt && t.resolvedAt);
             if (resolvedWithDates.length > 0) {
-                const totalDays = resolvedWithDates.reduce((sum, t) => {
-                    const created = new Date(t.createdAt);
-                    const resolved = new Date(t.resolvedAt);
-                    return sum + ((resolved - created) / (1000 * 60 * 60 * 24));
-                }, 0);
-                avgResolutionDays = totalDays / resolvedWithDates.length;
+                let totalHours = 0;
+                for (const ticket of resolvedWithDates) {
+                    const created = new Date(ticket.createdAt);
+                    const resolved = new Date(ticket.resolvedAt);
+                    totalHours += (resolved - created) / (1000 * 60 * 60);
+                }
+                avgResolutionHours = totalHours / resolvedWithDates.length;
             }
             
             // Resolution rate
             const resolutionRate = agentTickets.length > 0 ? (resolvedTickets.length / agentTickets.length) * 100 : 0;
             
-            // Chats handled (assignedTo matches agent id)
+            // Chats handled
             const agentChats = chats.filter(c => c.assignedTo === agentId);
             
-            // Last active from audit log
+            // Last active
             const agentActions = auditLogs.filter(log => log.agentEmail === agentEmail);
             const lastActive = agentActions.length > 0 ? agentActions[0].timestamp : null;
             
@@ -4583,13 +4583,14 @@ async function loadAgentPerformancePage() {
                 totalTickets: agentTickets.length,
                 resolvedTickets: resolvedTickets.length,
                 openTickets: openTickets.length,
-                avgResolutionDays: Math.round(avgResolutionDays * 10) / 10,
+                avgResolutionHours: Math.round(avgResolutionHours * 10) / 10,
                 resolutionRate: Math.round(resolutionRate),
                 chatsHandled: agentChats.length,
                 lastActive: lastActive
             };
         });
         
+        // Sort by resolved tickets
         agentMetrics.sort((a, b) => b.resolvedTickets - a.resolvedTickets);
         agentMetricsCache = agentMetrics;
         
@@ -4597,16 +4598,21 @@ async function loadAgentPerformancePage() {
         const totalAgents = agents.length;
         const totalResolved = agentMetrics.reduce((sum, a) => sum + a.resolvedTickets, 0);
         const totalChats = agentMetrics.reduce((sum, a) => sum + a.chatsHandled, 0);
-        const avgResAll = agentMetrics.filter(a => a.avgResolutionDays > 0).reduce((sum, a, idx, arr) => sum + (a.avgResolutionDays / arr.length), 0);
+        
+        let avgResAll = 0;
+        const agentsWithResolutions = agentMetrics.filter(a => a.avgResolutionHours > 0);
+        if (agentsWithResolutions.length > 0) {
+            avgResAll = agentsWithResolutions.reduce((sum, a) => sum + a.avgResolutionHours, 0) / agentsWithResolutions.length;
+        }
         
         document.getElementById('agent-stats').innerHTML = `
             <div class="stat-card"><div class="stat-value">${totalAgents}</div><div class="stat-label">Active Agents</div></div>
             <div class="stat-card"><div class="stat-value">${totalResolved}</div><div class="stat-label">Tickets Resolved</div></div>
-            <div class="stat-card"><div class="stat-value">${avgResAll.toFixed(1)}d</div><div class="stat-label">Avg Resolution</div></div>
+            <div class="stat-card"><div class="stat-value">${avgResAll.toFixed(1)}h</div><div class="stat-label">Avg Resolution</div></div>
             <div class="stat-card"><div class="stat-value">${totalChats}</div><div class="stat-label">Chats Handled</div></div>
         `;
         
-        // Render charts
+        // Render all charts
         renderTicketsByAgentChart(agentMetrics);
         renderResponseTimesChart(agentMetrics);
         renderResolutionRatesChart(agentMetrics);
@@ -4625,7 +4631,7 @@ async function loadAgentPerformancePage() {
         
     } catch (err) {
         console.error('Error loading agent performance:', err);
-        document.getElementById('agent-leaderboard-body').innerHTML = '<tr><td colspan="8" style="text-align:center; padding:50px; color:var(--danger);">Error loading data</td></tr>';
+        document.getElementById('agent-leaderboard-body').innerHTML = `<td><td colspan="8" style="text-align:center; padding:50px; color:var(--danger);">Error loading data</td></tr>`;
     }
 }
 
@@ -4634,13 +4640,14 @@ function renderTicketsByAgentChart(metrics) {
     if (!ctx) return;
     if (perfCharts.ticketsByAgent) perfCharts.ticketsByAgent.destroy();
     
+    const topAgents = metrics.slice(0, 8);
     perfCharts.ticketsByAgent = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: metrics.slice(0, 8).map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
+            labels: topAgents.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
             datasets: [
-                { label: 'Resolved', data: metrics.slice(0, 8).map(a => a.resolvedTickets), backgroundColor: '#0d8a4e', borderRadius: 6 },
-                { label: 'Open', data: metrics.slice(0, 8).map(a => a.openTickets), backgroundColor: '#e8a80c', borderRadius: 6 }
+                { label: 'Resolved', data: topAgents.map(a => a.resolvedTickets), backgroundColor: '#0d8a4e', borderRadius: 6 },
+                { label: 'Open', data: topAgents.map(a => a.openTickets), backgroundColor: '#e8a80c', borderRadius: 6 }
             ]
         },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
@@ -4652,14 +4659,14 @@ function renderResponseTimesChart(metrics) {
     if (!ctx) return;
     if (perfCharts.responseTimes) perfCharts.responseTimes.destroy();
     
-    const activeAgents = metrics.filter(a => a.resolvedTickets > 0).slice(0, 8);
+    const agentsWithData = metrics.filter(a => a.resolvedTickets > 0).slice(0, 8);
     perfCharts.responseTimes = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: activeAgents.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
-            datasets: [{ label: 'Avg Resolution (days)', data: activeAgents.map(a => a.avgResolutionDays), backgroundColor: '#3b82f6', borderRadius: 6 }]
+            labels: agentsWithData.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
+            datasets: [{ label: 'Avg Resolution (hours)', data: agentsWithData.map(a => a.avgResolutionHours), backgroundColor: '#3b82f6', borderRadius: 6 }]
         },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        options: { responsive: true, maintainAspectRatio: false }
     });
 }
 
@@ -4668,12 +4675,12 @@ function renderResolutionRatesChart(metrics) {
     if (!ctx) return;
     if (perfCharts.resolutionRates) perfCharts.resolutionRates.destroy();
     
-    const activeAgents = metrics.filter(a => a.totalTickets > 0).slice(0, 8);
+    const agentsWithTickets = metrics.filter(a => a.totalTickets > 0).slice(0, 8);
     perfCharts.resolutionRates = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: activeAgents.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
-            datasets: [{ label: 'Resolution Rate (%)', data: activeAgents.map(a => a.resolutionRate), backgroundColor: '#0d8a4e', borderRadius: 6 }]
+            labels: agentsWithTickets.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
+            datasets: [{ label: 'Resolution Rate (%)', data: agentsWithTickets.map(a => a.resolutionRate), backgroundColor: '#0d8a4e', borderRadius: 6 }]
         },
         options: { responsive: true, maintainAspectRatio: false, scales: { y: { max: 100 } } }
     });
@@ -4684,12 +4691,12 @@ function renderChatsByAgentChart(metrics) {
     if (!ctx) return;
     if (perfCharts.chatsByAgent) perfCharts.chatsByAgent.destroy();
     
-    const activeAgents = metrics.filter(a => a.chatsHandled > 0).slice(0, 8);
+    const agentsWithChats = metrics.filter(a => a.chatsHandled > 0).slice(0, 8);
     perfCharts.chatsByAgent = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: activeAgents.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
-            datasets: [{ label: 'Chats Handled', data: activeAgents.map(a => a.chatsHandled), backgroundColor: '#8b5cf6', borderRadius: 6 }]
+            labels: agentsWithChats.map(a => a.name.length > 12 ? a.name.substring(0, 10) + '...' : a.name),
+            datasets: [{ label: 'Chats Handled', data: agentsWithChats.map(a => a.chatsHandled), backgroundColor: '#8b5cf6', borderRadius: 6 }]
         },
         options: { responsive: true, maintainAspectRatio: false }
     });
@@ -4697,27 +4704,36 @@ function renderChatsByAgentChart(metrics) {
 
 function renderAgentLeaderboard(metrics) {
     const tbody = document.getElementById('agent-leaderboard-body');
-    tbody.innerHTML = metrics.map((agent, i) => `
-        <tr>
-            <td style="text-align:center;"><strong>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}</strong></td>
-            <td><strong>${escapeHtml(agent.name)}</strong><br><span style="font-size:0.7rem; color:var(--text-muted);">${escapeHtml(agent.email || '—')}</span></td>
-            <td><span class="badge badge-info">${agent.role}</span></td>
-            <td>${agent.totalTickets}</td>
-            <td style="color:var(--success); font-weight:600;">${agent.resolvedTickets}</td>
-            <td><span class="badge ${agent.resolutionRate >= 70 ? 'badge-success' : agent.resolutionRate >= 40 ? 'badge-warning' : 'badge-danger'}">${agent.resolutionRate}%</span></td>
-            <td>${agent.chatsHandled}</td>
-            <td style="font-size:0.8rem;">${agent.lastActive ? new Date(agent.lastActive).toLocaleDateString() : 'Never'}</td>
-        </tr>
-    `).join('');
+    tbody.innerHTML = metrics.map((agent, i) => {
+        const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+        const rateClass = agent.resolutionRate >= 70 ? 'badge-success' : agent.resolutionRate >= 40 ? 'badge-warning' : 'badge-danger';
+        return `
+            <tr>
+                <td style="text-align:center;">${rank}</td>
+                <td><strong>${escapeHtml(agent.name)}</strong><br><span style="font-size:0.7rem; color:var(--text-muted);">${escapeHtml(agent.email || '—')}</span></td>
+                <td><span class="badge badge-info">${agent.role}</span></td>
+                <td>${agent.totalTickets}</td>
+                <td style="color:var(--success); font-weight:600;">${agent.resolvedTickets}</td>
+                <td><span class="badge ${rateClass}">${agent.resolutionRate}%</span></td>
+                <td>${agent.chatsHandled}</td>
+                <td style="font-size:0.8rem;">${agent.lastActive ? new Date(agent.lastActive).toLocaleDateString() : 'Never'}</td>
+            </tr>
+        `;
+    }).join('');
 }
 
 function renderAgentActivityFeed(auditLogs) {
     const container = document.getElementById('agent-activity-feed');
-    const actionIcons = { login: 'fa-sign-in-alt', ticket_created: 'fa-ticket-alt', ticket_resolved: 'fa-check-circle', ticket_reopened: 'fa-redo', chat_message_sent: 'fa-comment', chat_claimed: 'fa-hand-paper', access_granted: 'fa-gem' };
+    const icons = { login: 'fa-sign-in-alt', ticket_created: 'fa-ticket-alt', ticket_resolved: 'fa-check-circle', ticket_reopened: 'fa-redo', chat_message_sent: 'fa-comment', chat_claimed: 'fa-hand-paper', access_granted: 'fa-gem' };
+    
+    if (auditLogs.length === 0) {
+        container.innerHTML = '<p style="text-align:center; padding:40px;">No activity recorded</p>';
+        return;
+    }
     
     container.innerHTML = auditLogs.slice(0, 50).map(log => `
         <div class="timeline-item">
-            <div class="timeline-icon" style="background: #eef4ff; color: #2563eb;"><i class="fas ${actionIcons[log.action] || 'fa-history'}"></i></div>
+            <div class="timeline-icon" style="background:#eef4ff; color:#2563eb;"><i class="fas ${icons[log.action] || 'fa-history'}"></i></div>
             <div style="flex:1;">
                 <div><strong>${escapeHtml(log.agentEmail?.split('@')[0] || 'Unknown')}</strong> <span class="badge badge-neutral">${log.action}</span></div>
                 <div style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(log.details || log.target || '—')}</div>
@@ -4725,7 +4741,6 @@ function renderAgentActivityFeed(auditLogs) {
             </div>
         </div>
     `).join('');
-    if (auditLogs.length === 0) container.innerHTML = '<p style="text-align:center; padding:40px;">No activity recorded</p>';
 }
 
 function renderAgentDetails(metrics) {
@@ -4733,12 +4748,15 @@ function renderAgentDetails(metrics) {
     container.innerHTML = metrics.map(agent => `
         <div class="agent-detail-card" data-agent-name="${agent.name.toLowerCase()}">
             <div style="display:flex; justify-content:space-between; flex-wrap:wrap;">
-                <div><h4 style="margin:0;"><i class="fas fa-user-circle"></i> ${escapeHtml(agent.name)}</h4><div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(agent.email || '—')} · ${agent.role}</div></div>
+                <div>
+                    <h4 style="margin:0;"><i class="fas fa-user-circle"></i> ${escapeHtml(agent.name)}</h4>
+                    <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(agent.email || '—')} · ${agent.role}</div>
+                </div>
                 <div><span class="badge ${agent.resolutionRate >= 70 ? 'badge-success' : 'badge-warning'}">${agent.resolutionRate}% Resolution</span></div>
             </div>
             <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:16px;">
                 <div><div style="font-size:0.7rem; color:var(--text-muted);">Tickets</div><div style="font-size:1.3rem; font-weight:700;">${agent.resolvedTickets}<span style="font-size:0.85rem;">/${agent.totalTickets}</span></div></div>
-                <div><div style="font-size:0.7rem; color:var(--text-muted);">Avg Resolution</div><div style="font-size:1rem; font-weight:600;">${agent.avgResolutionDays > 0 ? agent.avgResolutionDays + 'd' : '—'}</div></div>
+                <div><div style="font-size:0.7rem; color:var(--text-muted);">Avg Resolution</div><div style="font-size:1rem; font-weight:600;">${agent.avgResolutionHours > 0 ? agent.avgResolutionHours + 'h' : '—'}</div></div>
                 <div><div style="font-size:0.7rem; color:var(--text-muted);">Chats Handled</div><div style="font-size:1rem; font-weight:600;">${agent.chatsHandled}</div></div>
                 <div><div style="font-size:0.7rem; color:var(--text-muted);">Last Active</div><div style="font-size:0.85rem;">${agent.lastActive ? new Date(agent.lastActive).toLocaleDateString() : 'Never'}</div></div>
             </div>
@@ -4749,7 +4767,10 @@ function renderAgentDetails(metrics) {
 async function renderTicketAnalytics(tickets) {
     // Tickets by category
     const categories = { account: 0, billing: 0, technical: 0, '2fa': 0, rewards: 0, other: 0 };
-    tickets.forEach(t => { if (categories[t.category] !== undefined) categories[t.category]++; else categories.other++; });
+    tickets.forEach(t => {
+        if (categories[t.category] !== undefined) categories[t.category]++;
+        else categories.other++;
+    });
     
     const ctxCat = document.getElementById('chart-tickets-by-category')?.getContext('2d');
     if (ctxCat) {
@@ -4776,9 +4797,16 @@ async function renderTicketAnalytics(tickets) {
         });
     }
     
-    // Ticket trends (last 30 days)
-    const last30Days = []; const counts = [];
-    for (let i = 29; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); last30Days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })); counts.push(tickets.filter(t => t.createdAt && new Date(t.createdAt).toDateString() === d.toDateString()).length); }
+    // Ticket trends
+    const last30Days = [];
+    const counts = [];
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        last30Days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        const dayTickets = tickets.filter(t => t.createdAt && new Date(t.createdAt).toDateString() === d.toDateString());
+        counts.push(dayTickets.length);
+    }
     
     const ctxTrend = document.getElementById('chart-ticket-trends')?.getContext('2d');
     if (ctxTrend) {
@@ -4794,38 +4822,39 @@ async function renderTicketAnalytics(tickets) {
 async function loadTimelineView() {
     const agentFilter = document.getElementById('timeline-agent-filter')?.value || 'all';
     const actionFilter = document.getElementById('timeline-action-filter')?.value || 'all';
-    
     const container = document.getElementById('timeline-container');
     container.innerHTML = '<p style="text-align:center; padding:40px;"><i class="fas fa-spinner fa-pulse"></i> Loading...</p>';
     
     try {
-        let auditQuery = query(collection(db, 'support_audit_log'), orderBy('timestamp', 'desc'), limit(200));
-        const snap = await getDocs(auditQuery);
+        const snap = await getDocs(query(collection(db, 'support_audit_log'), orderBy('timestamp', 'desc'), limit(200)));
         let logs = snap.docs.map(d => d.data());
         
         if (agentFilter !== 'all') logs = logs.filter(l => l.agentEmail === agentFilter);
         if (actionFilter !== 'all') logs = logs.filter(l => l.action === actionFilter);
         
-        const actionIcons = { login: 'fa-sign-in-alt', ticket_created: 'fa-ticket-alt', ticket_resolved: 'fa-check-circle', ticket_reopened: 'fa-redo', chat_message_sent: 'fa-comment', chat_claimed: 'fa-hand-paper', access_granted: 'fa-gem' };
+        const icons = { login: 'fa-sign-in-alt', ticket_created: 'fa-ticket-alt', ticket_resolved: 'fa-check-circle', ticket_reopened: 'fa-redo', chat_message_sent: 'fa-comment', chat_claimed: 'fa-hand-paper', access_granted: 'fa-gem' };
         
         container.innerHTML = logs.map(log => `
             <div class="timeline-item">
-                <div class="timeline-icon" style="background:#eef4ff; color:#2563eb;"><i class="fas ${actionIcons[log.action] || 'fa-history'}"></i></div>
+                <div class="timeline-icon" style="background:#eef4ff; color:#2563eb;"><i class="fas ${icons[log.action] || 'fa-history'}"></i></div>
                 <div style="flex:1;">
                     <div><strong>${escapeHtml(log.agentEmail || 'Unknown')}</strong> <span class="badge badge-neutral">${log.action}</span></div>
-                    <div style="font-size:0.85rem; color:var(--text-muted);">${escapeHtml(log.details || log.target || '—')}</div>
+                    <div style="font-size:0.85rem;">${escapeHtml(log.details || log.target || '—')}</div>
                     <div style="font-size:0.7rem; color:var(--text-muted); margin-top:4px;">${new Date(log.timestamp).toLocaleString()}</div>
                 </div>
             </div>
         `).join('');
         if (logs.length === 0) container.innerHTML = '<p style="text-align:center; padding:40px;">No activity found</p>';
-    } catch (err) { container.innerHTML = '<p style="text-align:center; padding:40px; color:var(--danger);">Error loading timeline</p>'; }
+    } catch (err) {
+        container.innerHTML = '<p style="text-align:center; padding:40px; color:var(--danger);">Error loading timeline</p>';
+    }
 }
 
 function filterAgentDetails() {
     const search = (document.getElementById('agent-detail-search')?.value || '').toLowerCase();
     document.querySelectorAll('#agent-details-container .agent-detail-card').forEach(card => {
-        card.style.display = card.getAttribute('data-agent-name')?.includes(search) ? '' : 'none';
+        const name = card.getAttribute('data-agent-name') || '';
+        card.style.display = name.includes(search) ? '' : 'none';
     });
 }
 
