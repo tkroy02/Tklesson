@@ -10416,6 +10416,7 @@ async function adminResetTutor2FA(tutorId) {
 }
 
 // ═══════════════ DASHBOARD SUBTABS & AGENT PERFORMANCE ═══════════════
+// ═══════════════ DASHBOARD SUBTABS & AGENT PERFORMANCE ═══════════════
 let currentDashboardTab = 'overview';
 let agentMetricsCache = null;
 let liveChatsInterval = null;
@@ -10463,10 +10464,10 @@ async function loadAgentPerformanceData() {
     const period = document.getElementById('agent-period-filter')?.value || '30';
     
     try {
-        // Fetch support agents
-        const agentsSnap = await getDocs(collection(db, 'support_agents'));
+        // Fetch support agents using Firestore compat syntax
+        const agentsSnapshot = await db.collection('support_agents').get();
         const agents = [];
-        agentsSnap.forEach(doc => {
+        agentsSnapshot.forEach(doc => {
             agents.push({ id: doc.id, ...doc.data() });
         });
         
@@ -10478,21 +10479,32 @@ async function loadAgentPerformanceData() {
         }
         
         // Fetch tickets
-        let ticketsQuery = collection(db, 'support_tickets');
-        const ticketsSnap = await getDocs(ticketsQuery);
-        let tickets = ticketsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const ticketsSnapshot = await db.collection('support_tickets').get();
+        let tickets = [];
+        ticketsSnapshot.forEach(doc => {
+            tickets.push({ id: doc.id, ...doc.data() });
+        });
         
         if (startDate) {
             tickets = tickets.filter(t => t.createdAt && new Date(t.createdAt) >= startDate);
         }
         
         // Fetch audit logs for last active
-        const auditSnap = await getDocs(query(collection(db, 'support_audit_log'), orderBy('timestamp', 'desc'), limit(200)));
-        const auditLogs = auditSnap.docs.map(d => d.data());
+        const auditSnapshot = await db.collection('support_audit_log')
+            .orderBy('timestamp', 'desc')
+            .limit(200)
+            .get();
+        const auditLogs = [];
+        auditSnapshot.forEach(doc => {
+            auditLogs.push(doc.data());
+        });
         
         // Fetch chats
-        const chatsSnap = await getDocs(collection(db, 'chats'));
-        const chats = chatsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const chatsSnapshot = await db.collection('chats').get();
+        const chats = [];
+        chatsSnapshot.forEach(doc => {
+            chats.push({ id: doc.id, ...doc.data() });
+        });
         
         // Calculate metrics per agent
         const agentMetrics = agents.map(agent => {
@@ -10550,10 +10562,15 @@ async function loadAgentPerformanceData() {
             avgResAll = agentsWithRes.reduce((sum, a) => sum + a.avgResolutionHours, 0) / agentsWithRes.length;
         }
         
-        document.getElementById('agent-total-count').textContent = totalAgents;
-        document.getElementById('agent-resolved-tickets').textContent = totalResolved;
-        document.getElementById('agent-avg-resolution').textContent = avgResAll.toFixed(1) + 'h';
-        document.getElementById('agent-chats-handled').textContent = totalChats;
+        const agentTotalCount = document.getElementById('agent-total-count');
+        const agentResolvedTickets = document.getElementById('agent-resolved-tickets');
+        const agentAvgResolution = document.getElementById('agent-avg-resolution');
+        const agentChatsHandled = document.getElementById('agent-chats-handled');
+        
+        if (agentTotalCount) agentTotalCount.textContent = totalAgents;
+        if (agentResolvedTickets) agentResolvedTickets.textContent = totalResolved;
+        if (agentAvgResolution) agentAvgResolution.textContent = avgResAll.toFixed(1) + 'h';
+        if (agentChatsHandled) agentChatsHandled.textContent = totalChats;
         
         // Render leaderboard
         renderAgentLeaderboard(agentMetrics);
@@ -10563,12 +10580,16 @@ async function loadAgentPerformanceData() {
         
     } catch (err) {
         console.error('Error loading agent performance:', err);
-        document.getElementById('agent-leaderboard-body').innerHTML = '<tr><td colspan="8" class="loading">Error loading data</td></tr>';
+        const leaderboardBody = document.getElementById('agent-leaderboard-body');
+        if (leaderboardBody) {
+            leaderboardBody.innerHTML = '<tr><td colspan="8" class="loading">Error loading data</td></tr>';
+        }
     }
 }
 
 function renderAgentLeaderboard(metrics) {
     const tbody = document.getElementById('agent-leaderboard-body');
+    if (!tbody) return;
     
     if (metrics.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" class="loading">No agent data available</td></tr>';
@@ -10578,12 +10599,12 @@ function renderAgentLeaderboard(metrics) {
     tbody.innerHTML = metrics.map((agent, i) => {
         const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
         const rateClass = agent.resolutionRate >= 70 ? 'badge-success' : agent.resolutionRate >= 40 ? 'badge-warning' : 'badge-danger';
-        const lastActive = agent.lastActive ? timeAgo(agent.lastActive) : 'Never';
+        const lastActive = agent.lastActive ? timeAgoCompat(agent.lastActive) : 'Never';
         
         return `
             <tr>
                 <td style="text-align: center;">${rank}</td>
-                <td><strong>${escapeHtml(agent.name)}</strong><br><small>${escapeHtml(agent.email || '—')}</small></td>
+                <td><strong>${escapeHtmlCompat(agent.name)}</strong><br><small>${escapeHtmlCompat(agent.email || '—')}</small></td>
                 <td>${agent.totalTickets}</td>
                 <td style="color: var(--success); font-weight: 600;">${agent.resolvedTickets}</td>
                 <td><span class="badge ${rateClass}">${agent.resolutionRate}%</span></td>
@@ -10597,6 +10618,7 @@ function renderAgentLeaderboard(metrics) {
 
 function renderAgentDetails(metrics) {
     const container = document.getElementById('agent-details-container');
+    if (!container) return;
     
     if (!metrics || metrics.length === 0) {
         container.innerHTML = '<p class="loading">No agent data available</p>';
@@ -10607,8 +10629,8 @@ function renderAgentDetails(metrics) {
         <div class="agent-detail-card" data-agent-name="${agent.name.toLowerCase()}">
             <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
                 <div>
-                    <h4 style="margin: 0;"><i class="fas fa-user-circle"></i> ${escapeHtml(agent.name)}</h4>
-                    <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(agent.email || '—')} · ${agent.role}</div>
+                    <h4 style="margin: 0;"><i class="fas fa-user-circle"></i> ${escapeHtmlCompat(agent.name)}</h4>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtmlCompat(agent.email || '—')} · ${agent.role}</div>
                 </div>
                 <div><span class="badge ${agent.resolutionRate >= 70 ? 'badge-success' : 'badge-warning'}">${agent.resolutionRate}% Resolution</span></div>
             </div>
@@ -10616,7 +10638,7 @@ function renderAgentDetails(metrics) {
                 <div><div style="font-size: 0.7rem; color: var(--text-muted);">Tickets</div><div style="font-size: 1.3rem; font-weight: 700;">${agent.resolvedTickets}<span style="font-size: 0.85rem;">/${agent.totalTickets}</span></div></div>
                 <div><div style="font-size: 0.7rem; color: var(--text-muted);">Avg Resolution</div><div style="font-size: 1rem; font-weight: 600;">${agent.avgResolutionHours > 0 ? agent.avgResolutionHours + 'h' : '—'}</div></div>
                 <div><div style="font-size: 0.7rem; color: var(--text-muted);">Chats Handled</div><div style="font-size: 1rem; font-weight: 600;">${agent.chatsHandled}</div></div>
-                <div><div style="font-size: 0.7rem; color: var(--text-muted);">Last Active</div><div style="font-size: 0.85rem;">${agent.lastActive ? timeAgo(agent.lastActive) : 'Never'}</div></div>
+                <div><div style="font-size: 0.7rem; color: var(--text-muted);">Last Active</div><div style="font-size: 0.85rem;">${agent.lastActive ? timeAgoCompat(agent.lastActive) : 'Never'}</div></div>
             </div>
         </div>
     `).join('');
@@ -10635,14 +10657,18 @@ async function loadLiveChats() {
     const container = document.getElementById('live-chats-container');
     const filter = document.getElementById('live-chat-filter')?.value || 'all';
     
+    if (!container) return;
+    
     try {
-        const chatsSnap = await getDocs(query(
-            collection(db, 'chats'),
-            where('status', '!=', 'closed'),
-            orderBy('lastMessageAt', 'desc')
-        ));
+        const chatsSnapshot = await db.collection('chats')
+            .where('status', '!=', 'closed')
+            .orderBy('lastMessageAt', 'desc')
+            .get();
         
-        let chats = chatsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        let chats = [];
+        chatsSnapshot.forEach(doc => {
+            chats.push({ id: doc.id, ...doc.data() });
+        });
         
         if (filter === 'unclaimed') {
             chats = chats.filter(c => !c.assignedTo);
@@ -10650,13 +10676,13 @@ async function loadLiveChats() {
             chats = chats.filter(c => c.assignedTo);
         }
         
-        const agentsSnap = await getDocs(collection(db, 'support_agents'));
+        const agentsSnapshot = await db.collection('support_agents').get();
         const agents = {};
-        agentsSnap.forEach(doc => {
+        agentsSnapshot.forEach(doc => {
             agents[doc.id] = doc.data().name || doc.data().email?.split('@')[0] || 'Agent';
         });
         
-        const total = chatsSnap.docs.length;
+        const total = chatsSnapshot.size;
         const unclaimed = chats.filter(c => !c.assignedTo).length;
         const claimed = chats.filter(c => c.assignedTo).length;
         
@@ -10672,12 +10698,20 @@ async function loadLiveChats() {
         }
         const avgWaitMinutes = waitCount > 0 ? Math.round(totalWaitMinutes / waitCount) : 0;
         
-        document.getElementById('live-total-chats').textContent = total;
-        document.getElementById('live-unclaimed-chats').textContent = unclaimed;
-        document.getElementById('live-claimed-chats').textContent = claimed;
-        document.getElementById('live-avg-wait').textContent = avgWaitMinutes + 'm';
-        document.getElementById('chat-unclaimed-badge').textContent = unclaimed;
-        document.getElementById('chat-unclaimed-badge').style.display = unclaimed > 0 ? 'inline-block' : 'none';
+        const liveTotalChats = document.getElementById('live-total-chats');
+        const liveUnclaimedChats = document.getElementById('live-unclaimed-chats');
+        const liveClaimedChats = document.getElementById('live-claimed-chats');
+        const liveAvgWait = document.getElementById('live-avg-wait');
+        const chatUnclaimedBadge = document.getElementById('chat-unclaimed-badge');
+        
+        if (liveTotalChats) liveTotalChats.textContent = total;
+        if (liveUnclaimedChats) liveUnclaimedChats.textContent = unclaimed;
+        if (liveClaimedChats) liveClaimedChats.textContent = claimed;
+        if (liveAvgWait) liveAvgWait.textContent = avgWaitMinutes + 'm';
+        if (chatUnclaimedBadge) {
+            chatUnclaimedBadge.textContent = unclaimed;
+            chatUnclaimedBadge.style.display = unclaimed > 0 ? 'inline-block' : 'none';
+        }
         
         if (chats.length === 0) {
             container.innerHTML = '<p class="loading">No active chats</p>';
@@ -10686,7 +10720,7 @@ async function loadLiveChats() {
         
         container.innerHTML = chats.map(chat => {
             const lastMsgTime = chat.lastMessageAt?.toDate ? chat.lastMessageAt.toDate() : (chat.lastMessageAt ? new Date(chat.lastMessageAt) : null);
-            const timeAgoStr = lastMsgTime ? formatChatTimeAgo(lastMsgTime) : 'Unknown';
+            const timeAgoStr = lastMsgTime ? formatChatTimeAgoCompat(lastMsgTime) : 'Unknown';
             const isUnclaimed = !chat.assignedTo;
             const agentName = chat.assignedTo ? (agents[chat.assignedTo] || chat.assignedName || 'Unknown') : 'Unclaimed';
             const lastMsg = chat.lastMessage || 'No messages yet';
@@ -10716,15 +10750,15 @@ async function loadLiveChats() {
                                 </span>
                                 ${priorityBadge}
                                 <span style="font-size: 0.75rem; color: var(--text-muted);">
-                                    <i class="fas fa-user"></i> ${escapeHtml(agentName)}
+                                    <i class="fas fa-user"></i> ${escapeHtmlCompat(agentName)}
                                 </span>
                                 <span style="font-size: 0.75rem; color: var(--text-muted);">
                                     <i class="fas fa-clock"></i> Last: ${timeAgoStr}
                                 </span>
                             </div>
                             <div style="margin-top: 10px;">
-                                <div style="font-weight: 500; font-size: 0.85rem;">${escapeHtml(displayName)}</div>
-                                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${escapeHtml(lastMsg.substring(0, 80))}</div>
+                                <div style="font-weight: 500; font-size: 0.85rem;">${escapeHtmlCompat(displayName)}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${escapeHtmlCompat(lastMsg.substring(0, 80))}</div>
                             </div>
                         </div>
                         <div style="display: flex; gap: 8px; margin-top: 10px;">
@@ -10748,7 +10782,82 @@ async function loadLiveChats() {
     }
 }
 
-function formatChatTimeAgo(date) {
+async function loadTicketAnalytics() {
+    try {
+        const ticketsSnapshot = await db.collection('support_tickets').get();
+        const tickets = [];
+        ticketsSnapshot.forEach(doc => {
+            tickets.push({ id: doc.id, ...doc.data() });
+        });
+        
+        const total = tickets.length;
+        const open = tickets.filter(t => t.status !== 'resolved').length;
+        const resolved = tickets.filter(t => t.status === 'resolved').length;
+        const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+        
+        const ticketTotalCount = document.getElementById('ticket-total-count');
+        const ticketOpenCount = document.getElementById('ticket-open-count');
+        const ticketResolvedCount = document.getElementById('ticket-resolved-count');
+        const ticketResolutionRate = document.getElementById('ticket-resolution-rate');
+        
+        if (ticketTotalCount) ticketTotalCount.textContent = total;
+        if (ticketOpenCount) ticketOpenCount.textContent = open;
+        if (ticketResolvedCount) ticketResolvedCount.textContent = resolved;
+        if (ticketResolutionRate) ticketResolutionRate.textContent = resolutionRate + '%';
+        
+        // Tickets by category
+        const categories = { account: 0, billing: 0, technical: 0, '2fa': 0, rewards: 0, other: 0 };
+        tickets.forEach(t => {
+            if (categories[t.category] !== undefined) categories[t.category]++;
+            else categories.other++;
+        });
+        
+        // Check if Chart is available
+        if (typeof Chart !== 'undefined') {
+            const ctxCat = document.getElementById('category-chart-canvas')?.getContext('2d');
+            if (ctxCat && window.categoryChart) window.categoryChart.destroy();
+            if (ctxCat) {
+                window.categoryChart = new Chart(ctxCat, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Account', 'Billing', 'Technical', '2FA', 'Rewards', 'Other'],
+                        datasets: [{ data: Object.values(categories), backgroundColor: ['#3b82f6', '#e8a80c', '#8b5cf6', '#c62828', '#0d8a4e', '#64748b'] }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+                });
+            }
+            
+            // Ticket trends (last 30 days)
+            const last30Days = [];
+            const counts = [];
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                last30Days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+                const dayTickets = tickets.filter(t => t.createdAt && new Date(t.createdAt).toDateString() === d.toDateString());
+                counts.push(dayTickets.length);
+            }
+            
+            const ctxTrend = document.getElementById('trend-chart-canvas')?.getContext('2d');
+            if (ctxTrend && window.trendChart) window.trendChart.destroy();
+            if (ctxTrend) {
+                window.trendChart = new Chart(ctxTrend, {
+                    type: 'line',
+                    data: {
+                        labels: last30Days,
+                        datasets: [{ label: 'Tickets Created', data: counts, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.05)', fill: true, tension: 0.4 }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        }
+        
+    } catch (err) {
+        console.error('Error loading ticket analytics:', err);
+    }
+}
+
+function formatChatTimeAgoCompat(date) {
     const diffMs = Date.now() - date;
     const diffMins = Math.floor(diffMs / 60000);
     if (diffMins < 1) return 'Just now';
@@ -10758,7 +10867,7 @@ function formatChatTimeAgo(date) {
     return `${Math.floor(diffHours / 24)} days ago`;
 }
 
-function timeAgo(dateString) {
+function timeAgoCompat(dateString) {
     if (!dateString) return 'Never';
     const date = new Date(dateString);
     const now = new Date();
@@ -10775,76 +10884,39 @@ function timeAgo(dateString) {
     return date.toLocaleDateString();
 }
 
-function escapeHtml(text) {
+function escapeHtmlCompat(text) {
     if (!text) return '';
     const div = document.createElement('div');
     div.appendChild(document.createTextNode(text));
     return div.innerHTML;
 }
 
-async function loadTicketAnalytics() {
+// Claim chat from admin dashboard
+async function claimChatFromAdmin(chatId) {
+    if (!confirm('Claim this chat?')) return;
+    
     try {
-        const ticketsSnap = await getDocs(collection(db, 'support_tickets'));
-        const tickets = ticketsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const user = firebase.auth().currentUser;
+        const agentSnap = await db.collection('support_agents').doc(user.uid).get();
+        const agentName = agentSnap.exists() ? (agentSnap.data().name || user.email?.split('@')[0]) : user.email?.split('@')[0];
         
-        const total = tickets.length;
-        const open = tickets.filter(t => t.status !== 'resolved').length;
-        const resolved = tickets.filter(t => t.status === 'resolved').length;
-        const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
-        
-        document.getElementById('ticket-total-count').textContent = total;
-        document.getElementById('ticket-open-count').textContent = open;
-        document.getElementById('ticket-resolved-count').textContent = resolved;
-        document.getElementById('ticket-resolution-rate').textContent = resolutionRate + '%';
-        
-        // Tickets by category
-        const categories = { account: 0, billing: 0, technical: 0, '2fa': 0, rewards: 0, other: 0 };
-        tickets.forEach(t => {
-            if (categories[t.category] !== undefined) categories[t.category]++;
-            else categories.other++;
+        await db.collection('chats').doc(chatId).update({
+            assignedTo: user.uid,
+            assignedName: agentName,
+            claimedAt: firebase.firestore.FieldValue.serverTimestamp()
         });
         
-        // Render category chart
-        const ctxCat = document.getElementById('category-chart-canvas')?.getContext('2d');
-        if (ctxCat && window.categoryChart) window.categoryChart.destroy();
-        if (ctxCat) {
-            window.categoryChart = new Chart(ctxCat, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Account', 'Billing', 'Technical', '2FA', 'Rewards', 'Other'],
-                    datasets: [{ data: Object.values(categories), backgroundColor: ['#3b82f6', '#e8a80c', '#8b5cf6', '#c62828', '#0d8a4e', '#64748b'] }]
-                },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
-            });
-        }
-        
-        // Ticket trends (last 30 days)
-        const last30Days = [];
-        const counts = [];
-        for (let i = 29; i >= 0; i--) {
-            const d = new Date();
-            d.setDate(d.getDate() - i);
-            last30Days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-            const dayTickets = tickets.filter(t => t.createdAt && new Date(t.createdAt).toDateString() === d.toDateString());
-            counts.push(dayTickets.length);
-        }
-        
-        const ctxTrend = document.getElementById('trend-chart-canvas')?.getContext('2d');
-        if (ctxTrend && window.trendChart) window.trendChart.destroy();
-        if (ctxTrend) {
-            window.trendChart = new Chart(ctxTrend, {
-                type: 'line',
-                data: {
-                    labels: last30Days,
-                    datasets: [{ label: 'Tickets Created', data: counts, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.05)', fill: true, tension: 0.4 }]
-                },
-                options: { responsive: true, maintainAspectRatio: false }
-            });
-        }
-        
+        alert('Chat claimed successfully');
+        loadLiveChats();
     } catch (err) {
-        console.error('Error loading ticket analytics:', err);
+        console.error('Error claiming chat:', err);
+        alert('Failed to claim chat');
     }
+}
+
+// Open chat conversation in new tab/window
+function openChatConversation(chatId) {
+    window.open(`support-dashboard.html?chat=${chatId}`, '_blank');
 }
 
 // Add these functions to window
@@ -10852,6 +10924,8 @@ window.switchDashboardTab = switchDashboardTab;
 window.loadAgentPerformanceData = loadAgentPerformanceData;
 window.filterAgentDetails = filterAgentDetails;
 window.loadLiveChats = loadLiveChats;
+window.claimChatFromAdmin = claimChatFromAdmin;
+window.openChatConversation = openChatConversation;
         
     </script>
     
