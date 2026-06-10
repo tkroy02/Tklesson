@@ -908,6 +908,13 @@
     </div>
 </div>
 
+<!-- Ticket Detail Modal for Viewing Notes -->
+<div id="ticket-detail-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this) closeTicketDetail()">
+    <div class="modal-content" style="max-width: 600px;">
+        <div id="ticket-detail-content"></div>
+    </div>
+</div>
+        
         <!-- USER MANAGEMENT -->
         <div class="page" id="user-management">
             <h2>User Management</h2>
@@ -2279,14 +2286,37 @@ async function resolveTicket(ticketDocId) {
 }
 
 async function reopenTicket(ticketDocId) {
-    if (!confirm('Reopen this ticket?')) return;
+    const note = prompt('Add a note explaining why this ticket is being reopened:');
+    if (note === null) return; // User cancelled
+    if (!note.trim()) {
+        alert('Please add a note when reopening a ticket.');
+        return;
+    }
+    
+    if (!confirm('Reopen this ticket?\n\nNote: ' + note)) return;
+    
     try {
-        const snap   = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const snap = await getDoc(doc(db, 'support_tickets', ticketDocId));
         const ticket = snap.data();
+        
+        // Get existing notes or create new array
+        const existingNotes = ticket.notes || [];
+        const updatedNotes = [...existingNotes, {
+            note: note.trim(),
+            addedBy: auth.currentUser?.email || 'Unknown',
+            addedAt: new Date().toISOString(),
+            action: 'reopened'
+        }];
+        
         await setDoc(doc(db, 'support_tickets', ticketDocId), {
-            status: 'open', resolvedAt: null
+            status: 'open',
+            resolvedAt: null,
+            notes: updatedNotes,
+            reopenedAt: new Date().toISOString(),
+            reopenedBy: auth.currentUser?.email
         }, { merge: true });
-        await logAuditAction('ticket_reopened', ticket.subject, `Ticket ${ticket.ticketId} reopened`);
+        
+        await logAuditAction('ticket_reopened', ticket.subject, `Ticket ${ticket.ticketId} reopened with note: ${note}`);
         loadTickets();
     } catch (err) {
         console.error('Reopen error:', err);
@@ -2294,6 +2324,35 @@ async function reopenTicket(ticketDocId) {
     }
 }
 
+async function addTicketNote(ticketDocId) {
+    const note = prompt('Add a note to this ticket:');
+    if (!note || !note.trim()) return;
+    
+    try {
+        const snap = await getDoc(doc(db, 'support_tickets', ticketDocId));
+        const ticket = snap.data();
+        
+        const existingNotes = ticket.notes || [];
+        const updatedNotes = [...existingNotes, {
+            note: note.trim(),
+            addedBy: auth.currentUser?.email || 'Unknown',
+            addedAt: new Date().toISOString(),
+            action: 'note'
+        }];
+        
+        await setDoc(doc(db, 'support_tickets', ticketDocId), {
+            notes: updatedNotes
+        }, { merge: true });
+        
+        await logAuditAction('ticket_note_added', ticket.subject, `Note added to ticket ${ticket.ticketId}`);
+        loadTickets();
+        alert('Note added successfully!');
+    } catch (err) {
+        console.error('Add note error:', err);
+        alert('Error adding note.');
+    }
+}
+    
 async function loadTickets() {
     const unresolvedContainer = document.getElementById('unresolved-tickets');
     const resolvedContainer   = document.getElementById('resolved-tickets');
@@ -2316,6 +2375,67 @@ async function loadTickets() {
         unresolvedContainer.innerHTML = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
         resolvedContainer.innerHTML   = '<div class="results-placeholder"><i class="fas fa-exclamation-triangle"></i><p>Error loading tickets</p></div>';
     }
+}
+
+    async function openTicketDetail(ticketId) {
+    const ticket = allTickets.find(t => t.id === ticketId);
+    if (!ticket) return;
+    
+    const modal = document.getElementById('ticket-detail-modal');
+    const content = document.getElementById('ticket-detail-content');
+    
+    const notesHtml = (ticket.notes && ticket.notes.length > 0) ? `
+        <div style="margin-top: 16px;">
+            <h4 style="font-size: 0.85rem; margin-bottom: 10px;"><i class="fas fa-history"></i> Ticket History</h4>
+            <div style="background: #f8fafc; border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto;">
+                ${ticket.notes.map(n => `
+                    <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="font-size: 0.8rem;">${escapeHtml(n.note)}</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
+                            <i class="fas fa-user"></i> ${escapeHtml(n.addedBy)} · 
+                            <i class="fas fa-clock"></i> ${new Date(n.addedAt).toLocaleString()}
+                            ${n.action === 'reopened' ? '<span class="badge badge-warning" style="margin-left: 8px;">Reopened</span>' : ''}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    ` : '<p style="color: var(--text-muted); margin-top: 16px;">No notes on this ticket.</p>';
+    
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3><i class="fas fa-ticket-alt"></i> ${ticket.ticketId}</h3>
+            <button class="modal-close" onclick="closeTicketDetail()">&times;</button>
+        </div>
+        <div><strong>Subject:</strong> ${escapeHtml(ticket.subject)}</div>
+        <div style="margin-top: 8px;"><strong>School:</strong> ${escapeHtml(ticket.schoolName || 'N/A')}</div>
+        <div><strong>Client:</strong> ${escapeHtml(ticket.clientEmail)}</div>
+        <div><strong>Agent:</strong> ${escapeHtml(ticket.agentEmail)}</div>
+        <div><strong>Category:</strong> ${ticket.category}</div>
+        <div><strong>Status:</strong> ${ticket.status === 'resolved' ? 'Resolved' : 'Open'}</div>
+        <div style="margin-top: 12px;"><strong>Original Action:</strong></div>
+        <div style="background: #f1f5f9; border-radius: 8px; padding: 10px; margin-top: 4px;">${escapeHtml(ticket.agentAction)}</div>
+        ${notesHtml}
+        <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-outline btn-sm" onclick="closeTicketDetail()">Close</button>
+            ${ticket.status !== 'resolved' ? `<button class="btn btn-primary btn-sm" onclick="addTicketNote('${ticket.id}'); closeTicketDetail();">
+                <i class="fas fa-plus"></i> Add Note
+            </button>` : ''}
+        </div>
+    `;
+    
+    modal.style.display = 'flex';
+}
+
+function closeTicketDetail() {
+    document.getElementById('ticket-detail-modal').style.display = 'none';
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
 }
 
 function filterTickets() {
@@ -2366,30 +2486,52 @@ function renderTicketCard(ticket, type) {
         '2fa': 'badge-2fa', suggestion: 'badge-suggestion', education: 'badge-education', other: 'badge-other'
     };
     const catBadge = catBadgeMap[ticket.category] || 'badge-other';
+    
+    const hasNotes = (ticket.notes && ticket.notes.length > 0);
+    const notesIndicator = hasNotes ? `<span class="badge" style="background:#fef3c7; color:#92400e; margin-left:8px;"><i class="fas fa-sticky-note"></i> ${ticket.notes.length}</span>` : '';
 
     return `
         <div class="ticket-card">
             <div class="ticket-dot ${type}"></div>
             <div class="ticket-body">
-                <div class="ticket-subject">${ticket.subject}</div>
+                <div class="ticket-subject">
+                    ${ticket.subject}
+                    ${notesIndicator}
+                </div>
                 <div class="ticket-meta">
                     <span class="ticket-id">${ticket.ticketId}</span>
                     <span class="ticket-badge ${catBadge}">${ticket.category}</span>
+                    ${ticket.schoolName ? `<span><i class="fas fa-school"></i> ${ticket.schoolName}</span>` : ''}
                     <span><i class="fas fa-envelope"></i> ${ticket.clientEmail || 'N/A'}</span>
                     <span><i class="fas fa-user"></i> ${ticket.agentEmail}</span>
                     <span><i class="fas fa-clock"></i> ${time}</span>
                     ${type === 'resolved' ? `<span style="color: var(--danger);"><i class="fas fa-check-circle"></i> Resolved ${resolvedTime}</span>` : ''}
                 </div>
                 <div class="ticket-action">${ticket.agentAction}</div>
+                ${hasNotes ? `
+                <div style="margin-top: 8px; font-size: 0.7rem; color: var(--text-muted);">
+                    <i class="fas fa-history"></i> Last note: ${new Date(ticket.notes[ticket.notes.length-1].addedAt).toLocaleString()}
+                </div>
+                ` : ''}
             </div>
-            <div class="ticket-actions">
-                ${type === 'unresolved'
-                    ? `<button class="btn-resolve" onclick="resolveTicket('${ticket.id}')"><i class="fas fa-check"></i> Resolve</button>`
-                    : `<button class="btn-reopen" onclick="reopenTicket('${ticket.id}')"><i class="fas fa-redo"></i> Reopen</button>`
-                }
+            <div class="ticket-actions" style="display: flex; flex-direction: column; gap: 6px;">
+                ${type === 'unresolved' ? `
+                    <button class="btn-resolve" style="width: 100%;" onclick="addTicketNote('${ticket.id}')">
+                        <i class="fas fa-plus"></i> Add Note
+                    </button>
+                    <button class="btn-resolve" style="width: 100%;" onclick="resolveTicket('${ticket.id}')">
+                        <i class="fas fa-check"></i> Resolve
+                    </button>
+                ` : `
+                    <button class="btn-reopen" style="width: 100%;" onclick="reopenTicket('${ticket.id}')">
+                        <i class="fas fa-redo"></i> Reopen
+                    </button>
+                `}
             </div>
         </div>`;
 }
+
+    
 // ════════════════════════════════════════════════════════════════════
 // END TICKETING
 // ════════════════════════════════════════════════════════════════════
