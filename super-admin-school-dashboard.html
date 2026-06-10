@@ -4008,16 +4008,20 @@ async function openUserDetail(adminId) {
 
         <!-- Actions -->
         <div style="display:flex; gap:10px; flex-wrap:wrap; padding-top:16px; border-top:1px solid var(--border-light);">
-            <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${escapeHtml(admin.email || '')}')">
-                <i class="fas fa-envelope"></i> Send Password Reset
-            </button>
-            ${twoFA ? `
-            <button class="btn btn-sm" style="background:#fef9ee; color:var(--warning); border:1.5px solid #fde68a;"
-                    onclick="resetAdminTFA('${admin.id}', '${escapeHtml(admin.displayName || admin.email || '')}')">
-                <i class="fas fa-shield-alt"></i> Reset 2FA
-            </button>` : ''}
-            <button class="btn btn-outline btn-sm" onclick="closeUserDetail()">Close</button>
-        </div>
+    <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${escapeHtml(admin.email || '')}')">
+        <i class="fas fa-envelope"></i> Send Password Reset
+    </button>
+    ${twoFA ? `
+    <button class="btn btn-sm" style="background:#fef9ee; color:var(--warning); border:1.5px solid #fde68a;"
+            onclick="resetAdminTFA('${admin.id}', '${escapeHtml(admin.displayName || admin.email || '')}')">
+        <i class="fas fa-shield-alt"></i> Reset 2FA
+    </button>` : ''}
+    <button class="btn btn-danger btn-sm" style="margin-left:auto;"
+            onclick="removeSchoolAdmin('${admin.id}', '${escapeHtml(admin.displayName || admin.email || '')}', '${escapeHtml(admin.email || '')}')">
+        <i class="fas fa-user-minus"></i> Remove Admin
+    </button>
+    <button class="btn btn-outline btn-sm" onclick="closeUserDetail()">Close</button>
+</div>
     `;
 
     modal.style.display = 'flex';
@@ -4278,6 +4282,45 @@ async function submitAddAdmin() {
         btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
     }
 }
+
+async function removeSchoolAdmin(adminId, adminName, adminEmail) {
+    if (!confirm(`Remove "${adminName}" as a school admin?\n\nThis will:\n• Delete their Firestore profile\n• Permanently delete their login account\n\nThis cannot be undone.`)) return;
+    if (!confirm(`Final confirmation — permanently remove ${adminEmail}?`)) return;
+
+    try {
+        // Step 1: Delete the schooladmins Firestore document
+        const { deleteDoc: deleteDocument } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
+        await deleteDocument(doc(db, 'schooladmins', adminId));
+
+        // Step 2: Hard delete the Auth account via Cloud Function
+        const deleteSchoolAdmin = httpsCallable(functions, 'deleteSchoolAdmin');
+        await deleteSchoolAdmin({ uid: adminId });
+
+        // Step 3: Write audit log
+        await setDoc(doc(db, 'deletedAdmins', adminId), {
+            adminId,
+            displayName: adminName,
+            email: adminEmail,
+            deletedAt: new Date().toISOString(),
+            deletedBy: currentUser?.email
+        });
+
+        // Step 4: Refresh UI
+        allSchoolAdmins = allSchoolAdmins.filter(a => a.id !== adminId);
+        closeUserDetail();
+        renderUserStats();
+        filterUsers();
+
+        alert(`✅ ${adminName} has been permanently removed.`);
+
+    } catch (err) {
+        console.error('Remove admin error:', err);
+        let msg = err.message;
+        if (err.code === 'functions/not-found') msg = 'Admin account not found — may have already been deleted.';
+        if (err.code === 'functions/permission-denied') msg = 'You do not have permission to perform this action.';
+        alert('❌ Failed to remove admin: ' + msg);
+    }
+}
     
     
     // ═══════════════ EXPORT ALL GLOBAL FUNCTIONS ═══════════════
@@ -4323,6 +4366,7 @@ async function submitAddAdmin() {
     window.closeAddAdminModal = closeAddAdminModal;
     window.addAdminNextStep = addAdminNextStep;
     window.submitAddAdmin = submitAddAdmin;
+    window.removeSchoolAdmin = removeSchoolAdmin;
     
 </script>
 </body>
