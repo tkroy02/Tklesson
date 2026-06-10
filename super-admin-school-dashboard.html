@@ -754,6 +754,8 @@
                     <i class="fas fa-chart-bar"></i> Analytics & Reports</a></li>
             <li><a href="#" data-page="subscriptions" onclick="navigateTo('subscriptions', this)">
                     <i class="fas fa-credit-card"></i> Subscriptions</a></li>
+            <li><a href="#" data-page="users" onclick="navigateTo('users', this)">
+                    <i class="fas fa-users-cog"></i> User Management</a></li>
             <li><a href="#" data-page="school-credit" onclick="navigateTo('school-credit', this)">
                     <i class="fas fa-coins"></i> School Credits</a></li>
             <li><a href="#" onclick="handleLogout()">
@@ -1095,6 +1097,95 @@
     <div id="school-credit-log-section" style="margin-top: 20px;"></div>
 </div>
 
+<!-- Page: User Management -->
+<div id="page-users" class="page">
+    <div class="page-header">
+        <div class="page-title-group">
+            <h1><i class="fas fa-users-cog"></i> User Management</h1>
+            <p>View and manage school admins across your network</p>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="loadUsersPage()">
+            <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid" id="user-stats">
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Total Admins</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">2FA Enabled</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Active (last 7d)</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Never Signed In</div></div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card" style="padding: 20px;">
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+            <div style="flex: 2; min-width: 220px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Search</label>
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="user-search-input" class="form-input"
+                           placeholder="Name, email, or school..."
+                           oninput="filterUsers()">
+                </div>
+            </div>
+            <div style="flex: 1; min-width: 180px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">School</label>
+                <select id="user-school-filter" class="form-select" onchange="filterUsers()">
+                    <option value="all">All Schools</option>
+                </select>
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">2FA Status</label>
+                <select id="user-2fa-filter" class="form-select" onchange="filterUsers()">
+                    <option value="all">All</option>
+                    <option value="enabled">2FA Enabled</option>
+                    <option value="disabled">2FA Disabled</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div style="padding: 16px 20px; border-bottom: 1px solid var(--border-light); display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">School Admins</h3>
+            <span id="user-count-badge" class="badge badge-neutral"></span>
+        </div>
+        <div style="max-height: 580px; overflow-y: auto;">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Admin</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">School</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Role</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">2FA</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Last Seen</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Joined</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-table-body">
+                        <tr>
+                            <td colspan="7" style="text-align: center; padding: 50px;">
+                                <i class="fas fa-spinner fa-pulse"></i> Loading admins...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- User Detail Modal -->
+<div id="user-detail-modal" class="modal-overlay" style="display: none;"
+     onclick="if(event.target===this) closeUserDetail()">
+    <div class="modal-content" style="max-width: 600px;">
+        <div id="user-detail-content"></div>
+    </div>
+</div>
         
 <!-- ═══════════════ SECURITY SETTINGS PAGE ═══════════════ -->
 <div id="page-security" class="page">
@@ -3392,10 +3483,321 @@ async function loadSchoolCreditLog(schoolId) {
 const originalNavigateToCredit = window.navigateTo;
 window.navigateTo = function(pageName, el) {
     originalNavigateToCredit(pageName, el);
-    if (pageName === 'school-credit') {
-        loadSchoolCreditPage();
-    }
+    if (pageName === 'school-credit') loadSchoolCreditPage();
+    if (pageName === 'users') loadUsersPage();
 };
+
+
+// ═══════════════ USER MANAGEMENT ═══════════════
+let allSchoolAdmins = [];
+
+async function loadUsersPage() {
+    document.getElementById('user-table-body').innerHTML = `
+        <tr><td colspan="7" style="text-align:center; padding:50px;">
+            <i class="fas fa-spinner fa-pulse"></i> Loading admins...
+        </td></tr>`;
+
+    await fetchAllSchools();
+    await fetchAllSchoolAdmins();
+    populateUserSchoolFilter();
+    renderUserStats();
+    filterUsers();
+}
+
+async function fetchAllSchoolAdmins() {
+    const snap = await getDocs(collection(db, 'schooladmins'));
+    allSchoolAdmins = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+function populateUserSchoolFilter() {
+    const sel = document.getElementById('user-school-filter');
+    if (!sel) return;
+    const schoolMap = {};
+    allSchoolAdmins.forEach(a => {
+        if (a.schoolId) {
+            const school = allSchools.find(s => s.id === a.schoolId);
+            if (school) schoolMap[a.schoolId] = school.name || 'Unnamed';
+        }
+    });
+    sel.innerHTML = '<option value="all">All Schools</option>' +
+        Object.entries(schoolMap)
+            .sort((a, b) => a[1].localeCompare(b[1]))
+            .map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`)
+            .join('');
+}
+
+function renderUserStats() {
+    const total = allSchoolAdmins.length;
+    const twoFAEnabled = allSchoolAdmins.filter(a => a.twoFactorEnabled === true).length;
+
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const recentlyActive = allSchoolAdmins.filter(a => {
+        if (!a.lastSeenAt) return false;
+        return new Date(a.lastSeenAt).getTime() > sevenDaysAgo;
+    }).length;
+
+    const neverSignedIn = allSchoolAdmins.filter(a => !a.lastSeenAt).length;
+
+    document.getElementById('user-stats').innerHTML = `
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-user-tie"></i></div>
+            <div class="stat-value">${total}</div>
+            <div class="stat-label">Total Admins</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-shield-alt"></i></div>
+            <div class="stat-value" style="color:var(--success);">${twoFAEnabled}</div>
+            <div class="stat-label">2FA Enabled</div>
+            <div class="stat-change ${twoFAEnabled === total ? 'up' : 'down'}">
+                ${total > 0 ? Math.round((twoFAEnabled / total) * 100) : 0}% of admins
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-clock"></i></div>
+            <div class="stat-value">${recentlyActive}</div>
+            <div class="stat-label">Active (last 7d)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-user-slash"></i></div>
+            <div class="stat-value" style="color:${neverSignedIn > 0 ? 'var(--warning)' : 'inherit'};">${neverSignedIn}</div>
+            <div class="stat-label">Never Signed In</div>
+        </div>
+    `;
+}
+
+function filterUsers() {
+    const search = (document.getElementById('user-search-input')?.value || '').toLowerCase();
+    const schoolFilter = document.getElementById('user-school-filter')?.value || 'all';
+    const tfaFilter = document.getElementById('user-2fa-filter')?.value || 'all';
+
+    let filtered = [...allSchoolAdmins];
+
+    if (search) {
+        filtered = filtered.filter(a =>
+            (a.displayName || '').toLowerCase().includes(search) ||
+            (a.email || '').toLowerCase().includes(search) ||
+            (a.phone || '').toLowerCase().includes(search) ||
+            getSchoolName(a.schoolId).toLowerCase().includes(search)
+        );
+    }
+    if (schoolFilter !== 'all') {
+        filtered = filtered.filter(a => a.schoolId === schoolFilter);
+    }
+    if (tfaFilter === 'enabled') {
+        filtered = filtered.filter(a => a.twoFactorEnabled === true);
+    } else if (tfaFilter === 'disabled') {
+        filtered = filtered.filter(a => !a.twoFactorEnabled);
+    }
+
+    document.getElementById('user-count-badge').textContent =
+        `${filtered.length} admin${filtered.length !== 1 ? 's' : ''}`;
+
+    renderUserTable(filtered);
+}
+
+function getSchoolName(schoolId) {
+    if (!schoolId) return 'Unassigned';
+    const school = allSchools.find(s => s.id === schoolId);
+    return school?.name || 'Unknown School';
+}
+
+function renderUserTable(admins) {
+    const tbody = document.getElementById('user-table-body');
+
+    if (admins.length === 0) {
+        tbody.innerHTML = `
+            <tr><td colspan="7" style="text-align:center; padding:50px; color:var(--text-muted);">
+                <i class="fas fa-users" style="display:block; font-size:2rem; margin-bottom:10px; opacity:0.2;"></i>
+                No admins match your filters
+            </td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = admins.map(admin => {
+        const schoolName = getSchoolName(admin.schoolId);
+        const twoFA = admin.twoFactorEnabled === true;
+        const lastSeen = admin.lastSeenAt
+            ? timeAgo(admin.lastSeenAt)
+            : '<span style="color:var(--text-muted);">Never</span>';
+        const joined = admin.createdAt
+            ? new Date(admin.createdAt).toLocaleDateString()
+            : '—';
+        const initials = (admin.displayName || admin.email || 'A')
+            .split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+
+        return `
+        <tr style="cursor:pointer;" onclick="openUserDetail('${admin.id}')">
+            <td>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg,var(--primary),var(--primary-light));
+                                color:white; display:flex; align-items:center; justify-content:center;
+                                font-weight:700; font-size:0.75rem; flex-shrink:0;">
+                        ${initials}
+                    </div>
+                    <div>
+                        <div style="font-weight:600; font-size:0.88rem;">${escapeHtml(admin.displayName || 'No Name')}</div>
+                        <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(admin.email || '—')}</div>
+                    </div>
+                </div>
+            </td>
+            <td style="font-size:0.85rem;">${escapeHtml(schoolName)}</td>
+            <td><span class="badge badge-info">${escapeHtml(admin.role || 'school_admin')}</span></td>
+            <td>
+                <span class="badge ${twoFA ? 'badge-success' : 'badge-warning'}">
+                    <i class="fas ${twoFA ? 'fa-lock' : 'fa-lock-open'}" style="font-size:0.65rem;"></i>
+                    ${twoFA ? 'Enabled' : 'Disabled'}
+                </span>
+            </td>
+            <td style="font-size:0.82rem;">${lastSeen}</td>
+            <td style="font-size:0.82rem;">${joined}</td>
+            <td>
+                <button class="btn btn-xs btn-outline" onclick="event.stopPropagation(); openUserDetail('${admin.id}')">
+                    <i class="fas fa-eye"></i> View
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function openUserDetail(adminId) {
+    const admin = allSchoolAdmins.find(a => a.id === adminId);
+    if (!admin) return;
+
+    const school = allSchools.find(s => s.id === admin.schoolId);
+    const schoolName = school?.name || 'Unassigned';
+    const twoFA = admin.twoFactorEnabled === true;
+
+    const permissionLabels = {
+        manage_users: 'Manage Users',
+        manage_billing: 'Manage Billing',
+        view_analytics: 'View Analytics',
+        manage_content: 'Manage Content',
+        manage_classes: 'Manage Classes'
+    };
+
+    const permissions = (admin.permissions || [])
+        .map(p => `<span class="badge badge-info" style="margin:2px;">${permissionLabels[p] || p}</span>`)
+        .join('') || '<span style="color:var(--text-muted); font-size:0.82rem;">No permissions set</span>';
+
+    const modal = document.getElementById('user-detail-modal');
+    document.getElementById('user-detail-content').innerHTML = `
+        <div class="modal-header">
+            <h3><i class="fas fa-user-cog"></i> Admin Profile</h3>
+            <button class="modal-close" onclick="closeUserDetail()">&times;</button>
+        </div>
+
+        <!-- Avatar + name -->
+        <div style="display:flex; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--border-light); margin-bottom:20px;">
+            <div style="width:56px; height:56px; border-radius:50%; background:linear-gradient(135deg,var(--primary),var(--primary-light));
+                        color:white; display:flex; align-items:center; justify-content:center;
+                        font-weight:800; font-size:1.1rem; flex-shrink:0;">
+                ${(admin.displayName || admin.email || 'A').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()}
+            </div>
+            <div>
+                <div style="font-size:1.15rem; font-weight:700;">${escapeHtml(admin.displayName || 'No Name')}</div>
+                <div style="color:var(--text-muted); font-size:0.85rem;">${escapeHtml(admin.email || '—')}</div>
+                <div style="margin-top:4px;">
+                    <span class="badge badge-info">${escapeHtml(admin.role || 'school_admin')}</span>
+                    <span class="badge ${twoFA ? 'badge-success' : 'badge-warning'}" style="margin-left:6px;">
+                        <i class="fas ${twoFA ? 'fa-lock' : 'fa-lock-open'}" style="font-size:0.65rem;"></i>
+                        2FA ${twoFA ? 'On' : 'Off'}
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info grid -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px;">
+            <div>
+                <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:3px;">School</div>
+                <div style="font-weight:600;">${escapeHtml(schoolName)}</div>
+                ${school ? `<div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(school.city || '')}${school.country ? ', ' + school.country : ''}</div>` : ''}
+            </div>
+            <div>
+                <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:3px;">Phone</div>
+                <div>${escapeHtml(admin.phone || '—')}</div>
+            </div>
+            <div>
+                <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:3px;">Joined</div>
+                <div>${admin.createdAt ? new Date(admin.createdAt).toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'}) : '—'}</div>
+            </div>
+            <div>
+                <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:3px;">Last Seen</div>
+                <div>${admin.lastSeenAt ? new Date(admin.lastSeenAt).toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit'}) : 'Never'}</div>
+            </div>
+            ${twoFA && admin.twoFactorEnabledAt ? `
+            <div>
+                <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:3px;">2FA Enabled</div>
+                <div>${new Date(admin.twoFactorEnabledAt).toLocaleDateString()}</div>
+            </div>` : ''}
+        </div>
+
+        <!-- Permissions -->
+        <div style="margin-bottom:20px;">
+            <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Permissions</div>
+            <div>${permissions}</div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex; gap:10px; flex-wrap:wrap; padding-top:16px; border-top:1px solid var(--border-light);">
+            <button class="btn btn-primary btn-sm" onclick="sendPasswordReset('${escapeHtml(admin.email || '')}')">
+                <i class="fas fa-envelope"></i> Send Password Reset
+            </button>
+            ${twoFA ? `
+            <button class="btn btn-sm" style="background:#fef9ee; color:var(--warning); border:1.5px solid #fde68a;"
+                    onclick="resetAdminTFA('${admin.id}', '${escapeHtml(admin.displayName || admin.email || '')}')">
+                <i class="fas fa-shield-alt"></i> Reset 2FA
+            </button>` : ''}
+            <button class="btn btn-outline btn-sm" onclick="closeUserDetail()">Close</button>
+        </div>
+    `;
+
+    modal.style.display = 'flex';
+}
+
+async function sendPasswordReset(email) {
+    if (!email) { alert('No email address on file for this admin.'); return; }
+    if (!confirm(`Send a password reset email to ${email}?`)) return;
+    try {
+        const { sendPasswordResetEmail } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js');
+        await sendPasswordResetEmail(auth, email);
+        alert(`✅ Password reset email sent to ${email}`);
+    } catch (err) {
+        console.error('Password reset error:', err);
+        alert('❌ Failed to send reset email: ' + err.message);
+    }
+}
+
+async function resetAdminTFA(adminId, adminName) {
+    if (!confirm(`Reset 2FA for ${adminName}?\n\nThis will disable their two-factor authentication. They will need to set it up again on next login.`)) return;
+    try {
+        await updateDoc(doc(db, 'schooladmins', adminId), {
+            twoFactorEnabled: false,
+            twoFactorSecret: null,
+            twoFactorBackupCodes: [],
+            twoFactorResetAt: new Date().toISOString(),
+            twoFactorResetBy: currentUser?.email || 'super_admin'
+        });
+        alert(`✅ 2FA has been reset for ${adminName}.`);
+        // Refresh local data
+        const idx = allSchoolAdmins.findIndex(a => a.id === adminId);
+        if (idx !== -1) {
+            allSchoolAdmins[idx].twoFactorEnabled = false;
+            allSchoolAdmins[idx].twoFactorSecret = null;
+        }
+        closeUserDetail();
+        renderUserStats();
+        filterUsers();
+    } catch (err) {
+        console.error('TFA reset error:', err);
+        alert('❌ Failed to reset 2FA: ' + err.message);
+    }
+}
+
+function closeUserDetail() {
+    document.getElementById('user-detail-modal').style.display = 'none';
+}
+    
     
     // ═══════════════ EXPORT ALL GLOBAL FUNCTIONS ═══════════════
     window.handleTFAction = handleTFAction;
@@ -3430,6 +3832,12 @@ window.navigateTo = function(pageName, el) {
     window.showSchoolCreditError = showSchoolCreditError;
     window.computeSchoolExpiry = computeSchoolExpiry;
     window.updateSchoolCreditStats = updateSchoolCreditStats;
+    window.loadUsersPage = loadUsersPage;
+    window.filterUsers = filterUsers;
+    window.openUserDetail = openUserDetail;
+    window.closeUserDetail = closeUserDetail;
+    window.sendPasswordReset = sendPasswordReset;
+    window.resetAdminTFA = resetAdminTFA;
     
 </script>
 </body>
