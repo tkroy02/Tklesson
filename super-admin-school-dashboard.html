@@ -746,6 +746,8 @@
                     <i class="fas fa-school-flag"></i> School Network</a></li>
             <li><a href="#" data-page="activity" onclick="navigateTo('activity', this)">
                     <i class="fas fa-stream"></i> Global Activity Log</a></li>
+            <li><a href="#" data-page="tickets" onclick="navigateTo('tickets', this)">
+                    <i class="fas fa-ticket-alt"></i> Support Tickets</a></li>
             <li><a href="#" data-page="security" onclick="navigateTo('security', this)">
                     <i class="fas fa-shield-alt"></i> Security Settings
             <li><a href="#" data-page="analytics" onclick="navigateTo('analytics', this)">
@@ -1181,6 +1183,105 @@
         <button class="btn btn-outline" style="width:100%; margin-top:10px;" onclick="closePasswordModal()">
             Cancel
         </button>
+    </div>
+</div>
+
+<!-- Page: Support Tickets -->
+<div id="page-tickets" class="page">
+    <div class="page-header">
+        <div class="page-title-group">
+            <h1><i class="fas fa-ticket-alt"></i> Support Tickets</h1>
+            <p>View and manage all support tickets across your network</p>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="loadTicketsPage()">
+            <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+    </div>
+
+    <!-- Ticket Stats -->
+    <div class="stats-grid" id="ticket-stats">
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Total Tickets</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Unresolved</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Resolved</div></div>
+        <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Avg Response</div></div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card" style="padding: 20px;">
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+            <div style="flex: 1; min-width: 180px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">School</label>
+                <select id="ticket-school-filter" class="form-select" onchange="filterTickets()">
+                    <option value="all">All Schools</option>
+                </select>
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Category</label>
+                <select id="ticket-category-filter" class="form-select" onchange="filterTickets()">
+                    <option value="all">All Categories</option>
+                    <option value="account">Account</option>
+                    <option value="billing">Billing</option>
+                    <option value="technical">Technical</option>
+                    <option value="2fa">2FA</option>
+                    <option value="rewards">Rewards</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Status</label>
+                <select id="ticket-status-filter" class="form-select" onchange="filterTickets()">
+                    <option value="all">All Status</option>
+                    <option value="open">Unresolved</option>
+                    <option value="resolved">Resolved</option>
+                </select>
+            </div>
+            <div style="flex: 2; min-width: 200px;">
+                <label style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Search</label>
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="ticket-search-input" class="form-input" placeholder="Subject, email, or ticket ID..." oninput="filterTickets()">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tickets Table -->
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div style="padding: 16px 20px; border-bottom: 1px solid var(--border-light);">
+            <h3 style="margin: 0;">All Support Tickets</h3>
+        </div>
+        <div style="max-height: 550px; overflow-y: auto;">
+            <div class="table-wrap">
+                <table style="width: 100%;">
+                    <thead>
+                        <tr>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">ID</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">School</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Subject</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Category</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Agent</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Created</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Status</th>
+                            <th style="position: sticky; top: 0; background: #f8fafc;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ticket-table-body">
+                        <tr>
+                            <td colspan="8" style="text-align: center; padding: 50px;">
+                                <i class="fas fa-spinner fa-pulse"></i> Loading tickets...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Ticket Detail Modal -->
+<div id="ticket-detail-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this) closeTicketDetail()">
+    <div class="modal-content" style="max-width: 700px;">
+        <div id="ticket-detail-content"></div>
     </div>
 </div>
         
@@ -2372,6 +2473,328 @@ async function confirmDisableTFA() {
         document.getElementById('password-save-btn').disabled = false;
     }
 
+// ═══════════════ SUPPORT TICKET SYSTEM ═══════════════
+let allTickets = [];
+let ticketSchoolMap = new Map(); // cache school names
+
+async function loadTicketsPage() {
+    // Show loading
+    document.getElementById('ticket-table-body').innerHTML = `
+        <tr><td colspan="8" style="text-align:center; padding:50px;">
+            <i class="fas fa-spinner fa-pulse"></i> Loading tickets...
+        </td></tr>`;
+    
+    await loadAllTickets();
+    await populateTicketSchoolFilter();
+    renderTicketStats();
+    renderTicketTable();
+}
+
+async function loadAllTickets() {
+    try {
+        const ticketsSnap = await getDocs(query(
+            collection(db, 'support_tickets'),
+            orderBy('createdAt', 'desc'),
+            limit(500)
+        ));
+        
+        allTickets = [];
+        ticketsSnap.forEach(doc => {
+            allTickets.push({ id: doc.id, ...doc.data() });
+        });
+        
+        // Build school name cache
+        for (let ticket of allTickets) {
+            if (ticket.schoolId && !ticketSchoolMap.has(ticket.schoolId)) {
+                try {
+                    const schoolSnap = await getDoc(doc(db, 'schools', ticket.schoolId));
+                    if (schoolSnap.exists()) {
+                        ticketSchoolMap.set(ticket.schoolId, schoolSnap.data().name || 'Unknown');
+                    } else {
+                        ticketSchoolMap.set(ticket.schoolId, 'Unknown School');
+                    }
+                } catch (e) {
+                    ticketSchoolMap.set(ticket.schoolId, 'Unknown');
+                }
+            }
+        }
+    } catch (err) {
+        console.error('Error loading tickets:', err);
+        allTickets = [];
+    }
+}
+
+async function populateTicketSchoolFilter() {
+    const schoolsSet = new Set();
+    allTickets.forEach(t => {
+        if (t.schoolId) schoolsSet.add(t.schoolId);
+    });
+    
+    const filter = document.getElementById('ticket-school-filter');
+    let options = '<option value="all">All Schools</option>';
+    
+    for (let schoolId of schoolsSet) {
+        const schoolName = ticketSchoolMap.get(schoolId) || schoolId.substring(0, 8);
+        options += `<option value="${schoolId}">${schoolName}</option>`;
+    }
+    
+    filter.innerHTML = options;
+}
+
+function renderTicketStats() {
+    const total = allTickets.length;
+    const unresolved = allTickets.filter(t => t.status !== 'resolved').length;
+    const resolved = allTickets.filter(t => t.status === 'resolved').length;
+    
+    // Calculate average response time (mock for now - can be enhanced)
+    const avgResponse = calculateAvgResponseTime();
+    
+    document.getElementById('ticket-stats').innerHTML = `
+        <div class="stat-card"><div class="stat-value">${total}</div><div class="stat-label">Total Tickets</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:var(--warning);">${unresolved}</div><div class="stat-label">Unresolved</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:var(--success);">${resolved}</div><div class="stat-label">Resolved</div></div>
+        <div class="stat-card"><div class="stat-value">${avgResponse}</div><div class="stat-label">Avg Response</div></div>
+    `;
+}
+
+function calculateAvgResponseTime() {
+    const resolvedTickets = allTickets.filter(t => t.status === 'resolved' && t.createdAt && t.resolvedAt);
+    if (resolvedTickets.length === 0) return '—';
+    
+    let totalHours = 0;
+    resolvedTickets.forEach(t => {
+        const created = new Date(t.createdAt);
+        const resolved = new Date(t.resolvedAt);
+        const hours = (resolved - created) / (1000 * 60 * 60);
+        totalHours += hours;
+    });
+    
+    const avgHours = totalHours / resolvedTickets.length;
+    if (avgHours < 24) return `${Math.round(avgHours)}h`;
+    return `${Math.round(avgHours / 24)}d`;
+}
+
+function filterTickets() {
+    const schoolFilter = document.getElementById('ticket-school-filter')?.value || 'all';
+    const categoryFilter = document.getElementById('ticket-category-filter')?.value || 'all';
+    const statusFilter = document.getElementById('ticket-status-filter')?.value || 'all';
+    const searchTerm = (document.getElementById('ticket-search-input')?.value || '').toLowerCase();
+    
+    let filtered = [...allTickets];
+    
+    if (schoolFilter !== 'all') {
+        filtered = filtered.filter(t => t.schoolId === schoolFilter);
+    }
+    if (categoryFilter !== 'all') {
+        filtered = filtered.filter(t => t.category === categoryFilter);
+    }
+    if (statusFilter !== 'all') {
+        filtered = filtered.filter(t => t.status === statusFilter);
+    }
+    if (searchTerm) {
+        filtered = filtered.filter(t => 
+            (t.subject || '').toLowerCase().includes(searchTerm) ||
+            (t.ticketId || '').toLowerCase().includes(searchTerm) ||
+            (t.clientEmail || '').toLowerCase().includes(searchTerm) ||
+            (t.agentEmail || '').toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    renderTicketTable(filtered);
+}
+
+function renderTicketTable(tickets = null) {
+    const displayTickets = tickets || allTickets;
+    const tbody = document.getElementById('ticket-table-body');
+    
+    if (displayTickets.length === 0) {
+        tbody.innerHTML = `
+            <tr><td colspan="8" style="text-align:center; padding:50px; color:var(--text-muted);">
+                <i class="fas fa-inbox" style="font-size:2rem; margin-bottom:10px; opacity:0.3; display:block;"></i>
+                No tickets found
+            </td></tr>`;
+        return;
+    }
+    
+    tbody.innerHTML = displayTickets.map(ticket => {
+        const schoolName = ticket.schoolId ? (ticketSchoolMap.get(ticket.schoolId) || 'Unknown') : 'N/A';
+        const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString() : 'Unknown';
+        const isResolved = ticket.status === 'resolved';
+        const categoryColors = {
+            account: 'badge-info',
+            billing: 'badge-warning',
+            technical: 'badge-neutral',
+            '2fa': 'badge-danger',
+            rewards: 'badge-success',
+            other: 'badge-neutral'
+        };
+        const categoryColor = categoryColors[ticket.category] || 'badge-neutral';
+        
+        return `
+            <tr style="cursor: pointer;" onclick="openTicketDetail('${ticket.id}')">
+                <td><code style="font-size:0.75rem;">${ticket.ticketId || ticket.id.substring(0, 8)}</code></td>
+                <td><strong>${escapeHtml(schoolName)}</strong></td>
+                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(ticket.subject || 'No subject')}</td>
+                <td><span class="badge ${categoryColor}">${ticket.category || 'other'}</span></td>
+                <td style="font-size:0.8rem;">${escapeHtml(ticket.agentEmail?.split('@')[0] || 'Unknown')}</td>
+                <td style="font-size:0.8rem;">${created}</td>
+                <td>
+                    <span class="badge ${isResolved ? 'badge-success' : 'badge-warning'}">
+                        ${isResolved ? 'Resolved' : 'Open'}
+                    </span>
+                </td>
+                <td>
+                    <button class="btn btn-xs ${isResolved ? 'btn-outline' : 'btn-primary'}" 
+                            onclick="event.stopPropagation(); updateTicketStatus('${ticket.id}', '${isResolved ? 'reopen' : 'resolve'}')">
+                        <i class="fas ${isResolved ? 'fa-redo' : 'fa-check'}"></i>
+                        ${isResolved ? 'Reopen' : 'Resolve'}
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function openTicketDetail(ticketId) {
+    const ticket = allTickets.find(t => t.id === ticketId);
+    if (!ticket) return;
+    
+    const schoolName = ticket.schoolId ? (ticketSchoolMap.get(ticket.schoolId) || 'Unknown') : 'N/A';
+    const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleString() : 'Unknown';
+    const resolved = ticket.resolvedAt ? new Date(ticket.resolvedAt).toLocaleString() : 'Not resolved';
+    const categoryColors = {
+        account: 'badge-info',
+        billing: 'badge-warning',
+        technical: 'badge-neutral',
+        '2fa': 'badge-danger',
+        rewards: 'badge-success',
+        other: 'badge-neutral'
+    };
+    
+    const modal = document.getElementById('ticket-detail-modal');
+    const content = document.getElementById('ticket-detail-content');
+    
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3><i class="fas fa-ticket-alt"></i> Ticket ${ticket.ticketId || ticket.id.substring(0, 8)}</h3>
+            <button class="modal-close" onclick="closeTicketDetail()">&times;</button>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+                <span class="badge ${categoryColors[ticket.category] || 'badge-neutral'}">${ticket.category || 'Other'}</span>
+                <span class="badge ${ticket.status === 'resolved' ? 'badge-success' : 'badge-warning'}">
+                    ${ticket.status === 'resolved' ? 'Resolved' : 'Open'}
+                </span>
+            </div>
+            
+            <h4 style="color: var(--primary); margin-bottom: 8px;">${escapeHtml(ticket.subject || 'No subject')}</h4>
+            
+            <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin: 16px 0;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div>
+                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">School</div>
+                        <div style="font-weight: 600;">${escapeHtml(schoolName)}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Client Email</div>
+                        <div>${escapeHtml(ticket.clientEmail || 'N/A')}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Agent</div>
+                        <div>${escapeHtml(ticket.agentEmail || 'Unknown')}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Created</div>
+                        <div>${created}</div>
+                    </div>
+                    ${ticket.status === 'resolved' ? `
+                    <div>
+                        <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted);">Resolved</div>
+                        <div>${resolved}</div>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+            
+            <div style="margin: 16px 0;">
+                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;">Agent Action / Response</div>
+                <div style="background: #f1f5f9; border-radius: 12px; padding: 14px; border-left: 3px solid var(--gold);">
+                    ${escapeHtml(ticket.agentAction || 'No action recorded')}
+                </div>
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+            <button class="btn btn-outline btn-sm" onclick="closeTicketDetail()">Close</button>
+            <button class="btn ${ticket.status === 'resolved' ? 'btn-outline' : 'btn-primary'} btn-sm" 
+                    onclick="updateTicketStatus('${ticket.id}', '${ticket.status === 'resolved' ? 'reopen' : 'resolve'}'); closeTicketDetail();">
+                <i class="fas ${ticket.status === 'resolved' ? 'fa-redo' : 'fa-check'}"></i>
+                ${ticket.status === 'resolved' ? 'Reopen Ticket' : 'Resolve Ticket'}
+            </button>
+        </div>
+    `;
+    
+    modal.style.display = 'flex';
+}
+
+async function updateTicketStatus(ticketId, action) {
+    const ticket = allTickets.find(t => t.id === ticketId);
+    if (!ticket) return;
+    
+    const confirmMsg = action === 'resolve' 
+        ? 'Mark this ticket as resolved?' 
+        : 'Reopen this ticket?';
+    
+    if (!confirm(confirmMsg)) return;
+    
+    try {
+        const updateData = action === 'resolve' 
+            ? { status: 'resolved', resolvedAt: new Date().toISOString() }
+            : { status: 'open', resolvedAt: null };
+        
+        await updateDoc(doc(db, 'support_tickets', ticketId), updateData);
+        
+        // Update local data
+        if (action === 'resolve') {
+            ticket.status = 'resolved';
+            ticket.resolvedAt = new Date().toISOString();
+        } else {
+            ticket.status = 'open';
+            ticket.resolvedAt = null;
+        }
+        
+        renderTicketStats();
+        filterTickets(); // Refresh the view
+        alert(`Ticket ${action === 'resolve' ? 'resolved' : 'reopened'} successfully!`);
+        
+    } catch (err) {
+        console.error('Error updating ticket:', err);
+        alert('Error updating ticket: ' + err.message);
+    }
+}
+
+function closeTicketDetail() {
+    document.getElementById('ticket-detail-modal').style.display = 'none';
+}
+
+// Helper function for escaping HTML
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
+}
+
+// Override navigateTo to load tickets when that page is selected
+const originalNavigateTo = window.navigateTo;
+window.navigateTo = function(pageName, el) {
+    originalNavigateTo(pageName, el);
+    if (pageName === 'tickets') {
+        loadTicketsPage();
+    }
+};
+    
     // ═══════════════ EXPORT ALL GLOBAL FUNCTIONS ═══════════════
     window.handleTFAction = handleTFAction;
     window.loadTFAStatus = loadTFAStatus;
