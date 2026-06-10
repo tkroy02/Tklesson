@@ -1474,25 +1474,42 @@
     };
 
     // ── Data Fetching ──
-    async function fetchAllSchools() {
-        const snap = await getDocs(collection(db, 'schools'));
-        allSchools = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        // Enrich with computed counts if not stored
-        for (let school of allSchools) {
-            if (school.studentCount === undefined || school.teacherCount === undefined) {
-                try {
-                    const usersSnap = await getDocs(collection(db, `schools/${school.id}/users`));
-                    const users = usersSnap.docs.map(d => d.data());
-                    school.studentCount = users.filter(u => u.role === 'student').length;
-                    school.teacherCount = users.filter(u => u.role === 'teacher').length;
-                } catch (e) {
-                    school.studentCount = 0;
-                    school.teacherCount = 0;
-                }
+   async function fetchAllSchools() {
+    const snap = await getDocs(collection(db, 'schools'));
+    allSchools = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // Fetch all school admins once and index by schoolId
+    const adminSnap = await getDocs(collection(db, 'schooladmins'));
+    const adminEmailBySchoolId = {};
+    adminSnap.docs.forEach(d => {
+        const data = d.data();
+        if (data.schoolId && data.email) {
+            // Keep first admin found per school (or overwrite — doesn't matter much)
+            adminEmailBySchoolId[data.schoolId] = data.email;
+        }
+    });
+
+    // Enrich schools with admin email + user counts
+    for (let school of allSchools) {
+        // Attach admin email from schooladmins collection
+        if (!school.adminEmail && adminEmailBySchoolId[school.id]) {
+            school.adminEmail = adminEmailBySchoolId[school.id];
+        }
+
+        if (school.studentCount === undefined || school.teacherCount === undefined) {
+            try {
+                const usersSnap = await getDocs(collection(db, `schools/${school.id}/users`));
+                const users = usersSnap.docs.map(d => d.data());
+                school.studentCount = users.filter(u => u.role === 'student').length;
+                school.teacherCount = users.filter(u => u.role === 'teacher').length;
+            } catch (e) {
+                school.studentCount = 0;
+                school.teacherCount = 0;
             }
         }
-        return allSchools;
     }
+    return allSchools;
+}
 
     async function fetchGlobalActivity() {
         allActivityEntries = [];
