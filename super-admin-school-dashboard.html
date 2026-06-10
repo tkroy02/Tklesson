@@ -2473,9 +2473,9 @@ async function confirmDisableTFA() {
         document.getElementById('password-save-btn').disabled = false;
     }
 
+//=======================================================//  
 // ═══════════════ SUPPORT TICKET SYSTEM ═══════════════
 let allTickets = [];
-let ticketSchoolMap = new Map(); // cache school names
 
 async function loadTicketsPage() {
     // Show loading
@@ -2500,24 +2500,10 @@ async function loadAllTickets() {
         
         allTickets = [];
         ticketsSnap.forEach(doc => {
-            allTickets.push({ id: doc.id, ...doc.data() });
+            const ticketData = { id: doc.id, ...doc.data() };
+            allTickets.push(ticketData);
         });
         
-        // Build school name cache
-        for (let ticket of allTickets) {
-            if (ticket.schoolId && !ticketSchoolMap.has(ticket.schoolId)) {
-                try {
-                    const schoolSnap = await getDoc(doc(db, 'schools', ticket.schoolId));
-                    if (schoolSnap.exists()) {
-                        ticketSchoolMap.set(ticket.schoolId, schoolSnap.data().name || 'Unknown');
-                    } else {
-                        ticketSchoolMap.set(ticket.schoolId, 'Unknown School');
-                    }
-                } catch (e) {
-                    ticketSchoolMap.set(ticket.schoolId, 'Unknown');
-                }
-            }
-        }
     } catch (err) {
         console.error('Error loading tickets:', err);
         allTickets = [];
@@ -2525,29 +2511,34 @@ async function loadAllTickets() {
 }
 
 async function populateTicketSchoolFilter() {
-    const schoolsSet = new Set();
+    // Get unique school names from tickets (only non-empty ones)
+    const schoolNamesSet = new Set();
     allTickets.forEach(t => {
-        if (t.schoolId) schoolsSet.add(t.schoolId);
+        if (t.schoolName && t.schoolName.trim()) {
+            schoolNamesSet.add(t.schoolName.trim());
+        }
     });
     
     const filter = document.getElementById('ticket-school-filter');
     let options = '<option value="all">All Schools</option>';
     
-    for (let schoolId of schoolsSet) {
-        const schoolName = ticketSchoolMap.get(schoolId) || schoolId.substring(0, 8);
-        options += `<option value="${schoolId}">${schoolName}</option>`;
+    // Sort alphabetically
+    const sortedSchoolNames = Array.from(schoolNamesSet).sort();
+    for (let schoolName of sortedSchoolNames) {
+        options += `<option value="${escapeHtml(schoolName)}">${escapeHtml(schoolName)}</option>`;
     }
     
     filter.innerHTML = options;
 }
 
 function renderTicketStats() {
-    const total = allTickets.length;
-    const unresolved = allTickets.filter(t => t.status !== 'resolved').length;
-    const resolved = allTickets.filter(t => t.status === 'resolved').length;
+    // Only count tickets that have a school name (school-only tickets)
+    const schoolTickets = allTickets.filter(t => t.schoolName && t.schoolName.trim());
+    const total = schoolTickets.length;
+    const unresolved = schoolTickets.filter(t => t.status !== 'resolved').length;
+    const resolved = schoolTickets.filter(t => t.status === 'resolved').length;
     
-    // Calculate average response time (mock for now - can be enhanced)
-    const avgResponse = calculateAvgResponseTime();
+    const avgResponse = calculateAvgResponseTime(schoolTickets);
     
     document.getElementById('ticket-stats').innerHTML = `
         <div class="stat-card"><div class="stat-value">${total}</div><div class="stat-label">Total Tickets</div></div>
@@ -2557,8 +2548,8 @@ function renderTicketStats() {
     `;
 }
 
-function calculateAvgResponseTime() {
-    const resolvedTickets = allTickets.filter(t => t.status === 'resolved' && t.createdAt && t.resolvedAt);
+function calculateAvgResponseTime(tickets) {
+    const resolvedTickets = tickets.filter(t => t.status === 'resolved' && t.createdAt && t.resolvedAt);
     if (resolvedTickets.length === 0) return '—';
     
     let totalHours = 0;
@@ -2580,10 +2571,11 @@ function filterTickets() {
     const statusFilter = document.getElementById('ticket-status-filter')?.value || 'all';
     const searchTerm = (document.getElementById('ticket-search-input')?.value || '').toLowerCase();
     
-    let filtered = [...allTickets];
+    // Start with ONLY school tickets (has schoolName)
+    let filtered = allTickets.filter(t => t.schoolName && t.schoolName.trim());
     
     if (schoolFilter !== 'all') {
-        filtered = filtered.filter(t => t.schoolId === schoolFilter);
+        filtered = filtered.filter(t => t.schoolName === schoolFilter);
     }
     if (categoryFilter !== 'all') {
         filtered = filtered.filter(t => t.category === categoryFilter);
@@ -2596,6 +2588,7 @@ function filterTickets() {
             (t.subject || '').toLowerCase().includes(searchTerm) ||
             (t.ticketId || '').toLowerCase().includes(searchTerm) ||
             (t.clientEmail || '').toLowerCase().includes(searchTerm) ||
+            (t.schoolName || '').toLowerCase().includes(searchTerm) ||
             (t.agentEmail || '').toLowerCase().includes(searchTerm)
         );
     }
@@ -2604,20 +2597,20 @@ function filterTickets() {
 }
 
 function renderTicketTable(tickets = null) {
-    const displayTickets = tickets || allTickets;
+    const displayTickets = tickets || allTickets.filter(t => t.schoolName && t.schoolName.trim());
     const tbody = document.getElementById('ticket-table-body');
     
     if (displayTickets.length === 0) {
         tbody.innerHTML = `
             <tr><td colspan="8" style="text-align:center; padding:50px; color:var(--text-muted);">
                 <i class="fas fa-inbox" style="font-size:2rem; margin-bottom:10px; opacity:0.3; display:block;"></i>
-                No tickets found
+                No school tickets found
             </td></tr>`;
         return;
     }
     
     tbody.innerHTML = displayTickets.map(ticket => {
-        const schoolName = ticket.schoolId ? (ticketSchoolMap.get(ticket.schoolId) || 'Unknown') : 'N/A';
+        const schoolName = ticket.schoolName || '—';
         const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString() : 'Unknown';
         const isResolved = ticket.status === 'resolved';
         const categoryColors = {
@@ -2659,7 +2652,7 @@ async function openTicketDetail(ticketId) {
     const ticket = allTickets.find(t => t.id === ticketId);
     if (!ticket) return;
     
-    const schoolName = ticket.schoolId ? (ticketSchoolMap.get(ticket.schoolId) || 'Unknown') : 'N/A';
+    const schoolName = ticket.schoolName || '—';
     const created = ticket.createdAt ? new Date(ticket.createdAt).toLocaleString() : 'Unknown';
     const resolved = ticket.resolvedAt ? new Date(ticket.resolvedAt).toLocaleString() : 'Not resolved';
     const categoryColors = {
@@ -2755,7 +2748,6 @@ async function updateTicketStatus(ticketId, action) {
         
         await updateDoc(doc(db, 'support_tickets', ticketId), updateData);
         
-        // Update local data
         if (action === 'resolve') {
             ticket.status = 'resolved';
             ticket.resolvedAt = new Date().toISOString();
@@ -2765,7 +2757,7 @@ async function updateTicketStatus(ticketId, action) {
         }
         
         renderTicketStats();
-        filterTickets(); // Refresh the view
+        filterTickets();
         alert(`Ticket ${action === 'resolve' ? 'resolved' : 'reopened'} successfully!`);
         
     } catch (err) {
@@ -2778,7 +2770,6 @@ function closeTicketDetail() {
     document.getElementById('ticket-detail-modal').style.display = 'none';
 }
 
-// Helper function for escaping HTML
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
@@ -2786,7 +2777,7 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Override navigateTo to load tickets when that page is selected
+// Update navigateTo to load tickets
 const originalNavigateTo = window.navigateTo;
 window.navigateTo = function(pageName, el) {
     originalNavigateTo(pageName, el);
