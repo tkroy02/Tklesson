@@ -3137,6 +3137,13 @@ async function submitSchoolCreditAction() {
     const action = document.getElementById('school-credit-action-type').value;
     const reason = document.getElementById('school-credit-reason').value.trim();
     
+    // Get current user
+    const user = auth.currentUser;
+    if (!user) {
+        showSchoolCreditError('You must be logged in to perform this action.');
+        return;
+    }
+    
     // Validation
     if (!schoolId) {
         showSchoolCreditError('Please select a school.');
@@ -3148,11 +3155,29 @@ async function submitSchoolCreditAction() {
     }
     
     let expiryISO = null;
+    let durationMonths = null;
+    let planName = null;
+    
     if (action === 'grant') {
+        const dur = document.getElementById('school-credit-duration').value;
         expiryISO = computeSchoolExpiry();
+        
         if (!expiryISO) {
             showSchoolCreditError('Please set a valid access expiry date.');
             return;
+        }
+        
+        // Set plan name and duration based on selection
+        if (dur === 'monthly') {
+            planName = 'premium_monthly';
+            durationMonths = 1;
+        } else if (dur === 'yearly') {
+            planName = 'premium_yearly';
+            durationMonths = 12;
+        } else {
+            // Custom - default to monthly
+            planName = 'premium_monthly';
+            durationMonths = 1;
         }
     }
     
@@ -3162,7 +3187,7 @@ async function submitSchoolCreditAction() {
     const schoolName = school?.name || 'this school';
     
     const confirmMsg = action === 'grant'
-        ? `Grant PREMIUM access to "${schoolName}" until ${expiryLabel}?\n\nReason: ${reason}`
+        ? `Grant PREMIUM access to "${schoolName}" until ${expiryLabel}?\n\nPlan: ${planName}\nReason: ${reason}`
         : `Revoke PREMIUM access from "${schoolName}"?\n\nReason: ${reason}`;
     
     if (!confirm(confirmMsg)) return;
@@ -3185,30 +3210,42 @@ async function submitSchoolCreditAction() {
         const now = new Date().toISOString();
         
         if (action === 'grant') {
-            const planType = document.getElementById('school-credit-duration').value;
-            const planName = planType === 'monthly' ? 'monthly' : 'yearly';
-            const durationMonths = planType === 'monthly' ? 1 : 12;
-            
-            // Update school document
+            // 1. Update the schools document
             await updateDoc(schoolRef, {
                 subscription: true,
-                subscriptionPlan: planName,
+                subscriptionPlan: planName === 'premium_yearly' ? 'yearly' : 'monthly',
                 subscriptionExpiry: expiryISO,
                 subscriptionStart: schoolData.subscriptionStart || now,
                 lastUpdated: now,
-                grantedBy: currentUser?.uid,
-                grantedByName: currentUser?.email,
+                grantedBy: user.uid,
+                grantedByName: user.email,
                 grantedReason: reason,
                 grantedAt: now
             });
             
-            // Log to transactions
+            // 2. Create a subscription record (matching your schema)
+            await setDoc(doc(collection(db, 'subscriptions')), {
+                userId: schoolId,
+                email: schoolData.adminEmail || '',
+                duration: durationMonths,
+                extendedExisting: schoolData.subscription === true,
+                grantedAt: now,
+                grantedBy: user.uid,
+                plan: planName,
+                price: 0,
+                reason: reason,
+                source: 'super_admin_dashboard',
+                type: 'admin_grant'
+            });
+            
+            // 3. Log to credit transactions (for history display)
             await setDoc(doc(collection(db, 'schoolCreditTransactions')), {
                 schoolId: schoolId,
                 schoolName: schoolData.name || 'Unknown School',
                 schoolEmail: schoolData.adminEmail || '',
-                adminId: currentUser?.uid,
-                adminEmail: currentUser?.email,
+                adminId: user.uid,
+                adminEmail: user.email,
+                adminName: user.displayName || user.email?.split('@')[0] || 'Super Admin',
                 type: 'access_granted',
                 plan: planName,
                 duration: durationMonths,
@@ -3226,19 +3263,31 @@ async function submitSchoolCreditAction() {
                 subscriptionPlan: 'trial',
                 subscriptionExpiry: null,
                 lastUpdated: now,
-                revokedBy: currentUser?.uid,
-                revokedByName: currentUser?.email,
+                revokedBy: user.uid,
+                revokedByName: user.email,
                 revokedReason: reason,
                 revokedAt: now
             });
             
-            // Log to transactions
+            // 2. Create a revocation record in subscriptions (optional, for audit)
+            await setDoc(doc(collection(db, 'subscriptions')), {
+                userId: schoolId,
+                email: schoolData.adminEmail || '',
+                grantedAt: now,
+                grantedBy: user.uid,
+                reason: reason,
+                source: 'super_admin_dashboard',
+                type: 'admin_revoke'
+            });
+            
+            // 3. Log to credit transactions
             await setDoc(doc(collection(db, 'schoolCreditTransactions')), {
                 schoolId: schoolId,
                 schoolName: schoolData.name || 'Unknown School',
                 schoolEmail: schoolData.adminEmail || '',
-                adminId: currentUser?.uid,
-                adminEmail: currentUser?.email,
+                adminId: user.uid,
+                adminEmail: user.email,
+                adminName: user.displayName || user.email?.split('@')[0] || 'Super Admin',
                 type: 'access_revoked',
                 reason: reason,
                 timestamp: now
@@ -3265,120 +3314,6 @@ async function submitSchoolCreditAction() {
         onSchoolCreditActionTypeChange();
     }
 }
-
-// ─── Show Error ───
-function showSchoolCreditError(msg) {
-    const errorEl = document.getElementById('school-credit-error-msg');
-    errorEl.textContent = msg;
-    errorEl.style.display = 'block';
-    setTimeout(() => {
-        errorEl.style.display = 'none';
-    }, 5000);
-}
-
-// ─── Load Access History ───
-async function loadSchoolCreditLog(schoolId) {
-    const container = document.getElementById('school-credit-log-section');
-    container.innerHTML = '<div style="text-align: center; padding: 20px;"><i class="fas fa-spinner fa-pulse"></i> Loading history...</div>';
-    
-    try {
-        const q = query(
-            collection(db, 'schoolCreditTransactions'),
-            where('schoolId', '==', schoolId),
-            orderBy('timestamp', 'desc'),
-            limit(20)
-        );
-        
-        const snap = await getDocs(q);
-        
-        if (snap.empty) {
-            container.innerHTML = `
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-history"></i> Access History</h3>
-                    </div>
-                    <div style="text-align: center; padding: 40px; color: var(--text-muted);">
-                        <i class="fas fa-inbox" style="font-size: 2rem; margin-bottom: 10px; opacity: 0.3;"></i>
-                        <p>No access changes recorded for this school</p>
-                    </div>
-                </div>`;
-            return;
-        }
-        
-        let historyHtml = `
-            <div class="card">
-                <div class="card-header">
-                    <h3><i class="fas fa-history"></i> Access History (Last 20 changes)</h3>
-                </div>
-                <div style="max-height: 400px; overflow-y: auto;">
-        `;
-        
-        snap.docs.forEach(doc => {
-            const t = doc.data();
-            const time = new Date(t.timestamp).toLocaleString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-            
-            const isGrant = t.type === 'access_granted';
-            const icon = isGrant ? 'fa-check-circle' : 'fa-times-circle';
-            const color = isGrant ? 'var(--success)' : 'var(--danger)';
-            const bgColor = isGrant ? '#f0fdf4' : '#fef2f2';
-            
-            let details = '';
-            if (isGrant && t.plan) {
-                details = `<span class="badge badge-info" style="margin-left: 8px;">${t.plan}</span>`;
-                if (t.expiryDate) {
-                    details += `<span style="margin-left: 8px; font-size: 0.75rem;">until ${new Date(t.expiryDate).toLocaleDateString()}</span>`;
-                }
-            }
-            
-            historyHtml += `
-                <div style="background: ${bgColor}; border-bottom: 1px solid var(--border-light); padding: 16px;">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap;">
-                        <div>
-                            <i class="fas ${icon}" style="color: ${color}; margin-right: 8px;"></i>
-                            <strong style="color: ${color};">${isGrant ? 'ACCESS GRANTED' : 'ACCESS REVOKED'}</strong>
-                            ${details}
-                        </div>
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">${time}</span>
-                    </div>
-                    <div style="margin-top: 8px; font-size: 0.85rem;">
-                        <strong>Reason:</strong> ${escapeHtml(t.reason || 'No reason provided')}
-                    </div>
-                    <div style="margin-top: 4px; font-size: 0.75rem; color: var(--text-muted);">
-                        <i class="fas fa-user"></i> ${escapeHtml(t.adminEmail || 'Unknown')}
-                    </div>
-                </div>
-            `;
-        });
-        
-        historyHtml += `</div></div>`;
-        container.innerHTML = historyHtml;
-        
-    } catch (err) {
-        console.error('Error loading school credit log:', err);
-        container.innerHTML = `
-            <div class="card">
-                <div style="text-align: center; padding: 40px; color: var(--danger);">
-                    <i class="fas fa-exclamation-triangle" style="font-size: 2rem; margin-bottom: 10px;"></i>
-                    <p>Error loading access history</p>
-                </div>
-            </div>`;
-    }
-}
-
-// ─── Update navigateTo to include school-credit ───
-const originalNavigateToCredit = window.navigateTo;
-window.navigateTo = function(pageName, el) {
-    originalNavigateToCredit(pageName, el);
-    if (pageName === 'school-credit') {
-        loadSchoolCreditPage();
-    }
-};
     
     // ═══════════════ EXPORT ALL GLOBAL FUNCTIONS ═══════════════
     window.handleTFAction = handleTFAction;
