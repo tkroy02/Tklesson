@@ -79,28 +79,16 @@
         ::-webkit-scrollbar-thumb:hover { background: var(--primary-light); }
 
         /* Card animations - scroll triggered */
-.blog-post {
-    opacity: 0;
-    transform: translateY(30px);
-    transition: opacity 0.6s cubic-bezier(0.2, 0.9, 0.4, 1.1), transform 0.6s cubic-bezier(0.2, 0.9, 0.4, 1.1);
-}
+        .blog-post {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s cubic-bezier(0.2, 0.9, 0.4, 1.1), transform 0.6s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+        }
 
-.blog-post.visible {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-/* Staggered delays for cards (optional) */
-.blog-post:nth-child(1).visible { transition-delay: 0.05s; }
-.blog-post:nth-child(2).visible { transition-delay: 0.1s; }
-.blog-post:nth-child(3).visible { transition-delay: 0.15s; }
-.blog-post:nth-child(4).visible { transition-delay: 0.2s; }
-.blog-post:nth-child(5).visible { transition-delay: 0.25s; }
-.blog-post:nth-child(6).visible { transition-delay: 0.3s; }
-.blog-post:nth-child(7).visible { transition-delay: 0.35s; }
-.blog-post:nth-child(8).visible { transition-delay: 0.4s; }
-.blog-post:nth-child(9).visible { transition-delay: 0.45s; }
-.blog-post:nth-child(10).visible { transition-delay: 0.5s; }
+        .blog-post.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
 
         /* Hero Section */
         .hero-blog {
@@ -268,6 +256,43 @@
         .read-more i { transition: transform 0.2s ease; }
         .read-more:hover i { transform: translateX(4px); }
 
+        /* Pagination */
+        .pagination-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 48px;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .page-btn {
+            padding: 8px 14px;
+            border: 1px solid #e2e8f0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            font-family: 'Inter', sans-serif;
+            transition: var(--transition);
+        }
+        .page-btn:hover:not(:disabled) {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .page-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .page-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .page-dots {
+            padding: 8px 4px;
+            color: var(--text-muted);
+        }
+
         /* Sidebar */
         .sidebar {
             background: var(--background-light);
@@ -321,6 +346,7 @@
             .blog-content { padding: 30px 20px; }
             .blog-grid { grid-template-columns: 1fr; gap: 20px; }
             #back-to-top { bottom: 20px; right: 20px; width: 42px; height: 42px; }
+            .page-btn { padding: 6px 10px; font-size: 0.8rem; }
         }
     </style>
 </head>
@@ -353,6 +379,8 @@
             </div>
         </div>
 
+        <div id="pagination" class="pagination-container"></div>
+
         <div class="sidebar">
             <h3><i class="fas fa-tags"></i> Popular Topics</h3>
             <div class="tags-container" id="tagsContainer">
@@ -370,9 +398,12 @@
 
 <script>
 const ARTICLES_INDEX = 'articles/index.json';
+const ARTICLES_PER_PAGE = 6;
 
 let allArticles = [];
 let currentSearchTerm = '';
+let currentPage = 1;
+let filteredArticles = [];
 
 async function loadArticles() {
     const grid = document.getElementById('blogGrid');
@@ -387,7 +418,10 @@ async function loadArticles() {
         
         if (resultCount) resultCount.textContent = `${allArticles.length} articles`;
         
-        renderArticles(allArticles);
+        filteredArticles = [...allArticles];
+        currentPage = 1;
+        
+        renderArticles();
         renderTags(allArticles);
         
     } catch (error) {
@@ -401,10 +435,13 @@ async function loadArticles() {
     }
 }
 
-function renderArticles(articles) {
+function renderArticles() {
     const grid = document.getElementById('blogGrid');
     
-    if (!articles || articles.length === 0) {
+    const start = (currentPage - 1) * ARTICLES_PER_PAGE;
+    const pageArticles = filteredArticles.slice(start, start + ARTICLES_PER_PAGE);
+    
+    if (!pageArticles || pageArticles.length === 0) {
         grid.innerHTML = `
             <div style="text-align: center; padding: 60px; color: var(--text-muted); grid-column: 1/-1;">
                 <i class="fas fa-search" style="font-size: 2rem; margin-bottom: 12px; display: block;"></i>
@@ -412,10 +449,11 @@ function renderArticles(articles) {
                 <button onclick="clearSearch()" style="margin-top: 16px; padding: 8px 20px; background: var(--primary); color: white; border: none; border-radius: 50px; cursor: pointer;">Clear Search</button>
             </div>
         `;
+        document.getElementById('pagination').innerHTML = '';
         return;
     }
     
-    grid.innerHTML = articles.map(article => `
+    grid.innerHTML = pageArticles.map(article => `
         <article class="blog-post" onclick="openArticle('${article.slug}')">
             <div class="post-date">${formatDate(article.date)}</div>
             <h3 class="post-title">${escapeHtml(article.title)}</h3>
@@ -431,6 +469,52 @@ function renderArticles(articles) {
     
     // Trigger scroll animation for new cards
     observeCards();
+    
+    // Render pagination controls
+    renderPagination();
+}
+
+function renderPagination() {
+    const totalPages = Math.ceil(filteredArticles.length / ARTICLES_PER_PAGE);
+    const container = document.getElementById('pagination');
+    
+    if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    let html = '<div class="pagination-container">';
+    html += `<button class="page-btn" onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>‹ Previous</button>`;
+    
+    // Show first page
+    if (currentPage > 3) {
+        html += `<button class="page-btn" onclick="goToPage(1)">1</button>`;
+        if (currentPage > 4) html += `<span class="page-dots">...</span>`;
+    }
+    
+    // Show pages around current page
+    for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+        html += `<button class="page-btn ${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
+    }
+    
+    // Show last page
+    if (currentPage < totalPages - 2) {
+        if (currentPage < totalPages - 3) html += `<span class="page-dots">...</span>`;
+        html += `<button class="page-btn" onclick="goToPage(${totalPages})">${totalPages}</button>`;
+    }
+    
+    html += `<button class="page-btn" onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>Next ›</button>`;
+    html += '</div>';
+    
+    container.innerHTML = html;
+}
+
+function goToPage(page) {
+    const totalPages = Math.ceil(filteredArticles.length / ARTICLES_PER_PAGE);
+    if (page < 1 || page > totalPages) return;
+    currentPage = page;
+    renderArticles();
+    window.scrollTo({ top: 400, behavior: 'smooth' });
 }
 
 function renderTags(articles) {
@@ -452,8 +536,6 @@ function renderTags(articles) {
         return;
     }
 
-    // Use buttons with data attributes instead of inline onclick with string interpolation
-    // This safely handles tags containing apostrophes or special characters
     tagsContainer.innerHTML = sortedTags.map(([tag, count]) => `
         <button class="tag" data-tag="${escapeHtml(tag)}">
             ${escapeHtml(tag)} <span style="opacity: 0.7; font-size: 0.7rem;">(${count})</span>
@@ -469,38 +551,39 @@ function filterByTag(tag) {
     const searchInput = document.getElementById('searchInput');
     searchInput.value = tag;
     currentSearchTerm = tag.toLowerCase();
-    filterArticles();
+    applyFilters();
 }
 
 function performSearch() {
     const searchInput = document.getElementById('searchInput');
     currentSearchTerm = searchInput.value.trim().toLowerCase();
-    filterArticles();
+    applyFilters();
 }
 
-function filterArticles() {
+function applyFilters() {
     if (!currentSearchTerm) {
-        renderArticles(allArticles);
-        document.getElementById('resultCount').textContent = `${allArticles.length} articles`;
-        return;
+        filteredArticles = [...allArticles];
+    } else {
+        filteredArticles = allArticles.filter(article => {
+            const titleMatch = article.title.toLowerCase().includes(currentSearchTerm);
+            const excerptMatch = article.excerpt.toLowerCase().includes(currentSearchTerm);
+            const tagMatch = article.tags && article.tags.some(tag => tag.toLowerCase().includes(currentSearchTerm));
+            return titleMatch || excerptMatch || tagMatch;
+        });
     }
     
-    const filtered = allArticles.filter(article => {
-        const titleMatch = article.title.toLowerCase().includes(currentSearchTerm);
-        const excerptMatch = article.excerpt.toLowerCase().includes(currentSearchTerm);
-        const tagMatch = article.tags && article.tags.some(tag => tag.toLowerCase().includes(currentSearchTerm));
-        return titleMatch || excerptMatch || tagMatch;
-    });
-    
-    renderArticles(filtered);
-    document.getElementById('resultCount').textContent = `${filtered.length} of ${allArticles.length} articles`;
+    currentPage = 1;
+    renderArticles();
+    document.getElementById('resultCount').textContent = `${filteredArticles.length} of ${allArticles.length} articles`;
 }
 
 function clearSearch() {
     const searchInput = document.getElementById('searchInput');
     searchInput.value = '';
     currentSearchTerm = '';
-    renderArticles(allArticles);
+    filteredArticles = [...allArticles];
+    currentPage = 1;
+    renderArticles();
     document.getElementById('resultCount').textContent = `${allArticles.length} articles`;
 }
 
@@ -523,6 +606,24 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.appendChild(document.createTextNode(text));
     return div.innerHTML;
+}
+
+function observeCards() {
+    const cards = document.querySelectorAll('.blog-post');
+    
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+                observer.unobserve(entry.target);
+            }
+        });
+    }, {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+    });
+    
+    cards.forEach(card => observer.observe(card));
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -568,30 +669,6 @@ fetch("header.html").then(r => r.text()).then(data => {
 fetch("footer.html").then(r => r.text()).then(data => {
     document.getElementById("footer").innerHTML = data;
 });
-
-// Scroll-triggered animation for cards
-function observeCards() {
-    const cards = document.querySelectorAll('.blog-post');
-    
-    const observer = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('visible');
-                // Optional: unobserve after animation to save performance
-                observer.unobserve(entry.target);
-            }
-        });
-    }, {
-        threshold: 0.1,      // Trigger when 10% of card is visible
-        rootMargin: '0px 0px -50px 0px'  // Slight offset for better timing
-    });
-    
-    cards.forEach(card => observer.observe(card));
-}
-
-// Call this after rendering articles
-// Add this line inside your renderArticles function, after setting innerHTML
-    
 </script>
 
 </body>
