@@ -8,6 +8,7 @@
 
     <script src="https://tklesson.com/resources-loader.js"></script>
     <script>loadCommonResources();</script>
+    <script src="agent-messaging.js"></script>
     
     <style>
         :root {
@@ -1549,7 +1550,7 @@
 
     </div><!-- /content-panel -->
     
-    <!-- ═══════════════ LIVE CHAT ═══════════════ -->
+    <!-- ═══════════════ LIVE CHAT SYSTEM ═══════════════ -->
     <!-- ═══════════════ LIVE CHAT PANEL ═══════════════ -->
 <div class="chat-panel" id="chat-panel">
 
@@ -1653,7 +1654,7 @@ import {
 import {
     getFirestore, collection, doc, getDoc, getDocs,
     setDoc, updateDoc, addDoc, deleteDoc,
-    where, query, orderBy, limit, writeBatch,
+    where, query, orderBy, limit, increment, writeBatch,
     onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
@@ -2667,6 +2668,8 @@ async function initSupportChat(user) {
         listenToChats();
         setAgentPresence(true);
         supportChat.presenceInterval = setInterval(() => setAgentPresence(true), 60000);
+        initAgentMessaging();
+        patchSupportChatForAgentMessaging();
     } catch (err) {
         console.error('Support chat init error:', err);
     }
@@ -3491,6 +3494,454 @@ window.addEventListener('beforeunload', () => {
 
 // ════════════════════════════════════════════════════════
 // END SUPPORT CHAT SYSTEM
+// ════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════
+// AGENT INTERNAL MESSAGING SYSTEM
+// ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+
+const agentMessaging = {
+    currentThreadId:    null,
+    currentPeerId:      null,
+    currentPeerName:    null,
+    messagesUnsub:      null,
+    threadsUnsub:       null,
+    agentsUnsub:        null,
+    renderedMessageIds: new Set(),
+    threads:            [],          // enriched thread list
+    onlineAgents:       [],          // from support_presence
+    typingTimeout:      null,
+};
+
+// ── Build a deterministic thread ID from two UIDs ─────────
+function getAgentThreadId(uid1, uid2) {
+    return [uid1, uid2].sort().join('_');
+}
+
+// ── Init (called once after supportChat is ready) ─────────
+function initAgentMessaging() {
+    listenToAgentPresence();
+    listenToAgentThreads();
+    injectTeamTabUI();
+}
+
+// ── Inject "Team" tab into existing tab bar ───────────────
+function injectTeamTabUI() {
+    const tabBar = document.querySelector('.chat-panel > div[style*="background: #0d2b56"]');
+    if (!tabBar || document.querySelector('[data-tab="team"]')) return;
+
+    const btn = document.createElement('button');
+    btn.className = 'chat-tab';
+    btn.setAttribute('data-tab', 'team');
+    btn.innerHTML = 'Team <span class="chat-tab-badge" id="team-badge" style="display:none;"></span>';
+    btn.onclick = () => switchToTeamTab();
+    tabBar.appendChild(btn);
+}
+
+// ── Listen: online agents from support_presence ───────────
+function listenToAgentPresence() {
+    if (agentMessaging.agentsUnsub) agentMessaging.agentsUnsub();
+
+    agentMessaging.agentsUnsub = onSnapshot(
+        collection(db, 'support_presence'),
+        (snap) => {
+            const agents = [];
+            snap.forEach(d => {
+                const data = d.data();
+                if (d.id !== supportChat.agentUid) {
+                    agents.push({ uid: d.id, ...data });
+                }
+            });
+            agentMessaging.onlineAgents = agents;
+            // Re-render if team tab is active
+            if (supportChat.currentTab === 'team') renderAgentList();
+        }
+    );
+}
+
+// ── Listen: all agent DM threads involving this agent ─────
+function listenToAgentThreads() {
+    if (agentMessaging.threadsUnsub) agentMessaging.threadsUnsub();
+
+    const q = query(
+        collection(db, 'agent_chats'),
+        where('participants', 'array-contains', supportChat.agentUid),
+        orderBy('lastMessageAt', 'desc')
+    );
+
+    agentMessaging.threadsUnsub = onSnapshot(q, (snap) => {
+        const threads = [];
+        snap.forEach(d => threads.push({ id: d.id, ...d.data() }));
+        agentMessaging.threads = threads;
+        updateTeamBadge();
+        if (supportChat.currentTab === 'team') renderAgentList();
+    });
+}
+
+// ── Update team badge count (unread DMs) ──────────────────
+function updateTeamBadge() {
+    const badge = document.getElementById('team-badge');
+    if (!badge) return;
+    const total = agentMessaging.threads.reduce((sum, t) => {
+        return sum + (t.unreadCounts?.[supportChat.agentUid] || 0);
+    }, 0);
+    badge.textContent   = total;
+    badge.style.display = total > 0 ? 'flex' : 'none';
+}
+
+// ── Switch to Team tab ────────────────────────────────────
+function switchToTeamTab() {
+    // Close any open customer chat
+    if (agentMessaging.messagesUnsub) {
+        // keep messages open if same area; handled in renderAgentList
+    }
+    supportChat.currentTab = 'team';
+
+    document.querySelectorAll('.chat-tab').forEach(t => {
+        t.classList.toggle('active', t.getAttribute('data-tab') === 'team');
+    });
+
+    // Hide customer chat area, show agent list
+    document.getElementById('chat-active-area').style.display  = 'none';
+    document.getElementById('chat-empty-state').style.display  = 'none';
+
+    renderAgentList();
+}
+
+// ── Render the "Team" contact list ────────────────────────
+function renderAgentList() {
+    const container = document.getElementById('chat-contact-list');
+    container.innerHTML = '';
+
+    const myUid = supportChat.agentUid;
+
+    // Build a lookup: peerUid → thread
+    const threadByPeer = new Map();
+    agentMessaging.threads.forEach(t => {
+        const peer = t.participants?.find(p => p !== myUid);
+        if (peer) threadByPeer.set(peer, t);
+    });
+
+    // Gather all peer UIDs: from active threads + online agents
+    const seenUids = new Set();
+    const rows     = [];
+
+    // 1. Existing threads first (so agents you've messaged appear even if offline)
+    agentMessaging.threads.forEach(t => {
+        const peer = t.participants?.find(p => p !== myUid);
+        if (!peer || seenUids.has(peer)) return;
+        seenUids.add(peer);
+        const name   = t.participantNames?.[peer] || 'Agent';
+        const online = agentMessaging.onlineAgents.some(a => a.uid === peer && a.online);
+        rows.push({ uid: peer, name, online, thread: t });
+    });
+
+    // 2. Online agents not yet in threads
+    agentMessaging.onlineAgents.forEach(a => {
+        if (seenUids.has(a.uid)) return;
+        seenUids.add(a.uid);
+        rows.push({ uid: a.uid, name: a.name || 'Agent', online: !!a.online, thread: null });
+    });
+
+    if (rows.length === 0) {
+        container.innerHTML = `
+            <div class="chat-empty" style="padding: 30px 20px;">
+                <i class="fas fa-users" style="font-size: 1.8rem; opacity: 0.2; margin-bottom: 8px;"></i>
+                <p style="font-size: 0.82rem;">No other agents found</p>
+            </div>`;
+        // Show empty state panel area
+        document.getElementById('chat-empty-state').style.display = 'flex';
+        document.getElementById('chat-empty-state').querySelector('p').textContent = 'Select a teammate to message';
+        document.getElementById('chat-empty-state').querySelector('i').className   = 'fas fa-users';
+        return;
+    }
+
+    rows.forEach(row => {
+        const thread    = row.thread;
+        const unread    = thread?.unreadCounts?.[myUid] || 0;
+        const lastMsg   = thread?.lastMessage || '';
+        const lastTime  = thread?.lastMessageAt
+            ? formatChatTime(
+                thread.lastMessageAt.toDate
+                    ? thread.lastMessageAt.toDate()
+                    : new Date(thread.lastMessageAt)
+              )
+            : '';
+        const initials  = row.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const threadId  = getAgentThreadId(myUid, row.uid);
+        const isActive  = agentMessaging.currentThreadId === threadId;
+
+        const el        = document.createElement('div');
+        el.className    = `chat-contact-item${isActive ? ' active' : ''}`;
+        el.style.cursor = 'pointer';
+        el.innerHTML    = `
+            <div class="chat-contact-avatar" style="background: #1e3a5f; position: relative;">
+                ${escapeHtml(initials)}
+                <span style="position:absolute; bottom:1px; right:1px; width:8px; height:8px;
+                    border-radius:50%; background:${row.online ? '#22c55e' : '#94a3b8'};
+                    border:1.5px solid white;"></span>
+            </div>
+            <div class="chat-contact-info">
+                <div class="chat-contact-name">${escapeHtml(row.name)}</div>
+                <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 1px;">
+                    ${row.online ? '<i class="fas fa-circle" style="color:#22c55e; font-size:0.5rem;"></i> Online' : 'Offline'}
+                </div>
+                ${lastMsg ? `<div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>` : ''}
+            </div>
+            <div class="chat-contact-meta">
+                <span class="chat-time">${lastTime}</span>
+                ${unread > 0 ? `<div class="chat-unread-badge">${unread}</div>` : ''}
+            </div>`;
+
+        el.addEventListener('click', () => openAgentThread(row.uid, row.name));
+        container.appendChild(el);
+    });
+}
+
+// ── Open a DM thread with another agent ──────────────────
+async function openAgentThread(peerUid, peerName) {
+    const myUid    = supportChat.agentUid;
+    const threadId = getAgentThreadId(myUid, peerUid);
+
+    agentMessaging.currentThreadId = threadId;
+    agentMessaging.currentPeerId   = peerUid;
+    agentMessaging.currentPeerName = peerName;
+    agentMessaging.renderedMessageIds.clear();
+
+    // Re-render list to mark active item
+    renderAgentList();
+
+    // Show active chat area with agent styling
+    document.getElementById('chat-empty-state').style.display  = 'none';
+    document.getElementById('chat-active-area').style.display  = 'flex';
+
+    const initials = peerName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    const online   = agentMessaging.onlineAgents.some(a => a.uid === peerUid && a.online);
+
+    document.getElementById('active-chat-avatar').textContent      = initials;
+    document.getElementById('active-chat-avatar').style.background = '#1e3a5f';
+    document.getElementById('active-chat-name').textContent        = escapeHtml(peerName);
+    document.getElementById('active-chat-meta').innerHTML          =
+        `Agent · <span style="color:${online ? '#22c55e' : 'var(--text-muted)'}">
+            ${online ? 'Online' : 'Offline'}
+        </span>`;
+
+    // Hide customer-only buttons; show nothing (DMs have no claim/close)
+    ['claim-btn', 'unclaim-btn', 'close-chat-btn'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById('claimed-by-banner').style.display = 'none';
+
+    // Swap input placeholder
+    const input = document.getElementById('support-chat-input');
+    if (input) input.placeholder = `Message ${peerName}…`;
+
+    // Patch send / typing handlers for the agent thread context
+    // (The global sendSupportMessage and handleSupportTyping check agentMessaging.currentThreadId)
+
+    // Reset and load messages
+    await markAgentThreadRead(threadId);
+    loadAgentMessages(threadId);
+}
+
+// ── Load messages for an agent DM thread ─────────────────
+function loadAgentMessages(threadId) {
+    if (agentMessaging.messagesUnsub) {
+        agentMessaging.messagesUnsub();
+        agentMessaging.messagesUnsub = null;
+    }
+
+    const container = document.getElementById('support-messages');
+    container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading…</div>';
+
+    const q = query(
+        collection(db, 'agent_chats', threadId, 'messages'),
+        orderBy('timestamp', 'asc')
+    );
+
+    agentMessaging.messagesUnsub = onSnapshot(q, (snap) => {
+        if (snap.empty && container.innerHTML.includes('Loading')) {
+            container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">No messages yet. Say hello! 👋</div>';
+            return;
+        }
+
+        snap.docChanges().forEach(change => {
+            if (change.type !== 'added') return;
+            const msgId = change.doc.id;
+            if (agentMessaging.renderedMessageIds.has(msgId)) return;
+            agentMessaging.renderedMessageIds.add(msgId);
+
+            const msg    = change.doc.data();
+            const isSent = msg.senderId === supportChat.agentUid;
+            const time   = msg.timestamp?.toDate ? formatChatTime(msg.timestamp.toDate()) : '';
+
+            if (container.innerHTML.includes('Loading')) container.innerHTML = '';
+
+            const el       = document.createElement('div');
+            el.className   = isSent ? 'support-msg-sent' : 'support-msg-received';
+            el.innerHTML   = `
+                <div>${escapeHtml(msg.text)}</div>
+                <div class="support-msg-time">
+                    ${!isSent ? escapeHtml(msg.senderName || 'Agent') + ' · ' : ''}${time}
+                </div>`;
+            container.appendChild(el);
+            container.scrollTop = container.scrollHeight;
+        });
+    });
+}
+
+// ── Send a message in an agent DM thread ─────────────────
+async function sendAgentMessage(text) {
+    const threadId = agentMessaging.currentThreadId;
+    const peerUid  = agentMessaging.currentPeerId;
+    const peerName = agentMessaging.currentPeerName;
+    const myUid    = supportChat.agentUid;
+    const myName   = supportChat.agentName;
+
+    if (!text || !threadId) return;
+
+    const threadRef = doc(db, 'agent_chats', threadId);
+    const snap      = await getDoc(threadRef);
+
+    // Create thread doc if first message
+    if (!snap.exists()) {
+        await setDoc(threadRef, {
+            participants:     [myUid, peerUid],
+            participantNames: { [myUid]: myName, [peerUid]: peerName },
+            lastMessage:      '',
+            lastMessageAt:    serverTimestamp(),
+            lastMessageBy:    myUid,
+            unreadCounts:     { [myUid]: 0, [peerUid]: 0 },
+            createdAt:        serverTimestamp()
+        });
+    }
+
+    await addDoc(collection(db, 'agent_chats', threadId, 'messages'), {
+        text,
+        senderId:   myUid,
+        senderName: myName,
+        timestamp:  serverTimestamp(),
+        read:       false,
+        type:       'text'
+    });
+
+    await updateDoc(threadRef, {
+        lastMessage:                         text.substring(0, 200),
+        lastMessageAt:                       serverTimestamp(),
+        lastMessageBy:                       myUid,
+        [`unreadCounts.${peerUid}`]:         increment(1),
+        [`participantNames.${myUid}`]:       myName,
+        [`participantNames.${peerUid}`]:     peerName
+    });
+}
+
+// ── Mark agent thread as read ─────────────────────────────
+async function markAgentThreadRead(threadId) {
+    const myUid = supportChat.agentUid;
+    try {
+        const ref  = doc(db, 'agent_chats', threadId);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+            await updateDoc(ref, { [`unreadCounts.${myUid}`]: 0 });
+        }
+    } catch (err) {
+        console.error('Mark agent thread read error:', err);
+    }
+    updateTeamBadge();
+}
+
+// ── Close agent thread (return to team list) ──────────────
+function closeAgentThread() {
+    if (agentMessaging.messagesUnsub) {
+        agentMessaging.messagesUnsub();
+        agentMessaging.messagesUnsub = null;
+    }
+    agentMessaging.currentThreadId = null;
+    agentMessaging.currentPeerId   = null;
+    agentMessaging.currentPeerName = null;
+    agentMessaging.renderedMessageIds.clear();
+
+    document.getElementById('chat-active-area').style.display = 'none';
+    document.getElementById('chat-empty-state').style.display = 'flex';
+
+    const input = document.getElementById('support-chat-input');
+    if (input) input.placeholder = 'Type a message…';
+
+    renderAgentList();
+}
+
+// ════════════════════════════════════════════════════════
+// PATCHES TO EXISTING FUNCTIONS
+// ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+
+function patchSupportChatForAgentMessaging() {
+    // ── Patch: send ───────────────────────────────────────
+    const _origSend = window.sendSupportMessage;
+    window.sendSupportMessage = async function () {
+        if (agentMessaging.currentThreadId) {
+            const input = document.getElementById('support-chat-input');
+            const text  = input?.value.trim();
+            if (!text) return;
+            input.value        = '';
+            input.style.height = 'auto';
+            await sendAgentMessage(text);
+        } else {
+            await _origSend();
+        }
+    };
+
+    // ── Patch: typing ─────────────────────────────────────
+    const _origTyping = window.handleSupportTyping;
+    window.handleSupportTyping = function () {
+        if (agentMessaging.currentThreadId) return; // no typing indicator for DMs (v1)
+        _origTyping();
+    };
+
+    // ── Patch: close active chat ──────────────────────────
+    const _origClose = window.closeActiveChat;
+    window.closeActiveChat = function () {
+        if (agentMessaging.currentThreadId) {
+            closeAgentThread();
+        } else {
+            _origClose();
+        }
+    };
+
+    // ── Patch: switchChatTab to reset agent thread ────────
+    const _origSwitch = window.switchChatTab;
+    window.switchChatTab = function (tab) {
+        if (tab === 'team') {
+            switchToTeamTab();
+            return;
+        }
+        // Leaving team tab — clean up agent thread
+        if (agentMessaging.currentThreadId) {
+            if (agentMessaging.messagesUnsub) {
+                agentMessaging.messagesUnsub();
+                agentMessaging.messagesUnsub = null;
+            }
+            agentMessaging.currentThreadId = null;
+            agentMessaging.currentPeerId   = null;
+            agentMessaging.currentPeerName = null;
+            agentMessaging.renderedMessageIds.clear();
+            const input = document.getElementById('support-chat-input');
+            if (input) input.placeholder = 'Type a message…';
+        }
+        _origSwitch(tab);
+    };
+}
+
+// ── Cleanup ────────────────────────────────────────────────
+window.addEventListener('beforeunload', () => {
+    if (agentMessaging.messagesUnsub) agentMessaging.messagesUnsub();
+    if (agentMessaging.threadsUnsub)  agentMessaging.threadsUnsub();
+    if (agentMessaging.agentsUnsub)   agentMessaging.agentsUnsub();
+});
+
+// ════════════════════════════════════════════════════════
+// END AGENT INTERNAL MESSAGING SYSTEM
 // ════════════════════════════════════════════════════════
     
 // ====================================================
