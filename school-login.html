@@ -1122,7 +1122,7 @@
             }
         });
 
-        // ── Redirect ──
+               // ── Redirect ──
         function commitSessionAndRedirect() {
             if (!_pendingSession) return;
             const s = _pendingSession;
@@ -1250,10 +1250,18 @@
             document.getElementById('challenge-btn-spinner').style.display = 'inline';
             document.getElementById('challenge-submit-btn').disabled       = true;
 
-            const resetBtn = () => {
+            const enableRetry = () => {
                 document.getElementById('challenge-btn-text').style.display    = 'inline';
                 document.getElementById('challenge-btn-spinner').style.display = 'none';
                 document.getElementById('challenge-submit-btn').disabled       = false;
+            };
+
+            const delayRetry = () => {
+                document.getElementById('challenge-btn-text').style.display    = 'inline';
+                document.getElementById('challenge-btn-spinner').style.display = 'none';
+                setTimeout(() => {
+                    document.getElementById('challenge-submit-btn').disabled = false;
+                }, 3000);
             };
 
             try {
@@ -1261,7 +1269,7 @@
                     const code = [...document.querySelectorAll('#challenge-otp-inputs .otp-digit')]
                         .map(i => i.value).join('');
 
-                    if (code.length !== 6) { shakeChallenge(); resetBtn(); return; }
+                    if (code.length !== 6) { shakeChallenge(); enableRetry(); return; }
 
                     const initiateFnName = _pendingSession.userRole === 'school_admin'
                         ? 'initiateTFA'
@@ -1294,18 +1302,19 @@
                         const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
                         if (left <= 0) {
                             await lockoutChallenge();
-                        } else {
-                            errorTextEl.textContent = `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
-                            errorEl.style.display = 'block';
-                            clearChallengeOTP();
+                            return;
                         }
-                        resetBtn(); return;
+                        errorTextEl.textContent = `Incorrect code. ${left} attempt${left !== 1 ? 's' : ''} remaining. Please wait 3 seconds before retrying.`;
+                        errorEl.style.display = 'block';
+                        clearChallengeOTP();
+                        delayRetry();
+                        return;
                     }
 
                 } else {
                     // ── Backup code ──
                     const entered = document.getElementById('backup-code-input').value.trim().toUpperCase();
-                    if (!entered) { resetBtn(); return; }
+                    if (!entered) { enableRetry(); return; }
 
                     const encoded = btoa(entered);
                     const match   = _pendingSession.tfaBackupCodes.indexOf(encoded);
@@ -1316,17 +1325,17 @@
                         const left = CHALLENGE_MAX_ATTEMPTS - _challengeFailCount;
                         if (left <= 0) {
                             await lockoutChallenge();
-                        } else {
-                            errorTextEl.textContent = `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining.`;
-                            errorEl.style.display = 'block';
+                            return;
                         }
-                        resetBtn(); return;
+                        errorTextEl.textContent = `Invalid backup code. ${left} attempt${left !== 1 ? 's' : ''} remaining. Please wait 3 seconds before retrying.`;
+                        errorEl.style.display = 'block';
+                        delayRetry();
+                        return;
                     }
 
                     const updatedCodes = [..._pendingSession.tfaBackupCodes];
                     updatedCodes.splice(match, 1);
 
-                    // ── FIX: parents write to schoolparents/{uid}, not schools/.../users/{uid} ──
                     let userDocRef;
                     if (_pendingSession.userRole === 'school_admin') {
                         userDocRef = db.collection('schooladmins').doc(_pendingSession.userUid);
@@ -1352,7 +1361,7 @@
                 console.error('2FA challenge error:', err);
                 errorTextEl.textContent = 'Verification failed. Please try again.';
                 errorEl.style.display = 'block';
-                resetBtn();
+                enableRetry();
             }
         };
 
@@ -1360,7 +1369,12 @@
             stopOTPCountdown();
             document.getElementById('challenge-error').style.display   = 'none';
             document.getElementById('challenge-lockout').style.display = 'block';
-            document.getElementById('challenge-submit-btn').disabled   = true;
+            document.getElementById('challenge-lockout').innerHTML = `
+                <i class="fas fa-ban"></i>
+                <strong>Account temporarily locked</strong><br>
+                <span style="font-size:0.82rem;">Too many failed attempts. Your account is locked for 15 minutes for security. Please try again later.</span>
+            `;
+            document.getElementById('challenge-submit-btn').disabled = true;
             await auth.signOut();
             _pendingSession = null;
         }
