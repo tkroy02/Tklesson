@@ -11093,9 +11093,18 @@ function openChatConversation(chatId) {
     window.open(`https://tklesson.com/tutoring-support.html?chat=${chatId}`, '_blank');
 }
 
+//======================================================//
 // ═══════════════ ENROLL AGENTS TAB ═══════════════
+//======================================================//
+
 let enrolledAgentsCache = [];
 
+// ─── Callable references ──────────────────────────────────────────────────────
+const fnCreateAgent = firebase.functions().httpsCallable('createSupportAgent');
+const fnDeleteAgent = firebase.functions().httpsCallable('deleteSupportAgent');
+const fnDisable2FA  = firebase.functions().httpsCallable('disableAgent2FA');
+
+// ─── Load all agents from Firestore ──────────────────────────────────────────
 async function loadEnrolledAgents() {
     const statusFilter = document.getElementById('enroll-status-filter')?.value || 'all';
     const tbody = document.getElementById('enrolled-agents-body');
@@ -11108,19 +11117,19 @@ async function loadEnrolledAgents() {
         let agents = [];
         snapshot.forEach(doc => agents.push({ id: doc.id, ...doc.data() }));
 
-        // Update stat cards
-        const total = agents.length;
-        const active = agents.filter(a => a.status === 'active' || a.active === true).length;
+        // Stat cards
+        const total    = agents.length;
+        const active   = agents.filter(a => a.status === 'active' || a.active === true).length;
         const inactive = total - active;
-        const depts = new Set(agents.map(a => a.department).filter(Boolean)).size;
+        const depts    = new Set(agents.map(a => a.department).filter(Boolean)).size;
 
         const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-        setEl('enroll-total-agents', total);
-        setEl('enroll-active-agents', active);
+        setEl('enroll-total-agents',   total);
+        setEl('enroll-active-agents',  active);
         setEl('enroll-inactive-agents', inactive);
-        setEl('enroll-dept-count', depts);
+        setEl('enroll-dept-count',     depts);
 
-        // Filter by status dropdown
+        // Status filter
         if (statusFilter === 'active') {
             agents = agents.filter(a => a.status === 'active' || a.active === true);
         } else if (statusFilter === 'inactive') {
@@ -11136,6 +11145,7 @@ async function loadEnrolledAgents() {
     }
 }
 
+// ─── Render agent rows ────────────────────────────────────────────────────────
 function renderEnrolledAgents(agents) {
     const tbody = document.getElementById('enrolled-agents-body');
     if (!tbody) return;
@@ -11146,7 +11156,7 @@ function renderEnrolledAgents(agents) {
     }
 
     tbody.innerHTML = agents.map(agent => {
-        const isActive = agent.status === 'active' || agent.active === true;
+        const isActive    = agent.status === 'active' || agent.active === true;
         const statusBadge = isActive
             ? '<span class="badge badge-success">● Active</span>'
             : '<span class="badge badge-warning">○ Inactive</span>';
@@ -11158,8 +11168,9 @@ function renderEnrolledAgents(agents) {
             ? agent.createdAt.toDate().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
             : (agent.createdAt ? new Date(agent.createdAt).toLocaleDateString() : '—');
 
-        const toggleLabel = isActive ? 'Deactivate' : 'Activate';
-        const toggleClass = isActive ? 'btn-danger' : 'btn-success';
+        const safeId    = agent.id.replace(/'/g, "\\'");
+        const safeName  = (agent.displayName || 'this agent').replace(/'/g, "\\'");
+        const safeEmail = (agent.email || '').replace(/'/g, "\\'");
 
         return `
             <tr data-agent-search="${(agent.displayName || '').toLowerCase()} ${(agent.email || '').toLowerCase()}">
@@ -11180,12 +11191,22 @@ function renderEnrolledAgents(agents) {
                 <td>${statusBadge}</td>
                 <td style="font-size:0.8rem; color:var(--text-muted);">${enrolledDate}</td>
                 <td>
-                    <div style="display:flex; gap:6px;">
-                        <button class="btn btn-outline btn-sm" onclick="openEditAgentModal('${agent.id}')">
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <button class="btn btn-outline btn-sm" title="Edit"
+                            onclick="openEditAgentModal('${safeId}')">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn ${toggleClass} btn-sm" onclick="toggleAgentStatus('${agent.id}', ${isActive})">
-                            ${toggleLabel}
+                        <button class="btn btn-outline btn-sm" title="Send password reset email"
+                            onclick="sendPasswordReset('${safeEmail}', '${safeName}')">
+                            <i class="fas fa-envelope"></i>
+                        </button>
+                        <button class="btn btn-warning btn-sm" title="Disable 2FA"
+                            onclick="disable2FAForAgent('${safeId}', '${safeName}')">
+                            <i class="fas fa-shield-alt"></i>
+                        </button>
+                        <button class="btn btn-danger btn-sm" title="Delete agent"
+                            onclick="deleteAgent('${safeId}', '${safeName}')">
+                            <i class="fas fa-trash"></i>
                         </button>
                     </div>
                 </td>
@@ -11194,6 +11215,7 @@ function renderEnrolledAgents(agents) {
     }).join('');
 }
 
+// ─── Search filter ────────────────────────────────────────────────────────────
 function filterEnrolledAgents() {
     const q = (document.getElementById('enroll-search')?.value || '').toLowerCase();
     document.querySelectorAll('#enrolled-agents-body tr[data-agent-search]').forEach(row => {
@@ -11202,76 +11224,56 @@ function filterEnrolledAgents() {
     });
 }
 
+// ─── Enroll new agent via Cloud Function ─────────────────────────────────────
 async function enrollAgent() {
     const displayName = document.getElementById('enroll-displayName')?.value.trim();
-    const email = document.getElementById('enroll-email')?.value.trim();
-    const phone = document.getElementById('enroll-phone')?.value.trim();
-    const department = document.getElementById('enroll-department')?.value;
-    const role = document.getElementById('enroll-role')?.value;
-    const status = document.getElementById('enroll-status')?.value;
-    const feedback = document.getElementById('enroll-feedback');
+    const email       = document.getElementById('enroll-email')?.value.trim();
+    const phone       = document.getElementById('enroll-phone')?.value.trim();
+    const department  = document.getElementById('enroll-department')?.value;
+    const role        = document.getElementById('enroll-role')?.value;
+    const status      = document.getElementById('enroll-status')?.value;
+    const feedback    = document.getElementById('enroll-feedback');
+    const btn         = document.querySelector('[onclick="enrollAgent()"]');
 
     if (!displayName || !email) {
-        if (feedback) {
-            feedback.style.color = 'var(--danger)';
-            feedback.textContent = '⚠ Display name and email are required.';
-        }
+        if (feedback) { feedback.style.color = 'var(--danger)'; feedback.textContent = '⚠ Display name and email are required.'; }
+        return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        if (feedback) { feedback.style.color = 'var(--danger)'; feedback.textContent = '⚠ Please enter a valid email address.'; }
         return;
     }
 
-    // Basic email format check
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        if (feedback) {
-            feedback.style.color = 'var(--danger)';
-            feedback.textContent = '⚠ Please enter a valid email address.';
-        }
-        return;
-    }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enrolling…'; }
+    if (feedback) { feedback.style.color = 'var(--text-muted)'; feedback.textContent = 'Creating account…'; }
 
     try {
-        // Check for duplicate email
-        const existing = await db.collection('support_agents').where('email', '==', email).get();
-        if (!existing.empty) {
-            if (feedback) {
-                feedback.style.color = 'var(--danger)';
-                feedback.textContent = '⚠ An agent with this email is already enrolled.';
-            }
-            return;
-        }
+        const result = await fnCreateAgent({ displayName, email, phone, department, role, status });
+        const uid = result.data.uid;
 
-        // Use a new doc with auto-generated ID
-        // (If you want UID-based docs, create the Firebase Auth user first and use that UID)
-        await db.collection('support_agents').add({
-            displayName,
-            email,
-            phone: phone || '',
-            department,
-            role,
-            status,
-            active: status === 'active',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        await firebase.auth().sendPasswordResetEmail(email);
 
         if (feedback) {
             feedback.style.color = 'var(--success)';
-            feedback.textContent = `✓ Agent "${displayName}" enrolled successfully.`;
+            feedback.textContent = `✓ Agent "${displayName}" enrolled (UID: ${uid}). Password reset email sent to ${email}.`;
         }
 
         clearEnrollForm();
         loadEnrolledAgents();
-
-        // Clear feedback after 4 seconds
-        setTimeout(() => { if (feedback) feedback.textContent = ''; }, 4000);
+        setTimeout(() => { if (feedback) feedback.textContent = ''; }, 6000);
 
     } catch (err) {
-        console.error('Error enrolling agent:', err);
-        if (feedback) {
-            feedback.style.color = 'var(--danger)';
-            feedback.textContent = '⚠ Failed to enroll agent: ' + err.message;
-        }
+        console.error('Enroll error:', err);
+        const msg = err.code === 'already-exists'
+            ? '⚠ A user with this email already exists.'
+            : '⚠ Failed to enroll: ' + (err.message || err.code);
+        if (feedback) { feedback.style.color = 'var(--danger)'; feedback.textContent = msg; }
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus"></i> Enroll Agent'; }
     }
 }
 
+// ─── Clear enroll form ────────────────────────────────────────────────────────
 function clearEnrollForm() {
     ['enroll-displayName', 'enroll-email', 'enroll-phone'].forEach(id => {
         const el = document.getElementById(id);
@@ -11281,23 +11283,46 @@ function clearEnrollForm() {
     if (feedback) feedback.textContent = '';
 }
 
-async function toggleAgentStatus(agentId, currentlyActive) {
-    const newStatus = currentlyActive ? 'inactive' : 'active';
-    const label = currentlyActive ? 'deactivate' : 'activate';
-    if (!confirm(`Are you sure you want to ${label} this agent?`)) return;
-
+// ─── Send password reset email ────────────────────────────────────────────────
+async function sendPasswordReset(email, name) {
+    if (!confirm(`Send a password reset email to ${name} (${email})?`)) return;
     try {
-        await db.collection('support_agents').doc(agentId).update({
-            status: newStatus,
-            active: !currentlyActive
-        });
-        loadEnrolledAgents();
+        await firebase.auth().sendPasswordResetEmail(email);
+        alert(`✓ Password reset email sent to ${email}.`);
     } catch (err) {
-        console.error('Error updating agent status:', err);
-        alert('Failed to update status: ' + err.message);
+        console.error('Password reset error:', err);
+        alert('Failed to send reset email: ' + err.message);
     }
 }
 
+// ─── Delete agent from Auth + Firestore via Cloud Function ───────────────────
+async function deleteAgent(agentId, name) {
+    if (!confirm(`Permanently delete agent "${name}"?\n\nThis removes them from Firebase Auth and Firestore. This cannot be undone.`)) return;
+    try {
+        await fnDeleteAgent({ agentId });
+        loadEnrolledAgents();
+    } catch (err) {
+        console.error('Delete error:', err);
+        alert('Failed to delete agent: ' + err.message);
+    }
+}
+
+// ─── Disable 2FA via Cloud Function ──────────────────────────────────────────
+async function disable2FAForAgent(agentId, name) {
+    if (!confirm(`Disable all 2FA factors for "${name}"?\n\nThey will need to re-enroll 2FA on their next login.`)) return;
+    try {
+        const result = await fnDisable2FA({ agentId });
+        alert(`✓ ${result.data.message}`);
+    } catch (err) {
+        console.error('Disable 2FA error:', err);
+        const msg = err.code === 'not-found'
+            ? 'Agent not found in Firebase Auth — they may not have an Auth account yet.'
+            : 'Failed to disable 2FA: ' + err.message;
+        alert(msg);
+    }
+}
+
+// ─── Edit agent modal ─────────────────────────────────────────────────────────
 async function openEditAgentModal(agentId) {
     try {
         const doc = await db.collection('support_agents').doc(agentId).get();
@@ -11326,15 +11351,15 @@ async function openEditAgentModal(agentId) {
                         <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:4px;">Department</label>
                         <select id="edit-department" class="form-control">
                             ${['general','billing','technical','escalations'].map(d =>
-                                `<option value="${d}" ${a.department === d ? 'selected' : ''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`
+                                `<option value="${d}" ${a.department === d ? 'selected' : ''}>${d.charAt(0).toUpperCase() + d.slice(1)}</option>`
                             ).join('')}
                         </select>
                     </div>
                     <div>
                         <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:4px;">Role</label>
                         <select id="edit-role" class="form-control">
-                            ${['support agent','senior agent','supervisor', 'lead'].map(r =>
-                                `<option value="${r}" ${a.role === r ? 'selected' : ''}>${r.charAt(0).toUpperCase()+r.slice(1)}</option>`
+                            ${['support agent','senior agent','supervisor','lead'].map(r =>
+                                `<option value="${r}" ${a.role === r ? 'selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
                             ).join('')}
                         </select>
                     </div>
@@ -11356,9 +11381,9 @@ async function openEditAgentModal(agentId) {
 
 async function saveAgentEdit(agentId, modal) {
     const displayName = document.getElementById('edit-displayName')?.value.trim();
-    const phone = document.getElementById('edit-phone')?.value.trim();
-    const department = document.getElementById('edit-department')?.value;
-    const role = document.getElementById('edit-role')?.value;
+    const phone       = document.getElementById('edit-phone')?.value.trim();
+    const department  = document.getElementById('edit-department')?.value;
+    const role        = document.getElementById('edit-role')?.value;
 
     if (!displayName) { alert('Display name cannot be empty.'); return; }
 
@@ -11372,28 +11397,28 @@ async function saveAgentEdit(agentId, modal) {
     }
 }
 
-// Hook into switchDashboardTab
+// ─── Tab hook ─────────────────────────────────────────────────────────────────
 const _origSwitchTab = window.switchDashboardTab;
 window.switchDashboardTab = function(tab) {
     _origSwitchTab(tab);
     if (tab === 'enroll-agents') loadEnrolledAgents();
 };
 
-window.loadEnrolledAgents = loadEnrolledAgents;
+// ─── Expose to window ─────────────────────────────────────────────────────────
+window.loadEnrolledAgents   = loadEnrolledAgents;
 window.filterEnrolledAgents = filterEnrolledAgents;
-window.enrollAgent = enrollAgent;
-window.clearEnrollForm = clearEnrollForm;
-window.toggleAgentStatus = toggleAgentStatus;
-window.openEditAgentModal = openEditAgentModal;
-window.saveAgentEdit = saveAgentEdit;
-        
-// Add these functions to window
-window.switchDashboardTab = switchDashboardTab;
+window.enrollAgent          = enrollAgent;
+window.clearEnrollForm      = clearEnrollForm;
+window.sendPasswordReset    = sendPasswordReset;
+window.deleteAgent          = deleteAgent;
+window.disable2FAForAgent   = disable2FAForAgent;
+window.openEditAgentModal   = openEditAgentModal;
+window.saveAgentEdit        = saveAgentEdit;
 window.loadAgentPerformanceData = loadAgentPerformanceData;
-window.filterAgentDetails = filterAgentDetails;
-window.loadLiveChats = loadLiveChats;
-window.claimChatFromAdmin = claimChatFromAdmin;
-window.openChatConversation = openChatConversation;
+window.filterAgentDetails       = filterAgentDetails;
+window.loadLiveChats            = loadLiveChats;
+window.claimChatFromAdmin       = claimChatFromAdmin;
+window.openChatConversation     = openChatConversation;
         
     </script>
     
