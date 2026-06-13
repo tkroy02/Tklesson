@@ -11310,15 +11310,44 @@ async function deleteAgent(agentId, name) {
 // ─── Disable 2FA via Cloud Function ──────────────────────────────────────────
 async function disable2FAForAgent(agentId, name) {
     if (!confirm(`Disable all 2FA factors for "${name}"?\n\nThey will need to re-enroll 2FA on their next login.`)) return;
+
     try {
-        const result = await fnDisable2FA({ agentId });
-        alert(`✓ ${result.data.message}`);
+        // Check Firestore for custom TOTP 2FA
+        const agentDoc = await db.collection('support_agents').doc(agentId).get();
+
+        if (!agentDoc.exists) {
+            alert('Agent not found.');
+            return;
+        }
+
+        const data = agentDoc.data();
+
+        if (!data.twoFactorEnabled && !data.twoFactorSecret) {
+            alert(`No active 2FA found for "${name}".`);
+            return;
+        }
+
+        // Clear both the flag and the secret from Firestore
+        await db.collection('support_agents').doc(agentId).update({
+            twoFactorEnabled: false,
+            twoFactorSecret: firebase.firestore.FieldValue.delete()
+        });
+
+        // Audit log
+        await db.collection('support_audit_log').add({
+            action: 'agent_2fa_disabled',
+            agentUid: agentId,
+            agentEmail: data.email || '',
+            performedBy: firebase.auth().currentUser?.uid || 'admin',
+            timestamp: new Date().toISOString()
+        });
+
+        alert(`✓ 2FA has been disabled for "${name}". Their secret has been removed.`);
+        loadEnrolledAgents();
+
     } catch (err) {
         console.error('Disable 2FA error:', err);
-        const msg = err.code === 'not-found'
-            ? 'Agent not found in Firebase Auth — they may not have an Auth account yet.'
-            : 'Failed to disable 2FA: ' + err.message;
-        alert(msg);
+        alert('Failed to disable 2FA: ' + err.message);
     }
 }
 
