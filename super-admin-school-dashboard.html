@@ -1400,7 +1400,7 @@
         <div class="stat-card"><div class="stat-value">—</div><div class="stat-label">Never Signed In</div></div>
     </div>
 
-    <!-- Subtabs for User Management -->
+        <!-- Subtabs for User Management -->
     <div style="display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid var(--border);">
         <button class="user-dir-tab active" data-dir-tab="admins" onclick="switchUserDirTab('admins')">
             <i class="fas fa-user-tie"></i> School Admins
@@ -1418,8 +1418,11 @@
             <i class="fas fa-heart"></i> Parents
             <span id="dir-parents-badge" class="tab-badge">0</span>
         </button>
+        <button class="user-dir-tab" data-dir-tab="agents" onclick="switchUserDirTab('agents')">
+            <i class="fas fa-headset"></i> Support Agents
+            <span id="dir-agents-badge" class="tab-badge">0</span>
+        </button>
     </div>
-
     <!-- ===== SCHOOL ADMINS TAB (Original) ===== -->
     <div id="user-dir-admins" class="user-dir-content active">
         <!-- Filters -->
@@ -1596,6 +1599,43 @@
             </div>
         </div>
     </div>
+           <!-- ===== AGENTS TAB ===== -->
+    <div id="user-dir-agents" class="user-dir-content" style="display:none;">
+        <div class="card" style="padding: 0; overflow: hidden;">
+            <div style="padding: 16px 20px; border-bottom: 1px solid var(--border-light); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                <h3 style="margin: 0;"><i class="fas fa-headset"></i> Support Agents</h3>
+                <div class="search-box" style="width: 250px;">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="agents-dir-search" class="form-input" placeholder="Search by name, email, or role..." oninput="filterAgentsDirectory()">
+                </div>
+            </div>
+            <div style="max-height: 580px; overflow-y: auto;">
+                <div class="table-wrap">
+                    <table style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Agent</th>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Department</th>
+                                <th>Status</th>
+                                <th>2FA</th>
+                                <th>Last Login</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="agents-dir-body">
+                            <tr><td colspan="8" style="text-align:center; padding:50px;"><i class="fas fa-spinner fa-pulse"></i> Loading agents...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="agents-dir-pagination" style="padding: 16px 20px; border-top: 1px solid var(--border-light); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <span id="agents-dir-count" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+                <div id="agents-dir-pagination-buttons"></div>
+            </div>
+        </div>
+    </div>                         
 </div>
                                 
    
@@ -4700,6 +4740,171 @@ async function removeSchoolAdmin(adminId, adminName, adminEmail) {
         alert('❌ Failed to remove admin: ' + msg);
     }
 }
+
+// ═══════════════ SUPPORT AGENTS DIRECTORY ═══════════════
+let allAgentsDirectory = [];
+
+async function loadAllAgentsDirectory() {
+    try {
+        const snap = await getDocs(collection(db, 'support_agents'));
+        allAgentsDirectory = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+        console.error('Error loading agents:', err);
+        allAgentsDirectory = [];
+    }
+    document.getElementById('dir-agents-badge').textContent = allAgentsDirectory.length;
+    renderAgentsDirectory();
+}
+
+function filterAgentsDirectory() {
+    renderAgentsDirectory();
+}
+
+function renderAgentsDirectory() {
+    const search = (document.getElementById('agents-dir-search')?.value || '').toLowerCase();
+    let filtered = [...allAgentsDirectory];
+
+    if (search) {
+        filtered = filtered.filter(a =>
+            (a.displayName || '').toLowerCase().includes(search) ||
+            (a.email || '').toLowerCase().includes(search) ||
+            (a.role || '').toLowerCase().includes(search) ||
+            (a.department || '').toLowerCase().includes(search)
+        );
+    }
+
+    document.getElementById('agents-dir-count').textContent = `${filtered.length} agent${filtered.length !== 1 ? 's' : ''}`;
+
+    const tbody = document.getElementById('agents-dir-body');
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `
+            <tr><td colspan="8" style="text-align:center; padding:50px; color:var(--text-muted);">
+                <i class="fas fa-headset" style="display:block; font-size:2rem; margin-bottom:10px; opacity:0.2;"></i>
+                No agents match your search
+            </td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = filtered.map(agent => {
+        const initials = (agent.displayName || agent.email || 'A')
+            .split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+        const twoFA = agent.twoFactorEnabled === true;
+        const statusColor = agent.status === 'active' ? 'var(--success)' : 'var(--text-muted)';
+        const lastLogin = agent.lastLogin
+            ? timeAgo(agent.lastLogin)
+            : '<span style="color:var(--text-muted);">Never</span>';
+
+        return `
+        <tr>
+            <td>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg,#0f4c81,#1a5d9f);
+                                color:white; display:flex; align-items:center; justify-content:center;
+                                font-weight:700; font-size:0.75rem; flex-shrink:0;">
+                        ${initials}
+                    </div>
+                    <div>
+                        <div style="font-weight:600; font-size:0.88rem;">${escapeHtml(agent.displayName || 'No Name')}</div>
+                        <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(agent.email || '—')}</div>
+                    </div>
+                </div>
+            </td>
+            <td style="font-size:0.85rem;">${escapeHtml(agent.email || '—')}</td>
+            <td><span class="badge ${agent.role === 'lead' ? 'badge-success' : 'badge-info'}">${escapeHtml(agent.role || 'agent')}</span></td>
+            <td style="font-size:0.85rem;">${escapeHtml(agent.department || 'general')}</td>
+            <td><span style="display:inline-flex; align-items:center; gap:4px; color:${statusColor}; font-weight:600; font-size:0.82rem;">
+                <i class="fas fa-circle" style="font-size:0.45rem;"></i> ${agent.status === 'active' ? 'Active' : 'Inactive'}
+            </span></td>
+            <td>
+                <span class="badge ${twoFA ? 'badge-success' : 'badge-warning'}">
+                    <i class="fas ${twoFA ? 'fa-lock' : 'fa-lock-open'}" style="font-size:0.65rem;"></i>
+                    ${twoFA ? 'On' : 'Off'}
+                </span>
+            </td>
+            <td style="font-size:0.82rem;">${lastLogin}</td>
+            <td>
+                <div style="display:flex; gap:6px;">
+                    <button class="btn btn-xs btn-outline" onclick="sendAgentPasswordReset('${agent.id}', '${escapeHtml(agent.email || '')}')" title="Send Password Reset">
+                        <i class="fas fa-envelope"></i>
+                    </button>
+                    ${twoFA ? `
+                    <button class="btn btn-xs btn-outline" style="color:var(--warning); border-color:#fde68a;" onclick="resetAgentTFA('${agent.id}', '${escapeHtml(agent.displayName || agent.email || '')}')" title="Reset 2FA">
+                        <i class="fas fa-shield-alt"></i>
+                    </button>` : ''}
+                    <button class="btn btn-xs btn-outline" style="color:var(--danger); border-color:#fecaca;" onclick="deleteAgentAccount('${agent.id}', '${escapeHtml(agent.displayName || agent.email || '')}', '${escapeHtml(agent.email || '')}')" title="Delete Agent">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function sendAgentPasswordReset(agentId, email) {
+    if (!email) { alert('No email address on file for this agent.'); return; }
+    if (!confirm(`Send a password reset email to ${email}?`)) return;
+    try {
+        const { sendPasswordResetEmail } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js');
+        await sendPasswordResetEmail(auth, email);
+        alert(`✅ Password reset email sent to ${email}`);
+    } catch (err) {
+        console.error('Password reset error:', err);
+        alert('❌ Failed to send reset email: ' + err.message);
+    }
+}
+
+async function resetAgentTFA(agentId, agentName) {
+    if (!confirm(`Reset 2FA for ${agentName}?\n\nThis will disable their two-factor authentication. They will need to set it up again on next login.`)) return;
+    try {
+        await updateDoc(doc(db, 'support_agents', agentId), {
+            twoFactorEnabled: false,
+            twoFactorSecret: null,
+            twoFactorBackupCodes: [],
+            twoFactorResetAt: new Date().toISOString(),
+            twoFactorResetBy: currentUser?.email || 'super_admin'
+        });
+        alert(`✅ 2FA has been reset for ${agentName}.`);
+        // Refresh local data
+        const idx = allAgentsDirectory.findIndex(a => a.id === agentId);
+        if (idx !== -1) {
+            allAgentsDirectory[idx].twoFactorEnabled = false;
+            allAgentsDirectory[idx].twoFactorSecret = null;
+        }
+        renderAgentsDirectory();
+    } catch (err) {
+        console.error('TFA reset error:', err);
+        alert('❌ Failed to reset 2FA: ' + err.message);
+    }
+}
+
+async function deleteAgentAccount(agentId, agentName, agentEmail) {
+    if (!confirm(`Delete "${agentName}" as a support agent?\n\nThis will permanently delete their account. This cannot be undone.`)) return;
+    if (!confirm(`Final confirmation — permanently delete ${agentEmail}?`)) return;
+
+    try {
+        // Delete from Firebase Auth via dedicated Cloud Function
+        const deleteSupportAgent = httpsCallable(functions, 'deleteSupportAgent');
+        await deleteSupportAgent({ uid: agentId });
+
+        // Delete the support_agents Firestore document
+        const { deleteDoc: deleteDocument } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
+        await deleteDocument(doc(db, 'support_agents', agentId));
+
+        // Remove from local array and refresh
+        allAgentsDirectory = allAgentsDirectory.filter(a => a.id !== agentId);
+        document.getElementById('dir-agents-badge').textContent = allAgentsDirectory.length;
+        renderAgentsDirectory();
+
+        alert(`✅ ${agentName} has been permanently removed.`);
+    } catch (err) {
+        console.error('Delete agent error:', err);
+        let msg = err.message;
+        if (err.code === 'functions/not-found') msg = 'Agent account not found — may have already been deleted.';
+        if (err.code === 'functions/permission-denied') msg = 'You do not have permission to perform this action.';
+        alert('❌ Failed to delete agent: ' + msg);
+    }
+}
     
 
 // ═══════════════ AGENT PERFORMANCE METRICS ═══════════════
@@ -5360,7 +5565,7 @@ window.switchUserDirTab = async function(tab) {
         }
     }
     
-    if (tab === 'students') {
+        if (tab === 'students') {
         if (allStudentsDirectory.length === 0) await loadAllStudentsDirectory();
         renderStudentsDirectory();
     } else if (tab === 'teachers') {
@@ -5369,6 +5574,10 @@ window.switchUserDirTab = async function(tab) {
     } else if (tab === 'parents') {
         if (allParentsDirectory.length === 0) await loadAllParentsDirectory();
         renderParentsDirectory();
+    } else if (tab === 'agents') {
+        document.getElementById('user-dir-agents').style.display = 'block';
+        if (allAgentsDirectory.length === 0) loadAllAgentsDirectory();
+        else renderAgentsDirectory();
     }
 };
 
@@ -5864,7 +6073,7 @@ function timeAgo(dateString) {
         
         alert(`2FA disabled for ${name}`);
         
-        // Refresh the current view
+         // Refresh the current view
         if (role === 'student') {
             await loadAllStudentsDirectory();
             renderStudentsDirectory();
@@ -5874,14 +6083,16 @@ function timeAgo(dateString) {
         } else if (role === 'parent') {
             await loadAllParentsDirectory();
             renderParentsDirectory();
+        } else if (role === 'agent') {
+            await loadAllAgentsDirectory();
+            renderAgentsDirectory();
         }
-        
     } catch (err) {
         console.error('2FA disable error:', err);
         alert('Error disabling 2FA: ' + err.message);
     }
 }
-
+    
 async function disableUser2FAFromDirectory(uid, role, name, schoolId) {
     if (!confirm(`Are you sure you want to disable 2FA for ${name}?`)) return;
     
