@@ -3018,12 +3018,34 @@ function listenToChats() {
 }
 
 // ── Tab switching ─────────────────────────────────────────
+// ── Tab switching ─────────────────────────────────────────
 function switchChatTab(tab) {
     supportChat.currentTab = tab;
     document.querySelectorAll('.chat-tab').forEach(t => {
         t.classList.toggle('active', t.getAttribute('data-tab') === tab);
     });
-    renderChatContactList();
+
+    // Hide all tab content areas first
+    const agentsArea  = document.getElementById('agents-tab-area');
+    const contactList = document.getElementById('chat-contact-list');
+    const activeArea  = document.getElementById('chat-active-area');
+    const emptyState  = document.getElementById('chat-empty-state');
+
+    if (agentsArea)  agentsArea.style.display  = 'none';
+    if (contactList) contactList.style.display = 'none';
+    if (activeArea)  activeArea.style.display  = 'none';
+    if (emptyState)  emptyState.style.display  = 'none';
+
+    // Show the appropriate tab content
+    if (tab === 'agents') {
+        if (agentsArea) agentsArea.style.display = 'flex';
+        renderAgentRoster();
+        renderAgentConvoList();
+    } else {
+        // Unclaimed / Mine / All — show contact list
+        if (contactList) contactList.style.display = '';
+        renderChatContactList();
+    }
 }
 
 // ── Render contact list ───────────────────────────────────
@@ -3363,20 +3385,29 @@ async function markMessageAsRead(chatId, messageId) {
 async function sendSupportMessage() {
     const input = document.getElementById('support-chat-input');
     const text  = input?.value.trim();
-    if (!text || !supportChat.currentChatId) return;
+    if (!text) return;
+
+    // ── Route to agent chat if an agent conversation is open ──────────
+    if (agentChat.currentConvoId) {
+        await sendAgentMessage();
+        return;
+    }
+
+    // ── Original customer-facing logic ───────────────────────────────
+    if (!supportChat.currentChatId) return;
 
     input.value        = '';
     input.style.height = 'auto';
 
-    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
-    const chatRef  = doc(db, collName, supportChat.currentChatId);      // ← UPDATED
+    const collName = getChatCollection(supportChat.currentChatId);
+    const chatRef  = doc(db, collName, supportChat.currentChatId);
 
     await updateDoc(chatRef, { 'typing.admin': false }).catch(() => {});
 
     try {
         const contact = supportChat.currentContact;
 
-        await addDoc(collection(db, collName, supportChat.currentChatId, 'messages'), {  // ← UPDATED
+        await addDoc(collection(db, collName, supportChat.currentChatId, 'messages'), {
             text:       text,
             senderId:   'admin',
             senderName: supportChat.agentName,
@@ -3518,6 +3549,14 @@ async function closeCurrentChat() {
 
 // ── Close active chat (UI only) ────────────────────────────
 function closeActiveChat() {
+    // ── Clean up agent chat listeners if active ──────────────────────
+    if (agentChat.messagesUnsub) { agentChat.messagesUnsub(); agentChat.messagesUnsub = null; }
+    if (agentChat.typingUnsub)   { agentChat.typingUnsub();   agentChat.typingUnsub   = null; }
+    agentChat.currentConvoId = null;
+    agentChat.currentConvo   = null;
+    agentChat.renderedIds.clear();
+
+    // ── Clean up customer chat listeners ─────────────────────────────
     if (supportChat.messagesUnsub) { supportChat.messagesUnsub(); supportChat.messagesUnsub = null; }
     if (supportChat.typingUnsub)   { supportChat.typingUnsub();   supportChat.typingUnsub   = null; }
 
@@ -3525,19 +3564,35 @@ function closeActiveChat() {
     supportChat.currentContact = null;
     supportChat.renderedMessageIds.clear();
 
+    // ── Hide active area, show appropriate state ─────────────────────
     document.getElementById('chat-active-area').style.display = 'none';
     document.getElementById('chat-empty-state').style.display = 'flex';
-    renderChatContactList();
+
+    // ── Return to the correct list view based on current tab ─────────
+    if (supportChat.currentTab === 'agents') {
+        document.getElementById('agents-tab-area').style.display = 'flex';
+        renderAgentRoster();
+        renderAgentConvoList();
+    } else {
+        renderChatContactList();
+    }
 }
 
 // ── Agent typing indicator ─────────────────────────────────
 let agentTypingTimeout = null;
 
 function handleSupportTyping() {
+    // ── Route to agent chat typing if an agent conversation is open ───
+    if (agentChat.currentConvoId) {
+        handleAgentTyping();
+        return;
+    }
+
+    // ── Original customer-facing logic ───────────────────────────────
     if (!supportChat.currentChatId) return;
 
-    const collName = getChatCollection(supportChat.currentChatId);      // ← UPDATED
-    const chatRef  = doc(db, collName, supportChat.currentChatId);      // ← UPDATED
+    const collName = getChatCollection(supportChat.currentChatId);
+    const chatRef  = doc(db, collName, supportChat.currentChatId);
 
     if (agentTypingTimeout) clearTimeout(agentTypingTimeout);
 
@@ -3555,7 +3610,7 @@ function handleSupportTyping() {
 function handleSupportChatKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        sendSupportMessage();
+        sendSupportMessage();  // Already routes to agent chat when appropriate
     }
 }
 
@@ -3592,300 +3647,326 @@ window.addEventListener('beforeunload', () => {
 // END SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
 
-// ════════════════════════════════════════════════════════
-// AGENT INTERNAL MESSAGING SYSTEM
-// ════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════
+// AGENT-TO-AGENT INTERNAL CHAT — Project 1
+// ════════════════════════════════════════════════════════════════════
 
-const agentMessaging = {
-    currentThreadId:    null,
-    currentPeerId:      null,
-    currentPeerName:    null,
-    messagesUnsub:      null,
-    threadsUnsub:       null,
-    agentsUnsub:        null,
-    renderedMessageIds: new Set(),
-    threads:            [],          // enriched thread list
-    onlineAgents:       [],          // from support_presence
-    typingTimeout:      null,
+const agentChat = {
+    allAgents:        [],
+    presenceMap:      {},
+    conversations:    [],
+    currentConvoId:   null,
+    currentConvo:     null,
+    messagesUnsub:    null,
+    convoUnsub:       null,
+    rosterUnsub:      null,
+    presenceUnsub:    null,
+    renderedIds:      new Set(),
+    agentTypingTimeout: null,
+    typingUnsub:      null,
 };
 
-// ── Build a deterministic thread ID from two UIDs ─────────
-function getAgentThreadId(uid1, uid2) {
-    return [uid1, uid2].sort().join('_');
-}
-
-// ── Init (called once after supportChat is ready) ─────────
+// ── Init (called after supportChat agent is known) ────────────────────
 function initAgentMessaging() {
+    loadAllAgents();
     listenToAgentPresence();
-    listenToAgentThreads();
-    injectTeamTabUI();
+    listenToAgentConversations();
 }
 
-// ── Inject "Team" tab into existing tab bar ───────────────
-function injectTeamTabUI() {
-    const tabBar = document.querySelector('.chat-panel > div[style*="background: #0d2b56"]');
-    if (!tabBar || document.querySelector('[data-tab="team"]')) return;
-
-    const btn = document.createElement('button');
-    btn.className = 'chat-tab';
-    btn.setAttribute('data-tab', 'team');
-    btn.innerHTML = 'Team <span class="chat-tab-badge" id="team-badge" style="display:none;"></span>';
-    btn.onclick = () => switchToTeamTab();
-    tabBar.appendChild(btn);
+// ── Load all support agents ──────────────────────────────────────────
+async function loadAllAgents() {
+    try {
+        const snap = await getDocs(collection(db, 'support_agents'));
+        agentChat.allAgents = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+        console.error('Load agents error:', err);
+    }
 }
 
-// ── Listen: online agents from support_presence ───────────
+// ── Real-time presence listener ──────────────────────────────────────
 function listenToAgentPresence() {
-    if (agentMessaging.agentsUnsub) agentMessaging.agentsUnsub();
-
-    agentMessaging.agentsUnsub = onSnapshot(
+    if (agentChat.presenceUnsub) agentChat.presenceUnsub();
+    agentChat.presenceUnsub = onSnapshot(
         collection(db, 'support_presence'),
-        (snap) => {
-            const agents = [];
+        snap => {
             snap.forEach(d => {
-                const data = d.data();
-                if (d.id !== supportChat.agentUid) {
-                    agents.push({ uid: d.id, ...data });
-                }
+                agentChat.presenceMap[d.id] = d.data().online === true;
             });
-            agentMessaging.onlineAgents = agents;
-            // Re-render if team tab is active
-            if (supportChat.currentTab === 'team') renderAgentList();
+            if (supportChat.currentTab === 'agents') renderAgentRoster();
         }
     );
 }
 
-// ── Listen: all agent DM threads involving this agent ─────
-function listenToAgentThreads() {
-    if (agentMessaging.threadsUnsub) agentMessaging.threadsUnsub();
-
+// ── Real-time conversation listener ───────────────────────────────────
+function listenToAgentConversations() {
+    if (agentChat.convoUnsub) agentChat.convoUnsub();
     const q = query(
         collection(db, 'agent_chats'),
         where('participants', 'array-contains', supportChat.agentUid),
         orderBy('lastMessageAt', 'desc')
     );
-
-    agentMessaging.threadsUnsub = onSnapshot(q, (snap) => {
-        const threads = [];
-        snap.forEach(d => threads.push({ id: d.id, ...d.data() }));
-        agentMessaging.threads = threads;
-        updateTeamBadge();
-        if (supportChat.currentTab === 'team') renderAgentList();
-    }, (error) => {
-        if (error.code === 'permission-denied') {
-            // Collection is empty or index is still building — not a real error
-            console.warn('agent_chats listener: permission-denied (collection may be empty)');
-            agentMessaging.threads = [];
-            updateTeamBadge();
-        } else {
-            console.error('agent_chats listener error:', error);
-        }
+    agentChat.convoUnsub = onSnapshot(q, snap => {
+        agentChat.conversations = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        updateAgentsBadge();
+        if (supportChat.currentTab === 'agents') renderAgentConvoList();
     });
 }
 
-// ── Update team badge count (unread DMs) ──────────────────
-function updateTeamBadge() {
-    const badge = document.getElementById('team-badge');
-    if (!badge) return;
-    const total = agentMessaging.threads.reduce((sum, t) => {
-        return sum + (t.unreadCounts?.[supportChat.agentUid] || 0);
+// ── Unread badge on Agents tab ───────────────────────────────────────
+function updateAgentsBadge() {
+    const uid    = supportChat.agentUid;
+    const unread = agentChat.conversations.reduce((sum, c) => {
+        const lastRead    = supportChat.lastReadTimestamps.get('agent_' + c.id) || 0;
+        const lastMsgTime = c.lastMessageAt?.toDate?.()?.getTime() ||
+                            (c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : 0);
+        const byOther     = c.lastMessageBy && c.lastMessageBy !== uid;
+        return sum + (lastMsgTime > lastRead && byOther ? 1 : 0);
     }, 0);
-    badge.textContent   = total;
-    badge.style.display = total > 0 ? 'flex' : 'none';
-}
 
-// ── Switch to Team tab ────────────────────────────────────
-function switchToTeamTab() {
-    // Close any open customer chat
-    if (agentMessaging.messagesUnsub) {
-        // keep messages open if same area; handled in renderAgentList
+    const badge = document.getElementById('agents-badge');
+    if (badge) {
+        badge.textContent   = unread;
+        badge.style.display = unread > 0 ? 'flex' : 'none';
     }
-    supportChat.currentTab = 'team';
-
-    document.querySelectorAll('.chat-tab').forEach(t => {
-        t.classList.toggle('active', t.getAttribute('data-tab') === 'team');
-    });
-
-    // Hide customer chat area, show agent list
-    document.getElementById('chat-active-area').style.display  = 'none';
-    document.getElementById('chat-empty-state').style.display  = 'none';
-
-    renderAgentList();
 }
 
-// ── Render the "Team" contact list ────────────────────────
-function renderAgentList() {
-    const container = document.getElementById('chat-contact-list');
-    container.innerHTML = '';
+// ── Render agent roster ──────────────────────────────────────────────
+function renderAgentRoster() {
+    const container = document.getElementById('agent-roster-list');
+    if (!container) return;
 
-    const myUid = supportChat.agentUid;
-
-    // Build a lookup: peerUid → thread
-    const threadByPeer = new Map();
-    agentMessaging.threads.forEach(t => {
-        const peer = t.participants?.find(p => p !== myUid);
-        if (peer) threadByPeer.set(peer, t);
-    });
-
-    // Gather all peer UIDs: from active threads + online agents
-    const seenUids = new Set();
-    const rows     = [];
-
-    // 1. Existing threads first (so agents you've messaged appear even if offline)
-    agentMessaging.threads.forEach(t => {
-        const peer = t.participants?.find(p => p !== myUid);
-        if (!peer || seenUids.has(peer)) return;
-        seenUids.add(peer);
-        const name   = t.participantNames?.[peer] || 'Agent';
-        const online = agentMessaging.onlineAgents.some(a => a.uid === peer && a.online);
-        rows.push({ uid: peer, name, online, thread: t });
-    });
-
-    // 2. Online agents not yet in threads
-    agentMessaging.onlineAgents.forEach(a => {
-        if (seenUids.has(a.uid)) return;
-        seenUids.add(a.uid);
-        rows.push({ uid: a.uid, name: a.name || 'Agent', online: !!a.online, thread: null });
-    });
-
-    if (rows.length === 0) {
-        container.innerHTML = `
-            <div class="chat-empty" style="padding: 30px 20px;">
-                <i class="fas fa-users" style="font-size: 1.8rem; opacity: 0.2; margin-bottom: 8px;"></i>
-                <p style="font-size: 0.82rem;">No other agents found</p>
-            </div>`;
-        // Show empty state panel area
-        document.getElementById('chat-empty-state').style.display = 'flex';
-        document.getElementById('chat-empty-state').querySelector('p').textContent = 'Select a teammate to message';
-        document.getElementById('chat-empty-state').querySelector('i').className   = 'fas fa-users';
+    const others = agentChat.allAgents.filter(a => a.id !== supportChat.agentUid);
+    if (!others.length) {
+        container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.78rem;padding:12px;">No other agents found</div>';
         return;
     }
 
-    rows.forEach(row => {
-        const thread    = row.thread;
-        const unread    = thread?.unreadCounts?.[myUid] || 0;
-        const lastMsg   = thread?.lastMessage || '';
-        const lastTime  = thread?.lastMessageAt
-            ? formatChatTime(
-                thread.lastMessageAt.toDate
-                    ? thread.lastMessageAt.toDate()
-                    : new Date(thread.lastMessageAt)
-              )
-            : '';
-        const initials  = row.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        const threadId  = getAgentThreadId(myUid, row.uid);
-        const isActive  = agentMessaging.currentThreadId === threadId;
+    others.sort((a, b) => {
+        const aOn = agentChat.presenceMap[a.id] ? 1 : 0;
+        const bOn = agentChat.presenceMap[b.id] ? 1 : 0;
+        if (bOn !== aOn) return bOn - aOn;
+        return (a.displayName || '').localeCompare(b.displayName || '');
+    });
 
-        const el        = document.createElement('div');
-        el.className    = `chat-contact-item${isActive ? ' active' : ''}`;
-        el.style.cursor = 'pointer';
-        el.innerHTML    = `
-            <div class="chat-contact-avatar" style="background: #1e3a5f; position: relative;">
-                ${escapeHtml(initials)}
-                <span style="position:absolute; bottom:1px; right:1px; width:8px; height:8px;
-                    border-radius:50%; background:${row.online ? '#22c55e' : '#94a3b8'};
-                    border:1.5px solid white;"></span>
+    container.innerHTML = '';
+    others.forEach(agent => {
+        const online   = agentChat.presenceMap[agent.id] === true;
+        const name     = agent.displayName || agent.email || 'Agent';
+        const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const role     = agent.role ? `<span style="font-size:0.65rem;color:var(--text-muted);margin-left:4px;">${escapeHtml(agent.role)}</span>` : '';
+
+        const el = document.createElement('div');
+        el.className = 'agent-roster-item';
+        el.innerHTML = `
+            <div class="agent-roster-avatar">
+                ${initials}
+                <span class="presence-dot${online ? ' online' : ''}"></span>
             </div>
-            <div class="chat-contact-info">
-                <div class="chat-contact-name">${escapeHtml(row.name)}</div>
-                <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 1px;">
-                    ${row.online ? '<i class="fas fa-circle" style="color:#22c55e; font-size:0.5rem;"></i> Online' : 'Offline'}
+            <div style="flex:1;min-width:0;">
+                <div style="font-weight:600;color:var(--navy);">${escapeHtml(name)}${role}</div>
+                <div style="font-size:0.68rem;color:${online ? 'var(--success)' : 'var(--text-muted)'};">
+                    ${online ? 'Online' : 'Offline'}
                 </div>
-                ${lastMsg ? `<div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>` : ''}
-            </div>
-            <div class="chat-contact-meta">
-                <span class="chat-time">${lastTime}</span>
-                ${unread > 0 ? `<div class="chat-unread-badge">${unread}</div>` : ''}
             </div>`;
-
-        el.addEventListener('click', () => openAgentThread(row.uid, row.name));
+        el.addEventListener('click', () => openOrCreateDM(agent));
         container.appendChild(el);
     });
 }
 
-// ── Open a DM thread with another agent ──────────────────
-async function openAgentThread(peerUid, peerName) {
-    const myUid    = supportChat.agentUid;
-    const threadId = getAgentThreadId(myUid, peerUid);
+// ── Render conversation list ─────────────────────────────────────────
+function renderAgentConvoList() {
+    const container = document.getElementById('agent-convo-list');
+    if (!container) return;
 
-    agentMessaging.currentThreadId = threadId;
-    agentMessaging.currentPeerId   = peerUid;
-    agentMessaging.currentPeerName = peerName;
-    agentMessaging.renderedMessageIds.clear();
+    if (!agentChat.conversations.length) {
+        container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.78rem;padding:20px;">No conversations yet</div>';
+        return;
+    }
 
-    // Re-render list to mark active item
-    renderAgentList();
+    container.innerHTML = '';
+    agentChat.conversations.forEach(convo => {
+        const isGroup  = convo.isGroup === true;
+        const uid      = supportChat.agentUid;
+        const lastRead = supportChat.lastReadTimestamps.get('agent_' + convo.id) || 0;
+        const lastMsgTime = convo.lastMessageAt?.toDate?.()?.getTime() ||
+                            (convo.lastMessageAt ? new Date(convo.lastMessageAt).getTime() : 0);
+        const hasUnread = lastMsgTime > lastRead && convo.lastMessageBy !== uid;
 
-    // Show active chat area with agent styling
+        let displayName;
+        if (isGroup) {
+            displayName = convo.name || 'Group Chat';
+        } else {
+            const otherId = convo.participants?.find(p => p !== uid);
+            displayName   = convo.participantNames?.[otherId] || 'Agent';
+        }
+
+        const initials = isGroup
+            ? (convo.name || 'GC').substring(0, 2).toUpperCase()
+            : displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+
+        const lastMsg  = convo.lastMessage || 'No messages yet';
+        const lastDate = convo.lastMessageAt?.toDate
+            ? convo.lastMessageAt.toDate()
+            : convo.lastMessageAt ? new Date(convo.lastMessageAt) : null;
+        const lastTime = lastDate ? formatChatTime(lastDate) : '';
+
+        const el = document.createElement('div');
+        el.className = `agent-convo-item${agentChat.currentConvoId === convo.id ? ' active' : ''}`;
+        el.innerHTML = `
+            <div class="agent-convo-avatar${isGroup ? ' group' : ''}">
+                ${isGroup ? '<i class="fas fa-users" style="font-size:0.7rem;"></i>' : initials}
+            </div>
+            <div style="flex:1;min-width:0;">
+                <div style="font-weight:${hasUnread ? '700' : '600'};color:var(--navy);
+                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    ${escapeHtml(displayName)}
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-muted);
+                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    ${escapeHtml(lastMsg.substring(0, 40))}
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;">
+                <span style="font-size:0.65rem;color:var(--text-muted);">${lastTime}</span>
+                ${hasUnread ? '<div class="chat-unread-badge">●</div>' : ''}
+            </div>`;
+        el.addEventListener('click', () => openAgentConvo(convo));
+        container.appendChild(el);
+    });
+}
+
+// ── Open or create DM with another agent ─────────────────────────────
+async function openOrCreateDM(agent) {
+    const uid = supportChat.agentUid;
+
+    const existing = agentChat.conversations.find(c =>
+        !c.isGroup &&
+        c.participants?.includes(agent.id) &&
+        c.participants?.includes(uid) &&
+        c.participants?.length === 2
+    );
+
+    if (existing) { openAgentConvo(existing); return; }
+
+    try {
+        const myName    = supportChat.agentName;
+        const theirName = agent.displayName || agent.email || 'Agent';
+        const ref = await addDoc(collection(db, 'agent_chats'), {
+            isGroup:          false,
+            participants:     [uid, agent.id],
+            participantNames: { [uid]: myName, [agent.id]: theirName },
+            createdBy:        uid,
+            createdAt:        serverTimestamp(),
+            lastMessage:      '',
+            lastMessageAt:    serverTimestamp(),
+            lastMessageBy:    uid,
+            status:           'active'
+        });
+        const newConvo = {
+            id: ref.id, isGroup: false, participants: [uid, agent.id],
+            participantNames: { [uid]: myName, [agent.id]: theirName }
+        };
+        openAgentConvo(newConvo);
+    } catch (err) {
+        console.error('Create DM error:', err);
+    }
+}
+
+// ── Open a conversation ──────────────────────────────────────────────
+function openAgentConvo(convo) {
+    if (agentChat.messagesUnsub) { agentChat.messagesUnsub(); agentChat.messagesUnsub = null; }
+    if (agentChat.typingUnsub)   { agentChat.typingUnsub();   agentChat.typingUnsub   = null; }
+
+    agentChat.currentConvoId = convo.id;
+    agentChat.currentConvo   = convo;
+    agentChat.renderedIds.clear();
+
+    const uid      = supportChat.agentUid;
+    const isGroup  = convo.isGroup === true;
+    let displayName;
+
+    if (isGroup) {
+        displayName = convo.name || 'Group Chat';
+    } else {
+        const otherId = convo.participants?.find(p => p !== uid);
+        displayName   = convo.participantNames?.[otherId] || 'Agent';
+    }
+
+    supportChat.lastReadTimestamps.set('agent_' + convo.id, Date.now());
+    saveReadTimestamps();
+    updateAgentsBadge();
+    renderAgentConvoList();
+
     document.getElementById('chat-empty-state').style.display  = 'none';
     document.getElementById('chat-active-area').style.display  = 'flex';
+    document.getElementById('chat-contact-list').style.display = 'none';
 
-    const initials = peerName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-    const online   = agentMessaging.onlineAgents.some(a => a.uid === peerUid && a.online);
+    const initials = isGroup
+        ? (convo.name || 'GC').substring(0, 2).toUpperCase()
+        : displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-    document.getElementById('active-chat-avatar').textContent      = initials;
-    document.getElementById('active-chat-avatar').style.background = '#1e3a5f';
-    document.getElementById('active-chat-name').textContent        = escapeHtml(peerName);
-    document.getElementById('active-chat-meta').innerHTML          =
-        `Agent · <span style="color:${online ? '#22c55e' : 'var(--text-muted)'}">
-            ${online ? 'Online' : 'Offline'}
-        </span>`;
+    const avatarEl = document.getElementById('active-chat-avatar');
+    avatarEl.textContent       = isGroup ? '' : initials;
+    avatarEl.style.background  = '#7c3aed';
+    avatarEl.style.borderRadius = isGroup ? '8px' : '50%';
+    if (isGroup) avatarEl.innerHTML = '<i class="fas fa-users" style="font-size:0.8rem;"></i>';
 
-    // Hide customer-only buttons; show nothing (DMs have no claim/close)
-    ['claim-btn', 'unclaim-btn', 'close-chat-btn'].forEach(id => {
+    document.getElementById('active-chat-name').textContent = escapeHtml(displayName);
+
+    const memberCount = convo.participants?.length || 0;
+    document.getElementById('active-chat-meta').innerHTML = isGroup
+        ? `Internal Group · ${memberCount} members
+           <button onclick="openManageMembersModal()" style="margin-left:8px;padding:2px 8px;
+               border-radius:5px;border:1px solid var(--border);background:none;
+               color:var(--text-muted);font-size:0.68rem;cursor:pointer;font-family:inherit;">
+               <i class="fas fa-user-cog"></i> Manage
+           </button>`
+        : 'Internal · <span style="color:var(--success);">Agent DM</span>';
+
+    ['claim-btn','unclaim-btn','close-chat-btn'].forEach(id => {
         document.getElementById(id).style.display = 'none';
     });
     document.getElementById('claimed-by-banner').style.display = 'none';
 
-    // Swap input placeholder
-    const input = document.getElementById('support-chat-input');
-    if (input) input.placeholder = `Message ${peerName}…`;
-
-    // Patch send / typing handlers for the agent thread context
-    // (The global sendSupportMessage and handleSupportTyping check agentMessaging.currentThreadId)
-
-    // Reset and load messages
-    await markAgentThreadRead(threadId);
-    loadAgentMessages(threadId);
+    loadAgentMessages(convo.id);
+    subscribeToAgentTyping(convo.id);
 }
 
-// ── Load messages for an agent DM thread ─────────────────
-function loadAgentMessages(threadId) {
-    if (agentMessaging.messagesUnsub) {
-        agentMessaging.messagesUnsub();
-        agentMessaging.messagesUnsub = null;
-    }
+// ── Load messages ────────────────────────────────────────────────────
+function loadAgentMessages(convoId) {
+    if (agentChat.messagesUnsub) agentChat.messagesUnsub();
 
     const container = document.getElementById('support-messages');
-    container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading…</div>';
+    container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">Loading…</div>';
 
     const q = query(
-        collection(db, 'agent_chats', threadId, 'messages'),
+        collection(db, 'agent_chats', convoId, 'messages'),
         orderBy('timestamp', 'asc')
     );
 
-    agentMessaging.messagesUnsub = onSnapshot(q, (snap) => {
+    agentChat.messagesUnsub = onSnapshot(q, snap => {
         if (snap.empty && container.innerHTML.includes('Loading')) {
-            container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">No messages yet. Say hello! 👋</div>';
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">No messages yet. Say hello!</div>';
             return;
         }
 
         snap.docChanges().forEach(change => {
             if (change.type !== 'added') return;
             const msgId = change.doc.id;
-            if (agentMessaging.renderedMessageIds.has(msgId)) return;
-            agentMessaging.renderedMessageIds.add(msgId);
+            if (agentChat.renderedIds.has(msgId)) return;
+            agentChat.renderedIds.add(msgId);
 
             const msg    = change.doc.data();
             const isSent = msg.senderId === supportChat.agentUid;
-            const time   = msg.timestamp?.toDate ? formatChatTime(msg.timestamp.toDate()) : '';
+            const d      = msg.timestamp?.toDate ? msg.timestamp.toDate()
+                         : msg.timestamp ? new Date(msg.timestamp) : null;
+            const time   = d ? formatChatTime(d) : '';
 
             if (container.innerHTML.includes('Loading')) container.innerHTML = '';
 
-            const el       = document.createElement('div');
-            el.className   = isSent ? 'support-msg-sent' : 'support-msg-received';
-            el.innerHTML   = `
+            const el = document.createElement('div');
+            el.className = isSent ? 'support-msg-sent' : 'support-msg-received';
+            el.innerHTML = `
                 <div>${escapeHtml(msg.text)}</div>
                 <div class="support-msg-time">
                     ${!isSent ? escapeHtml(msg.senderName || 'Agent') + ' · ' : ''}${time}
@@ -3896,102 +3977,207 @@ function loadAgentMessages(threadId) {
     });
 }
 
-// ── Send a message in an agent DM thread ─────────────────
-async function sendAgentMessage(text) {
-    const threadId = agentMessaging.currentThreadId;
-    const peerUid  = agentMessaging.currentPeerId;
-    const peerName = agentMessaging.currentPeerName;
-    const myUid    = supportChat.agentUid;
-    const myName   = supportChat.agentName;
+// ── Send agent message ───────────────────────────────────────────────
+async function sendAgentMessage() {
+    const input = document.getElementById('support-chat-input');
+    const text  = input?.value.trim();
+    if (!text || !agentChat.currentConvoId) return;
 
-    if (!text || !threadId) return;
+    input.value        = '';
+    input.style.height = 'auto';
 
-    const threadRef = doc(db, 'agent_chats', threadId);
-    const snap      = await getDoc(threadRef);
+    const uid     = supportChat.agentUid;
+    const name    = supportChat.agentName;
+    const convoId = agentChat.currentConvoId;
 
-    // Create thread doc if first message
-    if (!snap.exists()) {
-        await setDoc(threadRef, {
-            participants:     [myUid, peerUid],
-            participantNames: { [myUid]: myName, [peerUid]: peerName },
+    updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: false }).catch(() => {});
+
+    try {
+        await addDoc(collection(db, 'agent_chats', convoId, 'messages'), {
+            text,
+            senderId:   uid,
+            senderName: name,
+            timestamp:  serverTimestamp(),
+            read:       false,
+            type:       'text'
+        });
+        await updateDoc(doc(db, 'agent_chats', convoId), {
+            lastMessage:   text.substring(0, 200),
+            lastMessageAt: serverTimestamp(),
+            lastMessageBy: uid,
+            status:        'active'
+        });
+        supportChat.lastReadTimestamps.set('agent_' + convoId, Date.now());
+        saveReadTimestamps();
+    } catch (err) {
+        console.error('Send agent message error:', err);
+        alert('Failed to send message.');
+    }
+}
+
+// ── Typing indicator ─────────────────────────────────────────────────
+function subscribeToAgentTyping(convoId) {
+    if (agentChat.typingUnsub) agentChat.typingUnsub();
+
+    agentChat.typingUnsub = onSnapshot(doc(db, 'agent_chats', convoId), snap => {
+        if (!snap.exists()) return;
+        const typing   = snap.data().typing || {};
+        const uid      = supportChat.agentUid;
+        const typer    = Object.entries(typing).find(([k, v]) => k !== uid && v === true);
+        const typingEl = document.getElementById('support-typing');
+        const nameEl   = document.getElementById('support-typing-name');
+
+        if (typer) {
+            const typerName = agentChat.currentConvo?.participantNames?.[typer[0]] || 'Agent';
+            if (typingEl) typingEl.style.display = 'block';
+            if (nameEl)   nameEl.textContent      = typerName.split(' ')[0];
+        } else {
+            if (typingEl) typingEl.style.display = 'none';
+        }
+    });
+}
+
+function handleAgentTyping() {
+    if (!agentChat.currentConvoId) return;
+    const uid     = supportChat.agentUid;
+    const convoId = agentChat.currentConvoId;
+    if (agentChat.agentTypingTimeout) clearTimeout(agentChat.agentTypingTimeout);
+    updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: true }).catch(() => {});
+    agentChat.agentTypingTimeout = setTimeout(() => {
+        updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: false }).catch(() => {});
+    }, 3000);
+}
+
+// ── Group chat: create ───────────────────────────────────────────────
+window.openNewGroupModal = function () {
+    const modal = document.getElementById('new-group-modal');
+    const box   = document.getElementById('group-member-checkboxes');
+    box.innerHTML = '';
+    agentChat.allAgents
+        .filter(a => a.id !== supportChat.agentUid)
+        .forEach(agent => {
+            const name = agent.displayName || agent.email || 'Agent';
+            const row  = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:0.82rem;';
+            row.innerHTML = `<input type="checkbox" value="${agent.id}" data-name="${escapeHtml(name)}" style="accent-color:var(--navy);"> ${escapeHtml(name)}`;
+            box.appendChild(row);
+        });
+    modal.style.display = 'flex';
+};
+
+window.closeNewGroupModal = function () {
+    document.getElementById('new-group-modal').style.display = 'none';
+    document.getElementById('group-name-input').value = '';
+};
+
+window.createGroupChat = async function () {
+    const name     = document.getElementById('group-name-input').value.trim();
+    const checked  = [...document.querySelectorAll('#group-member-checkboxes input:checked')];
+    if (!name)           { alert('Please enter a group name.'); return; }
+    if (!checked.length) { alert('Select at least one member.'); return; }
+
+    const uid        = supportChat.agentUid;
+    const myName     = supportChat.agentName;
+    const memberIds  = [uid, ...checked.map(c => c.value)];
+    const memberNames = { [uid]: myName };
+    checked.forEach(c => { memberNames[c.value] = c.dataset.name; });
+
+    try {
+        const ref = await addDoc(collection(db, 'agent_chats'), {
+            isGroup:          true,
+            name,
+            participants:     memberIds,
+            participantNames: memberNames,
+            createdBy:        uid,
+            createdAt:        serverTimestamp(),
             lastMessage:      '',
             lastMessageAt:    serverTimestamp(),
-            lastMessageBy:    myUid,
-            unreadCounts:     { [myUid]: 0, [peerUid]: 0 },
-            createdAt:        serverTimestamp()
+            lastMessageBy:    uid,
+            status:           'active'
         });
-    }
-
-    await addDoc(collection(db, 'agent_chats', threadId, 'messages'), {
-        text,
-        senderId:   myUid,
-        senderName: myName,
-        timestamp:  serverTimestamp(),
-        read:       false,
-        type:       'text'
-    });
-
-    await updateDoc(threadRef, {
-        lastMessage:                         text.substring(0, 200),
-        lastMessageAt:                       serverTimestamp(),
-        lastMessageBy:                       myUid,
-        [`unreadCounts.${peerUid}`]:         increment(1),
-        [`participantNames.${myUid}`]:       myName,
-        [`participantNames.${peerUid}`]:     peerName
-    });
-}
-
-// ── Mark agent thread as read ─────────────────────────────
-async function markAgentThreadRead(threadId) {
-    const myUid = supportChat.agentUid;
-    try {
-        const ref  = doc(db, 'agent_chats', threadId);
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-            await updateDoc(ref, { [`unreadCounts.${myUid}`]: 0 });
-        }
+        closeNewGroupModal();
+        const newConvo = { id: ref.id, isGroup: true, name, participants: memberIds, participantNames: memberNames };
+        openAgentConvo(newConvo);
     } catch (err) {
-        console.error('Mark agent thread read error:', err);
+        console.error('Create group error:', err);
+        alert('Failed to create group.');
     }
-    updateTeamBadge();
+};
+
+// ── Group chat: manage members ───────────────────────────────────────
+window.openManageMembersModal = function () {
+    const modal   = document.getElementById('manage-members-modal');
+    const box     = document.getElementById('manage-member-checkboxes');
+    const current = agentChat.currentConvo?.participants || [];
+    box.innerHTML = '';
+    agentChat.allAgents
+        .filter(a => a.id !== supportChat.agentUid)
+        .forEach(agent => {
+            const name    = agent.displayName || agent.email || 'Agent';
+            const checked = current.includes(agent.id) ? 'checked' : '';
+            const row     = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:0.82rem;';
+            row.innerHTML = `<input type="checkbox" value="${agent.id}" data-name="${escapeHtml(name)}" ${checked} style="accent-color:var(--navy);"> ${escapeHtml(name)}`;
+            box.appendChild(row);
+        });
+    modal.style.display = 'flex';
+};
+
+window.closeManageMembersModal = function () {
+    document.getElementById('manage-members-modal').style.display = 'none';
+};
+
+window.saveGroupMembers = async function () {
+    const convo    = agentChat.currentConvo;
+    if (!convo)    return;
+    const checked  = [...document.querySelectorAll('#manage-member-checkboxes input:checked')];
+    const uid      = supportChat.agentUid;
+    const myName   = supportChat.agentName;
+    const memberIds = [uid, ...checked.map(c => c.value)];
+    const memberNames = { ...(convo.participantNames || {}), [uid]: myName };
+    checked.forEach(c => { memberNames[c.value] = c.dataset.name; });
+
+    try {
+        await updateDoc(doc(db, 'agent_chats', convo.id), {
+            participants:     memberIds,
+            participantNames: memberNames
+        });
+        agentChat.currentConvo.participants     = memberIds;
+        agentChat.currentConvo.participantNames = memberNames;
+        closeManageMembersModal();
+    } catch (err) {
+        console.error('Save members error:', err);
+        alert('Failed to update members.');
+    }
+};
+
+// ── Tab switching support ────────────────────────────────────────────
+function showAgentsTabArea() {
+    document.getElementById('agents-tab-area').style.display   = 'flex';
+    document.getElementById('chat-contact-list').style.display = 'none';
+    document.getElementById('chat-active-area').style.display  = 'none';
+    document.getElementById('chat-empty-state').style.display  = 'none';
+    renderAgentRoster();
+    renderAgentConvoList();
 }
 
-// ── Close agent thread (return to team list) ──────────────
-function closeAgentThread() {
-    if (agentMessaging.messagesUnsub) {
-        agentMessaging.messagesUnsub();
-        agentMessaging.messagesUnsub = null;
-    }
-    agentMessaging.currentThreadId = null;
-    agentMessaging.currentPeerId   = null;
-    agentMessaging.currentPeerName = null;
-    agentMessaging.renderedMessageIds.clear();
-
-    document.getElementById('chat-active-area').style.display = 'none';
-    document.getElementById('chat-empty-state').style.display = 'flex';
-
-    const input = document.getElementById('support-chat-input');
-    if (input) input.placeholder = 'Type a message…';
-
-    renderAgentList();
+function hideAgentsTabArea() {
+    const el = document.getElementById('agents-tab-area');
+    if (el) el.style.display = 'none';
+    document.getElementById('chat-contact-list').style.display = '';
 }
-
-// ════════════════════════════════════════════════════════
-// PATCHES TO EXISTING FUNCTIONS
-// ════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════
 
 function patchSupportChatForAgentMessaging() {
     // ── Patch: send ───────────────────────────────────────
     const _origSend = window.sendSupportMessage;
     window.sendSupportMessage = async function () {
-        if (agentMessaging.currentThreadId) {
+        if (agentChat.currentConvoId) {
             const input = document.getElementById('support-chat-input');
             const text  = input?.value.trim();
             if (!text) return;
             input.value        = '';
             input.style.height = 'auto';
-            await sendAgentMessage(text);
+            await sendAgentMessage();
         } else {
             await _origSend();
         }
@@ -4000,15 +4186,35 @@ function patchSupportChatForAgentMessaging() {
     // ── Patch: typing ─────────────────────────────────────
     const _origTyping = window.handleSupportTyping;
     window.handleSupportTyping = function () {
-        if (agentMessaging.currentThreadId) return; // no typing indicator for DMs (v1)
+        if (agentChat.currentConvoId) {
+            handleAgentTyping();
+            return;
+        }
         _origTyping();
     };
 
     // ── Patch: close active chat ──────────────────────────
     const _origClose = window.closeActiveChat;
     window.closeActiveChat = function () {
-        if (agentMessaging.currentThreadId) {
-            closeAgentThread();
+        if (agentChat.currentConvoId) {
+            // Clean up agent chat listeners
+            if (agentChat.messagesUnsub) {
+                agentChat.messagesUnsub();
+                agentChat.messagesUnsub = null;
+            }
+            if (agentChat.typingUnsub) {
+                agentChat.typingUnsub();
+                agentChat.typingUnsub = null;
+            }
+            agentChat.currentConvoId = null;
+            agentChat.currentConvo   = null;
+            agentChat.renderedIds.clear();
+
+            // Return to agents tab view
+            document.getElementById('chat-active-area').style.display = 'none';
+            document.getElementById('chat-empty-state').style.display = 'flex';
+            renderAgentRoster();
+            renderAgentConvoList();
         } else {
             _origClose();
         }
@@ -4017,22 +4223,19 @@ function patchSupportChatForAgentMessaging() {
     // ── Patch: switchChatTab to reset agent thread ────────
     const _origSwitch = window.switchChatTab;
     window.switchChatTab = function (tab) {
-        if (tab === 'team') {
-            switchToTeamTab();
-            return;
-        }
-        // Leaving team tab — clean up agent thread
-        if (agentMessaging.currentThreadId) {
-            if (agentMessaging.messagesUnsub) {
-                agentMessaging.messagesUnsub();
-                agentMessaging.messagesUnsub = null;
+        // Clean up agent thread when leaving agents tab
+        if (supportChat.currentTab === 'agents' && tab !== 'agents') {
+            if (agentChat.messagesUnsub) {
+                agentChat.messagesUnsub();
+                agentChat.messagesUnsub = null;
             }
-            agentMessaging.currentThreadId = null;
-            agentMessaging.currentPeerId   = null;
-            agentMessaging.currentPeerName = null;
-            agentMessaging.renderedMessageIds.clear();
-            const input = document.getElementById('support-chat-input');
-            if (input) input.placeholder = 'Type a message…';
+            if (agentChat.typingUnsub) {
+                agentChat.typingUnsub();
+                agentChat.typingUnsub = null;
+            }
+            agentChat.currentConvoId = null;
+            agentChat.currentConvo   = null;
+            agentChat.renderedIds.clear();
         }
         _origSwitch(tab);
     };
@@ -4040,14 +4243,15 @@ function patchSupportChatForAgentMessaging() {
 
 // ── Cleanup ────────────────────────────────────────────────
 window.addEventListener('beforeunload', () => {
-    if (agentMessaging.messagesUnsub) agentMessaging.messagesUnsub();
-    if (agentMessaging.threadsUnsub)  agentMessaging.threadsUnsub();
-    if (agentMessaging.agentsUnsub)   agentMessaging.agentsUnsub();
+    if (agentChat.messagesUnsub)  agentChat.messagesUnsub();
+    if (agentChat.convoUnsub)     agentChat.convoUnsub();
+    if (agentChat.presenceUnsub)  agentChat.presenceUnsub();
+    if (agentChat.typingUnsub)    agentChat.typingUnsub();
 });
 
-// ════════════════════════════════════════════════════════
-// END AGENT INTERNAL MESSAGING SYSTEM
-// ════════════════════════════════════════════════════════
+// =====================================================
+// AGENT MESSAGING AGENT ENDS HERE
+//=======================================================
     
 // ====================================================
 // CREDIT MANAGEMENT (Lead Only) — FIXED
