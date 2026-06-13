@@ -2660,16 +2660,15 @@ async function initSupportChat(user) {
         }
         const agentData = agentSnap.data();
         supportChat.agentUid  = user.uid;
-        supportChat.agentName = agentData.name || user.email;
-
+        supportChat.agentName = agentData.displayName || agentData.name || user.email;
+ 
         document.getElementById('agent-name-display').textContent = supportChat.agentName;
-
+ 
         loadReadTimestamps();
         listenToChats();
         setAgentPresence(true);
         supportChat.presenceInterval = setInterval(() => setAgentPresence(true), 60000);
         initAgentMessaging();
-        patchSupportChatForAgentMessaging();
     } catch (err) {
         console.error('Support chat init error:', err);
     }
@@ -2927,9 +2926,15 @@ function switchChatTab(tab) {
     document.querySelectorAll('.chat-tab').forEach(t => {
         t.classList.toggle('active', t.getAttribute('data-tab') === tab);
     });
-    renderChatContactList();
+ 
+    if (tab === 'agents') {
+        showAgentsTabArea();
+    } else {
+        hideAgentsTabArea();
+        renderChatContactList();
+    }
 }
-
+    
 // ── Render contact list ───────────────────────────────────
 function renderChatContactList() {
     const container = document.getElementById('chat-contact-list');
@@ -3496,300 +3501,366 @@ window.addEventListener('beforeunload', () => {
 // END SUPPORT CHAT SYSTEM
 // ════════════════════════════════════════════════════════
 
+ 
 // ════════════════════════════════════════════════════════
 // AGENT INTERNAL MESSAGING SYSTEM
+// Ported from Project 2 (premium-support).
+// Collection: agent_chats/{chatId}/messages
 // ════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════
-
+ 
 const agentMessaging = {
     currentThreadId:    null,
-    currentPeerId:      null,
-    currentPeerName:    null,
+    currentConvo:       null,        // full convo doc for groups
     messagesUnsub:      null,
-    threadsUnsub:       null,
-    agentsUnsub:        null,
+    convoUnsub:         null,
+    presenceUnsub:      null,
     renderedMessageIds: new Set(),
-    threads:            [],          // enriched thread list
-    onlineAgents:       [],          // from support_presence
-    typingTimeout:      null,
+    conversations:      [],
+    allAgents:          [],
+    presenceMap:        {},
+    agentTypingTimeout: null,
+    typingUnsub:        null,
 };
-
-// ── Build a deterministic thread ID from two UIDs ─────────
-function getAgentThreadId(uid1, uid2) {
-    return [uid1, uid2].sort().join('_');
-}
-
-// ── Init (called once after supportChat is ready) ─────────
-function initAgentMessaging() {
+ 
+// ── Init ──────────────────────────────────────────────────
+async function initAgentMessaging() {
+    await loadAllAgents();
     listenToAgentPresence();
-    listenToAgentThreads();
-    injectTeamTabUI();
+    listenToAgentConversations();
 }
-
-// ── Inject "Team" tab into existing tab bar ───────────────
-function injectTeamTabUI() {
-    const tabBar = document.querySelector('.chat-panel > div[style*="background: #0d2b56"]');
-    if (!tabBar || document.querySelector('[data-tab="team"]')) return;
-
-    const btn = document.createElement('button');
-    btn.className = 'chat-tab';
-    btn.setAttribute('data-tab', 'team');
-    btn.innerHTML = 'Team <span class="chat-tab-badge" id="team-badge" style="display:none;"></span>';
-    btn.onclick = () => switchToTeamTab();
-    tabBar.appendChild(btn);
+ 
+// ── Load all support_agents docs ──────────────────────────
+async function loadAllAgents() {
+    try {
+        const snap = await getDocs(collection(db, 'support_agents'));
+        agentMessaging.allAgents = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) { console.error('Load agents error:', err); }
 }
-
-// ── Listen: online agents from support_presence ───────────
+ 
+// ── Listen: presence ──────────────────────────────────────
 function listenToAgentPresence() {
-    if (agentMessaging.agentsUnsub) agentMessaging.agentsUnsub();
-
-    agentMessaging.agentsUnsub = onSnapshot(
+    if (agentMessaging.presenceUnsub) agentMessaging.presenceUnsub();
+    agentMessaging.presenceUnsub = onSnapshot(
         collection(db, 'support_presence'),
-        (snap) => {
-            const agents = [];
+        snap => {
             snap.forEach(d => {
-                const data = d.data();
-                if (d.id !== supportChat.agentUid) {
-                    agents.push({ uid: d.id, ...data });
-                }
+                agentMessaging.presenceMap[d.id] = d.data().online === true;
             });
-            agentMessaging.onlineAgents = agents;
-            // Re-render if team tab is active
-            if (supportChat.currentTab === 'team') renderAgentList();
+            if (supportChat.currentTab === 'agents') renderAgentRoster();
         }
     );
 }
-
-// ── Listen: all agent DM threads involving this agent ─────
-function listenToAgentThreads() {
-    if (agentMessaging.threadsUnsub) agentMessaging.threadsUnsub();
-
+ 
+// ── Listen: agent_chats this agent is in ─────────────────
+function listenToAgentConversations() {
+    if (agentMessaging.convoUnsub) agentMessaging.convoUnsub();
+ 
     const q = query(
         collection(db, 'agent_chats'),
         where('participants', 'array-contains', supportChat.agentUid),
         orderBy('lastMessageAt', 'desc')
     );
-
-    agentMessaging.threadsUnsub = onSnapshot(q, (snap) => {
-        const threads = [];
-        snap.forEach(d => threads.push({ id: d.id, ...d.data() }));
-        agentMessaging.threads = threads;
-        updateTeamBadge();
-        if (supportChat.currentTab === 'team') renderAgentList();
-    }, (error) => {
-        if (error.code === 'permission-denied') {
-            // Collection is empty or index is still building — not a real error
-            console.warn('agent_chats listener: permission-denied (collection may be empty)');
-            agentMessaging.threads = [];
-            updateTeamBadge();
+ 
+    agentMessaging.convoUnsub = onSnapshot(q, snap => {
+        agentMessaging.conversations = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        updateAgentsBadge();
+        if (supportChat.currentTab === 'agents') renderAgentConvoList();
+    }, err => {
+        if (err.code === 'permission-denied' || err.code === 'failed-precondition') {
+            console.warn('agent_chats listener:', err.code);
+            agentMessaging.conversations = [];
+            updateAgentsBadge();
         } else {
-            console.error('agent_chats listener error:', error);
+            console.error('agent_chats listener error:', err);
         }
     });
 }
-
-// ── Update team badge count (unread DMs) ──────────────────
-function updateTeamBadge() {
-    const badge = document.getElementById('team-badge');
-    if (!badge) return;
-    const total = agentMessaging.threads.reduce((sum, t) => {
-        return sum + (t.unreadCounts?.[supportChat.agentUid] || 0);
+ 
+// ── Agents tab badge ──────────────────────────────────────
+function updateAgentsBadge() {
+    const uid    = supportChat.agentUid;
+    const unread = agentMessaging.conversations.reduce((sum, c) => {
+        const lastRead    = supportChat.lastReadTimestamps.get('agent_' + c.id) || 0;
+        const lastMsgTime = c.lastMessageAt?.toDate?.()?.getTime() ||
+                            (c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : 0);
+        const byOther     = c.lastMessageBy && c.lastMessageBy !== uid;
+        return sum + (lastMsgTime > lastRead && byOther ? 1 : 0);
     }, 0);
-    badge.textContent   = total;
-    badge.style.display = total > 0 ? 'flex' : 'none';
-}
-
-// ── Switch to Team tab ────────────────────────────────────
-function switchToTeamTab() {
-    // Close any open customer chat
-    if (agentMessaging.messagesUnsub) {
-        // keep messages open if same area; handled in renderAgentList
+ 
+    const badge = document.getElementById('agents-badge');
+    if (badge) {
+        badge.textContent   = unread;
+        badge.style.display = unread > 0 ? 'flex' : 'none';
     }
-    supportChat.currentTab = 'team';
-
-    document.querySelectorAll('.chat-tab').forEach(t => {
-        t.classList.toggle('active', t.getAttribute('data-tab') === 'team');
-    });
-
-    // Hide customer chat area, show agent list
+}
+ 
+// ── Show / hide agents tab area ───────────────────────────
+function showAgentsTabArea() {
+    document.getElementById('agents-tab-area').style.display   = 'flex';
+    document.getElementById('chat-contact-list').style.display = 'none';
     document.getElementById('chat-active-area').style.display  = 'none';
     document.getElementById('chat-empty-state').style.display  = 'none';
-
-    renderAgentList();
+    renderAgentRoster();
+    renderAgentConvoList();
 }
-
-// ── Render the "Team" contact list ────────────────────────
-function renderAgentList() {
-    const container = document.getElementById('chat-contact-list');
-    container.innerHTML = '';
-
-    const myUid = supportChat.agentUid;
-
-    // Build a lookup: peerUid → thread
-    const threadByPeer = new Map();
-    agentMessaging.threads.forEach(t => {
-        const peer = t.participants?.find(p => p !== myUid);
-        if (peer) threadByPeer.set(peer, t);
-    });
-
-    // Gather all peer UIDs: from active threads + online agents
-    const seenUids = new Set();
-    const rows     = [];
-
-    // 1. Existing threads first (so agents you've messaged appear even if offline)
-    agentMessaging.threads.forEach(t => {
-        const peer = t.participants?.find(p => p !== myUid);
-        if (!peer || seenUids.has(peer)) return;
-        seenUids.add(peer);
-        const name   = t.participantNames?.[peer] || 'Agent';
-        const online = agentMessaging.onlineAgents.some(a => a.uid === peer && a.online);
-        rows.push({ uid: peer, name, online, thread: t });
-    });
-
-    // 2. Online agents not yet in threads
-    agentMessaging.onlineAgents.forEach(a => {
-        if (seenUids.has(a.uid)) return;
-        seenUids.add(a.uid);
-        rows.push({ uid: a.uid, name: a.name || 'Agent', online: !!a.online, thread: null });
-    });
-
-    if (rows.length === 0) {
-        container.innerHTML = `
-            <div class="chat-empty" style="padding: 30px 20px;">
-                <i class="fas fa-users" style="font-size: 1.8rem; opacity: 0.2; margin-bottom: 8px;"></i>
-                <p style="font-size: 0.82rem;">No other agents found</p>
-            </div>`;
-        // Show empty state panel area
-        document.getElementById('chat-empty-state').style.display = 'flex';
-        document.getElementById('chat-empty-state').querySelector('p').textContent = 'Select a teammate to message';
-        document.getElementById('chat-empty-state').querySelector('i').className   = 'fas fa-users';
+ 
+function hideAgentsTabArea() {
+    document.getElementById('agents-tab-area').style.display   = 'none';
+    document.getElementById('chat-contact-list').style.display = '';
+ 
+    // Clean up any open agent convo
+    if (agentMessaging.messagesUnsub) { agentMessaging.messagesUnsub(); agentMessaging.messagesUnsub = null; }
+    if (agentMessaging.typingUnsub)   { agentMessaging.typingUnsub();   agentMessaging.typingUnsub   = null; }
+    agentMessaging.currentThreadId = null;
+    agentMessaging.currentConvo    = null;
+    agentMessaging.renderedMessageIds.clear();
+ 
+    const input = document.getElementById('support-chat-input');
+    if (input) input.placeholder = 'Type a message...';
+}
+ 
+// ── Render agent roster (dark pane) ───────────────────────
+function renderAgentRoster() {
+    const container = document.getElementById('agent-roster-list');
+    if (!container) return;
+ 
+    const others = agentMessaging.allAgents.filter(a => a.id !== supportChat.agentUid);
+    if (!others.length) {
+        container.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.35);font-size:0.78rem;padding:12px;">No other agents found</div>';
         return;
     }
-
-    rows.forEach(row => {
-        const thread    = row.thread;
-        const unread    = thread?.unreadCounts?.[myUid] || 0;
-        const lastMsg   = thread?.lastMessage || '';
-        const lastTime  = thread?.lastMessageAt
-            ? formatChatTime(
-                thread.lastMessageAt.toDate
-                    ? thread.lastMessageAt.toDate()
-                    : new Date(thread.lastMessageAt)
-              )
+ 
+    // Online first, then alphabetical
+    others.sort((a, b) => {
+        const aOn = agentMessaging.presenceMap[a.id] ? 1 : 0;
+        const bOn = agentMessaging.presenceMap[b.id] ? 1 : 0;
+        if (bOn !== aOn) return bOn - aOn;
+        return (a.displayName || a.name || '').localeCompare(b.displayName || b.name || '');
+    });
+ 
+    container.innerHTML = '';
+    others.forEach(agent => {
+        const online   = agentMessaging.presenceMap[agent.id] === true;
+        const name     = agent.displayName || agent.name || agent.email || 'Agent';
+        const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        const role     = agent.role
+            ? `<span style="font-size:0.62rem;color:rgba(255,255,255,0.35);margin-left:4px;">${escapeHtml(agent.role)}</span>`
             : '';
-        const initials  = row.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        const threadId  = getAgentThreadId(myUid, row.uid);
-        const isActive  = agentMessaging.currentThreadId === threadId;
-
-        const el        = document.createElement('div');
-        el.className    = `chat-contact-item${isActive ? ' active' : ''}`;
-        el.style.cursor = 'pointer';
-        el.innerHTML    = `
-            <div class="chat-contact-avatar" style="background: #1e3a5f; position: relative;">
-                ${escapeHtml(initials)}
-                <span style="position:absolute; bottom:1px; right:1px; width:8px; height:8px;
-                    border-radius:50%; background:${row.online ? '#22c55e' : '#94a3b8'};
-                    border:1.5px solid white;"></span>
+ 
+        const el = document.createElement('div');
+        el.className = 'agent-roster-item';
+        el.innerHTML = `
+            <div class="agent-roster-avatar">
+                ${initials}
+                <span class="presence-dot${online ? ' online' : ''}"></span>
             </div>
-            <div class="chat-contact-info">
-                <div class="chat-contact-name">${escapeHtml(row.name)}</div>
-                <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 1px;">
-                    ${row.online ? '<i class="fas fa-circle" style="color:#22c55e; font-size:0.5rem;"></i> Online' : 'Offline'}
+            <div style="flex:1;min-width:0;">
+                <div style="font-weight:600;color:white;font-size:0.82rem;">${escapeHtml(name)}${role}</div>
+                <div style="font-size:0.68rem;color:${online ? '#4ade80' : 'rgba(255,255,255,0.35)'};">
+                    ${online ? 'Online' : 'Offline'}
                 </div>
-                ${lastMsg ? `<div class="chat-contact-preview">${escapeHtml(lastMsg.substring(0, 50))}</div>` : ''}
-            </div>
-            <div class="chat-contact-meta">
-                <span class="chat-time">${lastTime}</span>
-                ${unread > 0 ? `<div class="chat-unread-badge">${unread}</div>` : ''}
             </div>`;
-
-        el.addEventListener('click', () => openAgentThread(row.uid, row.name));
+        el.addEventListener('click', () => openOrCreateDM(agent));
         container.appendChild(el);
     });
 }
-
-// ── Open a DM thread with another agent ──────────────────
-async function openAgentThread(peerUid, peerName) {
-    const myUid    = supportChat.agentUid;
-    const threadId = getAgentThreadId(myUid, peerUid);
-
-    agentMessaging.currentThreadId = threadId;
-    agentMessaging.currentPeerId   = peerUid;
-    agentMessaging.currentPeerName = peerName;
+ 
+// ── Render conversation list ──────────────────────────────
+function renderAgentConvoList() {
+    const container = document.getElementById('agent-convo-list');
+    if (!container) return;
+ 
+    if (!agentMessaging.conversations.length) {
+        container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.78rem;padding:20px;">No conversations yet</div>';
+        return;
+    }
+ 
+    container.innerHTML = '';
+    agentMessaging.conversations.forEach(convo => {
+        const isGroup  = convo.isGroup === true;
+        const uid      = supportChat.agentUid;
+        const lastRead = supportChat.lastReadTimestamps.get('agent_' + convo.id) || 0;
+        const lastMsgTime = convo.lastMessageAt?.toDate?.()?.getTime() ||
+                            (convo.lastMessageAt ? new Date(convo.lastMessageAt).getTime() : 0);
+        const hasUnread = lastMsgTime > lastRead && convo.lastMessageBy !== uid;
+ 
+        let displayName;
+        if (isGroup) {
+            displayName = convo.name || 'Group Chat';
+        } else {
+            const otherId = convo.participants?.find(p => p !== uid);
+            displayName   = convo.participantNames?.[otherId] || 'Agent';
+        }
+ 
+        const initials = isGroup
+            ? (convo.name || 'GC').substring(0, 2).toUpperCase()
+            : displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+ 
+        const lastMsg  = convo.lastMessage || 'No messages yet';
+        const lastDate = convo.lastMessageAt?.toDate
+            ? convo.lastMessageAt.toDate()
+            : convo.lastMessageAt ? new Date(convo.lastMessageAt) : null;
+        const lastTime = lastDate ? formatChatTime(lastDate) : '';
+ 
+        const el = document.createElement('div');
+        el.className = `agent-convo-item${agentMessaging.currentThreadId === convo.id ? ' active' : ''}`;
+        el.innerHTML = `
+            <div class="agent-convo-avatar${isGroup ? ' group' : ''}">
+                ${isGroup ? '<i class="fas fa-users" style="font-size:0.7rem;"></i>' : initials}
+            </div>
+            <div style="flex:1;min-width:0;">
+                <div style="font-weight:${hasUnread ? '700' : '600'};color:var(--navy);
+                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    ${escapeHtml(displayName)}
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-muted);
+                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    ${escapeHtml(lastMsg.substring(0, 40))}
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;">
+                <span style="font-size:0.65rem;color:var(--text-muted);">${lastTime}</span>
+                ${hasUnread ? `<div class="chat-unread-badge">●</div>` : ''}
+            </div>`;
+        el.addEventListener('click', () => openAgentConvo(convo));
+        container.appendChild(el);
+    });
+}
+ 
+// ── Open or create a 1-on-1 DM ───────────────────────────
+async function openOrCreateDM(agent) {
+    const uid      = supportChat.agentUid;
+    const existing = agentMessaging.conversations.find(c =>
+        !c.isGroup &&
+        c.participants?.includes(agent.id) &&
+        c.participants?.includes(uid) &&
+        c.participants?.length === 2
+    );
+ 
+    if (existing) { openAgentConvo(existing); return; }
+ 
+    try {
+        const myName    = supportChat.agentName;
+        const theirName = agent.displayName || agent.name || agent.email || 'Agent';
+        const ref = await addDoc(collection(db, 'agent_chats'), {
+            isGroup:          false,
+            participants:     [uid, agent.id],
+            participantNames: { [uid]: myName, [agent.id]: theirName },
+            createdBy:        uid,
+            createdAt:        serverTimestamp(),
+            lastMessage:      '',
+            lastMessageAt:    serverTimestamp(),
+            lastMessageBy:    uid,
+            status:           'active'
+        });
+        const newConvo = {
+            id: ref.id, isGroup: false,
+            participants:     [uid, agent.id],
+            participantNames: { [uid]: myName, [agent.id]: theirName }
+        };
+        openAgentConvo(newConvo);
+    } catch (err) { console.error('Create DM error:', err); }
+}
+ 
+// ── Open a conversation ───────────────────────────────────
+function openAgentConvo(convo) {
+    if (agentMessaging.messagesUnsub) { agentMessaging.messagesUnsub(); agentMessaging.messagesUnsub = null; }
+    if (agentMessaging.typingUnsub)   { agentMessaging.typingUnsub();   agentMessaging.typingUnsub   = null; }
+ 
+    agentMessaging.currentThreadId = convo.id;
+    agentMessaging.currentConvo    = convo;
     agentMessaging.renderedMessageIds.clear();
-
-    // Re-render list to mark active item
-    renderAgentList();
-
-    // Show active chat area with agent styling
-    document.getElementById('chat-empty-state').style.display  = 'none';
-    document.getElementById('chat-active-area').style.display  = 'flex';
-
-    const initials = peerName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-    const online   = agentMessaging.onlineAgents.some(a => a.uid === peerUid && a.online);
-
-    document.getElementById('active-chat-avatar').textContent      = initials;
-    document.getElementById('active-chat-avatar').style.background = '#1e3a5f';
-    document.getElementById('active-chat-name').textContent        = escapeHtml(peerName);
-    document.getElementById('active-chat-meta').innerHTML          =
-        `Agent · <span style="color:${online ? '#22c55e' : 'var(--text-muted)'}">
-            ${online ? 'Online' : 'Offline'}
-        </span>`;
-
-    // Hide customer-only buttons; show nothing (DMs have no claim/close)
+ 
+    const uid     = supportChat.agentUid;
+    const isGroup = convo.isGroup === true;
+    let displayName;
+ 
+    if (isGroup) {
+        displayName = convo.name || 'Group Chat';
+    } else {
+        const otherId = convo.participants?.find(p => p !== uid);
+        displayName   = convo.participantNames?.[otherId] || 'Agent';
+    }
+ 
+    // Mark read
+    supportChat.lastReadTimestamps.set('agent_' + convo.id, Date.now());
+    saveReadTimestamps();
+    updateAgentsBadge();
+    renderAgentConvoList();
+ 
+    // Show active chat area
+    document.getElementById('chat-empty-state').style.display = 'none';
+    document.getElementById('chat-active-area').style.display = 'flex';
+ 
+    const initials = isGroup
+        ? (convo.name || 'GC').substring(0, 2).toUpperCase()
+        : displayName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+ 
+    const avatarEl = document.getElementById('active-chat-avatar');
+    avatarEl.style.background   = '#7c3aed';
+    avatarEl.style.borderRadius = isGroup ? '8px' : '50%';
+    avatarEl.innerHTML          = isGroup
+        ? '<i class="fas fa-users" style="font-size:0.8rem;"></i>'
+        : initials;
+ 
+    document.getElementById('active-chat-name').textContent = escapeHtml(displayName);
+    document.getElementById('active-chat-meta').innerHTML   = isGroup
+        ? `Internal Group · ${convo.participants?.length || 0} members
+           <button onclick="openManageMembersModal()" style="margin-left:8px;padding:2px 8px;
+               border-radius:5px;border:1px solid var(--border);background:none;
+               color:var(--text-muted);font-size:0.68rem;cursor:pointer;font-family:inherit;">
+               <i class="fas fa-user-cog"></i> Manage
+           </button>`
+        : `Internal · <span style="color:#7c3aed;">Agent DM</span>`;
+ 
+    // Hide customer-only buttons
     ['claim-btn', 'unclaim-btn', 'close-chat-btn'].forEach(id => {
         document.getElementById(id).style.display = 'none';
     });
     document.getElementById('claimed-by-banner').style.display = 'none';
-
-    // Swap input placeholder
+ 
     const input = document.getElementById('support-chat-input');
-    if (input) input.placeholder = `Message ${peerName}…`;
-
-    // Patch send / typing handlers for the agent thread context
-    // (The global sendSupportMessage and handleSupportTyping check agentMessaging.currentThreadId)
-
-    // Reset and load messages
-    await markAgentThreadRead(threadId);
-    loadAgentMessages(threadId);
+    if (input) input.placeholder = `Message ${displayName}…`;
+ 
+    loadAgentMessages(convo.id);
+    subscribeToAgentTyping(convo.id);
 }
-
-// ── Load messages for an agent DM thread ─────────────────
-function loadAgentMessages(threadId) {
-    if (agentMessaging.messagesUnsub) {
-        agentMessaging.messagesUnsub();
-        agentMessaging.messagesUnsub = null;
-    }
-
+ 
+// ── Load messages ─────────────────────────────────────────
+function loadAgentMessages(convoId) {
+    if (agentMessaging.messagesUnsub) agentMessaging.messagesUnsub();
+ 
     const container = document.getElementById('support-messages');
-    container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">Loading…</div>';
-
+    container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">Loading…</div>';
+ 
     const q = query(
-        collection(db, 'agent_chats', threadId, 'messages'),
+        collection(db, 'agent_chats', convoId, 'messages'),
         orderBy('timestamp', 'asc')
     );
-
-    agentMessaging.messagesUnsub = onSnapshot(q, (snap) => {
+ 
+    agentMessaging.messagesUnsub = onSnapshot(q, snap => {
         if (snap.empty && container.innerHTML.includes('Loading')) {
-            container.innerHTML = '<div style="text-align:center; color: var(--text-muted); font-size:0.82rem; padding: 20px;">No messages yet. Say hello! 👋</div>';
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:0.82rem;padding:20px;">No messages yet. Say hello! 👋</div>';
             return;
         }
-
+ 
         snap.docChanges().forEach(change => {
             if (change.type !== 'added') return;
             const msgId = change.doc.id;
             if (agentMessaging.renderedMessageIds.has(msgId)) return;
             agentMessaging.renderedMessageIds.add(msgId);
-
+ 
             const msg    = change.doc.data();
             const isSent = msg.senderId === supportChat.agentUid;
-            const time   = msg.timestamp?.toDate ? formatChatTime(msg.timestamp.toDate()) : '';
-
+            const d      = msg.timestamp?.toDate ? msg.timestamp.toDate()
+                         : msg.timestamp ? new Date(msg.timestamp) : null;
+            const time   = d ? formatChatTime(d) : '';
+ 
             if (container.innerHTML.includes('Loading')) container.innerHTML = '';
-
-            const el       = document.createElement('div');
-            el.className   = isSent ? 'support-msg-sent' : 'support-msg-received';
-            el.innerHTML   = `
+ 
+            const el     = document.createElement('div');
+            el.className = isSent ? 'support-msg-sent' : 'support-msg-received';
+            el.innerHTML = `
                 <div>${escapeHtml(msg.text)}</div>
                 <div class="support-msg-time">
                     ${!isSent ? escapeHtml(msg.senderName || 'Agent') + ' · ' : ''}${time}
@@ -3799,159 +3870,230 @@ function loadAgentMessages(threadId) {
         });
     });
 }
-
-// ── Send a message in an agent DM thread ─────────────────
-async function sendAgentMessage(text) {
-    const threadId = agentMessaging.currentThreadId;
-    const peerUid  = agentMessaging.currentPeerId;
-    const peerName = agentMessaging.currentPeerName;
-    const myUid    = supportChat.agentUid;
-    const myName   = supportChat.agentName;
-
-    if (!text || !threadId) return;
-
-    const threadRef = doc(db, 'agent_chats', threadId);
-    const snap      = await getDoc(threadRef);
-
-    // Create thread doc if first message
-    if (!snap.exists()) {
-        await setDoc(threadRef, {
-            participants:     [myUid, peerUid],
-            participantNames: { [myUid]: myName, [peerUid]: peerName },
+ 
+// ── Send agent message ────────────────────────────────────
+async function sendAgentMessage() {
+    const input = document.getElementById('support-chat-input');
+    const text  = input?.value.trim();
+    if (!text || !agentMessaging.currentThreadId) return;
+ 
+    input.value        = '';
+    input.style.height = 'auto';
+ 
+    const uid     = supportChat.agentUid;
+    const name    = supportChat.agentName;
+    const convoId = agentMessaging.currentThreadId;
+ 
+    updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: false }).catch(() => {});
+ 
+    try {
+        await addDoc(collection(db, 'agent_chats', convoId, 'messages'), {
+            text,
+            senderId:   uid,
+            senderName: name,
+            timestamp:  serverTimestamp(),
+            read:       false,
+            type:       'text'
+        });
+        await updateDoc(doc(db, 'agent_chats', convoId), {
+            lastMessage:   text.substring(0, 200),
+            lastMessageAt: serverTimestamp(),
+            lastMessageBy: uid,
+            status:        'active'
+        });
+        supportChat.lastReadTimestamps.set('agent_' + convoId, Date.now());
+        saveReadTimestamps();
+    } catch (err) {
+        console.error('Send agent message error:', err);
+        alert('Failed to send message.');
+    }
+}
+ 
+// ── Typing indicator ──────────────────────────────────────
+function subscribeToAgentTyping(convoId) {
+    if (agentMessaging.typingUnsub) agentMessaging.typingUnsub();
+ 
+    agentMessaging.typingUnsub = onSnapshot(doc(db, 'agent_chats', convoId), snap => {
+        if (!snap.exists()) return;
+        const typing   = snap.data().typing || {};
+        const uid      = supportChat.agentUid;
+        const typer    = Object.entries(typing).find(([k, v]) => k !== uid && v === true);
+        const typingEl = document.getElementById('support-typing');
+        const nameEl   = document.getElementById('support-typing-name');
+ 
+        if (typer) {
+            const typerName = agentMessaging.currentConvo?.participantNames?.[typer[0]] || 'Agent';
+            if (typingEl) typingEl.style.display = 'block';
+            if (nameEl)   nameEl.textContent      = typerName.split(' ')[0];
+        } else {
+            if (typingEl) typingEl.style.display = 'none';
+        }
+    });
+}
+ 
+function handleAgentTyping() {
+    if (!agentMessaging.currentThreadId) return;
+    const uid     = supportChat.agentUid;
+    const convoId = agentMessaging.currentThreadId;
+    if (agentMessaging.agentTypingTimeout) clearTimeout(agentMessaging.agentTypingTimeout);
+    updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: true }).catch(() => {});
+    agentMessaging.agentTypingTimeout = setTimeout(() => {
+        updateDoc(doc(db, 'agent_chats', convoId), { [`typing.${uid}`]: false }).catch(() => {});
+    }, 3000);
+}
+ 
+// ── Group chat: create ────────────────────────────────────
+window.openNewGroupModal = function () {
+    const modal = document.getElementById('new-group-modal');
+    const box   = document.getElementById('group-member-checkboxes');
+    box.innerHTML = '';
+    agentMessaging.allAgents
+        .filter(a => a.id !== supportChat.agentUid)
+        .forEach(agent => {
+            const name = agent.displayName || agent.name || agent.email || 'Agent';
+            const row  = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:0.82rem;';
+            row.innerHTML = `<input type="checkbox" value="${agent.id}" data-name="${escapeHtml(name)}" style="accent-color:var(--navy);"> ${escapeHtml(name)}`;
+            box.appendChild(row);
+        });
+    modal.style.display = 'flex';
+};
+ 
+window.closeNewGroupModal = function () {
+    document.getElementById('new-group-modal').style.display = 'none';
+    document.getElementById('group-name-input').value = '';
+};
+ 
+window.createGroupChat = async function () {
+    const name    = document.getElementById('group-name-input').value.trim();
+    const checked = [...document.querySelectorAll('#group-member-checkboxes input:checked')];
+    if (!name)           { alert('Please enter a group name.'); return; }
+    if (!checked.length) { alert('Select at least one member.'); return; }
+ 
+    const uid         = supportChat.agentUid;
+    const myName      = supportChat.agentName;
+    const memberIds   = [uid, ...checked.map(c => c.value)];
+    const memberNames = { [uid]: myName };
+    checked.forEach(c => { memberNames[c.value] = c.dataset.name; });
+ 
+    try {
+        const ref = await addDoc(collection(db, 'agent_chats'), {
+            isGroup:          true,
+            name,
+            participants:     memberIds,
+            participantNames: memberNames,
+            createdBy:        uid,
+            createdAt:        serverTimestamp(),
             lastMessage:      '',
             lastMessageAt:    serverTimestamp(),
-            lastMessageBy:    myUid,
-            unreadCounts:     { [myUid]: 0, [peerUid]: 0 },
-            createdAt:        serverTimestamp()
+            lastMessageBy:    uid,
+            status:           'active'
         });
-    }
-
-    await addDoc(collection(db, 'agent_chats', threadId, 'messages'), {
-        text,
-        senderId:   myUid,
-        senderName: myName,
-        timestamp:  serverTimestamp(),
-        read:       false,
-        type:       'text'
-    });
-
-    await updateDoc(threadRef, {
-        lastMessage:                         text.substring(0, 200),
-        lastMessageAt:                       serverTimestamp(),
-        lastMessageBy:                       myUid,
-        [`unreadCounts.${peerUid}`]:         increment(1),
-        [`participantNames.${myUid}`]:       myName,
-        [`participantNames.${peerUid}`]:     peerName
-    });
-}
-
-// ── Mark agent thread as read ─────────────────────────────
-async function markAgentThreadRead(threadId) {
-    const myUid = supportChat.agentUid;
+        closeNewGroupModal();
+        const newConvo = { id: ref.id, isGroup: true, name, participants: memberIds, participantNames: memberNames };
+        openAgentConvo(newConvo);
+    } catch (err) { console.error('Create group error:', err); alert('Failed to create group.'); }
+};
+ 
+// ── Group chat: manage members ────────────────────────────
+window.openManageMembersModal = function () {
+    const modal   = document.getElementById('manage-members-modal');
+    const box     = document.getElementById('manage-member-checkboxes');
+    const current = agentMessaging.currentConvo?.participants || [];
+    box.innerHTML = '';
+    agentMessaging.allAgents
+        .filter(a => a.id !== supportChat.agentUid)
+        .forEach(agent => {
+            const name    = agent.displayName || agent.name || agent.email || 'Agent';
+            const checked = current.includes(agent.id) ? 'checked' : '';
+            const row     = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:0.82rem;';
+            row.innerHTML = `<input type="checkbox" value="${agent.id}" data-name="${escapeHtml(name)}" ${checked} style="accent-color:var(--navy);"> ${escapeHtml(name)}`;
+            box.appendChild(row);
+        });
+    modal.style.display = 'flex';
+};
+ 
+window.closeManageMembersModal = function () {
+    document.getElementById('manage-members-modal').style.display = 'none';
+};
+ 
+window.saveGroupMembers = async function () {
+    const convo = agentMessaging.currentConvo;
+    if (!convo) return;
+    const checked     = [...document.querySelectorAll('#manage-member-checkboxes input:checked')];
+    const uid         = supportChat.agentUid;
+    const myName      = supportChat.agentName;
+    const memberIds   = [uid, ...checked.map(c => c.value)];
+    const memberNames = { ...(convo.participantNames || {}), [uid]: myName };
+    checked.forEach(c => { memberNames[c.value] = c.dataset.name; });
+ 
     try {
-        const ref  = doc(db, 'agent_chats', threadId);
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-            await updateDoc(ref, { [`unreadCounts.${myUid}`]: 0 });
-        }
-    } catch (err) {
-        console.error('Mark agent thread read error:', err);
+        await updateDoc(doc(db, 'agent_chats', convo.id), {
+            participants:     memberIds,
+            participantNames: memberNames
+        });
+        agentMessaging.currentConvo.participants     = memberIds;
+        agentMessaging.currentConvo.participantNames = memberNames;
+        closeManageMembersModal();
+    } catch (err) { console.error('Save members error:', err); alert('Failed to update members.'); }
+};
+ 
+// ── Patch: sendSupportMessage ─────────────────────────────
+// Routes to agent send when in the Agents tab.
+const _origSendSupportMessage = window.sendSupportMessage;
+window.sendSupportMessage = async function () {
+    if (agentMessaging.currentThreadId && supportChat.currentTab === 'agents') {
+        return sendAgentMessage();
     }
-    updateTeamBadge();
-}
-
-// ── Close agent thread (return to team list) ──────────────
-function closeAgentThread() {
-    if (agentMessaging.messagesUnsub) {
-        agentMessaging.messagesUnsub();
-        agentMessaging.messagesUnsub = null;
+    return _origSendSupportMessage ? _origSendSupportMessage() : undefined;
+};
+ 
+// ── Patch: handleSupportTyping ────────────────────────────
+const _origHandleSupportTyping = window.handleSupportTyping;
+window.handleSupportTyping = function () {
+    if (agentMessaging.currentThreadId && supportChat.currentTab === 'agents') {
+        return handleAgentTyping();
     }
-    agentMessaging.currentThreadId = null;
-    agentMessaging.currentPeerId   = null;
-    agentMessaging.currentPeerName = null;
-    agentMessaging.renderedMessageIds.clear();
-
-    document.getElementById('chat-active-area').style.display = 'none';
-    document.getElementById('chat-empty-state').style.display = 'flex';
-
-    const input = document.getElementById('support-chat-input');
-    if (input) input.placeholder = 'Type a message…';
-
-    renderAgentList();
-}
-
-// ════════════════════════════════════════════════════════
-// PATCHES TO EXISTING FUNCTIONS
-// ════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════
-
-function patchSupportChatForAgentMessaging() {
-    // ── Patch: send ───────────────────────────────────────
-    const _origSend = window.sendSupportMessage;
-    window.sendSupportMessage = async function () {
-        if (agentMessaging.currentThreadId) {
-            const input = document.getElementById('support-chat-input');
-            const text  = input?.value.trim();
-            if (!text) return;
-            input.value        = '';
-            input.style.height = 'auto';
-            await sendAgentMessage(text);
-        } else {
-            await _origSend();
-        }
-    };
-
-    // ── Patch: typing ─────────────────────────────────────
-    const _origTyping = window.handleSupportTyping;
-    window.handleSupportTyping = function () {
-        if (agentMessaging.currentThreadId) return; // no typing indicator for DMs (v1)
-        _origTyping();
-    };
-
-    // ── Patch: close active chat ──────────────────────────
-    const _origClose = window.closeActiveChat;
-    window.closeActiveChat = function () {
-        if (agentMessaging.currentThreadId) {
-            closeAgentThread();
-        } else {
-            _origClose();
-        }
-    };
-
-    // ── Patch: switchChatTab to reset agent thread ────────
-    const _origSwitch = window.switchChatTab;
-    window.switchChatTab = function (tab) {
-        if (tab === 'team') {
-            switchToTeamTab();
-            return;
-        }
-        // Leaving team tab — clean up agent thread
-        if (agentMessaging.currentThreadId) {
-            if (agentMessaging.messagesUnsub) {
-                agentMessaging.messagesUnsub();
-                agentMessaging.messagesUnsub = null;
-            }
-            agentMessaging.currentThreadId = null;
-            agentMessaging.currentPeerId   = null;
-            agentMessaging.currentPeerName = null;
-            agentMessaging.renderedMessageIds.clear();
-            const input = document.getElementById('support-chat-input');
-            if (input) input.placeholder = 'Type a message…';
-        }
-        _origSwitch(tab);
-    };
-}
-
-// ── Cleanup ────────────────────────────────────────────────
+    return _origHandleSupportTyping ? _origHandleSupportTyping() : undefined;
+};
+ 
+// ── Patch: closeActiveChat ────────────────────────────────
+const _origCloseActiveChat = window.closeActiveChat;
+window.closeActiveChat = function () {
+    if (agentMessaging.currentThreadId && supportChat.currentTab === 'agents') {
+        if (agentMessaging.messagesUnsub) { agentMessaging.messagesUnsub(); agentMessaging.messagesUnsub = null; }
+        if (agentMessaging.typingUnsub)   { agentMessaging.typingUnsub();   agentMessaging.typingUnsub   = null; }
+        agentMessaging.currentThreadId = null;
+        agentMessaging.currentConvo    = null;
+        agentMessaging.renderedMessageIds.clear();
+ 
+        document.getElementById('chat-active-area').style.display = 'none';
+        document.getElementById('chat-empty-state').style.display = 'none';
+ 
+        const input = document.getElementById('support-chat-input');
+        if (input) input.placeholder = 'Type a message...';
+ 
+        renderAgentRoster();
+        renderAgentConvoList();
+        return;
+    }
+    return _origCloseActiveChat ? _origCloseActiveChat() : undefined;
+};
+ 
+// ── Cleanup ───────────────────────────────────────────────
 window.addEventListener('beforeunload', () => {
-    if (agentMessaging.messagesUnsub) agentMessaging.messagesUnsub();
-    if (agentMessaging.threadsUnsub)  agentMessaging.threadsUnsub();
-    if (agentMessaging.agentsUnsub)   agentMessaging.agentsUnsub();
+    if (agentMessaging.messagesUnsub)      agentMessaging.messagesUnsub();
+    if (agentMessaging.convoUnsub)         agentMessaging.convoUnsub();
+    if (agentMessaging.presenceUnsub)      agentMessaging.presenceUnsub();
+    if (agentMessaging.typingUnsub)        agentMessaging.typingUnsub();
+    if (agentMessaging.agentTypingTimeout) clearTimeout(agentMessaging.agentTypingTimeout);
 });
-
+ 
 // ════════════════════════════════════════════════════════
 // END AGENT INTERNAL MESSAGING SYSTEM
 // ════════════════════════════════════════════════════════
+ 
     
 // ====================================================
 // CREDIT MANAGEMENT (Lead Only) — FIXED
