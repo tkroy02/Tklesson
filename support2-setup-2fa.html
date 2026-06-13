@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tklesson — Set Up Two-Factor Authentication</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <script src="https://tklesson.com/resources-loader.js"></script>
+    <script>loadCommonResources();</script>
+
+    <!-- QR code generation (no external CDN needed — pure JS) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+    <style>
+        :root {
+            --navy:       #0a1f3f;
+            --navy-light: #0d2b56;
+            --navy-mid:   #132d5e;
+            --gold:       #d4a843;
+            --gold-hover: #c49632;
+            --gold-light: #f5e6c8;
+            --white:      #ffffff;
+            --bg:         #f0f2f5;
+            --text:       #1e293b;
+            --text-muted: #64748b;
+            --border:     #e2e8f0;
+            --danger:     #e74c3c;
+            --success:    #27ae60;
+            --radius:     14px;
+            --shadow:     0 4px 24px rgba(0,0,0,0.06);
+            --shadow-lg:  0 12px 48px rgba(0,0,0,0.10);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            display: flex;
+            min-height: 100vh;
+            color: var(--text);
+        }
+
+        /* ── Brand panel (left) ── */
+        .brand-panel {
+            flex: 1;
+            background: linear-gradient(160deg, var(--navy) 0%, #0d2b56 40%, #0f3066 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 60px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .brand-panel::before {
+            content: '';
+            position: absolute;
+            top: -50%; right: -30%;
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, rgba(212,168,67,0.08) 0%, transparent 70%);
+            border-radius: 50%;
+        }
+
+        .brand-content {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            max-width: 380px;
+        }
+
+        .brand-content img {
+            width: 68px; height: 68px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .brand-content h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--white);
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .brand-content h2 span { color: var(--gold); }
+
+        .brand-content .tagline {
+            color: rgba(255,255,255,0.6);
+            font-size: 0.92rem;
+            margin-bottom: 44px;
+            line-height: 1.5;
+        }
+
+        /* ── Animated shield ── */
+        .shield-wrap {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 32px;
+        }
+
+        .shield-svg {
+            width: 120px;
+            height: 120px;
+        }
+
+        .shield-fill {
+            fill: var(--gold);
+            clip-path: inset(100% 0 0 0);
+            transition: clip-path 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .shield-fill.step-1 { clip-path: inset(66% 0 0 0); }
+        .shield-fill.step-2 { clip-path: inset(33% 0 0 0); }
+        .shield-fill.step-3 { clip-path: inset(0%  0 0 0); }
+
+        .shield-outline {
+            fill: none;
+            stroke: rgba(255,255,255,0.25);
+            stroke-width: 2;
+        }
+
+        .shield-check {
+            opacity: 0;
+            transition: opacity 0.4s ease 0.5s;
+            fill: var(--navy);
+            font-size: 32px;
+        }
+
+        .shield-check.visible { opacity: 1; }
+
+        .step-label {
+            color: rgba(255,255,255,0.5);
+            font-size: 0.78rem;
+            letter-spacing: 0.5px;
+            margin-top: 8px;
+        }
+
+        /* Steps list */
+        .setup-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            text-align: left;
+        }
+
+        .setup-step {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: 0.85rem;
+            transition: all 0.3s ease;
+        }
+
+        .step-dot {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.2);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: rgba(255,255,255,0.35);
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+        }
+
+        .setup-step.active   .step-dot { border-color: var(--gold); color: var(--gold); }
+        .setup-step.done     .step-dot { background: var(--gold); border-color: var(--gold); color: var(--navy); }
+        .setup-step.active   .step-text { color: rgba(255,255,255,0.9); }
+        .setup-step          .step-text { color: rgba(255,255,255,0.4); transition: color 0.3s; }
+        .setup-step.done     .step-text { color: rgba(255,255,255,0.6); }
+
+        /* ── Setup panel (right) ── */
+        .setup-panel {
+            width: 520px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            background: var(--white);
+            overflow-y: auto;
+        }
+
+        .setup-wrapper {
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .mobile-logo {
+            display: none;
+            text-align: center;
+            margin-bottom: 28px;
+        }
+
+        .mobile-logo img { width: 48px; height: 48px; border-radius: 12px; }
+
+        /* ── Screen system ── */
+        .screen { display: none; }
+        .screen.active { display: block; }
+
+        /* ── Typography ── */
+        .screen-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--navy);
+            margin-bottom: 4px;
+        }
+
+        .screen-sub {
+            font-size: 0.83rem;
+            color: var(--text-muted);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        /* ── Message ── */
+        .message {
+            padding: 11px 14px;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            margin-bottom: 16px;
+            font-weight: 500;
+            display: none;
+        }
+
+        .message.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; display: block; }
+        .message.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; display: block; }
+        .message.info    { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; display: block; }
+
+        /* ── Buttons ── */
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--navy);
+            color: var(--white);
+            box-shadow: 0 4px 12px rgba(10,31,63,0.2);
+        }
+
+        .btn-primary:hover    { background: var(--navy-light); transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+        .btn-gold {
+            background: var(--gold);
+            color: var(--navy);
+            box-shadow: 0 4px 12px rgba(212,168,67,0.3);
+            margin-top: 12px;
+        }
+
+        .btn-gold:hover { background: var(--gold-hover); transform: translateY(-1px); }
+
+        /* ── QR code block ── */
+        .qr-block {
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        #qrcode {
+            display: inline-block;
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            margin-bottom: 12px;
+        }
+
+        #qrcode img, #qrcode canvas { display: block; }
+
+        .secret-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-top: 10px;
+        }
+
+        .secret-row code {
+            flex: 1;
+            font-family: 'Courier New', monospace;
+            font-size: 0.78rem;
+            color: var(--navy);
+            letter-spacing: 1px;
+            word-break: break-all;
+        }
+
+        .copy-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: color 0.2s;
+            flex-shrink: 0;
+        }
+
+        .copy-btn:hover { color: var(--navy); }
+
+        .qr-hint {
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* ── OTP inputs ── */
+        .otp-inputs {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 24px 0;
+        }
+
+        .otp-inputs input {
+            width: 50px; height: 58px;
+            text-align: center;
+            font-size: 1.4rem;
+            font-weight: 700;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            outline: none;
+            transition: all 0.2s ease;
+            background: #fafbfc;
+        }
+
+        .otp-inputs input:focus {
+            border-color: var(--gold);
+            background: var(--white);
+            box-shadow: 0 0 0 4px rgba(212,168,67,0.08);
+        }
+
+        .otp-inputs input.filled { background: var(--white); border-color: #cbd5e0; }
+
+        /* ── Timer bar ── */
+        .timer-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            margin: 8px 0 20px;
+            overflow: hidden;
+        }
+
+        .timer-bar-fill {
+            height: 100%;
+            background: var(--gold);
+            border-radius: 2px;
+            transition: width 1s linear;
+            width: 100%;
+        }
+
+        /* ── Success screen ── */
+        .success-icon {
+            width: 72px; height: 72px;
+            background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+            color: #065f46;
+        }
+
+        .success-screen { text-align: center; }
+
+        /* ── Spinner ── */
+        .spinner {
+            display: none;
+            width: 18px; height: 18px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Loading overlay ── */
+        #loading-overlay {
+            position: fixed; inset: 0;
+            background: rgba(255,255,255,0.9);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 100;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        #loading-overlay .spinner {
+            display: block;
+            width: 32px; height: 32px;
+            border-width: 3px;
+            border-top-color: var(--navy);
+        }
+
+        #loading-overlay p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        @media (max-width: 900px) {
+            .brand-panel { display: none; }
+            .setup-panel { width: 100%; }
+            .mobile-logo { display: block; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+    <span class="spinner"></span>
+    <p>Verifying your session…</p>
+</div>
+
+<!-- Left: Branding -->
+<div class="brand-panel">
+    <div class="brand-content">
+        <img src="Tklesson3.png" alt="Tklesson">
+        <h2>TK<span>lesson</span></h2>
+        <p class="tagline">Secure your account with two-factor authentication before accessing the support dashboard.</p>
+
+        <!-- Animated shield -->
+        <div class="shield-wrap">
+            <svg class="shield-svg" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+                <path class="shield-fill" id="shield-fill-path"
+                    d="M60 8 L100 24 L100 60 C100 82 82 98 60 108 C38 98 20 82 20 60 L20 24 Z"/>
+                <path class="shield-outline"
+                    d="M60 8 L100 24 L100 60 C100 82 82 98 60 108 C38 98 20 82 20 60 L20 24 Z"/>
+                <text class="shield-check" id="shield-check"
+                    x="60" y="72" text-anchor="middle" font-size="38" font-family="system-ui">✓</text>
+            </svg>
+        </div>
+
+        <p class="step-label" id="shield-label">Step 1 of 3</p>
+
+        <!-- Step list -->
+        <div class="setup-steps" style="margin-top: 24px;">
+            <div class="setup-step active" id="side-step-1">
+                <div class="step-dot">1</div>
+                <span class="step-text">Install an authenticator app</span>
+            </div>
+            <div class="setup-step" id="side-step-2">
+                <div class="step-dot">2</div>
+                <span class="step-text">Scan the QR code</span>
+            </div>
+            <div class="setup-step" id="side-step-3">
+                <div class="step-dot">3</div>
+                <span class="step-text">Verify and activate</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Right: Setup flow -->
+<div class="setup-panel">
+    <div class="setup-wrapper">
+        <div class="mobile-logo"><img src="Tklesson3.png" alt="Tklesson"></div>
+
+        <!-- ── Screen 1: Install instructions ── -->
+        <div class="screen active" id="screen-install">
+            <p class="screen-title">Set up two-factor authentication</p>
+            <p class="screen-sub">
+                Two-factor authentication adds a second layer of security.
+                You'll need an authenticator app on your phone.
+            </p>
+
+            <div class="message" id="msg-install"></div>
+
+            <div style="background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+                <p style="font-size: 0.8rem; font-weight: 600; color: var(--navy); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.4px;">Recommended apps</p>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text);">
+                        <div style="width: 36px; height: 36px; background: #fff; border-radius: 8px; display:flex; align-items:center; justify-content:center; box-shadow: 0 1px 4px rgba(0,0,0,0.08); flex-shrink:0;">
+                            <i class="fas fa-mobile-alt" style="color: #4285f4;"></i>
+                        </div>
+                        <div>
+                            <div style="font-weight: 600;">Google Authenticator</div>
+                            <div style="font-size: 0.74rem; color: var(--text-muted);">iOS & Android — free</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text);">
+                        <div style="width: 36px; height: 36px; background: #fff; border-radius: 8px; display:flex; align-items:center; justify-content:center; box-shadow: 0 1px 4px rgba(0,0,0,0.08); flex-shrink:0;">
+                            <i class="fas fa-shield-halved" style="color: #1a73e8;"></i>
+                        </div>
+                        <div>
+                            <div style="font-weight: 600;">Microsoft Authenticator</div>
+                            <div style="font-size: 0.74rem; color: var(--text-muted);">iOS & Android — free</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text);">
+                        <div style="width: 36px; height: 36px; background: #fff; border-radius: 8px; display:flex; align-items:center; justify-content:center; box-shadow: 0 1px 4px rgba(0,0,0,0.08); flex-shrink:0;">
+                            <i class="fas fa-lock" style="color: #6366f1;"></i>
+                        </div>
+                        <div>
+                            <div style="font-weight: 600;">Authy</div>
+                            <div style="font-size: 0.74rem; color: var(--text-muted);">iOS & Android — free, cloud backup</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="btn-install-next">
+                <span>I have an authenticator app</span>
+                <i class="fas fa-arrow-right"></i>
+            </button>
+        </div>
+
+        <!-- ── Screen 2: QR code ── -->
+        <div class="screen" id="screen-qr">
+            <p class="screen-title">Scan this QR code</p>
+            <p class="screen-sub">Open your authenticator app, tap <strong>Add account</strong>, then scan the code below.</p>
+
+            <div class="message" id="msg-qr"></div>
+
+            <div class="qr-block">
+                <div id="qrcode"></div>
+                <p class="qr-hint" style="margin-bottom: 8px;">Can't scan? Enter the key manually:</p>
+                <div class="secret-row">
+                    <code id="secret-display">Generating…</code>
+                    <button class="copy-btn" id="copy-secret-btn" title="Copy key">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="btn-qr-next">
+                <span>I've added the account</span>
+                <i class="fas fa-arrow-right"></i>
+            </button>
+        </div>
+
+        <!-- ── Screen 3: Verify code ── -->
+        <div class="screen" id="screen-verify">
+            <p class="screen-title">Enter the 6-digit code</p>
+            <p class="screen-sub">
+                Your authenticator app is now showing a code for Tklesson Support.
+                Enter it below to activate 2FA on your account.
+            </p>
+
+            <div class="message" id="msg-verify"></div>
+
+            <div class="otp-inputs" id="setup-otp-inputs">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+            </div>
+
+            <div class="timer-bar"><div class="timer-bar-fill" id="setup-timer-bar"></div></div>
+
+            <button class="btn btn-primary" id="btn-verify" disabled>
+                <span id="verify-btn-text">Activate 2FA</span>
+                <span class="spinner" id="verify-spinner"></span>
+            </button>
+        </div>
+
+        <!-- ── Screen 4: Success ── -->
+        <div class="screen success-screen" id="screen-success">
+            <div class="success-icon"><i class="fas fa-shield-halved"></i></div>
+            <p class="screen-title" style="text-align:center;">You're protected</p>
+            <p class="screen-sub" style="text-align:center;">
+                Two-factor authentication is active on your account.
+                You'll need your authenticator app each time you sign in.
+            </p>
+            <button class="btn btn-gold" id="btn-go-dashboard">
+                <i class="fas fa-arrow-right"></i>
+                <span>Go to dashboard</span>
+            </button>
+        </div>
+
+    </div>
+</div>
+
+<script type="module">
+import { initializeApp }                                          from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+import { getAuth, onAuthStateChanged, signOut }                  from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+import { getFirestore, doc, updateDoc }                          from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+import { getFunctions, httpsCallable }                           from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js';
+
+// ── Firebase init (email-notifications-1c77b) ────────────────────
+const config    = await fetch('https://us-central1-email-notifications-1c77b.cloudfunctions.net/getClientConfig').then(r => r.json());
+const app       = initializeApp(config);
+const auth      = getAuth(app);
+const db        = getFirestore(app);
+const functions = getFunctions(app);
+
+// ── State ────────────────────────────────────────────────────────
+let currentUser     = null;
+let generatedSecret = null;
+let challengeToken  = null;
+let timerInterval   = null;
+
+// ── Auth guard: must be logged in and NOT yet tfa_verified ───────
+onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+        window.location.href = 'support2-login.html';
+        return;
+    }
+
+    const tokenResult = await user.getIdTokenResult();
+    if (tokenResult.claims.tfa_verified) {
+        // Already has 2FA — go straight to dashboard
+        window.location.href = 'premium-support.html';
+        return;
+    }
+
+    currentUser = user;
+    document.getElementById('loading-overlay').style.display = 'none';
+});
+
+// ── Shield / step state ──────────────────────────────────────────
+function setStep(n) {
+    const fill  = document.getElementById('shield-fill-path');
+    const check = document.getElementById('shield-check');
+    fill.setAttribute('class',  `shield-fill${n >= 1 ? ` step-${Math.min(n, 3)}` : ''}`);
+    check.setAttribute('class', `shield-check${n >= 3 ? ' visible' : ''}`);
+
+    document.getElementById('shield-label').textContent = n < 3
+        ? `Step ${n} of 3`
+        : 'Setup complete';
+
+    [1, 2, 3].forEach(i => {
+        const el = document.getElementById(`side-step-${i}`);
+        el.className = `setup-step${i < n ? ' done' : i === n ? ' active' : ''}`;
+        if (i < n) el.querySelector('.step-dot').innerHTML = '<i class="fas fa-check" style="font-size:0.65rem;"></i>';
+    });
+}
+
+// ── Screen switcher ──────────────────────────────────────────────
+function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+}
+
+// ── Message helper ───────────────────────────────────────────────
+function showMsg(id, text, type) {
+    const el       = document.getElementById(id);
+    el.textContent = text;
+    el.className   = `message ${type}`;
+}
+
+function clearMsg(id) {
+    const el       = document.getElementById(id);
+    el.className   = 'message';
+    el.textContent = '';
+}
+
+// ── Base32 secret generator (client-side) ───────────────────────
+function generateBase32Secret(length = 20) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const arr   = new Uint8Array(length);
+    crypto.getRandomValues(arr);
+    return Array.from(arr, b => chars[b % 32]).join('');
+}
+
+// ── Format secret for display (groups of 4) ─────────────────────
+function formatSecret(s) {
+    return s.match(/.{1,4}/g).join(' ');
+}
+
+// ── Generate QR code + secret ────────────────────────────────────
+function generateQRCode(user, secret) {
+    const issuer  = 'Tklesson%20Support';
+    const email   = encodeURIComponent(user.email);
+    const otpauth = `otpauth://totp/${issuer}:${email}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+
+    document.getElementById('secret-display').textContent = formatSecret(secret);
+
+    const container = document.getElementById('qrcode');
+    container.innerHTML = '';
+
+    new QRCode(container, {
+        text:         otpauth,
+        width:        180,
+        height:       180,
+        colorDark:    '#0a1f3f',
+        colorLight:   '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+    });
+}
+
+// ── OTP input wiring ─────────────────────────────────────────────
+function setupOtpInputs(containerId, onComplete) {
+    const inputs = document.querySelectorAll(`#${containerId} input`);
+    inputs.forEach((inp, i) => {
+        inp.addEventListener('input', () => {
+            inp.value = inp.value.replace(/\D/g, '').slice(0, 1);
+            inp.classList.toggle('filled', inp.value !== '');
+            if (inp.value && i < inputs.length - 1) inputs[i + 1].focus();
+            const full = Array.from(inputs).every(x => x.value);
+            if (full && onComplete) onComplete();
+        });
+        inp.addEventListener('keydown', e => {
+            if (e.key === 'Backspace' && !inp.value && i > 0) inputs[i - 1].focus();
+        });
+        inp.addEventListener('paste', e => {
+            e.preventDefault();
+            const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+            inputs.forEach((box, j) => { box.value = text[j] || ''; box.classList.toggle('filled', !!box.value); });
+            const next = inputs[Math.min(text.length, inputs.length - 1)];
+            if (next) next.focus();
+            const full = Array.from(inputs).every(x => x.value);
+            if (full && onComplete) onComplete();
+        });
+    });
+}
+
+function getOtpValue(containerId) {
+    return Array.from(document.querySelectorAll(`#${containerId} input`)).map(i => i.value).join('');
+}
+
+function clearOtpInputs(containerId) {
+    document.querySelectorAll(`#${containerId} input`).forEach(i => {
+        i.value = '';
+        i.classList.remove('filled');
+    });
+}
+
+// ── Timer bar ────────────────────────────────────────────────────
+function startTimer(barId) {
+    clearInterval(timerInterval);
+    const bar  = document.getElementById(barId);
+    const tick = () => {
+        const rem = 30 - (Math.floor(Date.now() / 1000) % 30);
+        bar.style.width = `${(rem / 30) * 100}%`;
+    };
+    tick();
+    timerInterval = setInterval(tick, 1000);
+}
+
+// ── Step 1 → 2: Install ──────────────────────────────────────────
+document.getElementById('btn-install-next').addEventListener('click', () => {
+    if (!currentUser) return;
+    generatedSecret = generateBase32Secret();
+    generateQRCode(currentUser, generatedSecret);
+    setStep(2);
+    showScreen('screen-qr');
+});
+
+// ── Copy secret ──────────────────────────────────────────────────
+document.getElementById('copy-secret-btn').addEventListener('click', () => {
+    if (!generatedSecret) return;
+    navigator.clipboard.writeText(generatedSecret).then(() => {
+        const btn = document.getElementById('copy-secret-btn');
+        btn.innerHTML = '<i class="fas fa-check" style="color:var(--success);"></i>';
+        setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 2000);
+    });
+});
+
+// ── Step 2 → 3: QR scanned ──────────────────────────────────────
+document.getElementById('btn-qr-next').addEventListener('click', async () => {
+    clearMsg('msg-qr');
+    const btn = document.getElementById('btn-qr-next');
+    btn.disabled  = true;
+    btn.innerHTML = '<span class="spinner" style="display:inline-block; width:18px; height:18px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin 0.6s linear infinite;"></span>';
+
+    try {
+        const initiateSupportTFA = httpsCallable(functions, 'initiateSupportTFA');
+        const result = await initiateSupportTFA({
+            isSetupMode:   true,
+            pendingSecret: generatedSecret
+        });
+        challengeToken = result.data.challengeToken;
+
+        setStep(3);
+        showScreen('screen-verify');
+        clearOtpInputs('setup-otp-inputs');
+        startTimer('setup-timer-bar');
+        document.querySelector('#setup-otp-inputs input').focus();
+    } catch (err) {
+        console.error('Initiate TFA error:', err);
+        showMsg('msg-qr', 'Could not start verification. Please try again.', 'error');
+        btn.disabled  = false;
+        btn.innerHTML = '<span>I\'ve added the account</span><i class="fas fa-arrow-right"></i>';
+    }
+});
+
+// ── Enable verify button when all 6 digits entered ──────────────
+setupOtpInputs('setup-otp-inputs', () => {
+    document.getElementById('btn-verify').disabled = false;
+});
+
+// ── Step 3: Verify + activate ────────────────────────────────────
+document.getElementById('btn-verify').addEventListener('click', async () => {
+    const token = getOtpValue('setup-otp-inputs');
+    if (token.length < 6) {
+        showMsg('msg-verify', 'Enter the complete 6-digit code.', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btn-verify');
+    btn.disabled = true;
+    document.getElementById('verify-btn-text').style.display = 'none';
+    document.getElementById('verify-spinner').style.display  = 'inline-block';
+    clearMsg('msg-verify');
+
+    try {
+        const verifySupportTFA = httpsCallable(functions, 'verifySupportTFA');
+        const result = await verifySupportTFA({ challengeToken, token });
+
+        if (result.data.valid) {
+            clearInterval(timerInterval);
+
+            // Persist 2FA fields to the agent's Firestore doc
+            await updateDoc(doc(db, 'support_agents', currentUser.uid), {
+                twoFactorEnabled: true,
+                twoFactorSecret:  generatedSecret
+            });
+
+            // Force-refresh token so tfa_verified claim is in cache
+            await currentUser.getIdToken(true);
+
+            setStep(3);
+            showScreen('screen-success');
+        } else {
+            showMsg('msg-verify', 'Incorrect code — check your app and try again.', 'error');
+            clearOtpInputs('setup-otp-inputs');
+            document.querySelector('#setup-otp-inputs input').focus();
+            btn.disabled = false;
+        }
+    } catch (err) {
+        console.error('Verify error:', err);
+        if (err.code === 'resource-exhausted') {
+            showMsg('msg-verify', 'Too many attempts. Please sign in again.', 'error');
+            await signOut(auth);
+            setTimeout(() => window.location.href = 'support2-login.html', 2000);
+        } else if (err.code === 'failed-precondition') {
+            showMsg('msg-verify', 'Session expired. Please go back and scan the QR code again.', 'error');
+        } else {
+            showMsg('msg-verify', 'Verification failed. Please try again.', 'error');
+            btn.disabled = false;
+        }
+    } finally {
+        document.getElementById('verify-btn-text').style.display = 'inline';
+        document.getElementById('verify-spinner').style.display  = 'none';
+    }
+});
+
+// ── Success → dashboard ──────────────────────────────────────────
+document.getElementById('btn-go-dashboard').addEventListener('click', () => {
+    window.location.href = 'premium-support.html';
+});
+
+// ── Init: set step 1 ─────────────────────────────────────────────
+setStep(1);
+</script>
+</body>
+</html>
